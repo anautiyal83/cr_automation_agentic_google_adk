@@ -1,32 +1,45 @@
-"""CR Automation Pipeline — Google ADK Workflow Graph.
+"""CR Automation Pipeline — Google ADK Agent Graph.
 
-Defines the 10-step pipeline as a Workflow with conditional routing:
-- LLM steps (1,2,3,4,6,8): Use call_llm via FunctionNode
-- Deterministic steps (5,7,9,10): Run JARs, compare results
-- Milestones (3,4,5,6,7,8,9): Pause for user review
-- Feedback loops:
-  - Step 5 failure → retry Step 3 (validation rules issue)
-  - Step 7 failure → retry Step 6 (workflow YAML issue)
-  - Step 9 failure → retry Step 6 (workflow issue) OR Step 8 (simulator issue)
+Agent Architecture:
+  - 6 LlmAgents (Steps 2,3,4,6,8 + UC Analyzer) with tools for post-processing
+  - 4 Deterministic BaseAgents (Steps 1,5,7,9,10) wrapping existing JAR-based logic
+  - 3 Peer Reviewer LlmAgents (QA Validation, QA MOP, QA Execution)
+  - 7 Milestone nodes (pause for user review)
+  - 3 Failure Router nodes (conditional retry routing)
+
+Feedback Loops:
+  Step 5 fail → QA Validation Reviewer → fix instructions → retry Step 3
+  Step 7 fail → QA MOP Reviewer → fix instructions → retry Step 6
+  Step 9 fail → QA Execution Reviewer → classify → retry Step 6 or Step 8
 """
 from __future__ import annotations
 
 import logging
-from google.adk.agents import SequentialAgent, BaseAgent
-from google.adk.models import LiteLlm
+import os
 
+from google.adk.agents import SequentialAgent, BaseAgent
+from google.adk.models.lite_llm import LiteLlm
+
+from src.nodes.llm_agents import (
+    create_model,
+    create_uc_analyzer_agent,
+    create_validation_rules_agent,
+    create_json_template_agent,
+    create_workflow_gen_agent,
+    create_simulator_setup_agent,
+)
+from src.nodes.reviewer_agents import (
+    create_qa_validation_reviewer,
+    create_qa_mop_reviewer,
+    create_qa_execution_reviewer,
+)
 from src.nodes.step_nodes import (
     doc_parser_node,
-    uc_analyzer_node,
-    validation_rules_node,
-    json_template_node,
     ciq_qa_node,
-    milestone_review_node,
-    workflow_gen_node,
     mop_test_node,
-    simulator_setup_node,
     execution_test_node,
     final_report_node,
+    milestone_review_node,
     failure_router_step5_node,
     failure_router_step7_node,
     failure_router_step9_node,
@@ -35,75 +48,77 @@ from src.nodes.step_nodes import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Route constants
-# ---------------------------------------------------------------------------
-CONTINUE = "continue"
-RETRY_STEP3 = "retry_step3"
-RETRY_STEP6 = "retry_step6"
-RETRY_STEP8 = "retry_step8"
-SKIP = "skip"
-CANCEL = "cancel"
-
-
 def build_pipeline_agent(
     model_name: str = "openrouter/google/gemini-2.5-flash",
     api_key: str = "",
 ) -> BaseAgent:
     """Build the CR Automation pipeline as a Google ADK agent graph.
 
-    The pipeline is structured as a SequentialAgent with sub-agents for each
-    step. Conditional routing is handled within each step's logic — the step
-    sets state flags that downstream milestone/router nodes read to decide
-    whether to continue, retry from an earlier step, or cancel.
-
-    Returns a BaseAgent that can be run via google.adk.runners.Runner.
+    Returns a SequentialAgent with 10 pipeline steps, 3 reviewers,
+    7 milestones, and 3 failure routers.
     """
-
-    # --- LLM Model ---
-    llm = LiteLlm(model=model_name)
     if api_key:
-        import os
         os.environ["OPENROUTER_API_KEY"] = api_key
 
-    # --- Build pipeline as SequentialAgent ---
-    # Each step is a sub-agent (FunctionNode-based or LlmAgent-based).
-    # Milestone nodes pause for user review.
-    # Router nodes check state and decide retry vs continue.
+    model = LiteLlm(model=model_name)
 
+    # --- LLM Agents (native ADK LlmAgent with tools) ---
+    uc_analyzer = create_uc_analyzer_agent(model)
+    validation_rules = create_validation_rules_agent(model)
+    json_template = create_json_template_agent(model)
+    workflow_gen = create_workflow_gen_agent(model)
+    simulator_setup = create_simulator_setup_agent(model)
+
+    # --- Peer Reviewer Agents ---
+    qa_val_reviewer = create_qa_validation_reviewer(model)
+    qa_mop_reviewer = create_qa_mop_reviewer(model)
+    qa_exec_reviewer = create_qa_execution_reviewer(model)
+
+    # --- Pipeline ---
     pipeline = SequentialAgent(
         name="cr_automation_pipeline",
-        description="10-step CR Automation pipeline with milestones and feedback loops",
+        description=(
+            "10-step CR Automation pipeline with LLM agents, deterministic test steps, "
+            "3 peer reviewer agents for failure analysis, and conditional retry loops."
+        ),
         sub_agents=[
-            # Phase 1: Document Parsing & Analysis
-            doc_parser_node,        # Step 1
-            uc_analyzer_node,       # Step 2
+            # ── Phase 1: Document Parsing ──
+            doc_parser_node,                    # Step 1 (deterministic)
+            uc_analyzer,                        # Step 2 (LlmAgent)
 
-            # Phase 2: Config Generation & Validation
-            validation_rules_node,  # Step 3 (LLM)
+            # ── Phase 2: Config Generation ──
+            validation_rules,                   # Step 3 (LlmAgent + tools)
             milestone_review_node("milestone_step3", step_num=3, name="Validation Rules"),
-            json_template_node,     # Step 4 (LLM)
+            json_template,                      # Step 4 (LlmAgent + tools)
             milestone_review_node("milestone_step4", step_num=4, name="JSON Output Template"),
 
-            # Phase 3: CIQ QA Cycle
-            ciq_qa_node,            # Step 5 (deterministic)
-            failure_router_step5_node,  # Routes: continue or retry_step3
+            # ── Phase 3: CIQ QA ──
+            ciq_qa_node,                        # Step 5 (deterministic JAR)
+            qa_val_reviewer,                    # Reviewer: analyze Step 5 failures
+            failure_router_step5_node,          # Router: continue or retry Step 3
 
-            # Phase 4: Workflow & MOP
-            workflow_gen_node,      # Step 6 (LLM)
+            # ── Phase 4: Workflow & MOP ──
+            workflow_gen,                        # Step 6 (LlmAgent + tools)
             milestone_review_node("milestone_step6", step_num=6, name="Workflow"),
-            mop_test_node,          # Step 7 (deterministic)
-            failure_router_step7_node,  # Routes: continue or retry_step6
+            mop_test_node,                      # Step 7 (deterministic JAR)
+            qa_mop_reviewer,                    # Reviewer: analyze Step 7 failures
+            failure_router_step7_node,          # Router: continue or retry Step 6
 
-            # Phase 5: Simulator & Execution
-            simulator_setup_node,   # Step 8 (LLM)
+            # ── Phase 5: Simulator & Execution ──
+            simulator_setup,                    # Step 8 (LlmAgent + tools)
             milestone_review_node("milestone_step8", step_num=8, name="Simulator Config"),
-            execution_test_node,    # Step 9 (deterministic)
-            failure_router_step9_node,  # Routes: continue, retry_step6, or retry_step8
+            execution_test_node,                # Step 9 (deterministic JAR + MockWire)
+            qa_exec_reviewer,                   # Reviewer: classify & analyze Step 9 failures
+            failure_router_step9_node,          # Router: continue, retry Step 6, or retry Step 8
 
-            # Phase 6: Final Report
-            final_report_node,      # Step 10 (deterministic)
+            # ── Phase 6: Final Report ──
+            final_report_node,                  # Step 10 (deterministic)
         ],
+    )
+
+    logger.info(
+        "Pipeline built: %d agents (%d LLM, %d deterministic, %d reviewers, %d milestones, %d routers)",
+        len(pipeline.sub_agents), 5, 5, 3, 4, 3,
     )
 
     return pipeline
