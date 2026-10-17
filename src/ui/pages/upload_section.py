@@ -65,82 +65,73 @@ class UploadSection:
         self._build_ui()
 
     def _build_ui(self) -> None:
-        with ui.column().classes("w-full gap-5"):
-            # UC Name selection — Node Type + Activity Name
-            with ui.card().classes("w-full p-4 cr-card-inner").style(
+        with ui.column().classes("w-full gap-2"):
+            # UC Name selection — compact single row
+            with ui.card().classes("w-full p-3 cr-card-inner").style(
                 "background: rgba(108,99,255,0.06)"
             ):
-                with ui.column().classes("w-full gap-3"):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.icon("badge", size="24px").classes("cr-text-accent")
-                        ui.label("Use Case Identity").classes("text-subtitle2 font-semibold")
-                    with ui.row().classes("w-full gap-3 items-end"):
-                        self.node_select = ui.select(
-                            self._node_types, label="Node Type",
-                            with_input=True, new_value_mode="add-unique",
-                            on_change=self._on_node_change,
-                        ).classes("flex-1").props("outlined dense")
-                        self.custom_node_input = ui.input(
-                            "Custom Node Type",
-                            placeholder="e.g., CSCF",
-                        ).classes("flex-1").props("outlined dense")
-                        self.custom_node_input.set_visibility(False)
-                        self.custom_node_input.on("update:model-value", self._on_custom_node_change)
-                        self.activity_input = ui.input(
-                            "Activity Name",
-                            placeholder="e.g., Provisioning",
-                            autocomplete=self._activity_names,
-                        ).classes("flex-1").props("outlined dense")
-                        self.activity_input.on("update:model-value", self._on_activity_change)
+                with ui.row().classes("w-full gap-2 items-end"):
+                    ui.icon("badge", size="20px").classes("cr-text-accent")
+                    self.node_select = ui.select(
+                        self._node_types, label="Node Type",
+                        with_input=True, new_value_mode="add-unique",
+                        on_change=self._on_node_change,
+                    ).classes("flex-1").props("outlined dense")
+                    self.custom_node_input = ui.input(
+                        "Custom Node Type",
+                        placeholder="e.g., CSCF",
+                    ).classes("flex-1").props("outlined dense")
+                    self.custom_node_input.set_visibility(False)
+                    self.custom_node_input.on("update:model-value", self._on_custom_node_change)
+                    self.activity_input = ui.input(
+                        "Activity Name",
+                        placeholder="e.g., Provisioning",
+                        autocomplete=self._activity_names,
+                    ).classes("flex-1").props("outlined dense")
+                    self.activity_input.on("update:model-value", self._on_activity_change)
                     self.uc_name_label = ui.label("") \
                         .classes("text-body2 font-mono font-semibold cr-text-accent")
 
-            # Document upload grid — row 1: CIQ, MOP, Sample I/O XMLs
-            with ui.row().classes("w-full gap-4 flex-wrap"):
+            # Document upload grid — all 5 + additional in 2 rows
+            with ui.row().classes("w-full gap-2 flex-wrap"):
                 for doc in DOC_TYPES[:3]:
                     self._upload_card(doc)
 
-            # Row 2: Constraints, Command Outputs
-            with ui.row().classes("w-full gap-4 flex-wrap"):
+            with ui.row().classes("w-full gap-2 flex-wrap"):
                 for doc in DOC_TYPES[3:]:
                     self._upload_card(doc)
 
-                # Additional documents — inline in same row
+                # Additional documents — compact inline
                 with ui.card().classes("cr-upload-card flex-1 min-w-48"):
-                    with ui.column().classes("w-full gap-2 items-center"):
+                    with ui.column().classes("w-full gap-1 items-center"):
                         with ui.row().classes("w-full items-center justify-between"):
-                            with ui.row().classes("items-center gap-2"):
-                                ui.icon("attach_file", size="20px").classes("cr-text-accent")
-                                ui.label("Additional Documents").classes("text-subtitle2 font-semibold")
+                            with ui.row().classes("items-center gap-1"):
+                                ui.icon("attach_file", size="18px").classes("cr-text-accent")
+                                ui.label("Additional Docs").classes("text-caption font-semibold")
                             ui.html('<span class="cr-badge cr-badge-optional">Optional</span>')
-                        ui.label("Reference configs, design docs, etc.").classes("text-caption cr-text-dim w-full")
                         ui.upload(
-                            label="Drop or click to upload",
+                            label="Drop or click",
                             multiple=True,
                             auto_upload=True,
                             on_upload=self._handle_additional_upload,
                         ).props('flat bordered color=deep-purple-6').classes("w-full")
-                        self.additional_docs_list = ui.column().classes("w-full gap-1")
+                        self.additional_docs_list = ui.column().classes("w-full gap-0")
 
-            # Validation results
+            # Validation + options + action — compact single row
             self.validation_container = ui.column().classes("w-full")
 
-            # Options row
-            with ui.row().classes("w-full items-center gap-4"):
-                self.review_checkbox = ui.checkbox(
-                    "Review artifacts at each milestone (Steps 3-6)",
-                    value=True,
-                ).classes("text-body2")
-
-            # Action row
             with ui.row().classes("w-full justify-between items-center"):
-                self.validation_label = ui.label("Upload all required documents to continue") \
-                    .classes("text-body2 cr-text-dim")
+                self.review_checkbox = ui.checkbox(
+                    "Review at milestones",
+                    value=True,
+                ).classes("text-caption")
+                self.validation_label = ui.label("Upload required documents to continue") \
+                    .classes("text-caption cr-text-dim")
                 self.start_btn = ui.button(
                     "Start Pipeline", icon="play_arrow",
                     on_click=self._on_start,
-                ).props("unelevated color=deep-purple-6 size=lg rounded") \
-                    .classes("px-8")
+                ).props("unelevated color=deep-purple-6 size=md rounded") \
+                    .classes("px-6")
                 self.start_btn.disable()
 
     def _upload_card(self, doc: dict) -> None:
@@ -151,28 +142,23 @@ class UploadSection:
 
         with ui.card().classes("cr-upload-card flex-1 min-w-48") as card:
             self.cards[key] = card
-            with ui.column().classes("w-full gap-2 items-center"):
-                # Header
+            with ui.column().classes("w-full gap-1 items-center"):
                 with ui.row().classes("w-full items-center justify-between"):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.icon(doc["icon"], size="20px").classes("cr-text-accent")
-                        ui.label(doc["label"]).classes("text-subtitle2 font-semibold")
+                    with ui.row().classes("items-center gap-1"):
+                        ui.icon(doc["icon"], size="18px").classes("cr-text-accent")
+                        ui.label(doc["label"]).classes("text-caption font-semibold")
                     badge_cls = "cr-badge cr-badge-required" if doc["required"] else "cr-badge cr-badge-optional"
-                    ui.html(f'<span class="{badge_cls}">{"Required" if doc["required"] else "Optional"}</span>')
+                    ui.html(f'<span class="{badge_cls}">{"Req" if doc["required"] else "Opt"}</span>')
 
-                ui.label(doc["desc"]).classes("text-caption cr-text-dim w-full")
-
-                # Upload widget — always allow multiple drops
                 ui.upload(
-                    label="Drop or click to upload",
+                    label="Drop or click",
                     multiple=True,
                     auto_upload=True,
                     on_upload=lambda e, k=key, m=is_multi: self._handle_upload(e, k, multi=m),
                 ).props(f'accept="{doc["accept"]}" flat bordered color=deep-purple-6').classes("w-full")
 
-                # Status / file list
                 if is_multi:
-                    file_list = ui.column().classes("w-full gap-1")
+                    file_list = ui.column().classes("w-full gap-0")
                     self.statuses[key] = file_list
                 else:
                     status = ui.label("").classes("text-xs")
