@@ -25,10 +25,7 @@ from google.adk.agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
-# Add cr_automation-agentic to path so we can import existing agents
-CR_AUTO_ROOT = Path("D:/my_workspace/cr_automation-agentic")
-if str(CR_AUTO_ROOT) not in sys.path:
-    sys.path.insert(0, str(CR_AUTO_ROOT))
+from src.nodes.cr_import import get_agent_class, import_cr_module
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +35,8 @@ if str(CR_AUTO_ROOT) not in sys.path:
 async def _call_existing_agent(agent_cls, input_data: dict, config: dict) -> dict:
     """Call an existing cr_automation-agentic agent and return its output."""
     agent = agent_cls() if not hasattr(agent_cls, '__init__') else agent_cls
-    from src.core.models import RetryContext
+    models_mod = import_cr_module("src.core.models")
+    RetryContext = models_mod.RetryContext
     retry_ctx = None
     if input_data.get("retry_context"):
         retry_ctx = RetryContext(**input_data["retry_context"])
@@ -123,7 +121,7 @@ class DocParserNode(BaseAgent):
     description: str = "Step 1: Parse CIQ/MOP documents into intermediate representation"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.doc_parser_agent import DocParserAgent
+        DocParserAgent = get_agent_class("src.agents.doc_parser_agent", "DocParserAgent")
         logger.info("Step 1: Document Parser — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -143,7 +141,7 @@ class UCAnalyzerNode(BaseAgent):
     description: str = "Step 2: Analyze and enrich UC intermediate representation"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.uc_analyzer_agent import UCAnalyzerAgent
+        UCAnalyzerAgent = get_agent_class("src.agents.uc_analyzer_agent", "UCAnalyzerAgent")
         logger.info("Step 2: UC Analyzer — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -163,7 +161,7 @@ class ValidationRulesNode(BaseAgent):
     description: str = "Step 3: Generate CIQ validation rules via LLM"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.validation_gen_agent import ValidationGenAgent
+        ValidationGenAgent = get_agent_class("src.agents.validation_gen_agent", "ValidationGenAgent")
         logger.info("Step 3: Validation Rules — starting")
 
         retries = ctx.session.state.get("retry_count_3", 0)
@@ -202,7 +200,7 @@ class JsonTemplateNode(BaseAgent):
     description: str = "Step 4: Generate CIQ JSON output template via LLM"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.json_template_agent import JsonTemplateAgent
+        JsonTemplateAgent = get_agent_class("src.agents.json_template_agent", "JsonTemplateAgent")
         logger.info("Step 4: JSON Template — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -222,7 +220,7 @@ class CiqQANode(BaseAgent):
     description: str = "Step 5: QA cycle — test validation rules + JSON template via ciq-processor JAR"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.test_executor import TestExecutor
+        TestExecutor = get_agent_class("src.agents.test_executor", "TestExecutor")
         logger.info("Step 5: CIQ QA — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -251,7 +249,7 @@ class WorkflowGenNode(BaseAgent):
     description: str = "Step 6: Generate execution workflow YAML via LLM"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.workflow_gen_agent import WorkflowGenAgent
+        WorkflowGenAgent = get_agent_class("src.agents.workflow_gen_agent", "WorkflowGenAgent")
         logger.info("Step 6: Workflow Gen — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -271,7 +269,7 @@ class MopTestNode(BaseAgent):
     description: str = "Step 7: Test MOP generation via cli-automation-standalone JAR"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.mop_gen_tester import MopGenTester
+        MopGenTester = get_agent_class("src.agents.mop_gen_tester", "MopGenTester")
         logger.info("Step 7: MOP Test — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -291,7 +289,7 @@ class SimulatorSetupNode(BaseAgent):
     description: str = "Step 8: Generate MockWire simulator configs via LLM"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.simulator_setup import SimulatorSetupAgent
+        SimulatorSetupAgent = get_agent_class("src.agents.simulator_setup", "SimulatorSetupAgent")
         logger.info("Step 8: Simulator Setup — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -311,7 +309,7 @@ class ExecutionTestNode(BaseAgent):
     description: str = "Step 9: Execute workflow via cli-automation JAR + MockWire simulator"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.test_executor import TestExecutor
+        TestExecutor = get_agent_class("src.agents.test_executor", "TestExecutor")
         logger.info("Step 9: Execution Test — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
@@ -339,7 +337,7 @@ class FinalReportNode(BaseAgent):
     description: str = "Step 10: Generate final HTML + Excel pipeline report"
 
     async def _run_async_impl(self, ctx):
-        from src.agents.report_generator import ReportGenerator
+        ReportGenerator = get_agent_class("src.agents.report_generator", "ReportGenerator")
         logger.info("Step 10: Final Report — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)

@@ -18,10 +18,7 @@ from google.adk.tools.function_tool import FunctionTool
 
 logger = logging.getLogger(__name__)
 
-# Access existing cr_automation-agentic utilities
-CR_AUTO_ROOT = Path("D:/my_workspace/cr_automation-agentic")
-if str(CR_AUTO_ROOT) not in sys.path:
-    sys.path.insert(0, str(CR_AUTO_ROOT))
+from src.nodes.cr_import import import_cr_module
 
 
 # ---------------------------------------------------------------------------
