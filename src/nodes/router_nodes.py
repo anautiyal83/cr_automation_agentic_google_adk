@@ -39,7 +39,8 @@ class FailureRouterStep5(BaseAgent):
             else:
                 ctx.session.state["pipeline_failed"] = True
                 logger.error("Router5: retry limit exhausted for Step 3")
-        yield
+        return
+        yield  # unreachable
 
 
 class FailureRouterStep7(BaseAgent):
@@ -64,7 +65,8 @@ class FailureRouterStep7(BaseAgent):
             else:
                 ctx.session.state["pipeline_failed"] = True
                 logger.error("Router7: retry limit exhausted for Step 6")
-        yield
+        return
+        yield  # unreachable
 
 
 class FailureRouterStep9(BaseAgent):
@@ -104,7 +106,8 @@ class FailureRouterStep9(BaseAgent):
             else:
                 ctx.session.state["pipeline_failed"] = True
                 logger.error("Router9: retry limit exhausted for Step %d", target)
-        yield
+        return
+        yield  # unreachable
 
 
 # Patterns indicating workflow issues (route to Step 6)

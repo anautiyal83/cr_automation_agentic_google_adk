@@ -35,9 +35,6 @@ class PipelineAgent(BaseAgent):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    class Config:
-        arbitrary_types_allowed = True
-
     def _configure(
         self,
         agents_list: list[BaseAgent],
@@ -102,7 +99,9 @@ class PipelineAgent(BaseAgent):
             index += 1
 
         logger.info("PipelineAgent finished at index %d", index)
-        yield  # Required for async generator
+        # Must be async generator but don't yield None
+        return
+        yield  # unreachable — makes this an async generator
 
 
 def build_pipeline(config: dict | None = None) -> PipelineAgent:

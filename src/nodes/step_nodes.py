@@ -57,11 +57,17 @@ def _get_config_from_state(state: dict) -> dict:
 
 def _get_step_data(state: dict) -> dict:
     """Build step_data dict from session state (same structure existing agents expect)."""
+    # Remove empty/missing optional path keys from document_set
+    # (prevents DocParserAgent from calling Path("") or Path(None))
+    doc_set = dict(state.get("document_set", {}))
+    for opt_key in ("mop_file_path", "constraints_file_path", "command_outputs_path"):
+        if not doc_set.get(opt_key):
+            doc_set.pop(opt_key, None)
     return {
         "uc_name": state.get("uc_name", ""),
         "run_dir": state.get("run_dir", ""),
         "ciq_file_path": state.get("ciq_file_path", ""),
-        "document_set": state.get("document_set", {}),
+        "document_set": doc_set,
         "intermediate_repr": state.get("intermediate_repr", {}),
         "ciq_data": state.get("ciq_data", {}),
         "mop_data": state.get("mop_data", {}),
@@ -128,7 +134,8 @@ class DocParserNode(BaseAgent):
         result = await _call_existing_agent(DocParserAgent(), step_data, config)
         _save_step_result(ctx.session.state, 1, result)
         logger.info("Step 1: Document Parser — %s", result.get("status"))
-        yield  # Required for async generator
+        return
+        yield  # unreachable — async generator
 
 doc_parser_node = DocParserNode()
 
@@ -148,7 +155,8 @@ class UCAnalyzerNode(BaseAgent):
         result = await _call_existing_agent(UCAnalyzerAgent(), step_data, config)
         _save_step_result(ctx.session.state, 2, result)
         logger.info("Step 2: UC Analyzer — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 uc_analyzer_node = UCAnalyzerNode()
 
@@ -187,7 +195,8 @@ class ValidationRulesNode(BaseAgent):
                 logger.error("Step 3 exhausted %d retries", MAX_RETRIES)
 
         logger.info("Step 3: Validation Rules — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 validation_rules_node = ValidationRulesNode()
 
@@ -207,7 +216,8 @@ class JsonTemplateNode(BaseAgent):
         result = await _call_existing_agent(JsonTemplateAgent(), step_data, config)
         _save_step_result(ctx.session.state, 4, result)
         logger.info("Step 4: JSON Template — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 json_template_node = JsonTemplateNode()
 
@@ -236,7 +246,8 @@ class CiqQANode(BaseAgent):
                 ctx.session.state["qa_feedback"] = failed_tcs
 
         logger.info("Step 5: CIQ QA — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 ciq_qa_node = CiqQANode()
 
@@ -256,7 +267,8 @@ class WorkflowGenNode(BaseAgent):
         result = await _call_existing_agent(WorkflowGenAgent(), step_data, config)
         _save_step_result(ctx.session.state, 6, result)
         logger.info("Step 6: Workflow Gen — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 workflow_gen_node = WorkflowGenNode()
 
@@ -276,7 +288,8 @@ class MopTestNode(BaseAgent):
         result = await _call_existing_agent(MopGenTester(), step_data, config)
         _save_step_result(ctx.session.state, 7, result)
         logger.info("Step 7: MOP Test — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 mop_test_node = MopTestNode()
 
@@ -296,7 +309,8 @@ class SimulatorSetupNode(BaseAgent):
         result = await _call_existing_agent(SimulatorSetupAgent(), step_data, config)
         _save_step_result(ctx.session.state, 8, result)
         logger.info("Step 8: Simulator Setup — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 simulator_setup_node = SimulatorSetupNode()
 
@@ -324,7 +338,8 @@ class ExecutionTestNode(BaseAgent):
             )
 
         logger.info("Step 9: Execution Test — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 execution_test_node = ExecutionTestNode()
 
@@ -344,7 +359,8 @@ class FinalReportNode(BaseAgent):
         result = await _call_existing_agent(ReportGenerator(), step_data, config)
         _save_step_result(ctx.session.state, 10, result)
         logger.info("Step 10: Final Report — %s", result.get("status"))
-        yield
+        return
+        yield  # unreachable
 
 final_report_node = FinalReportNode()
 
@@ -416,7 +432,8 @@ class FailureRouterStep5(BaseAgent):
             else:
                 logger.error("Step 5: retry limit exhausted for Step 3")
                 ctx.session.state["pipeline_failed"] = True
-        yield
+        return
+        yield  # unreachable
 
 failure_router_step5_node = FailureRouterStep5()
 
@@ -442,7 +459,8 @@ class FailureRouterStep7(BaseAgent):
             else:
                 logger.error("Step 7: retry limit exhausted for Step 6")
                 ctx.session.state["pipeline_failed"] = True
-        yield
+        return
+        yield  # unreachable
 
 failure_router_step7_node = FailureRouterStep7()
 
@@ -478,7 +496,8 @@ class FailureRouterStep9(BaseAgent):
             else:
                 logger.error("Step 9: retry limit exhausted for Step %d", target)
                 ctx.session.state["pipeline_failed"] = True
-        yield
+        return
+        yield  # unreachable
 
 failure_router_step9_node = FailureRouterStep9()
 

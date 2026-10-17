@@ -42,7 +42,7 @@ async def main():
             "ciq_processor_jar": str(CR_AUTO_ROOT / "lib" / "ciq-processor-1.0.3-cli.jar"),
             "cli_automation_jar": str(CR_AUTO_ROOT / "lib" / "cli-automation-standalone.jar"),
             "execution_report_jar": str(CR_AUTO_ROOT / "lib" / "execution-report-generator-1.0.2-cli.jar"),
-            "output_directory": str(Path("./data/runs")),
+            "output_directory": str(Path(__file__).resolve().parent / "data" / "runs"),
             "mop_template": str(CR_AUTO_ROOT / "lib" / "templates" / "mop_summary_report_template_v2.html"),
             "exec_summary_template": str(CR_AUTO_ROOT / "lib" / "templates" / "mop_execution_summary_report_template.html"),
             "exec_failure_template": str(CR_AUTO_ROOT / "lib" / "templates" / "execution_failure_template.html"),
