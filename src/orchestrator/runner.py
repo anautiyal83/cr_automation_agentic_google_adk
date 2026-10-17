@@ -15,7 +15,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from src.core.events import EventBus, PipelineEvent
-from src.nodes.milestone_nodes import milestone_events, milestone_decisions
+from src.nodes.milestone_nodes import milestone_events, milestone_decisions, milestone_waiting
 from src.orchestrator.pipeline_agent import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,8 @@ class PipelineRunner:
             session_id=run_id,
             state=initial_state,
         )
+        self._sessions = getattr(self, '_sessions', {})
+        self._sessions[run_id] = session
 
         # Create milestone events for this run
         for step in (3, 4, 5, 6, 7, 8, 9):
@@ -91,14 +93,18 @@ class PipelineRunner:
             except Exception:
                 logger.exception("Failed to persist pipeline run to DB")
 
-        # Start pipeline in background
-        task = asyncio.create_task(self._run_pipeline(run_id, user_id))
         self._active_runs[run_id] = {
-            "task": task,
             "status": "running",
             "current_step": 0,
             "started_at": time.monotonic(),
+            "session_id": run_id,
         }
+
+        # Start pipeline + milestone monitor in background
+        pipeline_task = asyncio.create_task(self._run_pipeline(run_id, user_id))
+        monitor_task = asyncio.create_task(self._monitor_milestones(run_id))
+        self._active_runs[run_id]["pipeline_task"] = pipeline_task
+        self._active_runs[run_id]["monitor_task"] = monitor_task
 
         await event_bus.publish(PipelineEvent(
             run_id=UUID(run_id), event_type="run_started",
@@ -107,100 +113,45 @@ class PipelineRunner:
         return run_id
 
     async def _run_pipeline(self, run_id: str, user_id: str):
-        """Execute the pipeline and monitor state for events."""
+        """Execute the pipeline. Milestone monitoring handled by _monitor_milestones."""
         try:
             content = types.Content(
                 role="user",
                 parts=[types.Part(text="Execute the CR Automation pipeline")],
             )
 
-            prev_step = 0
             async for event in self._runner.run_async(
                 user_id=user_id,
                 session_id=run_id,
                 new_message=content,
             ):
-                # Get current session state
-                sessions = await self._session_service.list_sessions(
-                    app_name="cr_automation", user_id=user_id)
-                session = None
-                for s in sessions.sessions:
-                    if s.id == run_id:
-                        session = s
-                        break
+                pass  # Events processed by monitor task
 
-                if not session:
-                    continue
-
-                state = session.state or {}
-
-                # Detect step transitions
-                current_step = self._detect_current_step(state)
-                if current_step != prev_step and current_step > 0:
-                    self._active_runs[run_id]["current_step"] = current_step
-                    await event_bus.publish(PipelineEvent(
-                        run_id=UUID(run_id), event_type="step_started",
-                        step_number=current_step,
-                        payload={"step_name": f"Step {current_step}"},
-                    ))
-
-                    # Persist step result for previous step
-                    if prev_step > 0:
-                        step_status = state.get(f"step_{prev_step}_status", "passed")
-                        await self._persist_step_result(run_id, prev_step, step_status)
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id), event_type="step_completed",
-                            step_number=prev_step,
-                            payload={"status": step_status},
-                        ))
-
-                    prev_step = current_step
-
-                # Check for milestone pauses
-                for step_num in (3, 4, 5, 6, 7, 8, 9):
-                    if state.get(f"milestone_{step_num}_waiting"):
-                        self._active_runs[run_id]["status"] = "paused_milestone"
-                        self._active_runs[run_id]["milestone_step"] = step_num
-                        milestone_name = state.get(f"milestone_{step_num}_step_name", f"Step {step_num}")
-                        step_status = state.get(f"milestone_{step_num}_step_status", "passed")
-
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id), event_type="milestone_reached",
-                            step_number=step_num,
-                            payload={
-                                "milestone": milestone_name,
-                                "test_status": step_status if step_status == "failed" else None,
-                            },
-                        ))
-
-                # Check termination
-                if state.get("pipeline_cancelled"):
-                    self._active_runs[run_id]["status"] = "cancelled"
-                    await self._persist_run_status(run_id, "cancelled")
-                    await event_bus.publish(PipelineEvent(
-                        run_id=UUID(run_id), event_type="run_cancelled",
-                        payload={"run_id": run_id},
-                    ))
-                    return
-
-                if state.get("pipeline_failed"):
-                    self._active_runs[run_id]["status"] = "failed"
-                    error = state.get("pipeline_error", "Retry limit exhausted")
-                    await self._persist_run_status(run_id, "failed", error)
-                    await event_bus.publish(PipelineEvent(
-                        run_id=UUID(run_id), event_type="run_failed",
-                        payload={"run_id": run_id, "error": error},
-                    ))
-                    return
-
-            # Pipeline completed successfully
-            elapsed = time.monotonic() - self._active_runs[run_id]["started_at"]
-            self._active_runs[run_id]["status"] = "completed"
-            await self._persist_run_status(run_id, "completed")
-            await event_bus.publish(PipelineEvent(
-                run_id=UUID(run_id), event_type="run_completed",
-                payload={"run_id": run_id, "duration": elapsed},
-            ))
+            # Pipeline completed — check final state
+            state = await self.get_state(run_id)
+            if state.get("pipeline_cancelled"):
+                self._active_runs[run_id]["status"] = "cancelled"
+                await self._persist_run_status(run_id, "cancelled")
+                await event_bus.publish(PipelineEvent(
+                    run_id=UUID(run_id), event_type="run_cancelled",
+                    payload={"run_id": run_id},
+                ))
+            elif state.get("pipeline_failed"):
+                error = state.get("pipeline_error", "Retry limit exhausted")
+                self._active_runs[run_id]["status"] = "failed"
+                await self._persist_run_status(run_id, "failed", error)
+                await event_bus.publish(PipelineEvent(
+                    run_id=UUID(run_id), event_type="run_failed",
+                    payload={"run_id": run_id, "error": error},
+                ))
+            else:
+                elapsed = time.monotonic() - self._active_runs[run_id]["started_at"]
+                self._active_runs[run_id]["status"] = "completed"
+                await self._persist_run_status(run_id, "completed")
+                await event_bus.publish(PipelineEvent(
+                    run_id=UUID(run_id), event_type="run_completed",
+                    payload={"run_id": run_id, "duration": elapsed},
+                ))
 
         except Exception as e:
             logger.exception("Pipeline run %s failed", run_id)
@@ -210,6 +161,52 @@ class PipelineRunner:
                 run_id=UUID(run_id), event_type="run_failed",
                 payload={"run_id": run_id, "error": str(e)},
             ))
+
+    async def _monitor_milestones(self, run_id: str):
+        """Monitor session state for milestone pauses and update runner status."""
+        try:
+            while self._active_runs.get(run_id, {}).get("status") not in ("completed", "failed", "cancelled"):
+                await asyncio.sleep(0.3)
+
+                # Read session state from cached session
+                session = getattr(self, '_sessions', {}).get(run_id)
+                if not session or not session.state:
+                    continue
+                state = session.state
+
+                # Detect current step
+                current_step = self._detect_current_step(state)
+                if current_step > 0:
+                    self._active_runs[run_id]["current_step"] = current_step
+
+                # Detect milestone pauses via shared global dict
+                for step_num in (3, 4, 5, 6, 7, 8, 9):
+                    mw = milestone_waiting.get(step_num)
+                    if mw and mw.get("waiting"):
+                        if self._active_runs[run_id].get("status") != "paused_milestone":
+                            self._active_runs[run_id]["status"] = "paused_milestone"
+                            self._active_runs[run_id]["milestone_step"] = step_num
+                            await event_bus.publish(PipelineEvent(
+                                run_id=UUID(run_id), event_type="milestone_reached",
+                                step_number=step_num,
+                                payload={
+                                    "milestone": mw.get("name", f"Step {step_num}"),
+                                    "test_status": mw.get("status") if mw.get("status") == "failed" else None,
+                                },
+                            ))
+
+                # Detect termination
+                if state.get("pipeline_cancelled"):
+                    self._active_runs[run_id]["status"] = "cancelled"
+                    break
+                if state.get("pipeline_failed"):
+                    self._active_runs[run_id]["status"] = "failed"
+                    break
+
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Milestone monitor error for run %s", run_id)
 
     def respond_milestone(self, run_id: str, step_num: int, decision: str):
         """Respond to a milestone pause: 'continue', 'rerun', or 'cancel'."""
@@ -233,17 +230,10 @@ class PipelineRunner:
 
     async def _set_milestone_decision(self, run_id: str, step_num: int, decision: str):
         """Set milestone decision in session state."""
-        try:
-            sessions = await self._session_service.list_sessions(
-                app_name="cr_automation", user_id="pipeline_user")
-            for s in sessions.sessions:
-                if s.id == run_id:
-                    s.state[f"milestone_{step_num}_decision"] = decision
-                    # For routers: they check milestone_N_decision_action
-                    s.state[f"milestone_{step_num}_decision_action"] = decision
-                    break
-        except Exception:
-            logger.exception("Failed to set milestone decision in session")
+        session = getattr(self, '_sessions', {}).get(run_id)
+        if session and session.state:
+            session.state[f"milestone_{step_num}_decision"] = decision
+            session.state[f"milestone_{step_num}_decision_action"] = decision
 
     def get_status(self, run_id: str) -> dict[str, Any]:
         """Get current pipeline status."""
@@ -257,14 +247,9 @@ class PipelineRunner:
 
     async def get_state(self, run_id: str) -> dict[str, Any]:
         """Get full pipeline state for a run."""
-        try:
-            sessions = await self._session_service.list_sessions(
-                app_name="cr_automation", user_id="pipeline_user")
-            for s in sessions.sessions:
-                if s.id == run_id:
-                    return dict(s.state) if s.state else {}
-        except Exception:
-            pass
+        session = getattr(self, '_sessions', {}).get(run_id)
+        if session and session.state:
+            return dict(session.state)
         return {}
 
     async def cancel_run(self, run_id: str):

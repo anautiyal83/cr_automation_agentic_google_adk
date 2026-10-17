@@ -12,10 +12,10 @@ from google.adk.agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
-# Shared registry: milestone_step → asyncio.Event
-# Managed by the runner (created before pipeline starts)
-milestone_events: dict[int, asyncio.Event] = {}
-milestone_decisions: dict[int, str] = {}
+# Shared registries — used by both milestone nodes and runner
+milestone_events: dict[int, asyncio.Event] = {}   # step → Event (signaled by runner)
+milestone_decisions: dict[int, str] = {}            # step → decision
+milestone_waiting: dict[int, dict] = {}             # step → {waiting, name, status}
 
 
 class MilestoneNode(BaseAgent):
@@ -34,7 +34,14 @@ class MilestoneNode(BaseAgent):
         logger.info("Milestone Step %d (%s): status=%s — awaiting review",
                      step, self.milestone_name, status)
 
-        # Signal that we're waiting
+        # Signal via shared global dict (visible to monitor task)
+        milestone_waiting[step] = {
+            "waiting": True,
+            "name": self.milestone_name,
+            "status": status,
+        }
+
+        # Also set in session state for compatibility
         ctx.session.state[f"milestone_{step}_waiting"] = True
         ctx.session.state[f"milestone_{step}_step_name"] = self.milestone_name
         ctx.session.state[f"milestone_{step}_step_status"] = status
@@ -45,22 +52,23 @@ class MilestoneNode(BaseAgent):
             await evt.wait()
             evt.clear()  # Reset for potential re-use
         else:
-            # Fallback: poll state (shouldn't happen in normal operation)
             logger.warning("No asyncio.Event for milestone %d — falling back to polling", step)
-            while not ctx.session.state.get(f"milestone_{step}_decision"):
+            while step not in milestone_decisions:
                 await asyncio.sleep(0.5)
 
-        decision = ctx.session.state.get(f"milestone_{step}_decision", "continue")
+        decision = milestone_decisions.pop(step, "continue")
+        milestone_waiting.pop(step, None)
         ctx.session.state[f"milestone_{step}_waiting"] = False
-        # Clear decision for next potential use
-        ctx.session.state.pop(f"milestone_{step}_decision", None)
+        ctx.session.state[f"milestone_{step}_decision"] = decision
+        ctx.session.state[f"milestone_{step}_decision_action"] = decision
 
         logger.info("Milestone Step %d: decision=%s", step, decision)
 
         if decision == "cancel":
             ctx.session.state["pipeline_cancelled"] = True
 
-        yield  # Required for async generator
+        return
+        yield  # unreachable — async generator
 
 
 def create_milestone_node(step_num: int, name: str) -> MilestoneNode:
