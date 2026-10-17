@@ -36,11 +36,17 @@ class PipelineRunner:
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: dict[str, Any] | Any | None = None,
         db: Any | None = None,
         artifact_store: Any | None = None,
     ):
-        self._config = config or {}
+        # Accept both dict and Pydantic model
+        if config and hasattr(config, "model_dump"):
+            self._config = config.model_dump()
+        elif isinstance(config, dict):
+            self._config = config
+        else:
+            self._config = {}
         self._db = db
         self._artifact_store = artifact_store
         self._session_service = InMemorySessionService()
