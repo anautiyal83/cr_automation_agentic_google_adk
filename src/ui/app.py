@@ -265,12 +265,14 @@ body.body--light {
     color: white !important;
     border-color: var(--cr-primary) !important;
 }
-/* Layout */
+/* Layout — entire page is fixed viewport, only cr-content scrolls */
 html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 * { box-sizing: border-box; }
-.nicegui-content { padding: 48px 0 0 0 !important; height: 100vh; }
-.q-page-container { padding-top: 48px !important; }
-.q-page { min-height: 0 !important; padding: 0 !important; }
+.nicegui-content { padding: 0 !important; height: 100vh; overflow: hidden; }
+.q-page-container { padding-top: 0 !important; height: 100vh; overflow: hidden; }
+.q-page { min-height: 0 !important; padding: 0 !important; height: 100vh; overflow: hidden; }
+.q-layout { height: 100vh !important; overflow: hidden !important; }
+.q-page-container .q-page-container__page { height: 100vh !important; overflow: hidden !important; }
 /* --- Sidebar --- */
 .cr-sidebar {
     background: var(--cr-surface) !important;
@@ -323,11 +325,12 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     margin: 4px 12px;
 }
 .cr-content {
-    margin-left: 140px;
+    position: fixed;
+    top: 48px;
+    left: 140px;
+    right: 0;
+    bottom: 0;
     padding: 6px 12px;
-    width: calc(100vw - 140px);
-    max-width: calc(100vw - 140px);
-    height: calc(100vh - 48px);
     overflow-y: auto;
     overflow-x: hidden;
 }

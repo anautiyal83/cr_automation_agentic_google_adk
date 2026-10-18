@@ -3,12 +3,12 @@ openrouter_api_key: "${OPENROUTER_API_KEY}"
 models:
   default: "openrouter/google/gemini-2.5-flash"
   per_step:
-    1: null  # Doc Parser — uses default (Gemini 2.5 Flash)
-    2: null  # UC Analyzer — uses default
-    3: null  # Validation Rules Gen — uses default
-    4: null  # JSON Template Gen — uses default
-    5: null  # Workflow Gen — uses default
-    6: null  # Script + Simulator Gen — uses default
+    1: null  # DOC Parser
+    2: null  # DOC Analyzer
+    3: null  # CIQ Config Generation
+    4: null  # Generate CIQ JSON Config
+    6: null  # Generate Execution Config
+    8: null  # Simulator Setup
 
 retry:
   test_failure_limit: 3
@@ -16,9 +16,9 @@ retry:
   infrastructure_backoff: 2.0
 
 external_modules:
-  ciq_processor_jar: "./lib/ciq-processor.jar"
+  ciq_processor_jar: "./lib/ciq-processor-1.0.3-cli.jar"
   cli_automation_jar: "./lib/cli-automation-standalone.jar"
-  execution_report_jar: "./lib/execution-report-generator.jar"
+  execution_report_jar: "./lib/execution-report-generator-1.0.2-cli.jar"
   java_home: null
   subprocess_timeout: 300
 
@@ -44,4 +44,4 @@ ui:
   host: "0.0.0.0"
   port: 8000
   dark_mode: true
-  title: "CR Automation Agentic"
+  title: "CR Automation ADK Pipeline"

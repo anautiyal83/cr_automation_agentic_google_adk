@@ -1,84 +1,84 @@
-# CR Automation Pipeline — Google ADK Orchestrator
+# CR Automation Pipeline — Google ADK
 
-Google ADK-based orchestrator for the CR Automation pipeline. Uses ADK's `SequentialAgent` with conditional routing nodes for intelligent retry loops.
+Telecom UC automation pipeline using Google ADK (Agent Development Kit) for orchestration. Generates YAML configs via LLM agents, validates via Java JARs, tests against MockWire simulator, with automatic retry loops on failures.
+
+## Quick Start
+
+```powershell
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the web UI
+.\start.ps1
+# Open http://localhost:8000
+
+# Or run via CLI
+python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICATION
+```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Google ADK SequentialAgent                     │
-├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│ Step 1   │ Step 2   │ Step 3   │ Step 4   │ Step 5   │ Router5  │
-│ Parser   │ Analyzer │ Rules    │ JSON     │ CIQ QA   │ →3 or →6 │
-├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤
-│ Step 6   │ Step 7   │ Router7  │ Step 8   │ Step 9   │ Router9  │
-│ Workflow │ MOP QA   │ →6 or →8 │ Simulator│ Exec QA  │ →6/8/10  │
-├──────────┴──────────┴──────────┴──────────┴──────────┴──────────┤
-│ Step 10: Final Report                                            │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────── PipelineAgent (23 agents) ────────────────────────┐
+│                                                                            │
+│  [1] Parser → [2] Analyzer → [3] Rules → ⏸ → [4] JSON → ⏸               │
+│                                                                            │
+│  → [5] CIQ QA → ⏸ → [R1 Reviewer] → [→ Router: retry 3?]               │
+│                                                                            │
+│  → [6] Workflow → ⏸ → [7] MOP QA → ⏸ → [R2 Reviewer] → [→ Router: 6?] │
+│                                                                            │
+│  → [8] Simulator → ⏸ → [9] Exec QA → ⏸ → [R3 Reviewer] → [→ Router]   │
+│                                                                            │
+│  → [10] Report                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Retry loops:  Step 5 fail → Step 3  |  Step 7 fail → Step 6  |  Step 9 fail → Step 6 or 8
 ```
 
-## Feedback Loops
+## Pipeline Steps
 
-| Test Step | Failure Type        | Routes To | Why                              |
-|-----------|--------------------|-----------|---------------------------------|
-| Step 5    | Validation failure | Step 3    | Fix validation rules             |
-| Step 7    | MOP gen failure    | Step 6    | Fix workflow YAML                |
-| Step 9    | YAML parse error   | Step 6    | Fix workflow structure            |
-| Step 9    | Simulator error    | Step 8    | Fix mock responses               |
+| # | Step | Type | Description |
+|---|------|------|-------------|
+| 1 | DOC Parser | Deterministic | Parse CIQ Excel + MOP documents |
+| 2 | DOC Analyzer | LLM | Enrich intermediate representation |
+| 3 | CIQ Config Generation | LLM | Generate validation-rules.yaml |
+| 4 | Generate CIQ JSON Config | LLM | Generate json-output.yaml |
+| 5 | QA-Validation | JAR | Test rules via ciq-processor |
+| 6 | Generate Execution Config | LLM | Generate workflow.yaml |
+| 7 | QA-MOP | JAR | Test MOP generation |
+| 8 | Simulator Setup | LLM | Generate MockWire configs |
+| 9 | QA-Execution | JAR+MockWire | Execute workflow against simulator |
+| 10 | Final Report | Deterministic | HTML + Excel reports |
 
-Failure classification uses pattern matching on error messages to auto-detect the right retry target.
+## Peer Reviewer Agents
 
-## Usage
+When a test step fails, a reviewer LlmAgent analyzes the failure and generates fix instructions:
 
-### CLI
-```bash
-python main.py \
-  --ciq path/to/ciq.xlsx \
-  --uc-name DSR_1058_IFC_CAPABILITY_MODIFICATION \
-  --api-key sk-or-... \
-  --model openrouter/google/gemini-2.5-flash
-```
-
-### Library
-```python
-from src.orchestrator.runner import PipelineRunner
-
-runner = PipelineRunner(config={
-    "default_model": "openrouter/google/gemini-2.5-flash",
-    "openrouter_api_key": "sk-or-...",
-    "ciq_processor_jar": "./lib/ciq-processor.jar",
-    "cli_automation_jar": "./lib/cli-automation-standalone.jar",
-})
-
-run_id = await runner.start({
-    "uc_name": "DSR_1058_IFC_CAPABILITY_MODIFICATION",
-    "ciq_file_path": "/path/to/ciq.xlsx",
-})
-
-# Respond to milestones
-runner.respond_milestone(run_id, step_num=3, decision="continue")
-
-# Check status
-status = runner.get_status(run_id)
-```
-
-## Dependencies
-
-- `google-adk>=2.11.0` — Agent Development Kit
-- `cr_automation-agentic` — Existing pipeline agents (referenced via sys.path)
+- **QA Validation Reviewer**: Step 5 failures → fix instructions for Step 3
+- **QA MOP Reviewer**: Step 7 failures → fix instructions for Step 6
+- **QA Execution Reviewer**: Step 9 failures → classifies as workflow (→Step 6) or simulator (→Step 8)
 
 ## Project Structure
 
 ```
-cr_automation_agentic_google_adk/
-├── main.py                         # CLI entry point
-├── README.md
+├── main.py                    CLI entry point
+├── start.ps1                  Server launcher
+├── config/pipeline_config.yaml
+├── lib/                       JARs + templates + MockWire
+├── schemas/                   YAML validation schemas
 ├── src/
-│   ├── orchestrator/
-│   │   ├── pipeline_graph.py       # ADK agent graph definition
-│   │   └── runner.py               # Pipeline runner with session management
-│   └── nodes/
-│       └── step_nodes.py           # Step node implementations + failure routing
-└── config/
+│   ├── orchestrator/          PipelineAgent + PipelineRunner
+│   ├── nodes/                 Step agents, milestones, routers, reviewers
+│   ├── core/                  Models, events, config, retry
+│   ├── storage/               SQLite DB + artifact store
+│   └── ui/                    NiceGUI web interface
+├── data/                      Runtime (runs, uploads, DB)
+└── specs/                     Feature specifications
 ```
+
+## Requirements
+
+- Python 3.11+
+- Java 8+ (for JAR modules)
+- `google-adk>=2.11.0`, `litellm`, `nicegui>=2.0`
+- OpenRouter API key
