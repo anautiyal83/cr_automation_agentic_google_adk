@@ -43,6 +43,37 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+async def _ensure_api_key():
+    """Load API key from DB settings / config, same as the UI."""
+    from src.storage.db import init_database
+    config_dict = {}
+
+    # First check DB settings table (highest priority — set via UI)
+    try:
+        db = await init_database("data/pipeline.db")
+        for key_name in ("api_key", "openrouter_api_key"):
+            rows = await db.execute(f"SELECT value FROM settings WHERE key=?", (key_name,))
+            if rows and rows[0]["value"]:
+                os.environ["OPENROUTER_API_KEY"] = rows[0]["value"]
+                logger.info("API key loaded from DB settings.%s", key_name)
+                break
+    except Exception:
+        pass
+
+    # Load full config
+    try:
+        from src.core.config import ConfigManager
+        mgr = ConfigManager()
+        config = await mgr.get_config()
+        config_dict = config.model_dump()
+        if config.openrouter_api_key and not os.environ.get("OPENROUTER_API_KEY"):
+            os.environ["OPENROUTER_API_KEY"] = config.openrouter_api_key
+    except Exception:
+        pass
+
+    return config_dict
+
+
 async def list_runs():
     """List recent pipeline runs."""
     from src.storage.db import init_database
@@ -99,6 +130,7 @@ async def show_status(run_id: str):
 
 async def run_step(step_num: int, run_id: str):
     """Run a single step using state from a previous run."""
+    loaded_config = await _ensure_api_key()
     from src.nodes.cr_import import get_agent_class, import_cr_module
     from src.nodes.step_nodes import _get_step_data, _save_step_result, _call_existing_agent, _inject_retry_context
 
@@ -109,6 +141,8 @@ async def run_step(step_num: int, run_id: str):
 
     # Build state from existing run artifacts
     state = _build_state_from_run(run_dir, run_id)
+    if loaded_config:
+        state["pipeline_config"] = loaded_config
     step_data = _get_step_data(state)
     config = state.get("pipeline_config", {})
 
@@ -252,6 +286,7 @@ async def test_autofix_workflow(yaml_path: str):
 
 async def test_reviewer(step_num: int, run_id: str):
     """Test reviewer analysis on a failed step."""
+    await _ensure_api_key()
     from src.nodes.milestone_nodes import reviewer_feedback
     from src.nodes.cr_import import import_cr_module
 
