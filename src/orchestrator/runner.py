@@ -380,7 +380,7 @@ class PipelineRunner:
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-generation-report.html",
             8: f"{uc_name}_simulator-config.yaml",
-            9: f"{uc_name}_exec-test-report.html",
+            9: f"exec_report/{uc_name}_execution-report.html",
         }
 
         # Also check artifacts stored in session state
