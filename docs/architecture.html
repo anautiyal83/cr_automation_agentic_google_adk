@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CR Automation Pipeline — Architecture</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3348;
+    --text: #e2e4ed;
+    --text-muted: #8b8fa8;
+    --accent: #6c8aff;
+    --accent2: #38bdf8;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --purple: #a78bfa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    padding: 0;
+  }
+  .hero {
+    background: linear-gradient(135deg, #1e2340 0%, #0f1117 60%, #162032 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 40px 50px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 10px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  .badge-row {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .badge.blue { color: var(--accent2); border-color: #1e3a5f; }
+  .badge.green { color: var(--green); border-color: #1a3a2a; }
+  .badge.purple { color: var(--purple); border-color: #2d2650; }
+  .badge.amber { color: var(--amber); border-color: #3d2f10; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 30px; }
+
+  section { margin-bottom: 50px; }
+  section > h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  section > h2 .icon {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+  section > p.lead { color: var(--text-muted); margin-bottom: 24px; }
+
+  /* Cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
+  .card p { font-size: 0.88rem; color: var(--text-muted); }
+  .card .tag {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tag-base { background: #1e2a40; color: var(--accent2); }
+  .tag-llm { background: #2a1e40; color: var(--purple); }
+  .tag-jar { background: #2a3010; color: var(--amber); }
+  .tag-milestone { background: #1a2e20; color: var(--green); }
+  .tag-router { background: #2e1a1a; color: var(--red); }
+
+  /* Pipeline diagram */
+  .pipeline-flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 24px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 20px;
+  }
+  .pf-step {
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pf-step.step { background: #1e2a40; color: var(--accent2); border: 1px solid #2a3d5f; }
+  .pf-step.qa { background: #2a3010; color: var(--amber); border: 1px solid #4a5020; }
+  .pf-step.mile { background: #1a2e20; color: var(--green); border: 1px solid #2a4e30; }
+  .pf-step.review { background: #2a1e40; color: var(--purple); border: 1px solid #3d2e60; }
+  .pf-step.router { background: #2e1a1a; color: var(--red); border: 1px solid #4e2a2a; }
+  .pf-arrow { color: var(--text-muted); font-size: 0.85rem; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    font-size: 0.88rem;
+  }
+  thead { background: var(--surface2); }
+  th {
+    text-align: left;
+    padding: 12px 16px;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:last-child td { border-bottom: none; }
+  td code {
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  /* Feedback loop diagram */
+  .loop-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) { .loop-container { grid-template-columns: 1fr; } }
+  .loop-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .loop-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .loop-card.loop-a::before { background: var(--amber); }
+  .loop-card.loop-b::before { background: var(--purple); }
+  .loop-card.loop-c::before { background: var(--red); }
+  .loop-card h4 { font-size: 0.95rem; margin-bottom: 10px; }
+  .loop-card .flow {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 2;
+  }
+  .loop-card .flow strong { color: var(--text); }
+
+  /* Code block */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    color: var(--text-muted);
+  }
+  pre strong { color: var(--text); font-weight: 600; }
+  pre .comment { color: #555a70; }
+  pre .key { color: var(--accent); }
+  pre .val { color: var(--green); }
+
+  /* Stack row */
+  .stack-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .stack-item {
+    flex: 1 1 180px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    text-align: center;
+  }
+  .stack-item .label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .stack-item .value {
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    padding: 30px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<!-- ======================= HERO ======================= -->
+<div class="hero">
+  <h1><span>CR Automation</span> Pipeline Architecture</h1>
+  <p class="subtitle">
+    A 23-agent agentic pipeline for telecom UC Change Request automation,
+    built on Google ADK with LLM-driven generation, JAR-based validation,
+    and self-healing feedback loops.
+  </p>
+  <div class="badge-row">
+    <span class="badge blue">Google ADK</span>
+    <span class="badge purple">Gemini 2.5 Flash via LiteLLM</span>
+    <span class="badge green">NiceGUI</span>
+    <span class="badge amber">23 Agents</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ======================= TECH STACK ======================= -->
+<section>
+  <h2><span class="icon" style="background:#1e2a40;color:var(--accent2);">S</span> Technology Stack</h2>
+  <div class="stack-row">
+    <div class="stack-item">
+      <div class="label">Orchestrator</div>
+      <div class="value">PipelineAgent</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Custom BaseAgent subclass</p>
+    </div>
+    <div class="stack-item">
+      <div class="label">Framework</div>
+      <div class="value">Google ADK</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Runner + InMemorySessionService</p>
+    </div>
+    <div class="stack-item">
+      <div class="label">LLM</div>
+      <div class="value">Gemini 2.5 Flash</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">via OpenRouter / LiteLLM</p>
+    </div>
+    <div class="stack-item">
+      <div class="label">UI</div>
+      <div class="value">NiceGUI</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Port 8000, dark mode</p>
+    </div>
+    <div class="stack-item">
+      <div class="label">Storage</div>
+      <div class="value">SQLite + FS</div>
+      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">DB metadata + file artifacts</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= PIPELINE FLOW ======================= -->
+<section>
+  <h2><span class="icon" style="background:#1a2e20;color:var(--green);">F</span> Pipeline Flow</h2>
+  <p class="lead">23 agents execute sequentially. The PipelineAgent state machine supports conditional backtracking via <code>_retry_target</code>.</p>
+
+  <div class="pipeline-flow">
+    <span class="pf-step step">1 DOC Parser</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">2 DOC Analyzer</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">3 CIQ Config Gen</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M3</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">4 JSON Template</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M4</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step qa">5 QA-Validation</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M5</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step review">R5 Reviewer</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step router">Router5</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">6 Workflow Gen</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M6</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step qa">7 MOP Test</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M7</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step review">R7 Reviewer</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step router">Router7</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">8 Simulator Setup</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M8</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step qa">9 Execution Test</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step mile">M9</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step review">R9 Reviewer</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step router">Router9</span><span class="pf-arrow">&rarr;</span>
+    <span class="pf-step step">10 Final Report</span>
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:var(--text-muted);">
+    <span><span class="pf-step step" style="padding:3px 8px;">Step</span> Pipeline step (BaseAgent)</span>
+    <span><span class="pf-step qa" style="padding:3px 8px;">QA</span> JAR-based test step</span>
+    <span><span class="pf-step mile" style="padding:3px 8px;">M</span> Milestone (user review pause)</span>
+    <span><span class="pf-step review" style="padding:3px 8px;">R</span> LLM Peer Reviewer</span>
+    <span><span class="pf-step router" style="padding:3px 8px;">Router</span> Failure router</span>
+  </div>
+</section>
+
+<!-- ======================= 10 STEPS ======================= -->
+<section>
+  <h2><span class="icon" style="background:#1e2a40;color:var(--accent2);">10</span> Pipeline Steps</h2>
+  <p class="lead">Each step wraps an existing agent from cr_automation-agentic via cross-project import bridge.</p>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Agent</th><th>Type</th><th>Description</th><th>Relies On</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td><td><code>DocParserNode</code></td><td><span class="tag tag-base">BaseAgent</span></td>
+        <td>Parse CIQ/MOP Excel documents into structured IR</td><td>-</td>
+      </tr>
+      <tr>
+        <td>2</td><td><code>UCAnalyzerNode</code></td><td><span class="tag tag-llm">LLM</span></td>
+        <td>Enrich intermediate representation via LLM analysis</td><td>Step 1</td>
+      </tr>
+      <tr>
+        <td>3</td><td><code>ValidationRulesNode</code></td><td><span class="tag tag-llm">LLM</span></td>
+        <td>Generate <code>validation-rules.yaml</code> configuration</td><td>Step 2</td>
+      </tr>
+      <tr>
+        <td>4</td><td><code>JsonTemplateNode</code></td><td><span class="tag tag-llm">LLM</span></td>
+        <td>Generate <code>json-output.yaml</code> template</td><td>Step 3</td>
+      </tr>
+      <tr>
+        <td>5</td><td><code>CiqQANode</code></td><td><span class="tag tag-jar">JAR</span></td>
+        <td>QA cycle via <code>ciq-processor</code> JAR</td><td>Steps 3-4</td>
+      </tr>
+      <tr>
+        <td>6</td><td><code>WorkflowGenNode</code></td><td><span class="tag tag-llm">LLM</span></td>
+        <td>Generate <code>workflow.yaml</code> execution config</td><td>Step 5</td>
+      </tr>
+      <tr>
+        <td>7</td><td><code>MopTestNode</code></td><td><span class="tag tag-jar">JAR</span></td>
+        <td>MOP generation test via <code>cli-automation</code> JAR</td><td>Step 6</td>
+      </tr>
+      <tr>
+        <td>8</td><td><code>SimulatorSetupNode</code></td><td><span class="tag tag-llm">LLM</span></td>
+        <td>Generate MockWire simulator configurations</td><td>Step 6</td>
+      </tr>
+      <tr>
+        <td>9</td><td><code>ExecutionTestNode</code></td><td><span class="tag tag-jar">JAR</span></td>
+        <td>Execute workflow via JAR + MockWire simulation</td><td>Steps 6-8</td>
+      </tr>
+      <tr>
+        <td>10</td><td><code>FinalReportNode</code></td><td><span class="tag tag-base">BaseAgent</span></td>
+        <td>Generate HTML + Excel summary reports</td><td>All</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ======================= FEEDBACK LOOPS ======================= -->
+<section>
+  <h2><span class="icon" style="background:#2e1a1a;color:var(--red);">R</span> Self-Healing Feedback Loops</h2>
+  <p class="lead">Three backtracking retry loops allow the pipeline to self-correct when QA or execution tests fail. Max 3 retries per loop before pipeline failure.</p>
+
+  <div class="loop-container">
+    <div class="loop-card loop-a">
+      <h4>Loop A &mdash; Validation</h4>
+      <div class="flow">
+        <strong>Step 5</strong> QA-Validation fails<br>
+        &darr; <strong>Reviewer</strong> analyzes test failures<br>
+        &darr; <strong>Router5</strong> sets <code>_retry_target=3</code><br>
+        &darr; <strong>Step 3</strong> re-generates validation-rules.yaml<br>
+        &darr; Step 4 &rarr; Step 5 (re-test)
+      </div>
+    </div>
+    <div class="loop-card loop-b">
+      <h4>Loop B &mdash; MOP</h4>
+      <div class="flow">
+        <strong>Step 7</strong> MOP Test fails<br>
+        &darr; <strong>Reviewer</strong> analyzes JAR parse errors<br>
+        &darr; <strong>Router7</strong> sets <code>_retry_target=6</code><br>
+        &darr; <strong>Step 6</strong> re-generates workflow.yaml<br>
+        &darr; Step 7 (re-test)
+      </div>
+    </div>
+    <div class="loop-card loop-c">
+      <h4>Loop C &mdash; Execution</h4>
+      <div class="flow">
+        <strong>Step 9</strong> Execution Test fails<br>
+        &darr; <strong>Reviewer</strong> classifies failure type<br>
+        &darr; <strong>Router9</strong> routes to:<br>
+        &nbsp;&nbsp;&bull; <code>_retry_target=6</code> (workflow issue)<br>
+        &nbsp;&nbsp;&bull; <code>_retry_target=8</code> (simulator issue)
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= AGENT COMPOSITION ======================= -->
+<section>
+  <h2><span class="icon" style="background:#2a1e40;color:var(--purple);">A</span> Agent Composition (23 Total)</h2>
+  <p class="lead">The PipelineAgent indexes all 23 agents (0..22) and executes them sequentially with conditional skip and backtracking logic.</p>
+
+  <table>
+    <thead>
+      <tr><th>Index</th><th>Agent</th><th>Category</th><th>Conditional</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>0</td><td><code>DocParserNode</code></td><td>Step 1</td><td>-</td></tr>
+      <tr><td>1</td><td><code>UCAnalyzerNode</code></td><td>Step 2</td><td>-</td></tr>
+      <tr><td>2</td><td><code>ValidationRulesNode</code></td><td>Step 3</td><td>Retry target</td></tr>
+      <tr><td>3</td><td><code>MilestoneNode(3)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>4</td><td><code>JsonTemplateNode</code></td><td>Step 4</td><td>-</td></tr>
+      <tr><td>5</td><td><code>MilestoneNode(4)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>6</td><td><code>CiqQANode</code></td><td>Step 5</td><td>-</td></tr>
+      <tr><td>7</td><td><code>MilestoneNode(5)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>8</td><td><code>qa_validation_reviewer</code></td><td>Reviewer</td><td>Skip if Step 5 passed</td></tr>
+      <tr><td>9</td><td><code>FailureRouterStep5</code></td><td>Router</td><td>-</td></tr>
+      <tr><td>10</td><td><code>WorkflowGenNode</code></td><td>Step 6</td><td>Retry target</td></tr>
+      <tr><td>11</td><td><code>MilestoneNode(6)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>12</td><td><code>MopTestNode</code></td><td>Step 7</td><td>-</td></tr>
+      <tr><td>13</td><td><code>MilestoneNode(7)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>14</td><td><code>qa_mop_reviewer</code></td><td>Reviewer</td><td>Skip if Step 7 passed</td></tr>
+      <tr><td>15</td><td><code>FailureRouterStep7</code></td><td>Router</td><td>-</td></tr>
+      <tr><td>16</td><td><code>SimulatorSetupNode</code></td><td>Step 8</td><td>Retry target</td></tr>
+      <tr><td>17</td><td><code>MilestoneNode(8)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>18</td><td><code>ExecutionTestNode</code></td><td>Step 9</td><td>-</td></tr>
+      <tr><td>19</td><td><code>MilestoneNode(9)</code></td><td>Milestone</td><td>-</td></tr>
+      <tr><td>20</td><td><code>qa_execution_reviewer</code></td><td>Reviewer</td><td>Skip if Step 9 passed</td></tr>
+      <tr><td>21</td><td><code>FailureRouterStep9</code></td><td>Router</td><td>-</td></tr>
+      <tr><td>22</td><td><code>FinalReportNode</code></td><td>Step 10</td><td>-</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ======================= STATE MACHINE ======================= -->
+<section>
+  <h2><span class="icon" style="background:#1e2a40;color:var(--accent);">M</span> State Machine &amp; Session State</h2>
+  <p class="lead">All agent communication happens through ADK session state — a shared dictionary passed via <code>ctx.session.state</code>.</p>
+
+  <table>
+    <thead>
+      <tr><th>Key Pattern</th><th>Type</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>step_{N}_status</code></td><td>str</td><td><code>"passed"</code> | <code>"failed"</code> | <code>"skipped"</code></td></tr>
+      <tr><td><code>step_{N}_output</code></td><td>dict</td><td>Step output data (passed to downstream steps)</td></tr>
+      <tr><td><code>artifacts</code></td><td>dict</td><td>Generated YAML/config content keyed by name</td></tr>
+      <tr><td><code>milestone_{N}_decision</code></td><td>str</td><td><code>"continue"</code> | <code>"rerun"</code> | <code>"cancel"</code></td></tr>
+      <tr><td><code>milestone_{N}_waiting</code></td><td>bool</td><td>True while awaiting user decision</td></tr>
+      <tr><td><code>retry_count_{N}</code></td><td>int</td><td>Number of retries executed for step N</td></tr>
+      <tr><td><code>_retry_target</code></td><td>int</td><td>Transient: step number to backtrack to (consumed by PipelineAgent)</td></tr>
+      <tr><td><code>qa_feedback</code></td><td>list</td><td>QA test failure details from reviewer analysis</td></tr>
+      <tr><td><code>exec_feedback</code></td><td>list</td><td>Execution failure details from reviewer analysis</td></tr>
+      <tr><td><code>pipeline_config</code></td><td>dict</td><td>Full pipeline configuration</td></tr>
+      <tr><td><code>document_set</code></td><td>dict</td><td>Input file paths (CIQ, MOP, vendor MOP)</td></tr>
+      <tr><td><code>pipeline_cancelled</code></td><td>bool</td><td>Pipeline termination flag (user cancel)</td></tr>
+      <tr><td><code>pipeline_failed</code></td><td>bool</td><td>Pipeline termination flag (retry exhausted)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ======================= EVENTS ======================= -->
+<section>
+  <h2><span class="icon" style="background:#1a2e20;color:var(--green);">E</span> Event System</h2>
+  <p class="lead">The async <code>EventBus</code> broadcasts pipeline events to the UI and other subscribers, filtered by <code>run_id</code>.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Lifecycle Events</h3>
+      <p><code>step_started</code>, <code>step_completed</code>, <code>step_failed</code>, <code>run_completed</code>, <code>run_failed</code>, <code>run_cancelled</code></p>
+    </div>
+    <div class="card">
+      <h3>Human-in-the-Loop</h3>
+      <p><code>milestone_reached</code>, <code>hil_requested</code>, <code>hil_responded</code> &mdash; Milestone pause/resume via <code>asyncio.Event</code></p>
+    </div>
+    <div class="card">
+      <h3>Retry Events</h3>
+      <p><code>retry_started</code> &mdash; Emitted when a feedback loop triggers backtracking to an upstream step</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= EXTERNAL DEPS ======================= -->
+<section>
+  <h2><span class="icon" style="background:#2a3010;color:var(--amber);">J</span> External Dependencies</h2>
+
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Path</th><th>Used By</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CIQ Processor JAR</td><td><code>lib/ciq-processor-1.0.3-cli.jar</code></td><td>Step 5 (QA-Validation)</td></tr>
+      <tr><td>CLI Automation JAR</td><td><code>lib/cli-automation-standalone.jar</code></td><td>Steps 7, 9 (MOP Test, Execution)</td></tr>
+      <tr><td>Report Generator JAR</td><td><code>lib/execution-report-generator-1.0.2-cli.jar</code></td><td>Step 10 (Final Report)</td></tr>
+      <tr><td>MockWire Simulator</td><td><code>lib/mockwire/mockwire-simulator/mockwire.jar</code></td><td>Step 9 (Execution Test)</td></tr>
+      <tr><td>Report Templates</td><td><code>lib/templates/*.html</code></td><td>Step 10 (Final Report)</td></tr>
+      <tr><td>YAML Schemas</td><td><code>schemas/*.yaml</code></td><td>Steps 3, 4, 6 (validation)</td></tr>
+      <tr><td>Reference Agents</td><td><code>cr_automation-agentic/src/agents/</code></td><td>All steps (via cr_import.py)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ======================= KEY FILES ======================= -->
+<section>
+  <h2><span class="icon" style="background:#242836;color:var(--text);">D</span> Key Source Files</h2>
+
+  <pre><span class="key">src/orchestrator/</span>
+    <strong>pipeline_agent.py</strong>  <span class="comment">-- PipelineAgent state-machine loop + backtracking + build_pipeline()</span>
+    <strong>runner.py</strong>          <span class="comment">-- PipelineRunner: ADK Runner + DB persistence + EventBus + milestones</span>
+
+<span class="key">src/nodes/</span>
+    <strong>step_nodes.py</strong>      <span class="comment">-- 10 BaseAgent step wrappers (call existing agents via cr_import)</span>
+    <strong>milestone_nodes.py</strong> <span class="comment">-- 7 MilestoneNode agents (asyncio.Event pause/resume)</span>
+    <strong>router_nodes.py</strong>    <span class="comment">-- 3 FailureRouter agents (classify + set _retry_target)</span>
+    <strong>reviewer_agents.py</strong> <span class="comment">-- 3 LlmAgent reviewers with FunctionTools</span>
+    <strong>tools.py</strong>           <span class="comment">-- Shared tools (YAML validation, report reading)</span>
+    <strong>cr_import.py</strong>       <span class="comment">-- Cross-project import bridge to cr_automation-agentic</span>
+
+<span class="key">src/core/</span>
+    <strong>events.py</strong>          <span class="comment">-- EventBus + PipelineEvent dataclass</span>
+    <strong>models.py</strong>          <span class="comment">-- Pydantic models (StepResult, RetryContext, etc.)</span>
+    <strong>config.py</strong>          <span class="comment">-- Pipeline configuration loader</span>
+
+<span class="key">src/storage/</span>
+    <strong>db.py</strong>              <span class="comment">-- SQLite metadata persistence</span>
+    <strong>artifact_store.py</strong>  <span class="comment">-- File system artifact storage</span>
+
+<span class="key">src/ui/</span>
+    <strong>app.py</strong>             <span class="comment">-- NiceGUI entry point + layout (sidebar 140px, step tracker)</span>
+    <strong>pages/</strong>             <span class="comment">-- upload, progress, settings, history, output_viewer, cleanup</span>
+
+<span class="key">config/</span>
+    <strong>pipeline_config.yaml</strong> <span class="comment">-- Model, retry, JAR paths, storage, UI settings</span></pre>
+</section>
+
+<!-- ======================= CROSS-PROJECT ======================= -->
+<section>
+  <h2><span class="icon" style="background:#2a1e40;color:var(--purple);">X</span> Cross-Project Integration</h2>
+  <p class="lead">Step agents delegate to existing implementations in <code>cr_automation-agentic</code> via runtime import bridge.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Import Bridge (<code>cr_import.py</code>)</h3>
+      <p>Uses <code>importlib.util.spec_from_file_location</code> with namespace isolation to avoid <code>src</code> package conflicts between the two projects.</p>
+    </div>
+    <div class="card">
+      <h3>Agent Delegation</h3>
+      <p>Each <code>StepNode._run_async_impl()</code> calls <code>_call_existing_agent()</code> which instantiates the reference agent and invokes <code>agent.execute()</code>.</p>
+    </div>
+    <div class="card">
+      <h3>State Mapping</h3>
+      <p>ADK session state is transformed to/from the <code>input_data</code> / <code>StepResult</code> format expected by legacy agents.</p>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<footer>
+  CR Automation Pipeline &mdash; Architecture Document &mdash; Generated October 2026
+</footer>
+
+</body>
+</html>

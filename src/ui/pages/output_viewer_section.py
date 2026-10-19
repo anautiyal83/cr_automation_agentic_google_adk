@@ -104,7 +104,7 @@ class OutputViewerSection:
         nodes = set()
         all_activities: dict[str, set] = {}
         for r in self._all_runs:
-            uc = r.get("uc_name", "")
+            uc = r.get("uc_name") or ""
             parts = uc.split("_", 1)
             if len(parts) == 2:
                 nodes.add(parts[0])
@@ -133,15 +133,15 @@ class OutputViewerSection:
 
         filtered = self._all_runs
         if node:
-            filtered = [r for r in filtered if r.get("uc_name", "").startswith(node + "_") or r.get("uc_name", "") == node]
+            filtered = [r for r in filtered if (r.get("uc_name") or "").startswith(node + "_") or (r.get("uc_name") or "") == node]
         if activity:
-            filtered = [r for r in filtered if r.get("uc_name", "").endswith("_" + activity)]
+            filtered = [r for r in filtered if (r.get("uc_name") or "").endswith("_" + activity)]
 
         options = {}
         for r in filtered:
             rid = r.get("id", "")
             uc = r.get("uc_name", "unknown")
-            status = str(r.get("status", "")).replace("PipelineStatus.", "")
+            status = str(r.get("status") or "").replace("PipelineStatus.", "")
             started = str(r.get("started_at") or "")[:16]
             options[rid] = f"{uc} ({status}) - {started}"
         self.run_select.options = options

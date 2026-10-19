@@ -14,14 +14,13 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from src.core.events import EventBus, PipelineEvent
+from src.core.events import PipelineEvent, event_bus
+from src.core.logging_config import get_flow_logger
 from src.nodes.milestone_nodes import milestone_events, milestone_decisions, milestone_waiting
 from src.orchestrator.pipeline_agent import build_pipeline
 
 logger = logging.getLogger(__name__)
-
-# Singleton event bus
-event_bus = EventBus()
+flow = get_flow_logger(__name__)
 
 
 class PipelineRunner:
@@ -66,6 +65,7 @@ class PipelineRunner:
     async def start(self, document_set: dict[str, Any]) -> str:
         """Start a new pipeline run. Returns run_id."""
         run_id = str(uuid4())
+        flow.flow("RUN START — run_id=%s, uc=%s", run_id[:8], document_set.get("uc_name", "?"))
         user_id = "pipeline_user"
 
         # Build initial state
@@ -85,15 +85,36 @@ class PipelineRunner:
         for step in (3, 4, 5, 6, 7, 8, 9):
             milestone_events[step] = asyncio.Event()
 
-        # Persist run to DB
+        # Persist document set + run to DB
         if self._db:
             try:
                 from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).isoformat()
+                doc_set_id = document_set.get("document_set_id", run_id)
+
+                # Save document set for re-run support
+                await self._db.execute_insert(
+                    "INSERT OR IGNORE INTO uc_document_sets "
+                    "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
+                    "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, selected_sheets) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (doc_set_id,
+                     document_set.get("uc_name", ""),
+                     document_set.get("ciq_file_path", ""),
+                     document_set.get("mop_file_path", ""),
+                     json.dumps(document_set.get("sample_io_xml_paths", [])),
+                     document_set.get("constraints_file_path", ""),
+                     document_set.get("command_outputs_path", ""),
+                     now,
+                     json.dumps(document_set.get("additional_documents", {})),
+                     json.dumps(document_set.get("selected_sheets", []))),
+                )
+
+                # Save pipeline run
                 await self._db.execute_insert(
                     "INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at, config_snapshot) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (run_id, document_set.get("document_set_id", run_id), "running", 0,
-                     datetime.now(timezone.utc).isoformat(),
+                    (run_id, doc_set_id, "running", 0, now,
                      json.dumps(self._config, default=str)),
                 )
             except Exception:
@@ -105,6 +126,22 @@ class PipelineRunner:
             "started_at": time.monotonic(),
             "session_id": run_id,
         }
+
+        # Subscribe to own events to persist step results to DB
+        async def _persist_events(event: PipelineEvent):
+            try:
+                if event.event_type in ("step_completed", "step_failed") and event.step_number:
+                    step_status = event.payload.get("status", "passed")
+                    await self._persist_step_result(run_id, event.step_number, step_status)
+                    # Update current_step in pipeline_runs
+                    if self._db:
+                        await self._db.execute_insert(
+                            "UPDATE pipeline_runs SET current_step=? WHERE id=?",
+                            (event.step_number, run_id),
+                        )
+            except Exception:
+                pass
+        event_bus.subscribe(_persist_events, UUID(run_id))
 
         # Start pipeline + milestone monitor in background
         pipeline_task = asyncio.create_task(self._run_pipeline(run_id, user_id))
@@ -133,17 +170,29 @@ class PipelineRunner:
             ):
                 pass  # Events processed by monitor task
 
-            # Pipeline completed — check final state
+            # Pipeline completed — determine final state
+            # Check multiple sources since ADK session state may not reflect changes
             state = await self.get_state(run_id)
-            if state.get("pipeline_cancelled"):
+            is_cancelled = (
+                state.get("pipeline_cancelled")
+                or self._active_runs.get(run_id, {}).get("status") == "cancelled"
+            )
+            is_failed = (
+                state.get("pipeline_failed")
+                or self._active_runs.get(run_id, {}).get("status") == "failed"
+            )
+
+            if is_cancelled:
+                flow.flow("RUN CANCELLED — run_id=%s", run_id[:8])
                 self._active_runs[run_id]["status"] = "cancelled"
                 await self._persist_run_status(run_id, "cancelled")
                 await event_bus.publish(PipelineEvent(
                     run_id=UUID(run_id), event_type="run_cancelled",
                     payload={"run_id": run_id},
                 ))
-            elif state.get("pipeline_failed"):
-                error = state.get("pipeline_error", "Retry limit exhausted")
+            elif is_failed:
+                error = state.get("pipeline_error", "Pipeline failed")
+                flow.flow("RUN FAILED — run_id=%s — %s", run_id[:8], error[:200])
                 self._active_runs[run_id]["status"] = "failed"
                 await self._persist_run_status(run_id, "failed", error)
                 await event_bus.publish(PipelineEvent(
@@ -152,6 +201,7 @@ class PipelineRunner:
                 ))
             else:
                 elapsed = time.monotonic() - self._active_runs[run_id]["started_at"]
+                flow.flow("RUN COMPLETED — run_id=%s — %.1fs", run_id[:8], elapsed)
                 self._active_runs[run_id]["status"] = "completed"
                 await self._persist_run_status(run_id, "completed")
                 await event_bus.publish(PipelineEvent(
@@ -161,6 +211,7 @@ class PipelineRunner:
 
         except Exception as e:
             logger.exception("Pipeline run %s failed", run_id)
+            flow.flow("RUN EXCEPTION — run_id=%s — %s", run_id[:8], e)
             self._active_runs[run_id]["status"] = "failed"
             await self._persist_run_status(run_id, "failed", str(e))
             await event_bus.publish(PipelineEvent(
@@ -192,12 +243,20 @@ class PipelineRunner:
                         if self._active_runs[run_id].get("status") != "paused_milestone":
                             self._active_runs[run_id]["status"] = "paused_milestone"
                             self._active_runs[run_id]["milestone_step"] = step_num
+
+                            # Resolve artifact file for this milestone
+                            artifact_file, extra_files = self._resolve_milestone_artifacts(
+                                state, step_num
+                            )
+
                             await event_bus.publish(PipelineEvent(
                                 run_id=UUID(run_id), event_type="milestone_reached",
                                 step_number=step_num,
                                 payload={
                                     "milestone": mw.get("name", f"Step {step_num}"),
                                     "test_status": mw.get("status") if mw.get("status") == "failed" else None,
+                                    "artifact_file": artifact_file,
+                                    "extra_artifact_files": extra_files,
                                 },
                             ))
 
@@ -216,14 +275,16 @@ class PipelineRunner:
 
     def respond_milestone(self, run_id: str, step_num: int, decision: str):
         """Respond to a milestone pause: 'continue', 'rerun', or 'cancel'."""
+        flow.flow("MILESTONE RESPOND — run=%s step=%d decision=%s", run_id[:8], step_num, decision)
+
         # Set decision in milestone_decisions for the node to read
         milestone_decisions[step_num] = decision
 
-        # Also set in session state (for routers to read)
-        # The milestone node reads from the asyncio.Event, but routers
-        # need the decision in state to know if user chose "rerun"
         run_info = self._active_runs.get(run_id, {})
-        run_info["status"] = "running"
+        if decision == "cancel":
+            run_info["status"] = "cancelled"
+        else:
+            run_info["status"] = "running"
 
         # Update session state asynchronously
         asyncio.create_task(self._set_milestone_decision(run_id, step_num, decision))
@@ -253,6 +314,16 @@ class PipelineRunner:
 
     async def get_state(self, run_id: str) -> dict[str, Any]:
         """Get full pipeline state for a run."""
+        # Try session service first (has the latest state from ADK runner)
+        try:
+            session = await self._session_service.get_session(
+                app_name="cr_automation", user_id="pipeline_user", session_id=run_id
+            )
+            if session and session.state:
+                return dict(session.state)
+        except Exception:
+            pass
+        # Fallback to cached session reference
         session = getattr(self, '_sessions', {}).get(run_id)
         if session and session.state:
             return dict(session.state)
@@ -291,6 +362,65 @@ class PipelineRunner:
             "exec_feedback": [],
             "run_data": {"uc_name": uc_name, "status": "running"},
         }
+
+    def _resolve_milestone_artifacts(
+        self, state: dict, step_num: int
+    ) -> tuple[str, list[str]]:
+        """Find the primary artifact file and any extra files for a milestone step."""
+        run_dir = state.get("run_dir", "")
+        uc_name = state.get("uc_name", "UC")
+        if not run_dir:
+            return "", []
+
+        artifact_map = {
+            3: f"{uc_name}_validation-rules.yaml",
+            4: f"{uc_name}_json-output.yaml",
+            5: "qa/qa-execution-report.html",
+            6: f"{uc_name}.yaml",
+            7: f"{uc_name}_mop-generation-report.html",
+            8: f"{uc_name}_simulator-overview.html",
+            9: f"{uc_name}_exec-test-report.html",
+        }
+
+        # Also check artifacts stored in session state
+        artifacts = state.get("artifacts", {})
+        state_artifact_map = {
+            3: "validation_rules_yaml",
+            4: "json_template_yaml",
+            6: "workflow_yaml",
+            8: "simulator_config_yaml",
+        }
+
+        primary = ""
+        fname = artifact_map.get(step_num, "")
+        if fname:
+            candidate = Path(run_dir) / fname
+            if candidate.exists():
+                primary = str(candidate)
+
+        # If no file on disk, check if content exists in state artifacts
+        # and write it to disk so the UI can display it
+        if not primary and step_num in state_artifact_map:
+            content = artifacts.get(state_artifact_map[step_num])
+            if content:
+                out_path = Path(run_dir) / fname
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(content, encoding="utf-8")
+                primary = str(out_path)
+
+        # Collect extra artifact files (e.g. report + source yaml)
+        extra: list[str] = []
+        extra_map = {
+            5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
+            7: [f"{uc_name}.yaml"],
+            9: [f"{uc_name}.yaml", f"{uc_name}_simulator-overview.html"],
+        }
+        for ef in extra_map.get(step_num, []):
+            ep = Path(run_dir) / ef
+            if ep.exists() and str(ep) != primary:
+                extra.append(str(ep))
+
+        return primary, extra
 
     def _detect_current_step(self, state: dict) -> int:
         """Detect current step from state."""

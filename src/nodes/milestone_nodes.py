@@ -12,10 +12,17 @@ from google.adk.agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
-# Shared registries — used by both milestone nodes and runner
+# Shared registries — used by milestone nodes, runner, and pipeline agent
 milestone_events: dict[int, asyncio.Event] = {}   # step → Event (signaled by runner)
 milestone_decisions: dict[int, str] = {}            # step → decision
 milestone_waiting: dict[int, dict] = {}             # step → {waiting, name, status}
+
+# Pipeline-level actions — set by milestone nodes, read by PipelineAgent
+# This bypasses ADK session state which may use copies/deltas
+pipeline_actions: dict[str, dict] = {}  # run_id → {"action": "rerun"/"cancel", "target_step": N}
+
+# Reviewer feedback — set by MilestoneReviewerNode, read by step nodes on retry
+reviewer_feedback: dict[str, str] = {}  # "run_id:step_num" → feedback text
 
 
 class MilestoneNode(BaseAgent):
@@ -58,14 +65,25 @@ class MilestoneNode(BaseAgent):
 
         decision = milestone_decisions.pop(step, "continue")
         milestone_waiting.pop(step, None)
-        ctx.session.state[f"milestone_{step}_waiting"] = False
-        ctx.session.state[f"milestone_{step}_decision"] = decision
-        ctx.session.state[f"milestone_{step}_decision_action"] = decision
 
-        logger.info("Milestone Step %d: decision=%s", step, decision)
+        run_id = ctx.session.state.get("run_id", "")
+        logger.info("Milestone Step %d: decision=%s, run_id=%s", step, decision, run_id[:8])
 
+        # Write action to shared dict (bypasses ADK session state issues)
         if decision == "cancel":
-            ctx.session.state["pipeline_cancelled"] = True
+            pipeline_actions[run_id] = {"action": "cancel"}
+            logger.info("Milestone Step %d: pipeline_actions → cancel", step)
+        elif decision == "rerun":
+            # For test steps, jump to the upstream generation step
+            _RERUN_TARGET = {
+                5: 3,   # QA-Validation → re-run from Step 3 (Validation Rules)
+                7: 6,   # QA-MOP → re-run from Step 6 (Workflow Gen)
+                9: 6,   # QA-Execution → re-run from Step 6 (Workflow Gen)
+            }
+            target = _RERUN_TARGET.get(step, step)
+            ctx.session.state[f"retry_count_{target}"] = 0
+            pipeline_actions[run_id] = {"action": "rerun", "target_step": target}
+            logger.info("Milestone Step %d: pipeline_actions → rerun step %d (retry counter reset)", step, target)
 
         return
         yield  # unreachable — async generator

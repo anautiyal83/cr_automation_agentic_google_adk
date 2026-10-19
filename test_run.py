@@ -27,7 +27,8 @@ CIQ_FILE = str(CR_AUTO_ROOT / "data" / "uploads" / "1a5ad4cd_1058_IFCCapabilityM
 
 
 async def main():
-    from src.orchestrator.runner import PipelineRunner, event_bus
+    from src.orchestrator.runner import PipelineRunner
+    from src.core.events import event_bus
 
     # Subscribe to events for console output
     async def on_event(event):

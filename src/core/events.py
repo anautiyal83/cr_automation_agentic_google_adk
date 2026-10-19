@@ -7,6 +7,7 @@ from uuid import UUID
 
 
 EventType = Literal[
+    "run_started",
     "step_started",
     "step_completed",
     "step_failed",

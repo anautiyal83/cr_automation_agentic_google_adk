@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from nicegui import ui, context
 
 from src.core.events import PipelineEvent
-from src.orchestrator.runner import event_bus
+from src.core.events import event_bus
 
 STATUS_CONFIG = {
     "pending":     {"color": "#94A3B8", "icon": "radio_button_unchecked", "text": "#94A3B8"},
@@ -64,7 +64,7 @@ class ProgressSection:
             self._client = None
         self._build_ui()
         # Check for active runs on load
-        if runner and runner._db:
+        if runner:
             ui.timer(0.5, self._restore_active_run, once=True)
 
     def _build_ui(self):
@@ -176,44 +176,106 @@ class ProgressSection:
             }
 
     async def _restore_active_run(self):
-        """Check DB for any running/paused pipeline and restore the progress view."""
+        """Check runner's live state (or DB) for any running/paused pipeline and restore the progress view."""
         try:
-            if not self.runner or not self.runner._db:
-                return
-            db = self.runner._db
-            rows = await db.execute(
-                "SELECT r.id, r.status, r.current_step, d.uc_name "
-                "FROM pipeline_runs r "
-                "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
-                "WHERE r.status IN ('running', 'paused_hil', 'paused_milestone', "
-                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
-                "ORDER BY r.started_at DESC LIMIT 1", ()
-            )
-            if not rows:
+            if not self.runner:
+                logger.debug("_restore: no runner")
                 return
 
-            run = rows[0]
-            run_id = UUID(run["id"])
-            status = str(run.get("status", "")).replace("PipelineStatus.", "").lower()
-            step = run.get("current_step", 0)
-            uc_name = run.get("uc_name", "")
+            # First check runner's in-memory active runs (survives page refresh)
+            run_id = None
+            status = None
+            step = 0
+            uc_name = ""
 
+            logger.info("_restore: checking %d active runs", len(self.runner._active_runs))
+            for rid, info in self.runner._active_runs.items():
+                live_status = info.get("status", "")
+                logger.info("_restore: run %s status=%s", rid[:8], live_status)
+                if live_status in ("running", "paused_milestone", "paused_hil"):
+                    run_id = UUID(rid)
+                    status = live_status
+                    step = info.get("current_step", 0)
+                    try:
+                        state = await self.runner.get_state(rid)
+                        uc_name = state.get("uc_name", "")
+                    except Exception:
+                        pass
+                    break
+
+            # Fallback: check DB for runs marked as running
+            if not run_id and self.runner._db:
+                rows = await self.runner._db.execute(
+                    "SELECT r.id, r.status, r.current_step, d.uc_name "
+                    "FROM pipeline_runs r "
+                    "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                    "WHERE r.status IN ('running', 'paused_hil', 'paused_milestone', "
+                    "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                    "ORDER BY r.started_at DESC LIMIT 1", ()
+                )
+                if not rows:
+                    return
+                run = rows[0]
+                db_run_id = run["id"]
+
+                # Check if this run is actually still alive in the runner
+                # If not, it's an orphaned record from a crashed/restarted server
+                if db_run_id not in self.runner._active_runs:
+                    logger.info("_restore: orphaned DB run %s — marking as failed", db_run_id[:8])
+                    try:
+                        from datetime import datetime, timezone
+                        await self.runner._db.execute_insert(
+                            "UPDATE pipeline_runs SET status='failed', error_summary='Server restarted — pipeline lost', completed_at=? WHERE id=?",
+                            (datetime.now(timezone.utc).isoformat(), db_run_id),
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                run_id = UUID(db_run_id)
+                status = str(run.get("status") or "").replace("PipelineStatus.", "").lower()
+                step = run.get("current_step", 0)
+                uc_name = (run.get("uc_name") or "")
+
+            if not run_id:
+                logger.info("_restore: no active run found in memory or DB")
+                return
+
+            logger.info("_restore: found run %s, status=%s, step=%d, uc=%s",
+                        str(run_id)[:8], status, step, uc_name)
             self.active_run_id = run_id
             self.action_btns.set_visibility(True)
             self.progress_bar.set_visibility(True)
 
-            # Restore step visuals from DB
-            step_rows = await db.execute(
-                "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY step_number",
-                (str(run_id),)
-            )
-            for sr in step_rows:
-                sn = sr.get("step_number", 0)
-                ss = str(sr.get("status", "pending")).replace("StepStatus.", "").lower()
-                if sn and sn in self.step_widgets:
-                    self._update_step_visual(sn, ss)
+            # Restore step visuals from live session state first, then DB
+            restored_steps = set()
+            try:
+                live_state = await self.runner.get_state(str(run_id))
+                for i in range(1, TOTAL_STEPS + 1):
+                    ss = live_state.get(f"step_{i}_status")
+                    if ss and i in self.step_widgets:
+                        self._update_step_visual(i, ss)
+                        restored_steps.add(i)
+                        step = max(step, i)
+            except Exception:
+                pass
 
-            # Set banner based on status
+            # Fill gaps from DB
+            if self.runner._db and len(restored_steps) < TOTAL_STEPS:
+                try:
+                    step_rows = await self.runner._db.execute(
+                        "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY step_number",
+                        (str(run_id),)
+                    )
+                    for sr in step_rows:
+                        sn = sr.get("step_number", 0)
+                        if sn and sn not in restored_steps and sn in self.step_widgets:
+                            ss = str(sr.get("status") or "pending").replace("StepStatus.", "").lower()
+                            self._update_step_visual(sn, ss)
+                except Exception:
+                    pass
+
+            # Set banner based on status and subscribe to events
             if status == "running":
                 self.status_icon.name = "sync"
                 self.status_icon.classes(replace="cr-text-accent cr-spin")
@@ -237,43 +299,30 @@ class ProgressSection:
                     "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
                 ))
 
-                # Show milestone review buttons
+                # Resolve milestone artifacts
                 milestone_name = _MILESTONE_NAMES.get(step, f"Step {step}")
-                run_dir = ""
-                if self.runner and self.runner._artifact_store:
-                    run_dir = str(self.runner._artifact_store.run_dir(run_id))
-                # Try to find the artifact file
                 artifact_file = ""
-                artifact_map = {
-                    3: f"{uc_name}_validation-rules.yaml",
-                    4: f"{uc_name}_json-output.yaml",
-                    5: "qa/qa-execution-report.html",
-                    6: f"{uc_name}.yaml",
-                    7: f"{uc_name}_mop-generation-report.html",
-                    8: f"{uc_name}_simulator-overview.html",
-                    9: f"{uc_name}_exec-test-report.html",
-                }
-                fname = artifact_map.get(step, "")
-                if fname and run_dir:
-                    from pathlib import Path
-                    candidate = Path(run_dir) / fname
-                    if candidate.exists():
-                        artifact_file = str(candidate)
-                # For test steps, check if there were failures
+                extra_files = []
+                try:
+                    ms_state = await self.runner.get_state(str(run_id))
+                    artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
+                        ms_state, step
+                    )
+                except Exception:
+                    pass
+
+                # Check for test failures
                 has_failures = False
-                if step in (5, 8):
+                if step in (5, 7, 9):
                     try:
-                        step_rows_check = await db.execute(
-                            "SELECT status FROM step_results WHERE run_id = ? AND step_number = ?",
-                            (str(run_id), step),
-                        )
-                        if step_rows_check and "failed" in str(step_rows_check[0].get("status", "")).lower():
-                            has_failures = True
+                        ms_state = ms_state if 'ms_state' in dir() else await self.runner.get_state(str(run_id))
+                        has_failures = ms_state.get(f"step_{step}_status") == "failed"
                     except Exception:
                         pass
 
                 self._show_milestone_review(step, milestone_name, artifact_file,
-                                            has_failures=has_failures)
+                                            has_failures=has_failures,
+                                            extra_artifact_files=extra_files)
                 event_bus.subscribe(self._on_event, run_id)
             elif status == "paused_hil":
                 self.status_icon.name = "help_outline"
@@ -286,8 +335,8 @@ class ProgressSection:
                     "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
                 ))
                 event_bus.subscribe(self._on_event, run_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("_restore_active_run failed: %s", exc, exc_info=True)
 
     async def start_tracking(self, run_id: UUID):
         self.active_run_id = run_id
@@ -308,22 +357,25 @@ class ProgressSection:
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
 
-        # Restore already-completed steps from DB
-        if self.runner and self.runner._db:
+        # Subscribe to events FIRST (before any steps can complete)
+        event_bus.subscribe(self._on_event, run_id)
+
+        # Periodic sync: catch up with steps that completed before subscription
+        async def _sync_steps():
+            if not self.active_run_id or self.active_run_id != run_id:
+                return
             try:
-                step_rows = await self.runner._db.execute(
-                    "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY step_number",
-                    (str(run_id),)
-                )
-                for sr in step_rows:
-                    sn = sr.get("step_number", 0)
-                    ss = str(sr.get("status", "pending")).replace("StepStatus.", "").lower()
-                    if sn and sn in self.step_widgets:
-                        self._update_step_visual(sn, ss)
+                state = await self.runner.get_state(str(run_id))
+                for i in range(1, TOTAL_STEPS + 1):
+                    ss = state.get(f"step_{i}_status")
+                    if ss and i in self.step_widgets:
+                        self._update_step_visual(i, ss)
             except Exception:
                 pass
 
-        event_bus.subscribe(self._on_event, run_id)
+        # Run sync after a brief delay to catch fast steps
+        ui.timer(1.0, _sync_steps, once=True)
+        ui.timer(3.0, _sync_steps, once=True)
 
     async def _on_event(self, event: PipelineEvent):
         # Ignore events if run was already cleared (cancelled/stopped)
@@ -363,18 +415,27 @@ class ProgressSection:
             artifact_file = event.payload.get("artifact_file", "")
             test_status = event.payload.get("test_status")
 
-            # Step 5 test results: show pass/fail visual
+            # Determine failure type
             has_failures = test_status == "failed"
-            if has_failures:
+            is_test_step = event.step_number in (5, 7, 9)
+
+            if has_failures and is_test_step:
+                # Test step failure — tests ran and failed
                 self._update_step_visual(event.step_number, "failed")
                 self.status_icon.name = "error_outline"
                 self.status_icon.classes(replace="cr-text-error")
-                if event.step_number in (5, 7, 9):
-                    self.status_detail.text = "Tests failed — re-run to fix, or skip to continue."
-                else:
-                    self.status_detail.text = "Tests failed — review results below."
+                self.status_detail.text = "Tests failed — re-run to fix, or skip to continue."
                 self.banner.style(replace=(
                     "background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3)"
+                ))
+            elif has_failures:
+                # LLM generation step had validation issues but produced output
+                self._update_step_visual(event.step_number, "failed")
+                self.status_icon.name = "warning"
+                self.status_icon.classes(replace="cr-text-warning")
+                self.status_detail.text = "Generated artifact has validation warnings — review below, then continue or re-run."
+                self.banner.style(replace=(
+                    "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
                 ))
             else:
                 self._update_step_visual(event.step_number, "passed")

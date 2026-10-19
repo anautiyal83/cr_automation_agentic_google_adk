@@ -18,9 +18,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from google.adk.agents import LlmAgent
+from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
+
+from src.nodes.milestone_nodes import reviewer_feedback as _reviewer_feedback_store
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +308,156 @@ OUTPUT FORMAT (JSON):
 }
 
 Be precise — specify the exact command, the exact problem, and the exact fix needed."""
+
+
+# ===========================================================================
+# MILESTONE REVIEWER (generic — analyzes LLM generation failures)
+# ===========================================================================
+
+_STEP_CONTEXT = {
+    3: {
+        "name": "Validation Rules",
+        "artifact_key": "validation_rules_yaml",
+        "file_pattern": "_validation-rules.yaml",
+        "description": "validation-rules.yaml consumed by ciq-processor JAR",
+    },
+    4: {
+        "name": "JSON Output Template",
+        "artifact_key": "json_template_yaml",
+        "file_pattern": "_json-output.yaml",
+        "description": "json-output.yaml consumed by ciq-processor JAR",
+    },
+    6: {
+        "name": "Execution Workflow",
+        "artifact_key": "workflow_yaml",
+        "file_pattern": ".yaml",
+        "description": "workflow YAML consumed by cli-automation-standalone JAR",
+    },
+    8: {
+        "name": "Simulator Config",
+        "artifact_key": "simulator_config_yaml",
+        "file_pattern": "_simulator-config.yaml",
+        "description": "MockWire simulator configuration",
+    },
+}
+
+MILESTONE_REVIEWER_PROMPT = """Analyze why this YAML generation step failed and produce fix instructions.
+
+STEP: {step_name} (Step {step_number})
+GENERATES: {description}
+
+ERROR DETAILS:
+{error_details}
+
+GENERATED ARTIFACT (may be partial/invalid):
+{artifact_content}
+
+Respond with a JSON object:
+{{
+    "analysis": "Brief summary of what went wrong",
+    "failure_type": "yaml_syntax | schema_validation | content_error | other",
+    "fix_instructions": [
+        {{
+            "location": "YAML path or line where fix is needed",
+            "problem": "What's wrong",
+            "fix": "Exact change to make"
+        }}
+    ],
+    "general_guidance": "Overall advice for regeneration"
+}}
+
+Be specific — reference exact YAML paths, line numbers, and content."""
+
+
+class MilestoneReviewerNode(BaseAgent):
+    """BaseAgent that calls LLM to analyze a failed step and stores feedback in session state."""
+    name: str = "milestone_reviewer"
+    description: str = "Analyze step failure and generate fix instructions"
+    step_number: int = 0
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    async def _run_async_impl(self, ctx):
+        from src.core.logging_config import get_flow_logger
+        _flow = get_flow_logger(__name__)
+
+        step = self.step_number
+        status = ctx.session.state.get(f"step_{step}_status", "passed")
+
+        # Only review if step failed
+        if status != "failed":
+            return
+            yield
+
+        run_dir = ctx.session.state.get("run_dir", "")
+        uc_name = ctx.session.state.get("uc_name", "UC")
+        step_ctx = _STEP_CONTEXT.get(step, {})
+
+        # Read artifact content
+        artifact_content = ""
+        pattern = step_ctx.get("file_pattern", "")
+        if pattern and run_dir:
+            candidate = Path(run_dir) / f"{uc_name}{pattern}"
+            if candidate.exists():
+                artifact_content = candidate.read_text(encoding="utf-8")[:6000]
+        if not artifact_content:
+            # Try from session state
+            art_key = step_ctx.get("artifact_key", "")
+            artifact_content = ctx.session.state.get("artifacts", {}).get(art_key, "")[:6000]
+
+        # Read error details
+        error_details = ""
+        err_file = Path(run_dir) / f"step_{step}_error.json" if run_dir else None
+        if err_file and err_file.exists():
+            error_details = err_file.read_text(encoding="utf-8")[:2000]
+        if not error_details:
+            error_details = str(ctx.session.state.get(f"step_{step}_error", "Unknown error"))[:2000]
+
+        # Build prompt
+        prompt = MILESTONE_REVIEWER_PROMPT.format(
+            step_name=step_ctx.get("name", f"Step {step}"),
+            step_number=step,
+            description=step_ctx.get("description", ""),
+            error_details=error_details,
+            artifact_content=artifact_content or "(no content generated)",
+        )
+
+        # Call LLM
+        try:
+            from src.nodes.cr_import import import_cr_module
+            agents_mod = import_cr_module("src.agents")
+            call_llm = agents_mod.call_llm
+            config = ctx.session.state.get("pipeline_config", {})
+
+            _flow.flow("REVIEWER START step %d — analyzing failure", step)
+            response = await call_llm(prompt, config=config)
+            _flow.flow("REVIEWER DONE step %d — %d chars feedback", step, len(response))
+
+            # Store feedback in shared dict (bypasses ADK session state)
+            run_id = ctx.session.state.get("run_id", "")
+            _reviewer_feedback_store[f"{run_id}:{step}"] = response
+            _flow.flow("REVIEWER STORED feedback for %s:%d", run_id[:8], step)
+
+            # Also write to disk for debugging
+            if run_dir:
+                fb_file = Path(run_dir) / f"step_{step}_reviewer_feedback.json"
+                fb_file.write_text(response, encoding="utf-8")
+
+        except Exception as e:
+            logger.error("Milestone reviewer step %d failed: %s", step, e)
+            ctx.session.state[f"step_{step}_reviewer_feedback"] = f"Reviewer error: {e}"
+
+        return
+        yield  # unreachable
+
+
+def create_milestone_reviewer(model, step_number: int) -> MilestoneReviewerNode:
+    """Create a milestone reviewer for a YAML generation step."""
+    node = MilestoneReviewerNode()
+    node.name = f"milestone_reviewer_step{step_number}"
+    node.description = f"Review Step {step_number} failure and generate fix instructions"
+    node.step_number = step_number
+    return node
 
 
 def create_qa_validation_reviewer(model: LiteLlm) -> LlmAgent:

@@ -92,7 +92,7 @@ class CleanupSection:
         nodes = set()
         all_activities: dict[str, set] = {}
         for r in runs:
-            uc = r.get("uc_name", "")
+            uc = r.get("uc_name") or ""
             parts = uc.split("_", 1)
             if len(parts) == 2:
                 nodes.add(parts[0])
@@ -116,14 +116,14 @@ class CleanupSection:
         # Apply filters
         act_val = self.activity_filter.value or ""
         if node_val:
-            runs = [r for r in runs if r.get("uc_name", "").startswith(node_val + "_") or r.get("uc_name", "") == node_val]
+            runs = [r for r in runs if (r.get("uc_name") or "").startswith(node_val + "_") or (r.get("uc_name") or "") == node_val]
         if act_val:
-            runs = [r for r in runs if r.get("uc_name", "").endswith("_" + act_val)]
+            runs = [r for r in runs if (r.get("uc_name") or "").endswith("_" + act_val)]
 
         # Format and update table rows (no DOM rebuild)
         for r in runs:
-            r["started_at"] = str(r.get("started_at", ""))[:19]
-            r["status"] = str(r.get("status", "")).replace("PipelineStatus.", "")
+            r["started_at"] = str(r.get("started_at") or "")[:19]
+            r["status"] = str(r.get("status") or "").replace("PipelineStatus.", "")
         self.table.rows = runs
 
     async def _on_delete_click(self, e):

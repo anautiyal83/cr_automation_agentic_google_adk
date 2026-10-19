@@ -148,7 +148,7 @@ class HistorySection:
         nodes = set()
         all_activities: dict[str, set] = {}
         for r in runs:
-            uc = r.get("uc_name", "")
+            uc = r.get("uc_name") or ""
             parts = uc.split("_", 1)
             if len(parts) == 2:
                 nodes.add(parts[0])
@@ -174,9 +174,9 @@ class HistorySection:
         # Apply filters
         act_val = self.activity_filter.value or ""
         if node_val:
-            runs = [r for r in runs if r.get("uc_name", "").startswith(node_val + "_") or r.get("uc_name", "") == node_val]
+            runs = [r for r in runs if (r.get("uc_name") or "").startswith(node_val + "_") or (r.get("uc_name") or "") == node_val]
         if act_val:
-            runs = [r for r in runs if r.get("uc_name", "").endswith("_" + act_val)]
+            runs = [r for r in runs if (r.get("uc_name") or "").endswith("_" + act_val)]
 
         # Format rows for display
         for r in runs:
@@ -184,7 +184,7 @@ class HistorySection:
                 r["started_at"] = str(r["started_at"])[:19]
             dur = r.get("duration_seconds")
             r["duration_seconds"] = f"{dur:.1f}s" if dur else "—"
-            r["status"] = str(r.get("status", "")).replace("PipelineStatus.", "")
+            r["status"] = str(r.get("status") or "").replace("PipelineStatus.", "")
             r["has_error"] = bool(r.get("error_summary"))
             r["error_summary"] = r.get("error_summary") or ""
         self.table.rows = runs
@@ -196,7 +196,7 @@ class HistorySection:
         if not run_id or not self.runner or not self.runner._db:
             return
 
-        self.detail_title.text = f"Run Details — {row.get('uc_name', '')} ({row.get('status', '')})"
+        self.detail_title.text = f"Run Details — {row.get('uc_name') or ''} ({row.get('status') or ''})"
         self.detail_content.clear()
         self.detail_panel.set_visibility(True)
 
@@ -358,6 +358,8 @@ class HistorySection:
                     if doc_set_id:
                         doc = await self.runner._db.get_by_id("uc_document_sets", str(doc_set_id))
                         if doc:
+                            # Reuse existing document_set_id for the new run
+                            doc["document_set_id"] = str(doc_set_id)
                             new_run_id = await self.runner.start(doc)
                             ui.notify(f"Re-running {row.get('uc_name', 'UC')}...", type="positive")
                             if self.on_rerun:

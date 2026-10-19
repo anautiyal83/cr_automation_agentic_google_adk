@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS knowledge_base_entries (
     created_at TEXT NOT NULL
 );
 
+-- Milestone tracking for active pipeline
+CREATE TABLE IF NOT EXISTS pipeline_milestones (
+    run_id TEXT NOT NULL REFERENCES pipeline_runs(id),
+    step_number INTEGER NOT NULL,
+    decision TEXT,  -- NULL = waiting, 'continue', 'rerun', 'cancel'
+    created_at TEXT NOT NULL,
+    responded_at TEXT,
+    PRIMARY KEY (run_id, step_number)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_doc_set ON pipeline_runs(document_set_id);
 CREATE INDEX IF NOT EXISTS idx_step_results_run ON step_results(run_id);

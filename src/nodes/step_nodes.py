@@ -23,7 +23,10 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 
+from src.core.logging_config import get_flow_logger
+
 logger = logging.getLogger(__name__)
+flow = get_flow_logger(__name__)
 
 from src.nodes.cr_import import get_agent_class, import_cr_module
 
@@ -34,6 +37,7 @@ from src.nodes.cr_import import get_agent_class, import_cr_module
 
 async def _call_existing_agent(agent_cls, input_data: dict, config: dict) -> dict:
     """Call an existing cr_automation-agentic agent and return its output."""
+    import time as _time
     agent = agent_cls() if not hasattr(agent_cls, '__init__') else agent_cls
     models_mod = import_cr_module("src.core.models")
     RetryContext = models_mod.RetryContext
@@ -41,13 +45,20 @@ async def _call_existing_agent(agent_cls, input_data: dict, config: dict) -> dic
     if input_data.get("retry_context"):
         retry_ctx = RetryContext(**input_data["retry_context"])
 
+    agent_name = type(agent).__name__
+    flow.flow("CALL AGENT %s — input_keys=%s", agent_name, list(input_data.keys())[:8])
+    t0 = _time.monotonic()
+
     output = await agent.execute(
         input_data=input_data,
         config=config,
         few_shot_examples=input_data.get("few_shot_examples"),
         retry_context=retry_ctx,
     )
-    return output.model_dump()
+    elapsed = _time.monotonic() - t0
+    result = output.model_dump()
+    flow.flow("AGENT RESULT %s — %.1fs — status=%s", agent_name, elapsed, result.get("status", "?"))
+    return result
 
 
 def _get_config_from_state(state: dict) -> dict:
@@ -89,15 +100,62 @@ def _save_step_result(state: dict, step_num: int, result: dict):
 
     # Merge output_data into step_data fields
     output = result.get("output_data", {})
-    for key in ("intermediate_repr", "ciq_data", "mop_data", "constraints",
-                "command_outputs", "workflow_yaml", "simulator_config_yaml"):
+
+    # Keys that are YAML/config artifacts — save to state["artifacts"]
+    _ARTIFACT_KEYS = {
+        "validation_rules_yaml", "json_template_yaml",
+        "workflow_yaml", "simulator_config_yaml",
+    }
+    # Keys that are data — save directly to state
+    _DATA_KEYS = {
+        "intermediate_repr", "ciq_data", "mop_data", "constraints", "command_outputs",
+    }
+
+    for key in _DATA_KEYS:
         if key in output:
-            if key in ("workflow_yaml", "simulator_config_yaml"):
-                artifacts = state.get("artifacts", {})
-                artifacts[key] = output[key]
-                state["artifacts"] = artifacts
-            else:
-                state[key] = output[key]
+            state[key] = output[key]
+
+    artifacts = state.get("artifacts", {})
+    for key in _ARTIFACT_KEYS:
+        if key in output and output[key]:
+            artifacts[key] = output[key]
+    state["artifacts"] = artifacts
+
+    # Write artifact files to disk for milestone review
+    run_dir = state.get("run_dir", "")
+    uc_name = state.get("uc_name", "UC")
+    if run_dir:
+        import json as _json
+        _artifact_filenames = {
+            "validation_rules_yaml": f"{uc_name}_validation-rules.yaml",
+            "json_template_yaml": f"{uc_name}_json-output.yaml",
+            "workflow_yaml": f"{uc_name}.yaml",
+            "simulator_config_yaml": f"{uc_name}_simulator-config.yaml",
+        }
+        for key, fname in _artifact_filenames.items():
+            content = artifacts.get(key)
+            if content:
+                try:
+                    out = Path(run_dir) / fname
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_text(content, encoding="utf-8")
+                except Exception:
+                    pass
+
+        # Write error details for reviewer agents
+        if result.get("status") == "failed":
+            try:
+                err_file = Path(run_dir) / f"step_{step_num}_error.json"
+                err_data = {
+                    "step_number": step_num,
+                    "status": "failed",
+                    "error": str(result.get("error", ""))[:2000],
+                    "error_message": str(result.get("error_message", ""))[:2000],
+                    "output_keys": list(output.keys()),
+                }
+                err_file.write_text(_json.dumps(err_data, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
     # Track step results for final report
     results = state.get("step_results", [])
@@ -108,6 +166,34 @@ def _save_step_result(state: dict, step_num: int, result: dict):
         "error_message": str(result.get("error", ""))[:500] if result.get("error") else "",
     })
     state["step_results"] = results
+
+
+def _inject_retry_context(state: dict, step_num: int, step_data: dict):
+    """If this step has been retried, inject reviewer feedback into step_data."""
+    from src.nodes.milestone_nodes import reviewer_feedback as _fb_store
+
+    retries = state.get(f"retry_count_{step_num}", 0)
+    if retries == 0:
+        return
+
+    prev_error = state.get(f"step_{step_num}_error", {})
+
+    # Read reviewer feedback from shared dict (bypasses ADK session state)
+    run_id = state.get("run_id", "")
+    feedback_key = f"{run_id}:{step_num}"
+    feedback = _fb_store.get(feedback_key, "")
+
+    if feedback:
+        if isinstance(prev_error, dict):
+            prev_error["reviewer_analysis"] = feedback
+        else:
+            prev_error = {"error": str(prev_error), "reviewer_analysis": feedback}
+        flow.flow("RETRY CONTEXT step %d — injected %d chars of reviewer feedback", step_num, len(feedback))
+
+    step_data["retry_context"] = {
+        "attempt_number": retries + 1,
+        "previous_error": prev_error,
+    }
 
 
 STEP_NAMES = {
@@ -171,32 +257,17 @@ class ValidationRulesNode(BaseAgent):
     async def _run_async_impl(self, ctx):
         ValidationGenAgent = get_agent_class("src.agents.validation_gen_agent", "ValidationGenAgent")
         logger.info("Step 3: Validation Rules — starting")
-
-        retries = ctx.session.state.get("retry_count_3", 0)
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
-
-        retry_context = None
-        if retries > 0:
-            prev_error = ctx.session.state.get("step_3_error", {})
-            retry_context = {"attempt_number": retries + 1, "previous_error": prev_error}
-            step_data["retry_context"] = retry_context
-
+        _inject_retry_context(ctx.session.state, 3, step_data)
         result = await _call_existing_agent(ValidationGenAgent(), step_data, config)
         _save_step_result(ctx.session.state, 3, result)
-
         if result.get("status") == "failed":
             ctx.session.state["step_3_error"] = result.get("error", {})
-            retries += 1
-            ctx.session.state["retry_count_3"] = retries
-            if retries < MAX_RETRIES:
-                logger.warning("Step 3 failed (attempt %d/%d) — will retry", retries, MAX_RETRIES)
-            else:
-                logger.error("Step 3 exhausted %d retries", MAX_RETRIES)
-
+            ctx.session.state["retry_count_3"] = ctx.session.state.get("retry_count_3", 0) + 1
         logger.info("Step 3: Validation Rules — %s", result.get("status"))
         return
-        yield  # unreachable
+        yield
 
 validation_rules_node = ValidationRulesNode()
 
@@ -213,11 +284,15 @@ class JsonTemplateNode(BaseAgent):
         logger.info("Step 4: JSON Template — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
+        _inject_retry_context(ctx.session.state, 4, step_data)
         result = await _call_existing_agent(JsonTemplateAgent(), step_data, config)
         _save_step_result(ctx.session.state, 4, result)
+        if result.get("status") == "failed":
+            ctx.session.state["step_4_error"] = result.get("error", {})
+            ctx.session.state["retry_count_4"] = ctx.session.state.get("retry_count_4", 0) + 1
         logger.info("Step 4: JSON Template — %s", result.get("status"))
         return
-        yield  # unreachable
+        yield
 
 json_template_node = JsonTemplateNode()
 
@@ -264,11 +339,15 @@ class WorkflowGenNode(BaseAgent):
         logger.info("Step 6: Workflow Gen — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
+        _inject_retry_context(ctx.session.state, 6, step_data)
         result = await _call_existing_agent(WorkflowGenAgent(), step_data, config)
         _save_step_result(ctx.session.state, 6, result)
+        if result.get("status") == "failed":
+            ctx.session.state["step_6_error"] = result.get("error", {})
+            ctx.session.state["retry_count_6"] = ctx.session.state.get("retry_count_6", 0) + 1
         logger.info("Step 6: Workflow Gen — %s", result.get("status"))
         return
-        yield  # unreachable
+        yield
 
 workflow_gen_node = WorkflowGenNode()
 
@@ -306,11 +385,15 @@ class SimulatorSetupNode(BaseAgent):
         logger.info("Step 8: Simulator Setup — starting")
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)
+        _inject_retry_context(ctx.session.state, 8, step_data)
         result = await _call_existing_agent(SimulatorSetupAgent(), step_data, config)
         _save_step_result(ctx.session.state, 8, result)
+        if result.get("status") == "failed":
+            ctx.session.state["step_8_error"] = result.get("error", {})
+            ctx.session.state["retry_count_8"] = ctx.session.state.get("retry_count_8", 0) + 1
         logger.info("Step 8: Simulator Setup — %s", result.get("status"))
         return
-        yield  # unreachable
+        yield
 
 simulator_setup_node = SimulatorSetupNode()
 

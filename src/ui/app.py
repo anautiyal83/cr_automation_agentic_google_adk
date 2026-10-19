@@ -17,22 +17,10 @@ warnings.filterwarnings("ignore", message=".*huggingface.*")
 warnings.filterwarnings("ignore", message=".*unauthenticated.*")
 import logging as _logging
 
-# Configure verbose logging for the application
-_logging.basicConfig(
-    level=_logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-# Set DEBUG for our own modules
-_logging.getLogger("src").setLevel(_logging.DEBUG)
-# Suppress noisy third-party loggers
-_logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
-_logging.getLogger("sentence_transformers").setLevel(_logging.ERROR)
-_logging.getLogger("httpx").setLevel(_logging.WARNING)
-_logging.getLogger("httpcore").setLevel(_logging.WARNING)
-_logging.getLogger("uvicorn.access").setLevel(_logging.WARNING)
-_logging.getLogger("nicegui").setLevel(_logging.WARNING)
-_logging.getLogger("watchfiles").setLevel(_logging.WARNING)
+from src.core.logging_config import setup_logging, get_flow_logger
+
+# Configure structured logging (flow.log, error.log, trace.log)
+setup_logging()
 
 from nicegui import ui, app
 
@@ -598,9 +586,9 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                             "SELECT status, duration_seconds FROM pipeline_runs", ()
                         )
                         total = len(rows)
-                        completed = sum(1 for r in rows if 'completed' in str(r.get('status', '')).lower())
+                        completed = sum(1 for r in rows if 'completed' in str(r.get('status') or '').lower())
                         durations = [r['duration_seconds'] for r in rows
-                                     if r.get('duration_seconds') and 'completed' in str(r.get('status', '')).lower()]
+                                     if r.get('duration_seconds') and 'completed' in str(r.get('status') or '').lower()]
                         runs_label.text = str(total)
                         if total > 0:
                             success_label.text = f"{completed * 100 // total}%"
@@ -740,4 +728,7 @@ def run() -> None:
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    run()
+    try:
+        run()
+    except KeyboardInterrupt:
+        pass
