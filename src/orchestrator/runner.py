@@ -93,21 +93,22 @@ class PipelineRunner:
                 doc_set_id = document_set.get("document_set_id", run_id)
 
                 # Save document set for re-run support
+                # Coerce None → "" for NOT NULL columns
                 await self._db.execute_insert(
-                    "INSERT OR IGNORE INTO uc_document_sets "
+                    "INSERT OR REPLACE INTO uc_document_sets "
                     "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
                     "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, selected_sheets) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_set_id,
-                     document_set.get("uc_name", ""),
-                     document_set.get("ciq_file_path", ""),
-                     document_set.get("mop_file_path", ""),
-                     json.dumps(document_set.get("sample_io_xml_paths", [])),
-                     document_set.get("constraints_file_path", ""),
-                     document_set.get("command_outputs_path", ""),
+                     document_set.get("uc_name") or "",
+                     document_set.get("ciq_file_path") or "",
+                     document_set.get("mop_file_path") or "",
+                     json.dumps(document_set.get("sample_io_xml_paths") or []),
+                     document_set.get("constraints_file_path") or "",
+                     document_set.get("command_outputs_path") or "",
                      now,
-                     json.dumps(document_set.get("additional_documents", {})),
-                     json.dumps(document_set.get("selected_sheets", []))),
+                     json.dumps(document_set.get("additional_documents") or {}),
+                     json.dumps(document_set.get("selected_sheets") or [])),
                 )
 
                 # Save pipeline run
