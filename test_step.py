@@ -131,6 +131,9 @@ async def show_status(run_id: str):
 async def run_step(step_num: int, run_id: str):
     """Run a single step using state from a previous run."""
     loaded_config = await _ensure_api_key()
+    # Clear module cache to pick up latest cr_automation-agentic changes
+    from src.nodes.cr_import import clear_cache
+    clear_cache()
     from src.nodes.cr_import import get_agent_class, import_cr_module
     from src.nodes.step_nodes import _get_step_data, _save_step_result, _call_existing_agent, _inject_retry_context
 

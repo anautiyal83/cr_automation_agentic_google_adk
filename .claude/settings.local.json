@@ -9,7 +9,10 @@
       "Bash(do echo \"=== $f ===\")",
       "Read(//d/my_workspace/cr_automation_agentic_google_adk/**)",
       "Bash(done)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(RUN=\"data/runs/f8ca9075-eee6-45d0-8d35-18af3883466d\")",
+      "Read(//d/my_workspace/cr_automation_agentic_google_adk/$RUN/**)"
     ]
   }
 }

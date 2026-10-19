@@ -22,6 +22,17 @@ _module_cache: dict[str, Any] = {}
 _initialized = False
 
 
+def clear_cache():
+    """Clear module cache — use when cr_automation-agentic code changes."""
+    global _initialized
+    _module_cache.clear()
+    _initialized = False
+    # Also remove from sys.modules
+    to_remove = [k for k in sys.modules if k.startswith("src.agents") or k.startswith("src.core") or k.startswith("src.parsers")]
+    for k in to_remove:
+        del sys.modules[k]
+
+
 def _ensure_cr_auto_importable():
     """Make cr_automation-agentic's src package importable via normal imports.
 
