@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(xargs:*)",
+      "Bash(find data/runs/30212299* -name \"*.json\" -path \"*/results/*\")",
+      "Bash(while read f)",
+      "Bash(do echo \"=== $f ===\")",
+      "Read(//d/my_workspace/cr_automation_agentic_google_adk/**)",
+      "Bash(done)",
+      "Bash(grep:*)"
+    ]
+  }
+}

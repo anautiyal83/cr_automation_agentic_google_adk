@@ -379,7 +379,7 @@ class PipelineRunner:
             5: "qa/qa-execution-report.html",
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-generation-report.html",
-            8: f"{uc_name}_simulator-overview.html",
+            8: f"{uc_name}_simulator-config.yaml",
             9: f"{uc_name}_exec-test-report.html",
         }
 
@@ -414,12 +414,20 @@ class PipelineRunner:
         extra_map = {
             5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
             7: [f"{uc_name}.yaml"],
-            9: [f"{uc_name}.yaml", f"{uc_name}_simulator-overview.html"],
+            8: ["simulator/simulator_manifest.yaml"],
+            9: [f"{uc_name}.yaml", f"{uc_name}_simulator-config.yaml"],
         }
         for ef in extra_map.get(step_num, []):
             ep = Path(run_dir) / ef
             if ep.exists() and str(ep) != primary:
                 extra.append(str(ep))
+        # For step 8, also add per-node config files
+        if step_num == 8:
+            sim_config_dir = Path(run_dir) / "simulator" / "config"
+            if sim_config_dir.exists():
+                for cf in sorted(sim_config_dir.glob("*.yaml")):
+                    if str(cf) != primary:
+                        extra.append(str(cf))
 
         return primary, extra
 
