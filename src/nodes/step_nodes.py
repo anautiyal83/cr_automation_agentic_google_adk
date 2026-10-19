@@ -177,18 +177,28 @@ def _inject_retry_context(state: dict, step_num: int, step_data: dict):
         return
 
     prev_error = state.get(f"step_{step_num}_error", {})
-
-    # Read reviewer feedback from shared dict (bypasses ADK session state)
     run_id = state.get("run_id", "")
-    feedback_key = f"{run_id}:{step_num}"
-    feedback = _fb_store.get(feedback_key, "")
 
-    if feedback:
+    # Collect feedback from this step AND downstream test steps that triggered the rerun
+    # e.g., step 3 retry may be caused by step 5 QA failure
+    _DOWNSTREAM_STEPS = {3: [3, 5], 4: [4, 5], 6: [6, 7, 9], 8: [8, 9]}
+    check_steps = _DOWNSTREAM_STEPS.get(step_num, [step_num])
+
+    all_feedback = []
+    for check_step in check_steps:
+        fb = _fb_store.get(f"{run_id}:{check_step}", "")
+        if fb:
+            all_feedback.append(f"=== Reviewer feedback from Step {check_step} ===\n{fb}")
+
+    combined_feedback = "\n\n".join(all_feedback) if all_feedback else ""
+
+    if combined_feedback:
         if isinstance(prev_error, dict):
-            prev_error["reviewer_analysis"] = feedback
+            prev_error["reviewer_analysis"] = combined_feedback
         else:
-            prev_error = {"error": str(prev_error), "reviewer_analysis": feedback}
-        flow.flow("RETRY CONTEXT step %d — injected %d chars of reviewer feedback", step_num, len(feedback))
+            prev_error = {"error": str(prev_error), "reviewer_analysis": combined_feedback}
+        flow.flow("RETRY CONTEXT step %d — injected %d chars of reviewer feedback from steps %s",
+                   step_num, len(combined_feedback), check_steps)
 
     step_data["retry_context"] = {
         "attempt_number": retries + 1,

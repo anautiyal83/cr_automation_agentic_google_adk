@@ -34,21 +34,45 @@ logger = logging.getLogger(__name__)
 def read_qa_report(run_dir: str) -> dict:
     """Read the CIQ QA execution report and return test case results.
 
-    Returns {total, passed, failed, test_cases: [{id, scenario, expected, actual, status, remarks}]}.
+    Returns {total, passed, failed, test_cases: [{id, status, errors: [{sheet, row, column, message}]}]}.
     """
     qa_dir = Path(run_dir) / "qa"
-    report_path = qa_dir / "qa-execution-report.xlsx"
+    results_dir = qa_dir / "results"
+    test_cases = []
 
-    # Try reading from test case data directly
-    tc_file = qa_dir / "test-cases.xlsx"
-    results = {"total": 0, "passed": 0, "failed": 0, "test_cases": []}
+    if results_dir.exists():
+        for tc_dir in sorted(results_dir.iterdir()):
+            if not tc_dir.is_dir():
+                continue
+            tc_id = tc_dir.name
+            # Find the validation report JSON
+            for jf in tc_dir.glob("*.json"):
+                try:
+                    data = json.loads(jf.read_text(encoding="utf-8"))
+                    tc_status = data.get("status", "UNKNOWN")
+                    errors = []
+                    for sheet in data.get("sheets", []):
+                        if sheet.get("status") == "FAILED":
+                            for err in sheet.get("errors", []):
+                                errors.append({
+                                    "sheet": sheet.get("sheetName", ""),
+                                    "row": err.get("rowNumber"),
+                                    "column": err.get("column", ""),
+                                    "value": str(err.get("value", ""))[:100],
+                                    "message": err.get("message", ""),
+                                })
+                    test_cases.append({
+                        "id": tc_id,
+                        "status": tc_status,
+                        "total_errors": data.get("totalErrors", 0),
+                        "errors": errors,
+                    })
+                except Exception:
+                    pass
 
-    # Read execution report JSON if available
-    for jf in (qa_dir / "results").glob("*/") if (qa_dir / "results").exists() else []:
-        pass  # Results are per-TC directories
-
-    # Fallback: read the step output from state
-    return results
+    passed = sum(1 for tc in test_cases if tc["status"] == "PASSED")
+    failed = sum(1 for tc in test_cases if tc["status"] == "FAILED")
+    return {"total": len(test_cases), "passed": passed, "failed": failed, "test_cases": test_cases}
 
 
 def read_exec_report(run_dir: str) -> dict:
@@ -205,34 +229,42 @@ def classify_failure_type(failures: list[dict]) -> dict:
 
 QA_VALIDATION_REVIEWER_INSTRUCTION = """You are a QA Validation Reviewer for the CR Automation pipeline.
 
-Your job: Analyze CIQ validation test failures (Step 5) and generate precise fix instructions
-for the Validation Rules Generator (Step 3).
+Your job: Analyze CIQ validation test failures (Step 5) and generate EXACT fix instructions
+for the Validation Rules Generator (Step 3) to apply on its next attempt.
 
 WORKFLOW:
-1. Use read_qa_report to get the test case results
-2. Use read_validation_rules to see the current validation rules
-3. Analyze each failed test case:
-   - What rule caused the failure?
-   - Was it a false positive (rule too strict) or a real issue?
-   - What specific change would fix it?
-4. Generate structured fix instructions
+1. Use read_qa_report to get test case results with per-sheet/per-row errors
+2. Use read_validation_rules to see the current validation rules YAML
+3. For each failed test case, analyze:
+   - Which sheet/column/rule caused the failure?
+   - Is the rule TOO STRICT (marking valid data as invalid)?
+   - Is the rule WRONG (referencing non-existent columns)?
+   - Should the column be required:false instead of required:true?
+   - Is a unique_key rule causing false duplicates?
+4. Generate EXACT fix instructions — not "review and update" but "change X to Y"
+
+COMMON FIX PATTERNS:
+- "Column 'X' is required but is empty" → change required: true to required: false
+- "Duplicate composite key" → the unique_key columns are wrong, change to actual unique columns
+- "Pattern does not match" → remove the pattern (patterns are fragile)
+- "Value not in allowedValues" → remove allowedValues (too restrictive)
 
 OUTPUT FORMAT (JSON):
 {
-    "analysis": "Brief summary of failures",
+    "analysis": "X of Y test cases failed. Root cause: ...",
     "fix_instructions": [
         {
-            "rule_location": "sheets.IP.columns.ZONE",
-            "current_value": "required: true, type: string",
-            "problem": "Column allows empty values in CIQ but rule says required",
-            "fix": "Change required to false",
+            "rule_location": "sheets.Index.columns.ZONE.required",
+            "current_value": "true",
+            "problem": "TC01: Column ZONE has blanks in test data row 3",
+            "fix": "Change to required: false",
             "priority": "high"
         }
     ],
     "retry_recommended": true
 }
 
-Be specific — reference exact sheet names, column names, and rule types."""
+CRITICAL: Every fix_instruction must specify the EXACT YAML path and EXACT change to make."""
 
 QA_MOP_REVIEWER_INSTRUCTION = """You are a QA MOP Reviewer for the CR Automation pipeline.
 
@@ -352,21 +384,27 @@ ERROR DETAILS:
 GENERATED ARTIFACT (may be partial/invalid):
 {artifact_content}
 
+NOTE: Column name mismatches are auto-corrected. Focus your analysis on:
+1. YAML SYNTAX errors (indentation, quoting, duplicate keys)
+2. WRONG RULE TYPES (required:true on optional columns, wrong patterns, wrong types)
+3. STRUCTURAL ISSUES (missing workbook_rules, wrong unique_key combinations, incorrect one_of groups)
+4. SEMANTIC ERRORS (rules that don't match the UC's business logic)
+
+For each issue, give the EXACT fix — not "review and update" but "change required:true to required:false".
+
 Respond with a JSON object:
 {{
-    "analysis": "Brief summary of what went wrong",
-    "failure_type": "yaml_syntax | schema_validation | content_error | other",
+    "analysis": "Brief root cause summary",
+    "failure_type": "yaml_syntax | rule_logic | structural | semantic",
     "fix_instructions": [
         {{
-            "location": "YAML path or line where fix is needed",
-            "problem": "What's wrong",
-            "fix": "Exact change to make"
+            "location": "Exact YAML path (e.g. sheets.Index.columns.ZONE.required)",
+            "problem": "What's wrong and why",
+            "fix": "Exact change (e.g. change required: true to required: false)"
         }}
     ],
-    "general_guidance": "Overall advice for regeneration"
-}}
-
-Be specific — reference exact YAML paths, line numbers, and content."""
+    "general_guidance": "Key principle the generator should follow on retry"
+}}"""
 
 
 class MilestoneReviewerNode(BaseAgent):
@@ -460,48 +498,108 @@ def create_milestone_reviewer(model, step_number: int) -> MilestoneReviewerNode:
     return node
 
 
-def create_qa_validation_reviewer(model: LiteLlm) -> LlmAgent:
+class QAReviewerNode(BaseAgent):
+    """BaseAgent QA reviewer — reads test results, calls LLM, stores feedback in shared dict."""
+    name: str = "qa_reviewer"
+    description: str = "Analyze test failures and generate fix instructions"
+    step_number: int = 0  # which step's test results to analyze (5, 7, 9)
+    instruction_text: str = ""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    async def _run_async_impl(self, ctx):
+        from src.core.logging_config import get_flow_logger
+        _flow = get_flow_logger(__name__)
+
+        step = self.step_number
+        status = ctx.session.state.get(f"step_{step}_status", "passed")
+        if status != "failed":
+            return
+            yield
+
+        run_dir = ctx.session.state.get("run_dir", "")
+        uc_name = ctx.session.state.get("uc_name", "UC")
+
+        # Gather context based on step type
+        context_parts = [self.instruction_text, "\n\n=== TEST RESULTS ===\n"]
+
+        if step == 5:
+            report = read_qa_report(run_dir)
+            context_parts.append(json.dumps(report, indent=2, default=str)[:6000])
+            rules_content = read_validation_rules(run_dir, uc_name)
+            context_parts.append(f"\n\n=== CURRENT VALIDATION RULES ===\n{rules_content}")
+        elif step == 7:
+            report = read_mop_report(run_dir, uc_name)
+            context_parts.append(json.dumps(report, indent=2, default=str)[:4000])
+            workflow = read_workflow_yaml(run_dir, uc_name)
+            context_parts.append(f"\n\n=== CURRENT WORKFLOW ===\n{workflow}")
+        elif step == 9:
+            report = read_exec_report(run_dir)
+            context_parts.append(json.dumps(report, indent=2, default=str)[:4000])
+            classification = classify_failure_type(report.get("commands", []))
+            context_parts.append(f"\n\n=== FAILURE CLASSIFICATION ===\n{json.dumps(classification, indent=2)}")
+            workflow = read_workflow_yaml(run_dir, uc_name)
+            context_parts.append(f"\n\n=== CURRENT WORKFLOW ===\n{workflow}")
+
+        # Also include error file if available
+        err_file = Path(run_dir) / f"step_{step}_error.json" if run_dir else None
+        if err_file and err_file.exists():
+            context_parts.append(f"\n\n=== ERROR DETAILS ===\n{err_file.read_text(encoding='utf-8')[:2000]}")
+
+        prompt = "\n".join(context_parts)
+
+        try:
+            from src.nodes.cr_import import import_cr_module
+            agents_mod = import_cr_module("src.agents")
+            call_llm = agents_mod.call_llm
+            config = ctx.session.state.get("pipeline_config", {})
+
+            _flow.flow("QA REVIEWER START step %d — analyzing %s", step, "test failures")
+            response = await call_llm(prompt, config=config)
+            _flow.flow("QA REVIEWER DONE step %d — %d chars feedback", step, len(response))
+
+            run_id = ctx.session.state.get("run_id", "")
+            _reviewer_feedback_store[f"{run_id}:{step}"] = response
+
+            if run_dir:
+                fb_file = Path(run_dir) / f"step_{step}_reviewer_feedback.json"
+                fb_file.write_text(response, encoding="utf-8")
+
+        except Exception as e:
+            logger.error("QA reviewer step %d failed: %s", step, e)
+
+        return
+        yield
+
+
+def create_qa_validation_reviewer(model) -> QAReviewerNode:
     """Create the QA Validation Reviewer (Step 5 → Step 3)."""
-    return LlmAgent(
-        name="qa_validation_reviewer",
-        model=model,
-        instruction=QA_VALIDATION_REVIEWER_INSTRUCTION,
-        tools=[
-            FunctionTool(func=read_qa_report),
-            FunctionTool(func=read_validation_rules),
-            FunctionTool(func=read_file_content),
-        ],
-    )
+    node = QAReviewerNode()
+    node.name = "qa_validation_reviewer"
+    node.description = "Analyze QA validation test failures"
+    node.step_number = 5
+    node.instruction_text = QA_VALIDATION_REVIEWER_INSTRUCTION
+    return node
 
 
-def create_qa_mop_reviewer(model: LiteLlm) -> LlmAgent:
+def create_qa_mop_reviewer(model) -> QAReviewerNode:
     """Create the QA MOP Reviewer (Step 7 → Step 6)."""
-    return LlmAgent(
-        name="qa_mop_reviewer",
-        model=model,
-        instruction=QA_MOP_REVIEWER_INSTRUCTION,
-        tools=[
-            FunctionTool(func=read_mop_report),
-            FunctionTool(func=read_workflow_yaml),
-            FunctionTool(func=read_file_content),
-        ],
-    )
+    node = QAReviewerNode()
+    node.name = "qa_mop_reviewer"
+    node.description = "Analyze MOP generation test failures"
+    node.step_number = 7
+    node.instruction_text = QA_MOP_REVIEWER_INSTRUCTION
+    return node
 
 
-def create_qa_execution_reviewer(model: LiteLlm) -> LlmAgent:
+def create_qa_execution_reviewer(model) -> QAReviewerNode:
     """Create the QA Execution Reviewer (Step 9 → Step 6 or Step 8)."""
-    return LlmAgent(
-        name="qa_execution_reviewer",
-        model=model,
-        instruction=QA_EXECUTION_REVIEWER_INSTRUCTION,
-        tools=[
-            FunctionTool(func=read_exec_report),
-            FunctionTool(func=read_workflow_yaml),
-            FunctionTool(func=read_simulator_config),
-            FunctionTool(func=classify_failure_type),
-            FunctionTool(func=read_file_content),
-        ],
-    )
+    node = QAReviewerNode()
+    node.name = "qa_execution_reviewer"
+    node.description = "Analyze execution test failures"
+    node.step_number = 9
+    node.instruction_text = QA_EXECUTION_REVIEWER_INSTRUCTION
+    return node
 
 
 # Import helper for read_file_content
