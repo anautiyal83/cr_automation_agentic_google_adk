@@ -174,14 +174,27 @@ class PipelineRunner:
             # Pipeline completed — determine final state
             # Check multiple sources since ADK session state may not reflect changes
             state = await self.get_state(run_id)
+            run_dir = state.get("run_dir", "")
+
             is_cancelled = (
                 state.get("pipeline_cancelled")
                 or self._active_runs.get(run_id, {}).get("status") == "cancelled"
             )
+
+            # Check for failure: session state, _active_runs, or step 10 not completed
             is_failed = (
                 state.get("pipeline_failed")
                 or self._active_runs.get(run_id, {}).get("status") == "failed"
             )
+            # Also check if pipeline ended before step 10 (final report)
+            if not is_failed and not is_cancelled and run_dir:
+                step_10_done = state.get("step_10_status") or (
+                    Path(run_dir) / "step_10_error.json"
+                ).exists()
+                if not step_10_done:
+                    # Pipeline ended early without reaching step 10
+                    is_failed = True
+                    state["pipeline_error"] = state.get("pipeline_error", "Pipeline ended before completing all steps")
 
             if is_cancelled:
                 flow.flow("RUN CANCELLED — run_id=%s", run_id[:8])
