@@ -67,6 +67,7 @@ class PipelineAgent(BaseAgent):
     async def _run_async_impl(self, ctx):
         """Execute agents sequentially with backtracking on _retry_target."""
         from uuid import UUID
+        from pathlib import Path as _Path
         from src.core.events import PipelineEvent, event_bus
 
         index = 0
@@ -119,7 +120,6 @@ class PipelineAgent(BaseAgent):
                 test_step = self._preceding_test_step.get(index)
                 if test_step:
                     # Check error file on disk (reliable) — ADK state may not reflect sub-agent writes
-                    from pathlib import Path as _Path
                     _run_dir = ctx.session.state.get("run_dir", "")
                     _err_file = _Path(_run_dir) / f"step_{test_step}_error.json" if _run_dir else None
                     step_failed = _err_file and _err_file.exists()
