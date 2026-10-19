@@ -420,14 +420,15 @@ class MilestoneReviewerNode(BaseAgent):
         _flow = get_flow_logger(__name__)
 
         step = self.step_number
-        status = ctx.session.state.get(f"step_{step}_status", "passed")
-
-        # Only review if step failed
-        if status != "failed":
+        # Don't check ctx.session.state — ADK state is unreliable
+        # PipelineAgent already skips this reviewer if the step passed
+        # Check disk for error file as confirmation
+        run_dir = ctx.session.state.get("run_dir", "")
+        err_file = Path(run_dir) / f"step_{step}_error.json" if run_dir else None
+        if err_file and not err_file.exists():
+            _flow.flow("MILESTONE REVIEWER step %d — no error file, skipping", step)
             return
             yield
-
-        run_dir = ctx.session.state.get("run_dir", "")
         uc_name = ctx.session.state.get("uc_name", "UC")
         step_ctx = _STEP_CONTEXT.get(step, {})
 
@@ -512,12 +513,16 @@ class QAReviewerNode(BaseAgent):
         _flow = get_flow_logger(__name__)
 
         step = self.step_number
-        status = ctx.session.state.get(f"step_{step}_status", "passed")
-        if status != "failed":
+        # Don't check ctx.session.state for status — ADK state is unreliable
+        # PipelineAgent already skips this reviewer if the step passed
+        # If we're executing, the step failed — check disk for confirmation
+        run_dir = ctx.session.state.get("run_dir", "")
+        err_file = Path(run_dir) / f"step_{step}_error.json" if run_dir else None
+        if err_file and not err_file.exists():
+            _flow.flow("QA REVIEWER step %d — no error file, skipping", step)
             return
             yield
 
-        run_dir = ctx.session.state.get("run_dir", "")
         uc_name = ctx.session.state.get("uc_name", "UC")
 
         # Gather context based on step type
