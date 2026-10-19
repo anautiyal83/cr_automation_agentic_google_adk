@@ -143,7 +143,7 @@ async def run_step(step_num: int, run_id: str):
         return
 
     # Build state from existing run artifacts
-    state = _build_state_from_run(run_dir, run_id)
+    state = await _build_state_from_run(run_dir, run_id)
     if loaded_config:
         state["pipeline_config"] = loaded_config
     step_data = _get_step_data(state)
@@ -303,7 +303,7 @@ async def test_reviewer(step_num: int, run_id: str):
         print(f"No error file for step {step_num}")
         return
 
-    state = _build_state_from_run(run_dir, run_id)
+    state = await _build_state_from_run(run_dir, run_id)
 
     # Determine reviewer type
     _STEP_CONTEXT = {
@@ -400,9 +400,8 @@ async def test_validate(yaml_path: str, ciq_path: str):
         print("PASSED")
 
 
-def _build_state_from_run(run_dir: Path, run_id: str) -> dict:
+async def _build_state_from_run(run_dir: Path, run_id: str) -> dict:
     """Reconstruct pipeline state from a run directory's artifacts."""
-    import yaml as _yaml
 
     # Find UC name from artifacts
     uc_name = "UC"
@@ -416,34 +415,27 @@ def _build_state_from_run(run_dir: Path, run_id: str) -> dict:
                 uc_name = candidate
                 break
 
-    # Find CIQ file
+    # Find CIQ file from DB
     ciq_path = ""
-    from src.storage.db import Database
-    db = Database("data/pipeline.db")
-    import asyncio
+    from src.storage.db import init_database
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
+        db = await init_database("data/pipeline.db")
+        rows = await db.execute(
+            "SELECT d.* FROM pipeline_runs r JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?",
+            (run_id,)
+        )
+        if rows:
+            ciq_path = rows[0].get("ciq_file_path", "")
+    except Exception:
+        pass
 
     # Read config
     config = {}
     try:
         from src.core.config import ConfigManager
         mgr = ConfigManager()
-        cfg = loop.run_until_complete(mgr.get_config())
+        cfg = await mgr.get_config()
         config = cfg.model_dump()
-    except Exception:
-        pass
-
-    # Try to find CIQ from DB
-    try:
-        rows = loop.run_until_complete(db.execute(
-            "SELECT d.* FROM pipeline_runs r JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?",
-            (run_id,)
-        ))
-        if rows:
-            ciq_path = rows[0].get("ciq_file_path", "")
     except Exception:
         pass
 
