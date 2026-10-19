@@ -117,10 +117,24 @@ class PipelineAgent(BaseAgent):
             # ----- SKIP REVIEWERS if preceding test passed -----
             if index in self._reviewer_indices:
                 test_step = self._preceding_test_step.get(index)
-                if test_step and ctx.session.state.get(f"step_{test_step}_status") != "failed":
-                    logger.debug("Skipping reviewer at index %d — step %d passed", index, test_step)
-                    index += 1
-                    continue
+                if test_step:
+                    # Check error file on disk (reliable) — ADK state may not reflect sub-agent writes
+                    from pathlib import Path as _Path
+                    _run_dir = ctx.session.state.get("run_dir", "")
+                    _err_file = _Path(_run_dir) / f"step_{test_step}_error.json" if _run_dir else None
+                    step_failed = _err_file and _err_file.exists()
+                    if not step_failed:
+                        logger.debug("Skipping reviewer at index %d — step %d passed (no error file)", index, test_step)
+                        index += 1
+                        continue
+
+            # ----- CLEAR old error file before re-run -----
+            if step_num:
+                _run_dir = ctx.session.state.get("run_dir", "")
+                if _run_dir:
+                    _old_err = _Path(_run_dir) / f"step_{step_num}_error.json"
+                    if _old_err.exists():
+                        _old_err.unlink()
 
             # ----- PUBLISH step_started -----
             if step_num and run_id_str:
@@ -158,13 +172,20 @@ class PipelineAgent(BaseAgent):
                 break
 
             agent_elapsed = _time.monotonic() - agent_t0
-            status = ctx.session.state.get(f"step_{step_num}_status", "ok") if step_num else "ok"
+
+            # Determine step status — check disk first (reliable), fallback to session state
+            if step_num:
+                _run_dir = ctx.session.state.get("run_dir", "")
+                _err = _Path(_run_dir) / f"step_{step_num}_error.json" if _run_dir else None
+                status = "failed" if (_err and _err.exists()) else \
+                         ctx.session.state.get(f"step_{step_num}_status", "passed")
+            else:
+                status = "ok"
             flow.flow("AGENT DONE  [%d/%d] %s — %.1fs — status=%s",
                        index + 1, total, agent.name, agent_elapsed, status)
 
             # ----- PUBLISH step_completed -----
             if step_num and run_id_str:
-                status = ctx.session.state.get(f"step_{step_num}_status", "passed")
                 try:
                     evt_type = "step_completed" if status != "failed" else "step_failed"
                     await event_bus.publish(PipelineEvent(

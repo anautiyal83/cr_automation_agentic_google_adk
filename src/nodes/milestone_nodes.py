@@ -35,8 +35,13 @@ class MilestoneNode(BaseAgent):
     model_config = {"arbitrary_types_allowed": True}
 
     async def _run_async_impl(self, ctx):
+        from pathlib import Path
         step = self.step_num
-        status = ctx.session.state.get(f"step_{step}_status", "passed")
+
+        # Determine step status from disk (ADK session state is unreliable)
+        run_dir = ctx.session.state.get("run_dir", "")
+        err_file = Path(run_dir) / f"step_{step}_error.json" if run_dir else None
+        status = "failed" if (err_file and err_file.exists()) else "passed"
 
         logger.info("Milestone Step %d (%s): status=%s — awaiting review",
                      step, self.milestone_name, status)
