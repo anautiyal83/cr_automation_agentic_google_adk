@@ -514,9 +514,25 @@ class ProgressSection:
         if step_num == 5:
             self.ms_rerun_btn.text = "Re-run Steps 3-5"
         elif step_num == 7:
-            self.ms_rerun_btn.text = "Re-run Steps 6-9"
+            self.ms_rerun_btn.text = "Re-run Steps 6-7"
         elif step_num == 9:
-            self.ms_rerun_btn.text = "Re-run Steps 6-9"
+            # Dynamic label based on reviewer classification
+            rerun_label = "Re-run Steps 6-9"
+            try:
+                import json as _json
+                from src.nodes.milestone_nodes import reviewer_feedback as _fb
+                run_id_str = str(self.active_run_id) if self.active_run_id else ""
+                fb = _fb.get(f"{run_id_str}:9", "")
+                if fb:
+                    fb_data = _json.loads(fb) if isinstance(fb, str) else fb
+                    classification = fb_data.get("classification", "")
+                    if classification == "simulator":
+                        rerun_label = "Re-run Step 8-9 (Simulator)"
+                    elif classification == "workflow":
+                        rerun_label = "Re-run Steps 6-9 (Workflow)"
+            except Exception:
+                pass
+            self.ms_rerun_btn.text = rerun_label
         else:
             self.ms_rerun_btn.text = "Re-run Step"
 
@@ -654,11 +670,35 @@ class ProgressSection:
                 self.status_detail.text = "Re-generating validation rules, JSON output, then re-testing..."
                 for s in (3, 4, 5):
                     self._update_step_visual(s, "pending")
-            elif ms_step in (7, 9):
-                self.status_label.text = "Re-running Steps 6-9"
-                self.status_detail.text = "Re-generating workflow, MOP, simulator config, then re-testing..."
-                for s in (6, 7, 8, 9):
+            elif ms_step == 7:
+                self.status_label.text = "Re-running Steps 6-7"
+                self.status_detail.text = "Re-generating workflow, then re-testing MOP..."
+                for s in (6, 7):
                     self._update_step_visual(s, "pending")
+            elif ms_step == 9:
+                # Dynamic based on reviewer classification
+                rerun_from = 6  # default
+                try:
+                    import json as _json
+                    from src.nodes.milestone_nodes import reviewer_feedback as _fb
+                    run_id_str = str(self.active_run_id) if self.active_run_id else ""
+                    fb = _fb.get(f"{run_id_str}:9", "")
+                    if fb:
+                        fb_data = _json.loads(fb) if isinstance(fb, str) else fb
+                        if fb_data.get("classification") == "simulator":
+                            rerun_from = 8
+                except Exception:
+                    pass
+                if rerun_from == 8:
+                    self.status_label.text = "Re-running Steps 8-9"
+                    self.status_detail.text = "Re-generating simulator config, then re-testing execution..."
+                    for s in (8, 9):
+                        self._update_step_visual(s, "pending")
+                else:
+                    self.status_label.text = "Re-running Steps 6-9"
+                    self.status_detail.text = "Re-generating workflow, MOP, simulator config, then re-testing..."
+                    for s in (6, 7, 8, 9):
+                        self._update_step_visual(s, "pending")
             else:
                 self.status_label.text = "Re-running Step"
                 self.status_detail.text = "Re-generating artifact..."

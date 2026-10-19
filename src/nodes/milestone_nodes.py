@@ -79,13 +79,32 @@ class MilestoneNode(BaseAgent):
             pipeline_actions[run_id] = {"action": "cancel"}
             logger.info("Milestone Step %d: pipeline_actions → cancel", step)
         elif decision == "rerun":
-            # For test steps, jump to the upstream generation step
-            _RERUN_TARGET = {
-                5: 3,   # QA-Validation → re-run from Step 3 (Validation Rules)
-                7: 6,   # QA-MOP → re-run from Step 6 (Workflow Gen)
-                9: 6,   # QA-Execution → re-run from Step 6 (Workflow Gen)
+            # Default rerun targets for test steps
+            _DEFAULT_RERUN = {
+                5: 3,   # QA-Validation → Step 3 (Validation Rules)
+                7: 6,   # QA-MOP → Step 6 (Workflow Gen)
             }
-            target = _RERUN_TARGET.get(step, step)
+            target = _DEFAULT_RERUN.get(step, step)
+
+            # For step 9: use reviewer classification to determine target dynamically
+            if step == 9:
+                import json as _json
+                fb = reviewer_feedback.get(f"{run_id}:9", "")
+                if fb:
+                    try:
+                        fb_data = _json.loads(fb) if isinstance(fb, str) else fb
+                        classification = fb_data.get("classification", "")
+                        reviewer_target = fb_data.get("retry_target")
+                        if reviewer_target in (6, 8):
+                            target = reviewer_target
+                            logger.info("Milestone Step 9: reviewer classified as '%s' → target step %d",
+                                        classification, target)
+                    except (_json.JSONDecodeError, TypeError):
+                        pass
+                if target == step:
+                    # Fallback: default to step 6 for workflow issues
+                    target = 6
+
             ctx.session.state[f"retry_count_{target}"] = 0
             pipeline_actions[run_id] = {"action": "rerun", "target_step": target}
             logger.info("Milestone Step %d: pipeline_actions → rerun step %d (retry counter reset)", step, target)
