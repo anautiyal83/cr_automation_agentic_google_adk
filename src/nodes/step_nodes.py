@@ -430,6 +430,11 @@ class ExecutionTestNode(BaseAgent):
                 ctx.session.state.get("run_dir", "")
             )
 
+        # Generate command execution log
+        run_dir = ctx.session.state.get("run_dir", "")
+        if run_dir:
+            _generate_exec_log(run_dir)
+
         logger.info("Step 9: Execution Test — %s", result.get("status"))
         return
         yield  # unreachable
@@ -461,6 +466,142 @@ final_report_node = FinalReportNode()
 # NOTE: Milestone, router, and classification code has been moved to
 # milestone_nodes.py and router_nodes.py. Only _classify_exec_failures
 # remains here as it's used by ExecutionTestNode.
+
+
+def _generate_exec_log(run_dir: str):
+    """Generate a command execution log from step 9 results.
+
+    Writes exec_log.txt with per-command status summary.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    exec_dir = Path(run_dir) / "exec_output"
+    if not exec_dir.exists():
+        exec_dir.mkdir(parents=True, exist_ok=True)
+
+    json_files = list(exec_dir.glob("*.json"))
+    if not json_files:
+        # No execution results — write a minimal log
+        log_path = Path(run_dir) / "exec_log.txt"
+        log_path.write_text(
+            "=" * 80 + "\n"
+            "COMMAND EXECUTION LOG\n"
+            f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            "=" * 80 + "\n\n"
+            "NO COMMANDS EXECUTED\n\n"
+            "The CLI automation JAR produced no output. Possible causes:\n"
+            "- MockWire simulator failed to start or authenticate\n"
+            "- Workflow YAML has structural issues the JAR cannot parse\n"
+            "- SSH connection to simulator timed out\n"
+            "- CIQ JSON output is empty or malformed\n\n"
+            "Check logs/error.log and logs/trace.log for details.\n",
+            encoding="utf-8",
+        )
+        flow.flow("EXEC LOG: no execution results found in %s", exec_dir)
+        return
+
+    lines = [
+        "=" * 80,
+        "COMMAND EXECUTION LOG",
+        f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "=" * 80,
+        "",
+    ]
+
+    total = 0
+    cmd_ok = 0
+    cmd_fail = 0
+    val_ok = 0
+    val_fail = 0
+    val_skip = 0
+    phase_stats: dict[str, dict] = {}
+
+    for jf in sorted(exec_dir.glob("*.json")):
+        try:
+            data = _json.loads(jf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        meta = data.get("metadata", {}).get("execution_summary", {})
+        lines.append(f"Report: {jf.name}")
+        lines.append(f"  Overall: {meta.get('overall_status', '?')}")
+        lines.append(f"  Started: {meta.get('startDateAndTime', '?')}")
+        lines.append(f"  Ended:   {meta.get('endDateAndTime', '?')}")
+        lines.append("")
+
+        for cmd_key, cmd_info in data.get("data", {}).items():
+            total += 1
+            phase = cmd_info.get("phase", "unknown")
+            success = cmd_info.get("success", False)
+            v_status = cmd_info.get("validation_status", "skipped")
+
+            if success:
+                cmd_ok += 1
+            else:
+                cmd_fail += 1
+            if v_status == "success":
+                val_ok += 1
+            elif v_status == "failed":
+                val_fail += 1
+            else:
+                val_skip += 1
+
+            # Phase stats
+            ps = phase_stats.setdefault(phase, {"total": 0, "cmd_ok": 0, "cmd_fail": 0, "val_ok": 0, "val_fail": 0})
+            ps["total"] += 1
+            ps["cmd_ok" if success else "cmd_fail"] += 1
+            if v_status == "success":
+                ps["val_ok"] += 1
+            elif v_status == "failed":
+                ps["val_fail"] += 1
+
+            # Command line
+            cmd_status = "OK" if success else "FAIL"
+            val_tag = f"[val:{v_status}]" if v_status != "skipped" else ""
+            cmd_short = cmd_key[:60].replace("\n", " ")
+            lines.append(f"  [{cmd_status}]{val_tag} [{phase}] {cmd_short}")
+
+            # Show failure details
+            if not success or v_status == "failed":
+                output = cmd_info.get("output", "")[:150].replace("\n", " ").replace("\r", "")
+                reason = cmd_info.get("reason", "")[:100]
+                conclusion = cmd_info.get("validation_conclusion", "")[:100]
+                if output:
+                    lines.append(f"    output: {output}")
+                if reason:
+                    lines.append(f"    reason: {reason}")
+                if conclusion and v_status == "failed":
+                    lines.append(f"    conclusion: {conclusion}")
+
+        lines.append("")
+
+    # Summary
+    lines.insert(4, "")
+    summary = [
+        "-" * 80,
+        "SUMMARY",
+        "-" * 80,
+        f"  Total commands:  {total}",
+        f"  Command OK:      {cmd_ok}",
+        f"  Command FAIL:    {cmd_fail}",
+        f"  Validation OK:   {val_ok}",
+        f"  Validation FAIL: {val_fail}",
+        f"  Validation SKIP: {val_skip}",
+        "",
+        "PHASE BREAKDOWN:",
+    ]
+    for phase, ps in phase_stats.items():
+        summary.append(f"  {phase}: {ps['total']} cmds | OK: {ps['cmd_ok']} | FAIL: {ps['cmd_fail']} | Val OK: {ps['val_ok']} | Val Fail: {ps['val_fail']}")
+    summary.append("")
+    summary.append("-" * 80)
+    summary.append("")
+
+    lines = lines[:5] + summary + lines[5:]
+
+    log_path = Path(run_dir) / "exec_log.txt"
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+    flow.flow("EXEC LOG written to %s — %d cmds, %d OK, %d fail", log_path, total, cmd_ok, cmd_fail)
 
 
 def _classify_exec_failures(run_dir: str) -> list[dict]:
