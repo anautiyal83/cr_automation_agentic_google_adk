@@ -624,11 +624,18 @@ class ProgressSection:
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
 
-        # Replace continue button with Answer Questions + Skip
+        # Show Answer Questions + Skip buttons
         self.ms_continue_btn.text = "Skip & Use Defaults"
         self.ms_continue_btn.props("color=grey-6")
 
-        # Auto-open the dialog immediately
+        # Add Answer Questions button in the action row
+        with self.milestone_row:
+            with ui.row().classes("w-full gap-3"):
+                ui.button("Answer Questions", icon="quiz",
+                          on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
+                    .props("unelevated color=deep-purple-6 size=sm no-caps")
+
+        # Auto-open the dialog on first show
         self._open_questionnaire_dialog(questions, milestone_name)
 
     def _open_questionnaire_dialog(self, questions: list, milestone_name: str):
