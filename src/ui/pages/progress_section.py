@@ -664,6 +664,14 @@ class ProgressSection:
         answer_inputs: dict[str, Any] = {}
 
         dialog = ui.dialog().props("maximized")
+        with dialog:
+            # Inject CSS for input visibility
+            ui.add_head_html("""<style>
+                .cr-q-input .q-field__control { border: 1px solid #5a5a70 !important; border-radius: 4px; }
+                .cr-q-input .q-field__native { color: #e8e8f0 !important; }
+                .cr-q-input .q-field__native::placeholder { color: #6a6a80 !important; }
+                .cr-q-input .q-field__control:focus-within { border-color: #6C63FF !important; }
+            </style>""")
         with dialog, ui.card().classes("w-full h-full p-0").style(
             "display: flex; flex-direction: column; max-height: 100vh; "
             "background: var(--cr-surface); color: var(--cr-text)"
@@ -743,24 +751,18 @@ class ProgressSection:
                                         answer_inputs[q_id] = inp
 
                                     elif q_type == "password":
-                                        with ui.element("div").classes("w-full").style(
-                                            "background: #2a2a3e; border: 1px solid #3a3a50; border-radius: 4px; padding: 6px 10px"
-                                        ):
-                                            inp = ui.input(placeholder=q_helper or "Enter value",
-                                                           value=default_str,
-                                                           password=True, password_toggle=True) \
-                                                .props("borderless dense").classes("w-full") \
-                                                .style("color: #e8e8f0 !important")
+                                        inp = ui.input(placeholder=q_helper or "Enter value",
+                                                       value=default_str,
+                                                       password=True, password_toggle=True) \
+                                            .props("outlined dense") \
+                                            .classes("w-full cr-q-input")
                                         answer_inputs[q_id] = inp
 
                                     else:
-                                        with ui.element("div").classes("w-full").style(
-                                            "background: #2a2a3e; border: 1px solid #3a3a50; border-radius: 4px; padding: 6px 10px"
-                                        ):
-                                            inp = ui.input(placeholder=q_helper or "Enter value",
-                                                           value=default_str) \
-                                                .props("borderless dense").classes("w-full") \
-                                                .style("color: #e8e8f0 !important")
+                                        inp = ui.input(placeholder=q_helper or "Enter value",
+                                                       value=default_str) \
+                                            .props("outlined dense") \
+                                            .classes("w-full cr-q-input")
                                         answer_inputs[q_id] = inp
 
                                     # Show pre-filled indicator
@@ -788,34 +790,34 @@ class ProgressSection:
 
         answers = {}
         for q_id, inp in answer_inputs.items():
-            if use_defaults:
-                # Keep default value (already in the input)
-                pass
             val = inp.value if hasattr(inp, 'value') else ""
             if val is not None and str(val).strip():
                 answers[q_id] = val
 
         dialog.close()
 
-        # Send answers to the milestone via respond_milestone
-        if self.runner and self.active_run_id:
-            # Store answers as JSON string in milestone_decisions
-            from src.nodes.milestone_nodes import milestone_decisions, milestone_events
-            milestone_decisions[0] = _json.dumps(answers) if answers else "continue"
-            evt = milestone_events.get(0)
-            if evt:
-                evt.set()
+        if not self.runner or not self.active_run_id:
+            return
 
-            self.status_icon.name = "sync"
-            self.status_icon.classes(replace="cr-text-accent cr-spin")
-            self.status_label.text = "Processing answers..."
-            self.status_detail.text = f"Submitted {len(answers)} answers"
-            self.milestone_row.set_visibility(False)
-            self.action_btns.set_visibility(True)
-            self.banner.style(replace=(
-                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
-            ))
-            self.progress_bar.props("stripe animate")
+        run_id_str = str(self.active_run_id)
+
+        # Use runner's respond_milestone for step 0 — this handles
+        # milestone_decisions, event signaling, and _active_runs status
+        answer_str = _json.dumps(answers) if answers else "continue"
+        self.runner.respond_milestone(run_id_str, 0, answer_str)
+
+        logger.info("Questionnaire submitted: %d answers for run %s", len(answers), run_id_str[:8])
+
+        self.status_icon.name = "sync"
+        self.status_icon.classes(replace="cr-text-accent cr-spin")
+        self.status_label.text = "Processing answers..."
+        self.status_detail.text = f"Submitted {len(answers)} answers"
+        self.milestone_row.set_visibility(False)
+        self.action_btns.set_visibility(True)
+        self.banner.style(replace=(
+            "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+        ))
+        self.progress_bar.props("stripe animate")
 
     def _show_artifact_dialog(self):
         import html as html_mod
