@@ -446,13 +446,20 @@ class ProgressSection:
                     "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
                 ))
 
-            self.progress_bar.value = event.step_number / TOTAL_STEPS
+            self.progress_bar.value = max(event.step_number, 1) / TOTAL_STEPS
             self.progress_bar.props(remove="animate")
             self.status_label.text = f"Review: {milestone}"
-            extra_files = event.payload.get("extra_artifact_files", [])
-            self._show_milestone_review(event.step_number, milestone, artifact_file,
-                                        has_failures=has_failures,
-                                        extra_artifact_files=extra_files)
+
+            # Requirements Gathering (step 0) — show interactive questionnaire dialog
+            if event.step_number == 0:
+                from src.nodes.milestone_nodes import milestone_waiting as _mw
+                questions = _mw.get(0, {}).get("questions", [])
+                self._show_questionnaire_dialog(questions, milestone)
+            else:
+                extra_files = event.payload.get("extra_artifact_files", [])
+                self._show_milestone_review(event.step_number, milestone, artifact_file,
+                                            has_failures=has_failures,
+                                            extra_artifact_files=extra_files)
         elif event.event_type == "run_completed":
             self.status_icon.name = "check_circle"
             self.status_icon.classes(replace="cr-text-success")
@@ -573,6 +580,160 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
+
+    def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
+        """Show an interactive questionnaire dialog for requirements gathering."""
+        self.milestone_row.set_visibility(True)
+        self.action_btns.set_visibility(False)
+        self._current_milestone_step = 0
+        self._current_milestone = milestone_name
+
+        # Replace milestone row content with questionnaire link
+        self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions"
+        self.ms_view_btn.text = "Answer Questions"
+        self.ms_view_btn.set_visibility(True)
+        self.ms_rerun_btn.set_visibility(False)
+        self.ms_skip_btn.set_visibility(False)
+        self.ms_continue_btn.text = "Skip & Use Defaults"
+
+        # Store questions for dialog
+        self._pending_questions = questions
+
+        # Override view button to open questionnaire dialog
+        self.ms_view_btn.on_click.clear()
+        self.ms_view_btn.on("click", lambda: self._open_questionnaire_dialog(questions, milestone_name))
+
+    def _open_questionnaire_dialog(self, questions: list, milestone_name: str):
+        """Open a maximized dialog with interactive question form."""
+        import json as _json
+
+        cat_labels = {
+            "node_activity": "Node & Activity",
+            "commands": "Commands & Parameters",
+            "orchestration": "Orchestration Details",
+        }
+        imp_colors = {
+            "critical": "negative",
+            "recommended": "warning",
+            "optional": "grey-6",
+        }
+
+        # Group questions by category
+        by_cat: dict[str, list] = {}
+        for q in questions:
+            if isinstance(q, dict):
+                cat = q.get("category", "other")
+                by_cat.setdefault(cat, []).append(q)
+
+        # Track answer inputs
+        answer_inputs: dict[str, Any] = {}
+
+        dialog = ui.dialog().props("maximized")
+        with dialog, ui.card().classes("w-full h-full p-0").style(
+            "display: flex; flex-direction: column; max-height: 100vh"
+        ):
+            # Header
+            with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
+                "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
+            ):
+                ui.label(f"{milestone_name}").classes("text-subtitle2 font-bold")
+                with ui.row().classes("items-center gap-2"):
+                    critical_count = sum(1 for q in questions if isinstance(q, dict) and q.get("importance") == "critical")
+                    ui.label(f"{len(questions)} questions ({critical_count} critical)").classes("text-caption cr-text-dim")
+                    ui.button(icon="close", on_click=dialog.close).props("flat round size=sm color=grey-6")
+
+            # Scrollable question form
+            with ui.scroll_area().style("flex: 1; min-height: 0"):
+                with ui.column().classes("w-full gap-4 p-4"):
+                    for cat, cat_questions in by_cat.items():
+                        label = cat_labels.get(cat, cat.replace("_", " ").title())
+                        with ui.expansion(label, icon="category").classes("w-full") \
+                                .props("default-opened dense header-class='text-subtitle2 font-bold'"):
+                            for q in cat_questions:
+                                if not isinstance(q, dict):
+                                    continue
+                                q_id = q.get("id", "")
+                                q_text = q.get("question", "?")
+                                q_type = q.get("input_type", "text")
+                                q_default = q.get("default_value", "")
+                                q_imp = q.get("importance", "optional")
+                                q_context = q.get("context", "")
+                                q_options = q.get("options", [])
+
+                                with ui.card().classes("w-full").style(
+                                    "background: rgba(30,35,50,0.5); border: 1px solid #2e3348"
+                                ):
+                                    with ui.row().classes("items-center gap-2"):
+                                        ui.badge(q_imp.upper(), color=imp_colors.get(q_imp, "grey-6")).props("rounded")
+                                        ui.label(q_text).classes("text-body2 font-semibold flex-1")
+
+                                    if q_context:
+                                        ui.label(q_context).classes("text-caption cr-text-dim")
+
+                                    # Input field based on type
+                                    if q_type == "boolean":
+                                        inp = ui.checkbox(q_text, value=bool(q_default))
+                                        answer_inputs[q_id] = inp
+                                    elif q_type == "select" and q_options:
+                                        inp = ui.select(q_options, value=q_default or (q_options[0] if q_options else "")) \
+                                            .props("outlined dense").classes("w-full")
+                                        answer_inputs[q_id] = inp
+                                    elif q_type == "password":
+                                        inp = ui.input("Answer", value=str(q_default or ""), password=True, password_toggle=True) \
+                                            .props("outlined dense").classes("w-full")
+                                        answer_inputs[q_id] = inp
+                                    else:
+                                        inp = ui.input("Answer", value=str(q_default or "")) \
+                                            .props("outlined dense").classes("w-full")
+                                        answer_inputs[q_id] = inp
+
+            # Footer buttons
+            with ui.row().classes("w-full justify-end gap-2 px-4 py-3").style(
+                "border-top: 1px solid var(--cr-border); flex-shrink: 0"
+            ):
+                ui.button("Use All Defaults", icon="skip_next",
+                          on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=True)) \
+                    .props("flat color=grey-6 no-caps")
+                ui.button("Submit Answers", icon="send",
+                          on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=False)) \
+                    .props("unelevated color=deep-purple-6 no-caps")
+
+        dialog.open()
+
+    def _submit_questionnaire(self, dialog, answer_inputs: dict, use_defaults: bool = False):
+        """Collect answers and respond to the milestone."""
+        import json as _json
+
+        answers = {}
+        for q_id, inp in answer_inputs.items():
+            if use_defaults:
+                # Keep default value (already in the input)
+                pass
+            val = inp.value if hasattr(inp, 'value') else ""
+            if val is not None and str(val).strip():
+                answers[q_id] = val
+
+        dialog.close()
+
+        # Send answers to the milestone via respond_milestone
+        if self.runner and self.active_run_id:
+            # Store answers as JSON string in milestone_decisions
+            from src.nodes.milestone_nodes import milestone_decisions, milestone_events
+            milestone_decisions[0] = _json.dumps(answers) if answers else "continue"
+            evt = milestone_events.get(0)
+            if evt:
+                evt.set()
+
+            self.status_icon.name = "sync"
+            self.status_icon.classes(replace="cr-text-accent cr-spin")
+            self.status_label.text = "Processing answers..."
+            self.status_detail.text = f"Submitted {len(answers)} answers"
+            self.milestone_row.set_visibility(False)
+            self.action_btns.set_visibility(True)
+            self.banner.style(replace=(
+                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+            ))
+            self.progress_bar.props("stripe animate")
 
     def _show_artifact_dialog(self):
         import html as html_mod
