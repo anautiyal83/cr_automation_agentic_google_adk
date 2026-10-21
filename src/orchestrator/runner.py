@@ -82,7 +82,8 @@ class PipelineRunner:
         self._sessions[run_id] = session
 
         # Create milestone events for this run
-        for step in (3, 4, 5, 6, 7, 8, 9):
+        # Step 0 = requirements questionnaire, Step 2 = requirements summary review
+        for step in (0, 2, 3, 4, 5, 6, 7, 8, 9):
             milestone_events[step] = asyncio.Event()
 
         # Persist document set + run to DB
@@ -251,7 +252,8 @@ class PipelineRunner:
                     self._active_runs[run_id]["current_step"] = current_step
 
                 # Detect milestone pauses via shared global dict
-                for step_num in (3, 4, 5, 6, 7, 8, 9):
+                # Step 0 = requirements questionnaire, Step 2 = requirements summary
+                for step_num in (0, 2, 3, 4, 5, 6, 7, 8, 9):
                     mw = milestone_waiting.get(step_num)
                     if mw and mw.get("waiting"):
                         if self._active_runs[run_id].get("status") != "paused_milestone":
@@ -387,6 +389,7 @@ class PipelineRunner:
             return "", []
 
         artifact_map = {
+            2: f"{uc_name}_requirements-summary.html",
             3: f"{uc_name}_validation-rules.yaml",
             4: f"{uc_name}_json-output.yaml",
             5: "qa/qa-execution-report.html",
@@ -425,6 +428,7 @@ class PipelineRunner:
         # Collect extra artifact files (e.g. report + source yaml)
         extra: list[str] = []
         extra_map = {
+            2: ["requirements.json"],
             5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
             7: [f"{uc_name}.yaml"],
             8: ["simulator/simulator_manifest.yaml"],

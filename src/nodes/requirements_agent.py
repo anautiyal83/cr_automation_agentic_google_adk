@@ -265,16 +265,213 @@ class RequirementsGathererNode(BaseAgent):
         # Store in shared dict (bypasses ADK session state)
         requirements_store[run_id] = requirements
 
-        # Also write to disk for debugging
+        # Write JSON to disk
         if run_dir:
             req_file = Path(run_dir) / "requirements.json"
             req_file.write_text(json.dumps(requirements, indent=2, default=str), encoding="utf-8")
 
-        flow.flow("REQUIREMENTS COMPLETE — readiness=%s, %d questions answered",
-                   readiness, len(all_answers))
+        # ── Phase 5: Generate requirements summary document ──
+        flow.flow("REQUIREMENTS Phase 5: Generating summary document")
+        summary_path = ""
+        if run_dir:
+            summary_path = self._generate_summary_doc(
+                Path(run_dir), uc_name, parsed, analysis, requirements, developer_notes, all_answers
+            )
+
+        # ── Phase 6: Milestone pause — developer reviews summary ──
+        flow.flow("REQUIREMENTS: Pausing for developer review of summary")
+        milestone_step = 2  # Use step 2 for requirements review milestone
+        milestone_waiting[milestone_step] = {
+            "waiting": True,
+            "name": "Requirements Summary",
+            "status": "passed",
+        }
+
+        if milestone_step not in milestone_events:
+            milestone_events[milestone_step] = asyncio.Event()
+        else:
+            milestone_events[milestone_step].clear()
+
+        evt = milestone_events[milestone_step]
+        await evt.wait()
+        evt.clear()
+
+        decision = milestone_decisions.pop(milestone_step, "continue")
+        milestone_waiting.pop(milestone_step, None)
+
+        if decision == "cancel":
+            from src.nodes.milestone_nodes import pipeline_actions
+            pipeline_actions[run_id] = {"action": "cancel"}
+
+        flow.flow("REQUIREMENTS COMPLETE — readiness=%s, %d questions answered, decision=%s",
+                   readiness, len(all_answers), decision)
 
         return
         yield  # async generator
+
+    def _generate_summary_doc(self, run_dir: Path, uc_name: str, parsed: dict,
+                               analysis: dict, requirements: dict,
+                               developer_notes: str, answers: dict) -> str:
+        """Generate a human-readable HTML requirements summary document."""
+        from datetime import datetime, timezone
+
+        ciq_data = parsed.get("ciq_data", {})
+        per_sheet = ciq_data.get("per_sheet", {})
+
+        # Build HTML
+        lines = [
+            "<!DOCTYPE html>",
+            "<html><head>",
+            "<meta charset='utf-8'>",
+            f"<title>Requirements Summary — {uc_name}</title>",
+            "<style>",
+            "body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 40px auto; color: #e2e4ed; background: #0f1117; padding: 20px; }",
+            "h1 { color: #6c8aff; border-bottom: 2px solid #2e3348; padding-bottom: 10px; }",
+            "h2 { color: #38bdf8; margin-top: 30px; }",
+            "h3 { color: #a78bfa; }",
+            "table { width: 100%; border-collapse: collapse; margin: 10px 0; }",
+            "th, td { text-align: left; padding: 8px 12px; border: 1px solid #2e3348; }",
+            "th { background: #1a1d27; color: #8b8fa8; font-size: 0.85em; text-transform: uppercase; }",
+            "td { background: #242836; }",
+            ".badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }",
+            ".badge-complete { background: #1a3a2a; color: #22c55e; }",
+            ".badge-partial { background: #3d2f10; color: #f59e0b; }",
+            ".badge-critical { background: #2e1a1a; color: #ef4444; }",
+            ".badge-cat { background: #1e2a40; color: #38bdf8; }",
+            ".section { background: #1a1d27; border: 1px solid #2e3348; border-radius: 8px; padding: 16px; margin: 12px 0; }",
+            "pre { background: #242836; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }",
+            ".meta { color: #8b8fa8; font-size: 0.85em; }",
+            "</style>",
+            "</head><body>",
+            f"<h1>Requirements Summary</h1>",
+            f"<p class='meta'>UC: <strong>{uc_name}</strong> | "
+            f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>",
+        ]
+
+        # Readiness status
+        readiness = analysis.get("overall_readiness", "?")
+        badge_cls = "badge-complete" if readiness == "COMPLETE" else "badge-partial"
+        lines.append(f"<p>Readiness: <span class='badge {badge_cls}'>{readiness}</span> | "
+                     f"UC Type: <strong>{analysis.get('uc_type', '?')}</strong> | "
+                     f"Activity: <strong>{analysis.get('activity_type', '?')}</strong></p>")
+
+        # CIQ Structure
+        lines.append("<h2>CIQ Structure</h2>")
+        lines.append("<div class='section'><table><tr><th>Sheet</th><th>Columns</th><th>Rows</th></tr>")
+        for sname, sdata in per_sheet.items():
+            headers = sdata.get("headers", []) if isinstance(sdata, dict) else []
+            row_count = sdata.get("row_count", "?") if isinstance(sdata, dict) else "?"
+            lines.append(f"<tr><td><strong>{sname}</strong></td><td>{', '.join(str(h) for h in headers)}</td><td>{row_count}</td></tr>")
+        lines.append("</table></div>")
+
+        # Category 1: Node & Activity
+        cat1 = analysis.get("category_1_node_activity", {})
+        cat1_req = requirements.get("category_1_node_activity", {})
+        lines.append("<h2>Category 1: Node & Activity</h2>")
+        lines.append("<div class='section'>")
+
+        nodes_detected = cat1.get("nodes_detected", [])
+        if nodes_detected:
+            lines.append("<table><tr><th>Node</th><th>Type</th><th>Role</th></tr>")
+            for n in nodes_detected:
+                if isinstance(n, dict):
+                    lines.append(f"<tr><td>{n.get('name','?')}</td><td>{n.get('type','?')}</td><td>{n.get('role','?')}</td></tr>")
+                else:
+                    lines.append(f"<tr><td colspan='3'>{n}</td></tr>")
+            lines.append("</table>")
+
+        lines.append(f"<p>Login approach: <strong>{cat1.get('login_approach', '?')}</strong> | "
+                     f"NIAM columns: <strong>{cat1.get('niam_columns_count', '?')}</strong> | "
+                     f"Root escalation: <strong>{cat1.get('root_method', '?')}</strong></p>")
+
+        root_esc = cat1_req.get("root_escalation", {})
+        if root_esc:
+            lines.append(f"<p>Root method: <code>{root_esc.get('method', '?')}</code> | "
+                         f"Password: <code>{'***' if root_esc.get('password') else 'not set'}</code></p>")
+        lines.append("</div>")
+
+        # Category 2: Commands & Parameters
+        cat2 = analysis.get("category_2_commands", {})
+        cat2_req = requirements.get("category_2_commands", {})
+        lines.append("<h2>Category 2: Commands & Parameters</h2>")
+        lines.append("<div class='section'>")
+
+        cmds = cat2.get("commands_found", []) or cat2_req.get("commands", [])
+        if cmds:
+            lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th><th>CIQ Params</th></tr>")
+            for c in cmds:
+                if isinstance(c, dict):
+                    params = ", ".join(c.get("ciq_params", c.get("params_from_ciq", [])))
+                    lines.append(f"<tr><td><code>{c.get('cmd', c.get('command', '?'))}</code></td>"
+                                 f"<td>{c.get('node', '?')}</td><td>{c.get('purpose', '?')}</td>"
+                                 f"<td>{params}</td></tr>")
+            lines.append("</table>")
+
+        ldap = cat2_req.get("ldap", {})
+        if ldap:
+            lines.append(f"<p>LDAP: <code>{ldap.get('host', '?')}:{ldap.get('port', '?')}</code> | "
+                         f"Bind DN: <code>{ldap.get('bind_dn', '?')}</code> | "
+                         f"Password: <code>{'***' if ldap.get('password') else 'not set'}</code></p>")
+        lines.append("</div>")
+
+        # Category 3: Orchestration
+        cat3 = analysis.get("category_3_orchestration", {})
+        cat3_req = requirements.get("category_3_orchestration", {})
+        lines.append("<h2>Category 3: Orchestration</h2>")
+        lines.append("<div class='section'>")
+        lines.append(f"<p>Grouping: <strong>{cat3.get('grouping_column', cat3_req.get('grouping', {}).get('column', '?'))}</strong> | "
+                     f"NIAM failover: <strong>{cat3.get('niam_failover_needed', cat3_req.get('niam_failover', '?'))}</strong> | "
+                     f"Backup: <strong>{cat3.get('backup_mentioned', '?')}</strong></p>")
+
+        ssh = cat3_req.get("ssh", {})
+        if ssh:
+            lines.append(f"<p>SSH: connect={ssh.get('connect_timeout', '?')}s | "
+                         f"read={ssh.get('read_timeout', '?')}s | "
+                         f"kex={ssh.get('kex_algorithms', 'default')}</p>")
+
+        phases = cat3_req.get("phases", [])
+        if phases:
+            lines.append(f"<p>Phases: {' → '.join(phases)}</p>")
+        lines.append("</div>")
+
+        # Generation Hints
+        hints = requirements.get("generation_hints", {})
+        if hints:
+            lines.append("<h2>Generation Hints (per step)</h2>")
+            lines.append("<div class='section'>")
+            for step_key, hint in hints.items():
+                lines.append(f"<p><strong>{step_key}:</strong> {hint}</p>")
+            lines.append("</div>")
+
+        # Developer Notes & Answers
+        if developer_notes or answers:
+            lines.append("<h2>Developer Input</h2>")
+            lines.append("<div class='section'>")
+            if developer_notes:
+                lines.append(f"<h3>Notes</h3><pre>{developer_notes}</pre>")
+            if answers:
+                lines.append(f"<h3>Questionnaire Answers</h3><pre>{json.dumps(answers, indent=2, default=str)}</pre>")
+            lines.append("</div>")
+
+        # Gaps (if any remain)
+        all_gaps = []
+        for cat_key in ("category_1_node_activity", "category_2_commands", "category_3_orchestration"):
+            cat = analysis.get(cat_key, {})
+            for gap in cat.get("gaps", []):
+                all_gaps.append(f"{cat_key}: {gap}")
+        if all_gaps:
+            lines.append("<h2>Remaining Gaps</h2>")
+            lines.append("<div class='section'>")
+            for g in all_gaps:
+                lines.append(f"<p class='badge badge-critical'>{g}</p>")
+            lines.append("</div>")
+
+        lines.append("</body></html>")
+
+        summary_path = run_dir / f"{uc_name}_requirements-summary.html"
+        summary_path.write_text("\n".join(lines), encoding="utf-8")
+        flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
+        return str(summary_path)
 
     async def _parse_documents(self, ctx) -> dict:
         """Parse CIQ, MOP, and command outputs using existing agents."""
