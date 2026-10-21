@@ -743,20 +743,24 @@ class ProgressSection:
                                         answer_inputs[q_id] = inp
 
                                     elif q_type == "password":
-                                        inp = ui.input(placeholder=q_helper or "Enter value",
-                                                       value=default_str,
-                                                       password=True, password_toggle=True) \
-                                            .props("outlined dense dark filled standout='bg-grey-9 text-white'") \
-                                            .classes("w-full") \
-                                            .style("color: white !important; --q-field-native-color: white")
+                                        with ui.element("div").classes("w-full").style(
+                                            "background: #2a2a3e; border: 1px solid #3a3a50; border-radius: 4px; padding: 6px 10px"
+                                        ):
+                                            inp = ui.input(placeholder=q_helper or "Enter value",
+                                                           value=default_str,
+                                                           password=True, password_toggle=True) \
+                                                .props("borderless dense").classes("w-full") \
+                                                .style("color: #e8e8f0 !important")
                                         answer_inputs[q_id] = inp
 
                                     else:
-                                        inp = ui.input(placeholder=q_helper or "Enter value",
-                                                       value=default_str) \
-                                            .props("outlined dense dark filled standout='bg-grey-9 text-white'") \
-                                            .classes("w-full") \
-                                            .style("color: white !important; --q-field-native-color: white")
+                                        with ui.element("div").classes("w-full").style(
+                                            "background: #2a2a3e; border: 1px solid #3a3a50; border-radius: 4px; padding: 6px 10px"
+                                        ):
+                                            inp = ui.input(placeholder=q_helper or "Enter value",
+                                                           value=default_str) \
+                                                .props("borderless dense").classes("w-full") \
+                                                .style("color: #e8e8f0 !important")
                                         answer_inputs[q_id] = inp
 
                                     # Show pre-filled indicator
