@@ -309,6 +309,97 @@ class RequirementsGathererNode(BaseAgent):
         return
         yield  # async generator
 
+    def _generate_questionnaire_doc(self, run_dir: Path, uc_name: str,
+                                     questions: list, round_num: int) -> str:
+        """Generate an HTML document showing the questionnaire for developer review."""
+        from datetime import datetime, timezone
+
+        cat_labels = {
+            "node_activity": "Node & Activity",
+            "commands": "Commands & Parameters",
+            "orchestration": "Orchestration Details",
+        }
+        imp_badges = {
+            "critical": ("badge-critical", "CRITICAL"),
+            "recommended": ("badge-partial", "RECOMMENDED"),
+            "optional": ("badge-cat", "OPTIONAL"),
+        }
+
+        lines = [
+            "<!DOCTYPE html>",
+            "<html><head>",
+            "<meta charset='utf-8'>",
+            f"<title>Requirements Questionnaire — {uc_name}</title>",
+            "<style>",
+            "body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 40px auto; color: #e2e4ed; background: #0f1117; padding: 20px; }",
+            "h1 { color: #6c8aff; border-bottom: 2px solid #2e3348; padding-bottom: 10px; }",
+            "h2 { color: #38bdf8; margin-top: 30px; }",
+            "table { width: 100%; border-collapse: collapse; margin: 10px 0; }",
+            "th, td { text-align: left; padding: 10px 14px; border: 1px solid #2e3348; }",
+            "th { background: #1a1d27; color: #8b8fa8; font-size: 0.85em; text-transform: uppercase; }",
+            "td { background: #242836; vertical-align: top; }",
+            ".badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }",
+            ".badge-critical { background: #2e1a1a; color: #ef4444; }",
+            ".badge-partial { background: #3d2f10; color: #f59e0b; }",
+            ".badge-cat { background: #1e2a40; color: #38bdf8; }",
+            ".section { background: #1a1d27; border: 1px solid #2e3348; border-radius: 8px; padding: 16px; margin: 12px 0; }",
+            ".context { color: #8b8fa8; font-size: 0.85em; margin-top: 4px; }",
+            ".default { color: #6c8aff; font-family: monospace; font-size: 0.9em; }",
+            ".meta { color: #8b8fa8; font-size: 0.85em; }",
+            "</style>",
+            "</head><body>",
+            f"<h1>Requirements Questionnaire — Round {round_num}</h1>",
+            f"<p class='meta'>UC: <strong>{uc_name}</strong> | "
+            f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+            f"Questions: <strong>{len(questions)}</strong></p>",
+            f"<p>The pipeline needs the following information to generate production-quality YAML. "
+            f"Answer in the UI or provide via Developer Notes.</p>",
+        ]
+
+        # Group questions by category
+        by_cat: dict[str, list] = {}
+        for q in questions:
+            if isinstance(q, dict):
+                cat = q.get("category", "other")
+                by_cat.setdefault(cat, []).append(q)
+
+        for cat, cat_questions in by_cat.items():
+            label = cat_labels.get(cat, cat.replace("_", " ").title())
+            lines.append(f"<h2>{label}</h2>")
+            lines.append("<div class='section'>")
+            lines.append("<table><tr><th>#</th><th>Question</th><th>Importance</th><th>Default</th></tr>")
+
+            for i, q in enumerate(cat_questions, 1):
+                imp = q.get("importance", "optional")
+                badge_cls, badge_text = imp_badges.get(imp, ("badge-cat", imp.upper()))
+                default = q.get("default_value", "—")
+                context = q.get("context", "")
+
+                lines.append(f"<tr>")
+                lines.append(f"<td>{q.get('id', i)}</td>")
+                lines.append(f"<td><strong>{q.get('question', '?')}</strong>")
+                if context:
+                    lines.append(f"<div class='context'>{context}</div>")
+                lines.append(f"</td>")
+                lines.append(f"<td><span class='badge {badge_cls}'>{badge_text}</span></td>")
+                lines.append(f"<td><span class='default'>{default}</span></td>")
+                lines.append(f"</tr>")
+
+            lines.append("</table></div>")
+
+        # Summary
+        critical_count = sum(1 for q in questions if isinstance(q, dict) and q.get("importance") == "critical")
+        lines.append(f"<p class='meta'>Total: {len(questions)} questions | "
+                     f"Critical: {critical_count} | "
+                     f"Use 'Continue' to accept defaults, or answer in the UI.</p>")
+
+        lines.append("</body></html>")
+
+        doc_path = run_dir / f"{uc_name}_questionnaire_round{round_num}.html"
+        doc_path.write_text("\n".join(lines), encoding="utf-8")
+        flow.flow("REQUIREMENTS: Questionnaire doc written to %s", doc_path)
+        return str(doc_path)
+
     def _generate_summary_doc(self, run_dir: Path, uc_name: str, parsed: dict,
                                analysis: dict, requirements: dict,
                                developer_notes: str, answers: dict) -> str:
@@ -604,6 +695,15 @@ class RequirementsGathererNode(BaseAgent):
     async def _ask_developer(self, ctx, questions: list, round_num: int) -> dict:
         """Present questions to developer via HIL pause, return answers."""
         run_id = ctx.session.state.get("run_id", "")
+        run_dir = ctx.session.state.get("run_dir", "")
+        uc_name = ctx.session.state.get("uc_name", "UC")
+
+        # Generate questionnaire HTML as artifact
+        artifact_path = ""
+        if run_dir:
+            artifact_path = self._generate_questionnaire_doc(
+                Path(run_dir), uc_name, questions, round_num
+            )
 
         # Use milestone step 0 for requirements gathering
         milestone_step = 0
@@ -614,6 +714,7 @@ class RequirementsGathererNode(BaseAgent):
             "name": f"Requirements Gathering (Round {round_num})",
             "status": "questions",
             "questions": questions,
+            "artifact_file": artifact_path,
         }
 
         # Create event if not exists

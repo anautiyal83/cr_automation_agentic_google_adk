@@ -261,9 +261,13 @@ class PipelineRunner:
                             self._active_runs[run_id]["milestone_step"] = step_num
 
                             # Resolve artifact file for this milestone
-                            artifact_file, extra_files = self._resolve_milestone_artifacts(
-                                state, step_num
-                            )
+                            # Check milestone_waiting for artifact first (used by RequirementsGatherer)
+                            artifact_file = mw.get("artifact_file", "")
+                            extra_files = []
+                            if not artifact_file:
+                                artifact_file, extra_files = self._resolve_milestone_artifacts(
+                                    state, step_num
+                                )
 
                             await event_bus.publish(PipelineEvent(
                                 run_id=UUID(run_id), event_type="milestone_reached",
