@@ -124,17 +124,32 @@ Rules:
 - Provide sensible defaults where possible
 - Group by category
 
+CRITICAL — QUESTION WRITING STYLE:
+- Write questions for a LAYMAN USER, not a developer
+- Use simple everyday language, avoid technical jargon
+- BAD:  "What kex_algorithms should be configured for SSH?"
+  GOOD: "Which SSH encryption method should be used for connecting to the nodes?"
+- BAD:  "Specify the LDAP bind DN and credentials"
+  GOOD: "What are the login details for the subscriber database? (username and password)"
+- BAD:  "Should NIAM failover be enabled across niamID-1/2/3?"
+  GOOD: "The system found 3 login IDs per node. Should it try each one until it connects successfully?"
+- Keep questions short (1 sentence) — put technical details in "context"
+- Use "context" field to explain WHY this is needed and WHAT happens if skipped
+- Use "helper_text" field to show an example of a valid answer
+- For select/boolean, make the options self-explanatory
+
 Respond with a JSON array:
 [
   {{
     "id": "q1",
     "category": "node_activity | commands | orchestration",
-    "question": "Human-readable question",
+    "question": "Simple, clear question in plain language",
     "importance": "critical | recommended | optional",
     "input_type": "text | boolean | select | password",
-    "options": ["opt1", "opt2"],
+    "options": ["Option A — explanation", "Option B — explanation"],
     "default_value": "sensible default",
-    "context": "Why this is needed"
+    "context": "Technical context: why this matters and what happens without it",
+    "helper_text": "Example: enter something like 'cn=adminUser' or '192.168.1.1'"
   }}
 ]
 

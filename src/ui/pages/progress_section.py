@@ -671,6 +671,7 @@ class ProgressSection:
                                         ui.label(q_context).classes("text-caption cr-text-dim")
 
                                     # Input field based on type
+                                    q_helper = q.get("helper_text", "")
                                     if q_type == "boolean":
                                         inp = ui.checkbox(q_text, value=bool(q_default))
                                         answer_inputs[q_id] = inp
@@ -681,10 +682,14 @@ class ProgressSection:
                                     elif q_type == "password":
                                         inp = ui.input("Answer", value=str(q_default or ""), password=True, password_toggle=True) \
                                             .props("outlined dense").classes("w-full")
+                                        if q_helper:
+                                            inp.props(f'hint="{q_helper}"')
                                         answer_inputs[q_id] = inp
                                     else:
                                         inp = ui.input("Answer", value=str(q_default or "")) \
                                             .props("outlined dense").classes("w-full")
+                                        if q_helper:
+                                            inp.props(f'hint="{q_helper}"')
                                         answer_inputs[q_id] = inp
 
             # Footer buttons
