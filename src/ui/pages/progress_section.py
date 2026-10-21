@@ -619,30 +619,26 @@ class ProgressSection:
 
         # Update milestone row labels
         self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions need your input"
-        self.ms_view_btn.set_visibility(False)  # Hide default view button
+        self.ms_view_btn.set_visibility(False)
         self.ms_rerun_btn.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
-        self.ms_continue_btn.text = "Skip & Use Defaults"
         self.ms_extra_files_row.set_visibility(False)
 
-        # Add Answer Questions button directly in milestone row
-        with self.milestone_row:
-            with ui.row().classes("w-full gap-3"):
-                ui.button("Answer Questions", icon="quiz",
-                          on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
-                    .props("unelevated color=deep-purple-6 size=sm no-caps")
+        # Replace continue button with Answer Questions + Skip
+        self.ms_continue_btn.text = "Skip & Use Defaults"
+        self.ms_continue_btn.props("color=grey-6")
 
         # Auto-open the dialog immediately
         self._open_questionnaire_dialog(questions, milestone_name)
 
     def _open_questionnaire_dialog(self, questions: list, milestone_name: str):
-        """Open a maximized dialog with interactive question form."""
+        """Open a maximized dialog with interactive question form — dark themed."""
         import json as _json
 
         cat_labels = {
-            "node_activity": "Node & Activity",
-            "commands": "Commands & Parameters",
-            "orchestration": "Orchestration Details",
+            "node_activity": ("Node & Activity", "dns"),
+            "commands": ("Commands & Parameters", "terminal"),
+            "orchestration": ("Orchestration Details", "account_tree"),
         }
         imp_colors = {
             "critical": "negative",
@@ -662,25 +658,33 @@ class ProgressSection:
 
         dialog = ui.dialog().props("maximized")
         with dialog, ui.card().classes("w-full h-full p-0").style(
-            "display: flex; flex-direction: column; max-height: 100vh"
+            "display: flex; flex-direction: column; max-height: 100vh; "
+            "background: var(--cr-surface); color: var(--cr-text)"
         ):
             # Header
-            with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
-                "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
+            with ui.row().classes("items-center justify-between w-full px-5 py-3").style(
+                "border-bottom: 1px solid var(--cr-border); flex-shrink: 0; "
+                "background: var(--cr-surface-light)"
             ):
-                ui.label(f"{milestone_name}").classes("text-subtitle2 font-bold")
                 with ui.row().classes("items-center gap-2"):
+                    ui.icon("quiz", size="24px").classes("cr-text-accent")
+                    ui.label(milestone_name).classes("text-subtitle1 font-bold cr-stat-value")
+                with ui.row().classes("items-center gap-3"):
                     critical_count = sum(1 for q in questions if isinstance(q, dict) and q.get("importance") == "critical")
-                    ui.label(f"{len(questions)} questions ({critical_count} critical)").classes("text-caption cr-text-dim")
-                    ui.button(icon="close", on_click=dialog.close).props("flat round size=sm color=grey-6")
+                    ui.badge(f"{len(questions)} questions", color="deep-purple-6").props("rounded")
+                    if critical_count:
+                        ui.badge(f"{critical_count} critical", color="negative").props("rounded")
+                    ui.button(icon="close", on_click=dialog.close) \
+                        .props("flat round size=sm color=grey-6")
 
             # Scrollable question form
             with ui.scroll_area().style("flex: 1; min-height: 0"):
-                with ui.column().classes("w-full gap-4 p-4"):
+                with ui.column().classes("w-full gap-3 pa-4").style("max-width: 800px; margin: 0 auto"):
                     for cat, cat_questions in by_cat.items():
-                        label = cat_labels.get(cat, cat.replace("_", " ").title())
-                        with ui.expansion(label, icon="category").classes("w-full") \
-                                .props("default-opened dense header-class='text-subtitle2 font-bold'"):
+                        label, icon = cat_labels.get(cat, (cat.replace("_", " ").title(), "help"))
+                        with ui.expansion(label, icon=icon).classes("w-full").style(
+                            "background: var(--cr-surface-light); border: 1px solid var(--cr-border); border-radius: 8px"
+                        ).props("default-opened dense header-class='text-subtitle2 font-bold'"):
                             for q in cat_questions:
                                 if not isinstance(q, dict):
                                     continue
@@ -691,49 +695,71 @@ class ProgressSection:
                                 q_imp = q.get("importance", "optional")
                                 q_context = q.get("context", "")
                                 q_options = q.get("options", [])
+                                q_helper = q.get("helper_text", "")
 
-                                with ui.card().classes("w-full").style(
-                                    "background: rgba(30,35,50,0.5); border: 1px solid #2e3348"
+                                with ui.element("div").classes("w-full").style(
+                                    "background: var(--cr-surface); border: 1px solid var(--cr-border); "
+                                    "border-radius: 6px; padding: 12px; margin: 4px 0"
                                 ):
-                                    with ui.row().classes("items-center gap-2"):
-                                        ui.badge(q_imp.upper(), color=imp_colors.get(q_imp, "grey-6")).props("rounded")
-                                        ui.label(q_text).classes("text-body2 font-semibold flex-1")
+                                    # Question header
+                                    with ui.row().classes("items-start gap-2 w-full"):
+                                        ui.badge(q_imp.upper(), color=imp_colors.get(q_imp, "grey-6")) \
+                                            .props("rounded").style("margin-top: 2px")
+                                        with ui.column().classes("flex-1 gap-1"):
+                                            ui.label(q_text).classes("text-body2 font-semibold")
+                                            if q_context:
+                                                ui.label(q_context).classes("text-caption").style(
+                                                    "color: var(--cr-text-dim)"
+                                                )
 
-                                    if q_context:
-                                        ui.label(q_context).classes("text-caption cr-text-dim")
+                                    # Input — auto-detect best input type
+                                    if q_type == "boolean" or (q_options and len(q_options) == 2 and
+                                            any(o.lower() in ("yes", "no", "true", "false") for o in q_options)):
+                                        # Yes/No toggle
+                                        default_val = str(q_default).lower() in ("true", "yes", "1")
+                                        inp = ui.switch("Yes", value=default_val) \
+                                            .props("color=deep-purple-6 dense")
+                                        answer_inputs[q_id] = inp
 
-                                    # Input field based on type
-                                    q_helper = q.get("helper_text", "")
-                                    if q_type == "boolean":
-                                        inp = ui.checkbox(q_text, value=bool(q_default))
+                                    elif q_options and len(q_options) <= 5:
+                                        # Radio buttons for small option sets
+                                        inp = ui.radio(q_options, value=q_default or q_options[0]) \
+                                            .props("dense color=deep-purple-6")
                                         answer_inputs[q_id] = inp
-                                    elif q_type == "select" and q_options:
-                                        inp = ui.select(q_options, value=q_default or (q_options[0] if q_options else "")) \
-                                            .props("outlined dense").classes("w-full")
+
+                                    elif q_options:
+                                        # Dropdown for larger option sets
+                                        inp = ui.select(q_options, value=q_default or q_options[0]) \
+                                            .props("outlined dense dark").classes("w-full")
                                         answer_inputs[q_id] = inp
+
                                     elif q_type == "password":
-                                        inp = ui.input("Answer", value=str(q_default or ""), password=True, password_toggle=True) \
-                                            .props("outlined dense").classes("w-full")
-                                        if q_helper:
-                                            inp.props(f'hint="{q_helper}"')
-                                        answer_inputs[q_id] = inp
-                                    else:
-                                        inp = ui.input("Answer", value=str(q_default or "")) \
-                                            .props("outlined dense").classes("w-full")
+                                        inp = ui.input("", value=str(q_default or ""),
+                                                       password=True, password_toggle=True) \
+                                            .props("outlined dense dark").classes("w-full")
                                         if q_helper:
                                             inp.props(f'hint="{q_helper}"')
                                         answer_inputs[q_id] = inp
 
-            # Footer buttons
-            with ui.row().classes("w-full justify-end gap-2 px-4 py-3").style(
-                "border-top: 1px solid var(--cr-border); flex-shrink: 0"
+                                    else:
+                                        # Text input
+                                        inp = ui.input("", value=str(q_default or "")) \
+                                            .props("outlined dense dark").classes("w-full")
+                                        if q_helper:
+                                            inp.props(f'hint="{q_helper}"')
+                                        answer_inputs[q_id] = inp
+
+            # Footer
+            with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style(
+                "border-top: 1px solid var(--cr-border); flex-shrink: 0; "
+                "background: var(--cr-surface-light)"
             ):
                 ui.button("Use All Defaults", icon="skip_next",
                           on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=True)) \
-                    .props("flat color=grey-6 no-caps")
+                    .props("flat color=grey-6 no-caps size=sm")
                 ui.button("Submit Answers", icon="send",
                           on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=False)) \
-                    .props("unelevated color=deep-purple-6 no-caps")
+                    .props("unelevated color=deep-purple-6 no-caps size=sm")
 
         dialog.open()
 
