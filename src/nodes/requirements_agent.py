@@ -124,7 +124,12 @@ Rules:
 - Provide sensible defaults where possible
 - Group by category
 
-CRITICAL — QUESTION WRITING STYLE:
+CRITICAL — DEFAULTS AND QUESTION STYLE:
+- ALWAYS provide a default_value for every question — the user should be able to accept defaults and move on
+- For boolean: default to the most common/safe choice
+- For select: default to the most likely option
+- For text: default to a sensible value from MOP/CIQ or common industry practice
+- The goal is: user reviews defaults, changes only what's wrong, submits
 - Write questions for a LAYMAN USER, not a developer
 - Use simple everyday language, avoid technical jargon
 - BAD:  "What kex_algorithms should be configured for SSH?"

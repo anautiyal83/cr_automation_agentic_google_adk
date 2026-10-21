@@ -719,42 +719,50 @@ class ProgressSection:
                                                     "color: var(--cr-text-dim)"
                                                 )
 
-                                    # Input — auto-detect best input type
+                                    # Input — auto-detect best type, pre-fill defaults
+                                    default_str = str(q_default) if q_default is not None else ""
+
                                     if q_type == "boolean" or (q_options and len(q_options) == 2 and
-                                            any(o.lower() in ("yes", "no", "true", "false") for o in q_options)):
-                                        # Yes/No toggle
-                                        default_val = str(q_default).lower() in ("true", "yes", "1")
+                                            any(str(o).lower() in ("yes", "no", "true", "false") for o in q_options)):
+                                        default_val = default_str.lower() in ("true", "yes", "1")
                                         inp = ui.switch("Yes", value=default_val) \
                                             .props("color=deep-purple-6 dense")
                                         answer_inputs[q_id] = inp
 
                                     elif q_options and len(q_options) <= 5:
-                                        # Radio buttons for small option sets
-                                        inp = ui.radio(q_options, value=q_default or q_options[0]) \
+                                        # Pre-select default or first option
+                                        sel = default_str if default_str in [str(o) for o in q_options] else str(q_options[0])
+                                        inp = ui.radio(q_options, value=sel) \
                                             .props("dense color=deep-purple-6")
                                         answer_inputs[q_id] = inp
 
                                     elif q_options:
-                                        # Dropdown for larger option sets
-                                        inp = ui.select(q_options, value=q_default or q_options[0]) \
-                                            .props("outlined dense dark").classes("w-full")
+                                        sel = default_str if default_str in [str(o) for o in q_options] else str(q_options[0])
+                                        inp = ui.select(q_options, value=sel) \
+                                            .props("outlined dense dark filled").classes("w-full")
                                         answer_inputs[q_id] = inp
 
                                     elif q_type == "password":
-                                        inp = ui.input("", value=str(q_default or ""),
+                                        inp = ui.input(placeholder=q_helper or "Enter value",
+                                                       value=default_str,
                                                        password=True, password_toggle=True) \
-                                            .props("outlined dense dark").classes("w-full")
-                                        if q_helper:
-                                            inp.props(f'hint="{q_helper}"')
+                                            .props("outlined dense dark filled standout='bg-grey-9 text-white'") \
+                                            .classes("w-full") \
+                                            .style("color: white !important; --q-field-native-color: white")
                                         answer_inputs[q_id] = inp
 
                                     else:
-                                        # Text input
-                                        inp = ui.input("", value=str(q_default or "")) \
-                                            .props("outlined dense dark").classes("w-full")
-                                        if q_helper:
-                                            inp.props(f'hint="{q_helper}"')
+                                        inp = ui.input(placeholder=q_helper or "Enter value",
+                                                       value=default_str) \
+                                            .props("outlined dense dark filled standout='bg-grey-9 text-white'") \
+                                            .classes("w-full") \
+                                            .style("color: white !important; --q-field-native-color: white")
                                         answer_inputs[q_id] = inp
+
+                                    # Show pre-filled indicator
+                                    if default_str and q_type not in ("boolean",):
+                                        ui.label(f"Default: {default_str}").classes("text-caption") \
+                                            .style("color: var(--cr-accent); font-style: italic; margin-top: -4px")
 
             # Footer
             with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style(
