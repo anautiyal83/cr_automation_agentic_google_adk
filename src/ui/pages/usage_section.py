@@ -17,24 +17,22 @@ class UsageSection:
         with ui.column().classes("w-full gap-4"):
             # Header row with refresh
             with ui.row().classes("w-full items-center justify-between"):
-                ui.label("LLM Usage Statistics").classes("text-subtitle1 font-bold")
+                ui.label("").classes("text-subtitle1 font-bold cr-stat-value")
                 ui.button("Refresh", icon="refresh", on_click=self._refresh) \
                     .props("flat color=deep-purple-6 size=sm no-caps")
 
             # Summary cards row
-            self.summary_row = ui.row().classes("w-full gap-3")
+            self.summary_row = ui.row().classes("w-full gap-3 flex-wrap")
 
-            # Per-model breakdown table
+            # Per-model breakdown
             self.model_container = ui.column().classes("w-full")
 
-            # Call log table
+            # Call log
             self.log_container = ui.column().classes("w-full")
 
-        # Initial load
         ui.timer(0.5, self._refresh, once=True)
 
     async def _refresh(self):
-        """Refresh usage stats from the LLM tracking store."""
         try:
             from src.nodes.cr_import import import_cr_module
             agents_mod = import_cr_module("src.agents")
@@ -51,29 +49,31 @@ class UsageSection:
         self.summary_row.clear()
         with self.summary_row:
             cards = [
-                ("LLM Calls", str(stats["total_calls"]), "call_made", "#6c8aff"),
-                ("Total Tokens", f"{stats['total_tokens']:,}", "token", "#38bdf8"),
-                ("Prompt Tokens", f"{stats['total_prompt']:,}", "upload", "#a78bfa"),
-                ("Completion Tokens", f"{stats['total_completion']:,}", "download", "#22c55e"),
-                ("Total Time", f"{stats['total_time']:.1f}s", "timer", "#f59e0b"),
+                ("LLM Calls", str(stats["total_calls"]), "call_made", "deep-purple-4"),
+                ("Total Tokens", f"{stats['total_tokens']:,}", "token", "light-blue-4"),
+                ("Prompt Tokens", f"{stats['total_prompt']:,}", "upload", "purple-3"),
+                ("Completion Tokens", f"{stats['total_completion']:,}", "download", "green-4"),
+                ("Total Time", f"{stats['total_time']:.1f}s", "timer", "amber-4"),
             ]
             for title, value, icon, color in cards:
-                with ui.card().classes("flex-1 min-w-32").style(
-                    f"background: rgba(30,35,50,0.6); border: 1px solid #2e3348"
+                with ui.card().classes("cr-card-inner flex-1 min-w-36").style(
+                    "border: 1px solid var(--cr-border)"
                 ):
-                    with ui.column().classes("items-center gap-0 py-2"):
-                        ui.icon(icon, size="24px").style(f"color: {color}")
-                        ui.label(value).classes("text-h6 font-bold").style(f"color: {color}")
+                    with ui.column().classes("items-center gap-1 py-3"):
+                        ui.icon(icon, size="28px").classes(f"text-{color}")
+                        ui.label(value).classes(f"text-h5 font-bold text-{color}")
                         ui.label(title).classes("text-caption cr-text-dim")
 
     def _render_model_breakdown(self, stats: dict):
         self.model_container.clear()
         by_model = stats.get("by_model", {})
         if not by_model:
+            with self.model_container:
+                ui.label("No LLM calls recorded yet").classes("text-body2 cr-text-dim")
             return
 
         with self.model_container:
-            ui.label("Per-Model Breakdown").classes("text-subtitle2 font-bold mt-2")
+            ui.label("Per-Model Breakdown").classes("text-subtitle2 font-bold cr-stat-value")
             columns = [
                 {"name": "model", "label": "Model", "field": "model", "align": "left", "sortable": True},
                 {"name": "calls", "label": "Calls", "field": "calls", "sortable": True},
@@ -81,11 +81,10 @@ class UsageSection:
                 {"name": "prompt", "label": "Prompt", "field": "prompt", "sortable": True},
                 {"name": "completion", "label": "Completion", "field": "completion", "sortable": True},
                 {"name": "time", "label": "Time (s)", "field": "time", "sortable": True},
-                {"name": "avg_tokens", "label": "Avg Tokens/Call", "field": "avg_tokens", "sortable": True},
+                {"name": "avg_tokens", "label": "Avg/Call", "field": "avg_tokens", "sortable": True},
             ]
             rows = []
             for model, data in by_model.items():
-                # Shorten model name for display
                 short = model.split("/")[-1] if "/" in model else model
                 avg = data["tokens"] // data["calls"] if data["calls"] > 0 else 0
                 rows.append({
@@ -98,7 +97,7 @@ class UsageSection:
                     "avg_tokens": f"{avg:,}",
                 })
             ui.table(columns=columns, rows=rows, row_key="model") \
-                .props("dense flat bordered").classes("w-full")
+                .props("dense flat bordered dark").classes("w-full")
 
     def _render_call_log(self, stats: dict):
         self.log_container.clear()
@@ -107,7 +106,7 @@ class UsageSection:
             return
 
         with self.log_container:
-            ui.label(f"Call Log ({len(calls)} calls)").classes("text-subtitle2 font-bold mt-2")
+            ui.label(f"Call Log ({len(calls)} calls)").classes("text-subtitle2 font-bold cr-stat-value mt-2")
             columns = [
                 {"name": "time", "label": "Time", "field": "time", "align": "left", "sortable": True},
                 {"name": "model", "label": "Model", "field": "model", "align": "left", "sortable": True},
@@ -115,21 +114,20 @@ class UsageSection:
                 {"name": "comp_tok", "label": "Completion", "field": "comp_tok", "sortable": True},
                 {"name": "total_tok", "label": "Total", "field": "total_tok", "sortable": True},
                 {"name": "elapsed", "label": "Time (s)", "field": "elapsed", "sortable": True},
-                {"name": "prompt_chars", "label": "Prompt Chars", "field": "prompt_chars", "sortable": True},
+                {"name": "chars", "label": "Prompt Chars", "field": "chars", "sortable": True},
             ]
             rows = []
-            for c in reversed(calls):  # newest first
+            for c in reversed(calls):
                 ts = datetime.fromtimestamp(c["timestamp"], tz=timezone.utc).strftime("%H:%M:%S")
-                short_model = c["model"].split("/")[-1] if "/" in c["model"] else c["model"]
+                short = c["model"].split("/")[-1] if "/" in c["model"] else c["model"]
                 rows.append({
                     "time": ts,
-                    "model": short_model,
+                    "model": short,
                     "prompt_tok": f"{c['prompt_tokens']:,}",
                     "comp_tok": f"{c['completion_tokens']:,}",
                     "total_tok": f"{c['total_tokens']:,}",
                     "elapsed": f"{c['elapsed_sec']:.1f}",
-                    "prompt_chars": f"{c['prompt_chars']:,}",
+                    "chars": f"{c['prompt_chars']:,}",
                 })
             ui.table(columns=columns, rows=rows, row_key="time") \
-                .props("dense flat bordered").classes("w-full") \
-                .style("max-height: 400px; overflow-y: auto")
+                .props("dense flat bordered dark").classes("w-full")
