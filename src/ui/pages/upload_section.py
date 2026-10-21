@@ -43,6 +43,8 @@ DOC_TYPES = [
      "desc": "Validation rules & business rules", "required": False},
     {"key": "cmd_outputs", "label": "Command Outputs", "icon": "terminal", "accept": ".txt",
      "desc": "CLI/API session logs", "required": True},
+    {"key": "reference_yaml", "label": "Reference Workflow YAML", "icon": "file_present", "accept": ".yaml,.yml",
+     "desc": "Working workflow YAML from similar UC (used as template for generation)", "required": False},
 ]
 
 
@@ -116,6 +118,23 @@ class UploadSection:
                             on_upload=self._handle_additional_upload,
                         ).props('flat bordered color=deep-purple-6').classes("w-full")
                         self.additional_docs_list = ui.column().classes("w-full gap-0")
+
+            # Developer Notes — domain knowledge input
+            with ui.expansion("Developer Notes & Guidance", icon="engineering") \
+                    .classes("w-full").props("dense header-class='text-caption font-semibold'"):
+                ui.label(
+                    "Provide domain-specific guidance for YAML generation: SSH details, "
+                    "LDAP connection strings, environment paths, retry strategies, "
+                    "node-specific commands, or any knowledge not in the MOP/CIQ."
+                ).classes("text-caption cr-text-dim")
+                self.developer_notes = ui.textarea(
+                    placeholder="e.g.:\n"
+                    "- Use NIAM failover: try niamID-1, then niamID-2, then niamID-3\n"
+                    "- Root escalation via 'su - root' with password 'siemens'\n"
+                    "- LDAP on RDS: ldapsearch -x -h localhost -p 16611 -D 'cn=pgwAdminUser' -w 8123Admi\n"
+                    "- Backup config before changes using 'configtool export'\n"
+                    "- SSH: kex_algorithms=+diffie-hellman-group14-sha1, host_key_algorithms=+ssh-rsa",
+                ).props("outlined autogrow rows=3").classes("w-full").style("font-size: 11px; font-family: monospace")
 
             # Validation + options + action — compact single row
             self.validation_container = ui.column().classes("w-full")
@@ -373,6 +392,8 @@ class UploadSection:
         _save_uc_options(self._node_types, self._activity_names)
 
         xml_paths = self.paths.get("sample_io_xml", [])
+        notes = self.developer_notes.value.strip() if self.developer_notes.value else None
+        ref_yaml = self.paths.get("reference_yaml", "")
         doc_set = UCDocumentSet(
             uc_name=self.uc_name.strip(),
             ciq_file_path=self.paths["ciq"],
@@ -382,6 +403,8 @@ class UploadSection:
             command_outputs_path=self.paths["cmd_outputs"],
             additional_documents=self.additional_docs if self.additional_docs else None,
             validated=True,
+            developer_notes=notes,
+            reference_yaml_path=ref_yaml or None,
         )
         self.start_btn.disable()
         self.start_btn.props("loading")

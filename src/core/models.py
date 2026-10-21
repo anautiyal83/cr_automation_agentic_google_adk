@@ -77,6 +77,8 @@ class UCDocumentSet(BaseModel):
     validated: bool = False
     validation_errors: list[dict[str, Any]] | None = None
     selected_sheets: list[str] | None = None  # None = all sheets
+    developer_notes: str | None = None  # Free-form domain guidance for LLM agents
+    reference_yaml_path: str | None = None  # Path to working reference workflow YAML
 
 
 class PipelineRun(BaseModel):
