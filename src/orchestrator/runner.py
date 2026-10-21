@@ -269,15 +269,20 @@ class PipelineRunner:
                                     state, step_num
                                 )
 
+                            payload = {
+                                "milestone": mw.get("name", f"Step {step_num}"),
+                                "test_status": mw.get("status") if mw.get("status") == "failed" else None,
+                                "artifact_file": artifact_file,
+                                "extra_artifact_files": extra_files,
+                            }
+                            # Include questions for questionnaire milestone (step 0)
+                            if mw.get("questions"):
+                                payload["questions"] = mw["questions"]
+
                             await event_bus.publish(PipelineEvent(
                                 run_id=UUID(run_id), event_type="milestone_reached",
                                 step_number=step_num,
-                                payload={
-                                    "milestone": mw.get("name", f"Step {step_num}"),
-                                    "test_status": mw.get("status") if mw.get("status") == "failed" else None,
-                                    "artifact_file": artifact_file,
-                                    "extra_artifact_files": extra_files,
-                                },
+                                payload=payload,
                             ))
 
                 # Detect termination

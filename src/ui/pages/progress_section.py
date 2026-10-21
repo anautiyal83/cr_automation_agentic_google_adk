@@ -452,9 +452,37 @@ class ProgressSection:
 
             # Requirements Gathering (step 0) — show interactive questionnaire dialog
             if event.step_number == 0:
-                from src.nodes.milestone_nodes import milestone_waiting as _mw
-                questions = _mw.get(0, {}).get("questions", [])
+                # Get questions from event payload or milestone_waiting
+                questions = event.payload.get("questions", [])
+                if not questions:
+                    from src.nodes.milestone_nodes import milestone_waiting as _mw
+                    questions = _mw.get(0, {}).get("questions", [])
+
+                # Update banner to show paused state
+                self.status_icon.name = "quiz"
+                self.status_icon.classes(replace="cr-text-warning")
+                self.status_label.text = f"Requirements Gathering"
+                self.status_detail.text = f"{len(questions)} questions need your input"
+                self.banner.style(replace=(
+                    "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
+                ))
+                self.progress_bar.props(remove="stripe animate indeterminate")
+
                 self._show_questionnaire_dialog(questions, milestone)
+            elif event.step_number == 2:
+                # Requirements Summary review
+                self.status_icon.name = "checklist"
+                self.status_icon.classes(replace="cr-text-warning")
+                self.status_label.text = "Review: Requirements Summary"
+                self.status_detail.text = "Review the gathered requirements before proceeding to YAML generation"
+                self.banner.style(replace=(
+                    "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
+                ))
+                self.progress_bar.props(remove="stripe animate indeterminate")
+
+                self._show_milestone_review(event.step_number, milestone, artifact_file,
+                                            has_failures=False,
+                                            extra_artifact_files=event.payload.get("extra_artifact_files", []))
             else:
                 extra_files = event.payload.get("extra_artifact_files", [])
                 self._show_milestone_review(event.step_number, milestone, artifact_file,
@@ -582,26 +610,30 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(False)
 
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
-        """Show an interactive questionnaire dialog for requirements gathering."""
+        """Show milestone row with questionnaire controls and auto-open dialog."""
         self.milestone_row.set_visibility(True)
         self.action_btns.set_visibility(False)
         self._current_milestone_step = 0
         self._current_milestone = milestone_name
+        self._pending_questions = questions
 
-        # Replace milestone row content with questionnaire link
-        self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions"
-        self.ms_view_btn.text = "Answer Questions"
-        self.ms_view_btn.set_visibility(True)
+        # Update milestone row labels
+        self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions need your input"
+        self.ms_view_btn.set_visibility(False)  # Hide default view button
         self.ms_rerun_btn.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
         self.ms_continue_btn.text = "Skip & Use Defaults"
+        self.ms_extra_files_row.set_visibility(False)
 
-        # Store questions for dialog
-        self._pending_questions = questions
+        # Add Answer Questions button directly in milestone row
+        with self.milestone_row:
+            with ui.row().classes("w-full gap-3"):
+                ui.button("Answer Questions", icon="quiz",
+                          on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
+                    .props("unelevated color=deep-purple-6 size=sm no-caps")
 
-        # Override view button to open questionnaire dialog
-        self.ms_view_btn.on_click.clear()
-        self.ms_view_btn.on("click", lambda: self._open_questionnaire_dialog(questions, milestone_name))
+        # Auto-open the dialog immediately
+        self._open_questionnaire_dialog(questions, milestone_name)
 
     def _open_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Open a maximized dialog with interactive question form."""
