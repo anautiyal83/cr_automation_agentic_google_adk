@@ -428,6 +428,7 @@ class RequirementsGathererNode(BaseAgent):
 
         # ── Phase 5: Generate requirements summary document ──
         flow.flow("REQUIREMENTS Phase 5: Generating summary document")
+        parsed["_ciq_file_path"] = ctx.session.state.get("ciq_file_path", "")
         summary_path = ""
         if run_dir:
             summary_path = self._generate_summary_doc(
@@ -563,7 +564,41 @@ class RequirementsGathererNode(BaseAgent):
         from datetime import datetime, timezone
 
         ciq_data = parsed.get("ciq_data", {})
+        # ciq_data may be a JSON string from IntermediateRepresentation
+        if isinstance(ciq_data, str):
+            try:
+                ciq_data = json.loads(ciq_data)
+            except (json.JSONDecodeError, TypeError):
+                ciq_data = {}
+
         per_sheet = ciq_data.get("per_sheet", {})
+
+        # Fallback: if per_sheet is empty, build it from raw CIQ data
+        if not per_sheet and ciq_data:
+            # Try headers/rows/sheet_names at top level
+            sheet_names = ciq_data.get("sheet_names", [])
+            headers = ciq_data.get("headers", [])
+            rows = ciq_data.get("rows", [])
+            if sheet_names and headers:
+                for sn in sheet_names:
+                    per_sheet[sn] = {"headers": headers, "row_count": len(rows)}
+            elif headers:
+                per_sheet["Data"] = {"headers": headers, "row_count": len(rows)}
+
+        # Last resort: read CIQ Excel directly for sheet/column info
+        if not per_sheet:
+            try:
+                ciq_path = parsed.get("_ciq_file_path") or ""
+                if ciq_path and Path(ciq_path).exists():
+                    import openpyxl
+                    wb = openpyxl.load_workbook(ciq_path, read_only=True, data_only=True)
+                    for sn in wb.sheetnames:
+                        ws = wb[sn]
+                        hdrs = [str(c.value or "") for c in next(ws.iter_rows(min_row=1, max_row=1))]
+                        per_sheet[sn] = {"headers": [h for h in hdrs if h], "row_count": ws.max_row - 1}
+                    wb.close()
+            except Exception as e:
+                logger.debug("Could not read CIQ for summary: %s", e)
 
         # Build HTML
         lines = [
