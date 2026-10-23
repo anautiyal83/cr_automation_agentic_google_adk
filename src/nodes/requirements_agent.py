@@ -332,75 +332,75 @@ class RequirementsGathererNode(BaseAgent):
         if all_answers and readiness in ("COMPLETE", "PARTIAL"):
             flow.flow("REQUIREMENTS: Reusing %d previous answers — readiness=%s, skipping questionnaire",
                        len(all_answers), readiness)
-            round_num = 0
-            max_rounds = 0  # skip the loop entirely
         else:
             round_num = 0
-            max_rounds = 3
+            rounds_per_batch = 3
+            keep_asking = True
 
-        while readiness != "COMPLETE" and round_num < max_rounds:
-            round_num += 1
-            flow.flow("REQUIREMENTS Phase 3: Round %d — asking developer", round_num)
+            while readiness != "COMPLETE" and keep_asking:
+                # Run a batch of up to 3 rounds
+                batch_rounds = 0
+                while readiness != "COMPLETE" and batch_rounds < rounds_per_batch:
+                    round_num += 1
+                    batch_rounds += 1
+                    flow.flow("REQUIREMENTS Phase 3: Round %d — asking developer", round_num)
 
-            # Generate questions — pass raw artifacts so LLM knows what's already available
-            questions = await self._generate_questions(
-                analysis, developer_notes, all_answers,
-                raw_artifacts=raw_artifacts, parsed=parsed,
-            )
+                    # Generate questions
+                    questions = await self._generate_questions(
+                        analysis, developer_notes, all_answers,
+                        raw_artifacts=raw_artifacts, parsed=parsed,
+                    )
 
-            if not questions:
-                flow.flow("REQUIREMENTS: No questions to ask — proceeding with defaults")
-                break
-
-            # Check if all questions already have answers from previous run
-            # Use fuzzy matching on question text since IDs may differ between runs
-            unanswered = []
-            for q in questions:
-                if not isinstance(q, dict):
-                    continue
-                q_id = q.get("id", "")
-                q_text = q.get("question", "").lower().strip()
-                # Direct ID match
-                if q_id in all_answers:
-                    continue
-                # Fuzzy: check if any previous answer's key or a similar question was answered
-                already_covered = False
-                for ak, av in all_answers.items():
-                    # Check if the answer text addresses this question's topic
-                    if q_text and any(
-                        kw in q_text for kw in ak.lower().replace("_", " ").split()
-                        if len(kw) > 3
-                    ):
-                        already_covered = True
-                        q["default_value"] = av  # pre-fill with previous answer
+                    if not questions:
+                        flow.flow("REQUIREMENTS: No questions to ask — proceeding with defaults")
+                        keep_asking = False
                         break
-                if not already_covered:
-                    unanswered.append(q)
 
-            if not unanswered and all_answers:
-                flow.flow("REQUIREMENTS: All %d questions already answered from previous run — skipping questionnaire",
-                          len(questions))
-                break
+                    # Filter out already-answered questions (fuzzy match)
+                    unanswered = self._filter_answered_questions(questions, all_answers)
 
-            if unanswered and len(unanswered) < len(questions):
-                flow.flow("REQUIREMENTS: %d/%d questions already answered, showing %d remaining",
-                          len(questions) - len(unanswered), len(questions), len(unanswered))
-                questions = unanswered
+                    if not unanswered and all_answers:
+                        flow.flow("REQUIREMENTS: All %d questions already covered — skipping",
+                                  len(questions))
+                        keep_asking = False
+                        break
 
-            # Ask developer (HIL pause) — pass previous answers for pre-filling defaults
-            answers = await self._ask_developer(ctx, questions, round_num, all_answers)
-            all_answers.update(answers)
+                    if unanswered and len(unanswered) < len(questions):
+                        flow.flow("REQUIREMENTS: %d/%d already answered, showing %d remaining",
+                                  len(questions) - len(unanswered), len(questions), len(unanswered))
+                        questions = unanswered
 
-            # Cache answers for potential re-runs
-            _save_previous_answers(uc_name, all_answers)
+                    # Ask developer (HIL pause)
+                    answers = await self._ask_developer(ctx, questions, round_num, all_answers)
+                    all_answers.update(answers)
+                    _save_previous_answers(uc_name, all_answers)
 
-            # Re-analyze with new answers
-            combined_notes = developer_notes
-            if all_answers:
-                combined_notes += "\n\n=== Developer Answers ===\n" + json.dumps(all_answers, indent=2)
-            analysis = await self._analyze_uc(parsed, uc_name, combined_notes)
-            readiness = analysis.get("overall_readiness", "INSUFFICIENT")
-            flow.flow("REQUIREMENTS Phase 3: Round %d result: readiness=%s", round_num, readiness)
+                    # Re-analyze with new answers
+                    combined_notes = developer_notes
+                    if all_answers:
+                        combined_notes += "\n\n=== Developer Answers ===\n" + json.dumps(all_answers, indent=2)
+                    analysis = await self._analyze_uc(parsed, uc_name, combined_notes)
+                    readiness = analysis.get("overall_readiness", "INSUFFICIENT")
+                    flow.flow("REQUIREMENTS Phase 3: Round %d result: readiness=%s", round_num, readiness)
+
+                # After batch of 3 rounds, if still not COMPLETE, ask user what to do
+                if readiness != "COMPLETE" and keep_asking:
+                    # Collect remaining gaps for display
+                    remaining_gaps = []
+                    for cat_key in ("category_1_node_activity", "category_2_commands", "category_3_orchestration"):
+                        cat = analysis.get(cat_key, {})
+                        remaining_gaps.extend(cat.get("gaps", []))
+
+                    user_choice = await self._ask_continue_or_clarify(
+                        ctx, readiness, remaining_gaps, round_num,
+                    )
+
+                    if user_choice == "continue":
+                        flow.flow("REQUIREMENTS: User chose to continue with gaps (readiness=%s)", readiness)
+                        keep_asking = False
+                    else:
+                        flow.flow("REQUIREMENTS: User chose to answer more questions")
+                        # Continue with another batch of 3 rounds
 
         # Save final answers for re-runs
         if all_answers:
@@ -556,6 +556,65 @@ class RequirementsGathererNode(BaseAgent):
         doc_path.write_text("\n".join(lines), encoding="utf-8")
         flow.flow("REQUIREMENTS: Questionnaire doc written to %s", doc_path)
         return str(doc_path)
+
+    @staticmethod
+    def _filter_answered_questions(questions: list, all_answers: dict) -> list:
+        """Filter out questions already answered via ID or fuzzy topic match."""
+        unanswered = []
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_id = q.get("id", "")
+            q_text = q.get("question", "").lower().strip()
+            # Direct ID match
+            if q_id in all_answers:
+                continue
+            # Fuzzy: check if any previous answer covers this question's topic
+            already_covered = False
+            for ak, av in all_answers.items():
+                if q_text and any(
+                    kw in q_text for kw in ak.lower().replace("_", " ").split()
+                    if len(kw) > 3
+                ):
+                    already_covered = True
+                    q["default_value"] = av
+                    break
+            if not already_covered:
+                unanswered.append(q)
+        return unanswered
+
+    async def _ask_continue_or_clarify(self, ctx, readiness: str,
+                                        remaining_gaps: list, round_num: int) -> str:
+        """Ask user whether to continue with gaps or answer more questions.
+
+        Uses milestone step 0 with a special question format.
+        Returns 'continue' or 'clarify'.
+        """
+        gap_text = "\n".join(f"  - {g}" for g in remaining_gaps[:10]) if remaining_gaps else "  (none identified)"
+
+        questions = [{
+            "id": "_continue_decision",
+            "category": "orchestration",
+            "question": (
+                f"After {round_num} rounds of questions, readiness is '{readiness}'. "
+                "Would you like to continue with the current information, or answer more questions to fill the gaps?"
+            ),
+            "importance": "critical",
+            "input_type": "select",
+            "options": [
+                "Continue with current information — proceed to YAML generation",
+                "Answer more questions — I want to clarify the remaining gaps",
+            ],
+            "default_value": "Continue with current information — proceed to YAML generation",
+            "context": f"Remaining gaps:\n{gap_text}",
+            "helper_text": "Choose 'Continue' to proceed or 'Answer more' to provide more details",
+        }]
+
+        answers = await self._ask_developer(ctx, questions, round_num + 1)
+        decision = answers.get("_continue_decision", "")
+        if "answer more" in str(decision).lower() or "clarify" in str(decision).lower():
+            return "clarify"
+        return "continue"
 
     def _generate_summary_doc(self, run_dir: Path, uc_name: str, parsed: dict,
                                analysis: dict, requirements: dict,
