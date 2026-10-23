@@ -66,6 +66,15 @@ FRAMEWORK EXPERTISE:
 
 ANALYZE_PROMPT = """Analyze this UC's documents and identify what's available and what's missing.
 
+IMPORTANT: Mark items as KNOWN (not gaps) if the information is visible in ANY of the provided data:
+- CIQ column names and counts are KNOWN — do not list them as gaps
+- NIAM column count is KNOWN from IP sheet headers
+- LDAP credentials visible in SSH logs are KNOWN
+- Shell prompts visible in SSH logs are KNOWN
+- Command syntax in MOP is KNOWN
+- XML structure in sample files is KNOWN
+- Only report GENUINE gaps — information that truly cannot be found anywhere in the provided data
+
 UC Name: {uc_name}
 
 === CIQ STRUCTURE ===
@@ -80,7 +89,8 @@ UC Name: {uc_name}
 === DEVELOPER NOTES ===
 {developer_notes}
 
-Respond with a JSON object covering all 3 categories:
+Respond with a JSON object covering all 3 categories.
+For each category, only list items in "gaps" that are GENUINELY missing — not items visible in the data above.
 
 {{
   "uc_type": "capability_modification | license_loading | software_upgrade | config_change | other",
@@ -121,47 +131,47 @@ Analysis:
 Developer already provided:
 {developer_notes}
 
-Rules:
-- Only ask about GAPS — do NOT ask about things already known
-- Mark each question as critical, recommended, or optional
-- Provide sensible defaults where possible
-- Group by category
+=== DATA ALREADY AVAILABLE (DO NOT ask about these) ===
+{available_data}
 
-CRITICAL — DEFAULTS AND QUESTION STYLE:
-- ALWAYS provide a default_value for every question — the user should be able to accept defaults and move on
-- For boolean: default to the most common/safe choice
-- For select: default to the most likely option
-- For text: default to a sensible value from MOP/CIQ or common industry practice
-- The goal is: user reviews defaults, changes only what's wrong, submits
+=== CRITICAL RULES — WHAT NOT TO ASK ===
+- Do NOT ask about anything visible in the CIQ columns (sheet names, column names, column count)
+- Do NOT ask about NIAM column count — it's visible in the CIQ IP sheet headers
+- Do NOT ask about which NIAM to try first — always try NIAM_NAME1, then 2, then 3 in order
+- Do NOT ask about XML structure/template — sample XML files are provided as input artifacts
+- Do NOT ask about LDAP credentials if they're visible in the SSH session logs
+- Do NOT ask about shell prompts if they're visible in the SSH session logs
+- Do NOT ask about command syntax if it's in the MOP document
+- Do NOT re-ask questions that have been answered in "Developer already provided" above
+- Only ask about things that are GENUINELY UNKNOWN and not inferable from the input documents
+
+=== QUESTION STYLE ===
+- ALWAYS provide a default_value for every question — extract it from the documents if possible
 - Write questions for a LAYMAN USER, not a developer
 - Use simple everyday language, avoid technical jargon
-- BAD:  "What kex_algorithms should be configured for SSH?"
-  GOOD: "Which SSH encryption method should be used for connecting to the nodes?"
-- BAD:  "Specify the LDAP bind DN and credentials"
-  GOOD: "What are the login details for the subscriber database? (username and password)"
-- BAD:  "Should NIAM failover be enabled across niamID-1/2/3?"
-  GOOD: "The system found 3 login IDs per node. Should it try each one until it connects successfully?"
 - Keep questions short (1 sentence) — put technical details in "context"
-- Use "context" field to explain WHY this is needed and WHAT happens if skipped
-- Use "helper_text" field to show an example of a valid answer
+- Use "context" field to explain WHY this is needed
+- Use "helper_text" field to show an example answer
 - For select/boolean, make the options self-explanatory
+- MAXIMUM 10-12 questions per round. Focus on the MOST IMPORTANT gaps only.
 
 Respond with a JSON array:
 [
   {{
-    "id": "q1",
+    "id": "na_q1",
     "category": "node_activity | commands | orchestration",
     "question": "Simple, clear question in plain language",
     "importance": "critical | recommended | optional",
     "input_type": "text | boolean | select | password",
     "options": ["Option A — explanation", "Option B — explanation"],
-    "default_value": "sensible default",
-    "context": "Technical context: why this matters and what happens without it",
-    "helper_text": "Example: enter something like 'cn=adminUser' or '192.168.1.1'"
+    "default_value": "sensible default extracted from documents",
+    "context": "Technical context: why this matters",
+    "helper_text": "Example answer"
   }}
 ]
 
-Only include questions for actual gaps. If developer notes already cover an item, skip it."""
+Use STABLE question IDs with category prefix: na_q1, na_q2 for node_activity; cmd_q1, cmd_q2 for commands; orch_q1, orch_q2 for orchestration.
+Only include questions for GENUINE gaps that cannot be answered from the provided data."""
 
 COMPILE_PROMPT = """Compile the final requirements package for YAML generation.
 
@@ -272,19 +282,50 @@ class RequirementsGathererNode(BaseAgent):
             round_num += 1
             flow.flow("REQUIREMENTS Phase 3: Round %d — asking developer", round_num)
 
-            # Generate questions
-            questions = await self._generate_questions(analysis, developer_notes, all_answers)
+            # Generate questions — pass raw artifacts so LLM knows what's already available
+            questions = await self._generate_questions(
+                analysis, developer_notes, all_answers,
+                raw_artifacts=raw_artifacts, parsed=parsed,
+            )
 
             if not questions:
                 flow.flow("REQUIREMENTS: No questions to ask — proceeding with defaults")
                 break
 
             # Check if all questions already have answers from previous run
-            unanswered = [q for q in questions if isinstance(q, dict) and q.get("id") not in all_answers]
+            # Use fuzzy matching on question text since IDs may differ between runs
+            unanswered = []
+            for q in questions:
+                if not isinstance(q, dict):
+                    continue
+                q_id = q.get("id", "")
+                q_text = q.get("question", "").lower().strip()
+                # Direct ID match
+                if q_id in all_answers:
+                    continue
+                # Fuzzy: check if any previous answer's key or a similar question was answered
+                already_covered = False
+                for ak, av in all_answers.items():
+                    # Check if the answer text addresses this question's topic
+                    if q_text and any(
+                        kw in q_text for kw in ak.lower().replace("_", " ").split()
+                        if len(kw) > 3
+                    ):
+                        already_covered = True
+                        q["default_value"] = av  # pre-fill with previous answer
+                        break
+                if not already_covered:
+                    unanswered.append(q)
+
             if not unanswered and all_answers:
                 flow.flow("REQUIREMENTS: All %d questions already answered from previous run — skipping questionnaire",
                           len(questions))
                 break
+
+            if unanswered and len(unanswered) < len(questions):
+                flow.flow("REQUIREMENTS: %d/%d questions already answered, showing %d remaining",
+                          len(questions) - len(unanswered), len(questions), len(unanswered))
+                questions = unanswered
 
             # Ask developer (HIL pause) — pass previous answers for pre-filling defaults
             answers = await self._ask_developer(ctx, questions, round_num, all_answers)
@@ -723,7 +764,10 @@ class RequirementsGathererNode(BaseAgent):
             logger.error("UC analysis failed: %s", e)
             return {"overall_readiness": "INSUFFICIENT", "error": str(e)}
 
-    async def _generate_questions(self, analysis: dict, developer_notes: str, existing_answers: dict) -> list:
+    async def _generate_questions(self, analysis: dict, developer_notes: str,
+                                   existing_answers: dict,
+                                   raw_artifacts: dict | None = None,
+                                   parsed: dict | None = None) -> list:
         """Generate targeted questions based on gaps in analysis."""
         from src.nodes.cr_import import import_cr_module
         agents_mod = import_cr_module("src.agents")
@@ -741,11 +785,56 @@ class RequirementsGathererNode(BaseAgent):
 
         combined_notes = developer_notes or ""
         if existing_answers:
-            combined_notes += "\n\nPrevious answers:\n" + json.dumps(existing_answers, indent=2)
+            combined_notes += "\n\nPrevious answers (DO NOT re-ask these):\n" + json.dumps(existing_answers, indent=2)
+
+        # Build "available data" summary so LLM knows what NOT to ask about
+        available_parts = []
+        raw_artifacts = raw_artifacts or {}
+        parsed = parsed or {}
+
+        # CIQ columns are visible — don't ask about them
+        ciq_data = parsed.get("ciq_data", {})
+        per_sheet = ciq_data.get("per_sheet", {})
+        if per_sheet:
+            available_parts.append("CIQ SHEETS AND COLUMNS (already known — do not ask):")
+            for sname, sdata in per_sheet.items():
+                headers = sdata.get("headers", []) if isinstance(sdata, dict) else []
+                available_parts.append(f'  Sheet "{sname}": {headers}')
+                niam_cols = [h for h in headers if "niam" in h.lower()]
+                if niam_cols:
+                    available_parts.append(f'    → NIAM columns found: {niam_cols} (count: {len(niam_cols)})')
+
+        # SSH logs contain prompts and credentials — don't ask about them
+        if raw_artifacts.get("ssh_logs"):
+            logs = raw_artifacts["ssh_logs"]
+            available_parts.append(f"\nSSH SESSION LOGS available ({len(logs)} chars) — contains:")
+            available_parts.append("  - Real shell prompts (extract from logs, don't ask user)")
+            available_parts.append("  - Real command outputs with actual data patterns")
+            # Extract visible credentials
+            import re
+            ldap_creds = re.findall(r"-D\s+'([^']+)'\s+-w\s+(\S+)", logs)
+            if ldap_creds:
+                available_parts.append(f"  - LDAP credentials visible: user={ldap_creds[0][0]}, password=***")
+            prompts_found = _extract_prompts_from_logs(logs)
+            if prompts_found:
+                available_parts.append(f"  - Shell prompts found: {prompts_found[:5]}")
+
+        # XML samples are provided — don't ask about XML structure
+        if raw_artifacts.get("xml_samples"):
+            available_parts.append(f"\nSAMPLE XML FILES provided ({len(raw_artifacts['xml_samples'])} chars)")
+            available_parts.append("  - XML structure/template is available — do not ask about it")
+
+        # MOP text is provided — don't ask about command syntax
+        if raw_artifacts.get("mop_text"):
+            available_parts.append(f"\nFULL MOP DOCUMENT available ({len(raw_artifacts['mop_text'])} chars)")
+            available_parts.append("  - Command syntax and procedures are in MOP — do not ask about them")
+
+        available_data = "\n".join(available_parts) if available_parts else "No additional data available"
 
         prompt = QUESTIONS_PROMPT.format(
             analysis_json=json.dumps(analysis, indent=2, default=str),
             developer_notes=combined_notes or "None",
+            available_data=available_data,
         )
 
         try:
