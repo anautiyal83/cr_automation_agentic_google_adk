@@ -350,21 +350,72 @@ class HistorySection:
         if not run_id or not self.runner:
             return
         try:
-            # Get original document set to re-run
-            if self.runner._db:
-                run_row = await self.runner._db.get_by_id("pipeline_runs", run_id)
-                if run_row:
-                    doc_set_id = run_row.get("document_set_id")
-                    if doc_set_id:
-                        doc = await self.runner._db.get_by_id("uc_document_sets", str(doc_set_id))
-                        if doc:
-                            # Reuse existing document_set_id for the new run
-                            doc["document_set_id"] = str(doc_set_id)
-                            new_run_id = await self.runner.start(doc)
-                            ui.notify(f"Re-running {row.get('uc_name', 'UC')}...", type="positive")
-                            if self.on_rerun:
-                                await self.on_rerun(new_run_id)
-                            return
-            ui.notify("Could not find original documents for re-run", type="warning")
+            doc = await self._find_document_set(run_id, row.get("uc_name", ""))
+            if not doc:
+                ui.notify("Could not find original documents for re-run", type="warning")
+                return
+
+            # Create a NEW copy — don't reference the old document_set_id
+            # This ensures the new run is independent and survives cleanup
+            from uuid import uuid4
+            doc["document_set_id"] = str(uuid4())
+
+            new_run_id = await self.runner.start(doc)
+            ui.notify(f"Re-running {row.get('uc_name', 'UC')}...", type="positive")
+            if self.on_rerun:
+                await self.on_rerun(new_run_id)
         except Exception as exc:
             ui.notify(f"Re-run failed: {exc}", type="negative")
+
+    async def _find_document_set(self, run_id: str, uc_name: str) -> dict | None:
+        """Find the original document set for a run, with multiple fallbacks."""
+        if not self.runner._db:
+            return None
+
+        import json as _json
+
+        # Try 1: Direct lookup via pipeline_runs → uc_document_sets
+        run_row = await self.runner._db.get_by_id("pipeline_runs", run_id)
+        if run_row:
+            doc_set_id = run_row.get("document_set_id")
+            if doc_set_id:
+                doc = await self.runner._db.get_by_id("uc_document_sets", str(doc_set_id))
+                if doc:
+                    return self._doc_row_to_dict(doc)
+
+        # Try 2: Find by UC name from any run
+        if uc_name:
+            rows = await self.runner._db.execute(
+                "SELECT d.* FROM uc_document_sets d "
+                "JOIN pipeline_runs r ON r.document_set_id = d.id "
+                "WHERE r.uc_name = ? ORDER BY d.uploaded_at DESC LIMIT 1",
+                (uc_name,),
+            )
+            if rows:
+                return self._doc_row_to_dict(rows[0])
+
+        # Try 3: Find by UC name directly in uc_document_sets
+        if uc_name:
+            rows = await self.runner._db.execute(
+                "SELECT * FROM uc_document_sets WHERE uc_name = ? ORDER BY uploaded_at DESC LIMIT 1",
+                (uc_name,),
+            )
+            if rows:
+                return self._doc_row_to_dict(rows[0])
+
+        return None
+
+    @staticmethod
+    def _doc_row_to_dict(row: dict) -> dict:
+        """Convert a DB uc_document_sets row to the dict format runner.start() expects."""
+        import json as _json
+        doc = dict(row)
+        # Parse JSON-encoded fields back to Python objects
+        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets"):
+            val = doc.get(json_field)
+            if isinstance(val, str):
+                try:
+                    doc[json_field] = _json.loads(val)
+                except (ValueError, TypeError):
+                    pass
+        return doc
