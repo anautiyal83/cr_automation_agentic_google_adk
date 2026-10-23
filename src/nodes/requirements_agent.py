@@ -38,7 +38,37 @@ flow = get_flow_logger(__name__)
 requirements_store: dict[str, dict] = {}  # run_id → requirements package
 
 # Cache of previous answers by UC name — reused on re-run if no new questions
+# Persisted to data/knowledge/{uc_name}_answers.json
 _previous_answers: dict[str, dict] = {}  # uc_name → all_answers from last run
+_ANSWERS_DIR = Path("data/knowledge")
+
+
+def _load_previous_answers(uc_name: str) -> dict:
+    """Load cached answers from disk for a UC."""
+    if uc_name in _previous_answers:
+        return _previous_answers[uc_name]
+    fpath = _ANSWERS_DIR / f"{uc_name}_answers.json"
+    if fpath.exists():
+        try:
+            answers = json.loads(fpath.read_text(encoding="utf-8"))
+            _previous_answers[uc_name] = answers
+            logger.info("Loaded %d cached answers for UC %s from disk", len(answers), uc_name)
+            return answers
+        except Exception as e:
+            logger.debug("Could not load answers for %s: %s", uc_name, e)
+    return {}
+
+
+def _save_previous_answers(uc_name: str, answers: dict):
+    """Persist answers to disk for a UC."""
+    _previous_answers[uc_name] = answers
+    try:
+        _ANSWERS_DIR.mkdir(parents=True, exist_ok=True)
+        fpath = _ANSWERS_DIR / f"{uc_name}_answers.json"
+        fpath.write_text(json.dumps(answers, indent=2, default=str), encoding="utf-8")
+        logger.info("Saved %d answers for UC %s to %s", len(answers), uc_name, fpath)
+    except Exception as e:
+        logger.error("Could not save answers for %s: %s", uc_name, e)
 
 SYSTEM_PROMPT = """You are a Nokia telecom UC automation expert and cr-automation framework specialist.
 
@@ -283,7 +313,7 @@ class RequirementsGathererNode(BaseAgent):
         parsed["_raw_artifacts"] = raw_artifacts  # attach for richer context
 
         # Pre-populate with answers from previous run of same UC (if any)
-        all_answers = dict(_previous_answers.get(uc_name, {}))
+        all_answers = dict(_load_previous_answers(uc_name))
         if all_answers:
             flow.flow("REQUIREMENTS: Loaded %d previous answers for UC %s", len(all_answers), uc_name)
 
@@ -362,7 +392,7 @@ class RequirementsGathererNode(BaseAgent):
             all_answers.update(answers)
 
             # Cache answers for potential re-runs
-            _previous_answers[uc_name] = dict(all_answers)
+            _save_previous_answers(uc_name, all_answers)
 
             # Re-analyze with new answers
             combined_notes = developer_notes
@@ -374,7 +404,7 @@ class RequirementsGathererNode(BaseAgent):
 
         # Save final answers for re-runs
         if all_answers:
-            _previous_answers[uc_name] = dict(all_answers)
+            _save_previous_answers(uc_name, all_answers)
 
         # ── Phase 4: Compile requirements ──
         flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
