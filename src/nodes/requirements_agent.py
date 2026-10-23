@@ -751,8 +751,31 @@ class RequirementsGathererNode(BaseAgent):
         else:
             lines.append("<p>No nodes detected</p>")
 
-        lines.append(f"<p>NIAM failover: <strong>{_v(cat1_req, 'niam_failover')}</strong> | "
-                     f"Activity type: <strong>{_v(cat1_req, 'activity_type')}</strong> | "
+        # Login workflow summary per node
+        if nodes:
+            lines.append("<h3>Login Workflow</h3>")
+            niam_failover = cat1_req.get("niam_failover", False)
+            niam_cols = cat1_req.get("niam_columns", [])
+            for n in nodes:
+                if not isinstance(n, dict):
+                    continue
+                name = _v(n, 'name')
+                ssh_user = _v(n, 'ssh', 'user')
+                ssh_host = _v(n, 'ssh', 'host')
+                prompt = _v(n, 'prompt_regex')
+                esc = n.get("escalation", {})
+                esc_method = _v(esc, 'method')
+                esc_prompt = _v(esc, 'prompt_regex')
+
+                steps = [f"SSH to <code>{ssh_host}</code> as <code>{ssh_user}</code>"]
+                if niam_failover and niam_cols:
+                    steps[0] += f" (NIAM failover: try {' → '.join(niam_cols)} in order)"
+                steps.append(f"Wait for prompt: <code>{prompt}</code>")
+                if esc_method and esc_method != "—":
+                    steps.append(f"Escalate: <code>{esc_method}</code> → wait for <code>{esc_prompt}</code>")
+                lines.append(f"<p><strong>{name}:</strong> " + " → ".join(steps) + "</p>")
+
+        lines.append(f"<p>Activity type: <strong>{_v(cat1_req, 'activity_type')}</strong> | "
                      f"Data sheet: <strong>{_v(cat1_req, 'data_sheet')}</strong></p>")
         lines.append("</div>")
 
@@ -760,12 +783,44 @@ class RequirementsGathererNode(BaseAgent):
         lines.append("<h2>Commands</h2><div class='section'>")
         cmds = cat2_req.get("commands", []) or cat2_an.get("commands_found", [])
         if cmds:
-            lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th></tr>")
+            lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th>"
+                         "<th>Syntax</th><th>User</th><th>Validation Criteria</th></tr>")
             for c in cmds:
                 if isinstance(c, dict):
+                    cmd_name = _v(c, 'cmd', fallback=_v(c, 'command'))
+                    syntax = _v(c, 'syntax')
+                    target_user = _v(c, 'target_user')
+                    # Build validation description
+                    val_rules = c.get('validation_rules', c.get('validation_success_patterns', []))
+                    val_desc = "—"
+                    if isinstance(val_rules, list) and val_rules:
+                        parts = []
+                        for vr in val_rules:
+                            if isinstance(vr, dict):
+                                msg = vr.get('description', vr.get('failure_message', ''))
+                                expr = vr.get('criteria', {})
+                                if isinstance(expr, dict):
+                                    expr = expr.get('expr', '')
+                                if msg:
+                                    parts.append(str(msg))
+                                elif expr:
+                                    parts.append(str(expr)[:80])
+                            elif isinstance(vr, str):
+                                parts.append(vr[:80])
+                        val_desc = "; ".join(parts) if parts else "—"
+                    # CIQ params
+                    ciq_params = c.get('ciq_params', c.get('params_from_ciq', []))
+                    params_str = f"<br><em>CIQ: {', '.join(str(p) for p in ciq_params)}</em>" if ciq_params else ""
+                    # Register captures
+                    register = c.get('register', [])
+                    reg_str = f"<br><em>Captures: {', '.join(str(r) for r in register)}</em>" if register else ""
                     lines.append(
-                        f"<tr><td><code>{_v(c, 'cmd', fallback=_v(c, 'command'))}</code></td>"
-                        f"<td>{_v(c, 'node')}</td><td>{_v(c, 'purpose')}</td></tr>"
+                        f"<tr><td><code>{cmd_name}</code>{params_str}{reg_str}</td>"
+                        f"<td>{_v(c, 'node')}</td>"
+                        f"<td>{_v(c, 'purpose')}</td>"
+                        f"<td><code>{syntax}</code></td>"
+                        f"<td>{target_user}</td>"
+                        f"<td>{val_desc}</td></tr>"
                     )
             lines.append("</table>")
 
