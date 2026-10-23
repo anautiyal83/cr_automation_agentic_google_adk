@@ -244,8 +244,17 @@ class RequirementsGathererNode(BaseAgent):
         if parsed.get("constraints"):
             ctx.session.state["constraints"] = parsed["constraints"]
 
+        # ── Phase 1b: Extract raw artifact content ──
+        # Read actual file contents (MOP text, SSH logs, XML samples) for richer context
+        raw_artifacts = self._extract_raw_artifacts(ctx.session.state)
+        ctx.session.state["raw_artifacts"] = raw_artifacts
+        if raw_artifacts:
+            flow.flow("REQUIREMENTS: Extracted raw artifacts — %s",
+                       {k: f"{len(v)} chars" for k, v in raw_artifacts.items() if v})
+
         # ── Phase 2: Analyze UC type ──
         flow.flow("REQUIREMENTS Phase 2: Analyzing UC type")
+        parsed["_raw_artifacts"] = raw_artifacts  # attach for richer context
         analysis = await self._analyze_uc(parsed, uc_name, developer_notes)
 
         readiness = analysis.get("overall_readiness", "INSUFFICIENT")
@@ -301,6 +310,11 @@ class RequirementsGathererNode(BaseAgent):
         requirements = await self._compile_requirements(
             uc_name, analysis, developer_notes, all_answers
         )
+
+        # ── Phase 4b: Enforce questionnaire answers as hard overrides ──
+        # LLM compilation may hallucinate — override with explicit user answers
+        requirements = self._enforce_answers(requirements, all_answers, raw_artifacts)
+        flow.flow("REQUIREMENTS Phase 4b: Enforced answer overrides")
 
         # Store in shared dict (bypasses ADK session state)
         requirements_store[run_id] = requirements
@@ -670,8 +684,23 @@ class RequirementsGathererNode(BaseAgent):
         mop_data = parsed.get("mop_data", {})
         mop_summary = json.dumps(mop_data, indent=2, default=str)[:4000] if mop_data else "No MOP data"
 
+        # Include raw MOP text if available (much richer than parsed templates)
+        raw_arts = parsed.get("_raw_artifacts", {})
+        if raw_arts.get("mop_text"):
+            mop_summary = (
+                "=== RAW MOP DOCUMENT ===\n" + raw_arts["mop_text"][:8000]
+                + "\n\n=== PARSED MOP STEPS ===\n" + mop_summary
+            )
+
         cmd_data = parsed.get("command_outputs", {})
         cmd_summary = json.dumps(cmd_data, indent=2, default=str)[:2000] if cmd_data else "No command outputs"
+
+        # Include raw SSH session logs (contains real prompts, real outputs)
+        if raw_arts.get("ssh_logs"):
+            cmd_summary = (
+                "=== RAW SSH SESSION LOGS ===\n" + raw_arts["ssh_logs"][:12000]
+                + "\n\n=== PARSED COMMAND OUTPUTS ===\n" + cmd_summary
+            )
 
         prompt = ANALYZE_PROMPT.format(
             uc_name=uc_name,
@@ -827,3 +856,171 @@ class RequirementsGathererNode(BaseAgent):
                 "developer_answers": answers,
                 "generation_hints": {},
             }
+
+    def _extract_raw_artifacts(self, state: dict) -> dict:
+        """Read raw file contents from uploaded artifacts for richer downstream context.
+
+        Extracts:
+        - mop_text: Full MOP document text (conditional logic, step descriptions)
+        - ssh_logs: Full SSH session logs (real prompts, real command outputs)
+        - xml_samples: Sample XML file contents (SPML schema, field mappings)
+        """
+        raw = {}
+        doc_set = state.get("document_set", {})
+
+        # Read MOP file
+        mop_path = doc_set.get("mop_file_path", "")
+        if mop_path:
+            try:
+                raw["mop_text"] = Path(mop_path).read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                logger.debug("Could not read MOP file %s: %s", mop_path, e)
+
+        # Read command output files (SSH session logs)
+        cmd_path = doc_set.get("command_outputs_path", "")
+        if cmd_path:
+            p = Path(cmd_path)
+            if p.is_file():
+                try:
+                    raw["ssh_logs"] = p.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+            elif p.is_dir():
+                parts = []
+                for f in sorted(p.iterdir()):
+                    if f.is_file() and f.suffix in (".txt", ".log", ""):
+                        try:
+                            content = f.read_text(encoding="utf-8", errors="replace")
+                            parts.append(f"=== {f.name} ===\n{content}")
+                        except Exception:
+                            pass
+                raw["ssh_logs"] = "\n\n".join(parts)
+
+        # Read sample I/O files (XML, text, etc.)
+        sample_paths = doc_set.get("sample_io_xml_paths", [])
+        if sample_paths:
+            parts = []
+            for sp in sample_paths:
+                try:
+                    content = Path(sp).read_text(encoding="utf-8", errors="replace")
+                    parts.append(f"=== {Path(sp).name} ===\n{content}")
+                except Exception:
+                    pass
+            raw["xml_samples"] = "\n\n".join(parts)
+
+        return raw
+
+    @staticmethod
+    def _enforce_answers(requirements: dict, answers: dict, raw_artifacts: dict) -> dict:
+        """Override LLM-compiled requirements with explicit user answers.
+
+        Ensures questionnaire answers are respected — LLM may hallucinate or ignore them.
+        """
+        if not answers:
+            return requirements
+
+        orch = requirements.get("category_3_orchestration", {})
+        nodes = requirements.get("category_1_node_activity", {})
+        cmds = requirements.get("category_2_commands", {})
+        hints = requirements.get("generation_hints", {})
+
+        # ── Phase enforcement ──
+        # Check for backup/rollback answers and enforce
+        answer_text = json.dumps(answers, default=str).lower()
+        phases = orch.get("phases", [])
+
+        no_backup = any(
+            "no backup" in str(v).lower() or "not required" in str(v).lower()
+            for k, v in answers.items()
+            if "backup" in k.lower() or "backup" in str(v).lower()
+        )
+        no_rollback = any(
+            "no rollback" in str(v).lower() or "not required" in str(v).lower()
+            for k, v in answers.items()
+            if "rollback" in k.lower() or "rollback" in str(v).lower()
+        )
+
+        if no_backup and "backup" in [p.lower() for p in phases]:
+            phases = [p for p in phases if p.lower() != "backup"]
+            logger.info("Enforced: removed 'backup' phase per user answer")
+        if no_rollback and "rollback" in [p.lower().replace("rollbackconfiguration", "rollback")
+                                           for p in phases]:
+            phases = [p for p in phases if "rollback" not in p.lower()]
+            logger.info("Enforced: removed 'rollback' phase per user answer")
+
+        orch["phases"] = phases
+        requirements["category_3_orchestration"] = orch
+
+        # ── Prompt regex enforcement ──
+        # Extract real prompts from SSH logs if available
+        ssh_logs = raw_artifacts.get("ssh_logs", "")
+        if ssh_logs:
+            extracted_prompts = _extract_prompts_from_logs(ssh_logs)
+            if extracted_prompts:
+                node_list = nodes.get("nodes", [])
+                for node in node_list:
+                    node_name = node.get("name", "").upper()
+                    # Match extracted prompts to nodes
+                    for prompt_str in extracted_prompts:
+                        prompt_lower = prompt_str.lower()
+                        if node_name.lower() in prompt_lower:
+                            # Don't override if user already provided a specific prompt
+                            if not any("prompt" in k.lower() and node_name.lower() in k.lower()
+                                       for k in answers):
+                                node["prompt_regex_from_logs"] = prompt_str
+                nodes["nodes"] = node_list
+                requirements["category_1_node_activity"] = nodes
+
+        # ── Include raw MOP and XML samples in generation hints ──
+        wf_hints = hints.get("workflow_yaml", {}) if isinstance(hints.get("workflow_yaml"), dict) else {}
+
+        if no_backup:
+            wf_hints["phase_overrides"] = wf_hints.get("phase_overrides", [])
+            wf_hints["phase_overrides"].append(
+                "DO NOT generate a backup phase. User explicitly stated backup is not required."
+            )
+        if no_rollback:
+            wf_hints["phase_overrides"] = wf_hints.get("phase_overrides", [])
+            wf_hints["phase_overrides"].append(
+                "DO NOT generate a rollback phase. User explicitly stated rollback is not required."
+            )
+
+        # Attach raw MOP text for downstream workflow generation
+        if raw_artifacts.get("mop_text"):
+            wf_hints["raw_mop_text"] = raw_artifacts["mop_text"]
+        if raw_artifacts.get("xml_samples"):
+            wf_hints["xml_samples"] = raw_artifacts["xml_samples"]
+
+        hints["workflow_yaml"] = wf_hints
+        requirements["generation_hints"] = hints
+
+        # ── Store raw answers for direct downstream access ──
+        requirements["developer_answers"] = answers
+
+        return requirements
+
+
+def _extract_prompts_from_logs(ssh_logs: str) -> list[str]:
+    """Extract shell prompt patterns from raw SSH session logs.
+
+    Looks for lines that look like prompts: [user@host ~]$ or user@host:~$
+    """
+    import re
+    prompts = set()
+    # Match common prompt patterns at start of lines
+    for m in re.finditer(
+        r'^(\[?\w+@[\w.-]+\s*[~\w/]*\]?\s*[$#>]\s*)$',
+        ssh_logs, re.MULTILINE,
+    ):
+        prompt = m.group(1).strip()
+        if len(prompt) > 3:
+            prompts.add(prompt)
+    # Also match prompts like "hostname$" or "hostname:~"
+    for m in re.finditer(
+        r'^([\w.-]+[$:#~>]+\s*)$',
+        ssh_logs, re.MULTILINE,
+    ):
+        prompt = m.group(1).strip()
+        if len(prompt) > 3:
+            prompts.add(prompt)
+    return sorted(prompts)

@@ -100,6 +100,8 @@ def _get_step_data(state: dict) -> dict:
         "requirements": requirements,
         "developer_notes": doc_set.get("developer_notes", ""),
         "generation_hints": requirements.get("generation_hints", {}),
+        "developer_answers": requirements.get("developer_answers", {}),
+        "raw_artifacts": state.get("raw_artifacts", {}),
     }
 
 
