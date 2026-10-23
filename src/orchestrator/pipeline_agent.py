@@ -54,6 +54,11 @@ class PipelineAgent(BaseAgent):
         # Register sub_agents for ADK framework
         self.sub_agents = list(agents_list)
 
+    # Agents that cover multiple display steps (name → list of step numbers)
+    _MULTI_STEP_AGENTS: dict[str, list[int]] = {
+        "requirements_gatherer": [1, 2],
+    }
+
     @staticmethod
     def _parse_step_number(agent_name: str) -> int | None:
         """Extract step number from agent name like 'step1_doc_parser' → 1."""
@@ -137,6 +142,7 @@ class PipelineAgent(BaseAgent):
                         _old_err.unlink()
 
             # ----- PUBLISH step_started -----
+            multi_steps = self._MULTI_STEP_AGENTS.get(agent.name, [])
             if step_num and run_id_str:
                 try:
                     await event_bus.publish(PipelineEvent(
@@ -145,6 +151,15 @@ class PipelineAgent(BaseAgent):
                     ))
                 except Exception:
                     pass
+            elif multi_steps and run_id_str:
+                for ms in multi_steps:
+                    try:
+                        await event_bus.publish(PipelineEvent(
+                            run_id=UUID(run_id_str), event_type="step_started",
+                            step_number=ms,
+                        ))
+                    except Exception:
+                        pass
 
             # ----- EXECUTE THE AGENT -----
             agent_t0 = _time.monotonic()
@@ -169,6 +184,16 @@ class PipelineAgent(BaseAgent):
                         ))
                     except Exception:
                         pass
+                elif multi_steps and run_id_str:
+                    for ms in multi_steps:
+                        try:
+                            await event_bus.publish(PipelineEvent(
+                                run_id=UUID(run_id_str), event_type="step_failed",
+                                step_number=ms,
+                                payload={"error": str(e)},
+                            ))
+                        except Exception:
+                            pass
                 break
 
             agent_elapsed = _time.monotonic() - agent_t0
@@ -195,6 +220,16 @@ class PipelineAgent(BaseAgent):
                     ))
                 except Exception:
                     pass
+            elif multi_steps and run_id_str:
+                for ms in multi_steps:
+                    try:
+                        await event_bus.publish(PipelineEvent(
+                            run_id=UUID(run_id_str), event_type="step_completed",
+                            step_number=ms,
+                            payload={"status": "passed"},
+                        ))
+                    except Exception:
+                        pass
 
             # ----- CHECK FOR ACTIONS SET DURING AGENT EXECUTION -----
             # (milestone nodes set pipeline_actions during their run)

@@ -223,7 +223,7 @@ class HistorySection:
                             for key, label in [
                                 ("ciq_file_path", "CIQ Excel"),
                                 ("mop_file_path", "MOP Document"),
-                                ("sample_io_xml_paths", "Sample I/O XMLs"),
+                                ("sample_io_xml_paths", "Sample I/O"),
                                 ("constraints_file_path", "Constraints"),
                                 ("command_outputs_path", "Command Outputs"),
                                 ("additional_documents", "Additional Documents"),

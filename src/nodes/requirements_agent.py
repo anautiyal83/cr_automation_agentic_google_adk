@@ -37,6 +37,9 @@ flow = get_flow_logger(__name__)
 # Shared dict for requirements — read by step nodes via _get_step_data
 requirements_store: dict[str, dict] = {}  # run_id → requirements package
 
+# Cache of previous answers by UC name — reused on re-run if no new questions
+_previous_answers: dict[str, dict] = {}  # uc_name → all_answers from last run
+
 SYSTEM_PROMPT = """You are a Nokia telecom UC automation expert and cr-automation framework specialist.
 
 Your job: Analyze input documents and identify ALL information needed to generate
@@ -249,7 +252,10 @@ class RequirementsGathererNode(BaseAgent):
         flow.flow("REQUIREMENTS Phase 2 result: readiness=%s", readiness)
 
         # ── Phase 3: Gather missing requirements (iterate) ──
-        all_answers = {}
+        # Pre-populate with answers from previous run of same UC (if any)
+        all_answers = dict(_previous_answers.get(uc_name, {}))
+        if all_answers:
+            flow.flow("REQUIREMENTS: Loaded %d previous answers for UC %s", len(all_answers), uc_name)
         round_num = 0
         max_rounds = 3
 
@@ -264,9 +270,19 @@ class RequirementsGathererNode(BaseAgent):
                 flow.flow("REQUIREMENTS: No questions to ask — proceeding with defaults")
                 break
 
-            # Ask developer (HIL pause)
-            answers = await self._ask_developer(ctx, questions, round_num)
+            # Check if all questions already have answers from previous run
+            unanswered = [q for q in questions if isinstance(q, dict) and q.get("id") not in all_answers]
+            if not unanswered and all_answers:
+                flow.flow("REQUIREMENTS: All %d questions already answered from previous run — skipping questionnaire",
+                          len(questions))
+                break
+
+            # Ask developer (HIL pause) — pass previous answers for pre-filling defaults
+            answers = await self._ask_developer(ctx, questions, round_num, all_answers)
             all_answers.update(answers)
+
+            # Cache answers for potential re-runs
+            _previous_answers[uc_name] = dict(all_answers)
 
             # Re-analyze with new answers
             combined_notes = developer_notes
@@ -275,6 +291,10 @@ class RequirementsGathererNode(BaseAgent):
             analysis = await self._analyze_uc(parsed, uc_name, combined_notes)
             readiness = analysis.get("overall_readiness", "INSUFFICIENT")
             flow.flow("REQUIREMENTS Phase 3: Round %d result: readiness=%s", round_num, readiness)
+
+        # Save final answers for re-runs
+        if all_answers:
+            _previous_answers[uc_name] = dict(all_answers)
 
         # ── Phase 4: Compile requirements ──
         flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
@@ -712,11 +732,20 @@ class RequirementsGathererNode(BaseAgent):
             logger.error("Question generation failed: %s", e)
             return []
 
-    async def _ask_developer(self, ctx, questions: list, round_num: int) -> dict:
+    async def _ask_developer(self, ctx, questions: list, round_num: int,
+                             previous_answers: dict | None = None) -> dict:
         """Present questions to developer via HIL pause, return answers."""
         run_id = ctx.session.state.get("run_id", "")
         run_dir = ctx.session.state.get("run_dir", "")
         uc_name = ctx.session.state.get("uc_name", "UC")
+
+        # Pre-fill default_value from previous answers for re-runs
+        if previous_answers:
+            for q in questions:
+                if isinstance(q, dict):
+                    q_id = q.get("id", "")
+                    if q_id in previous_answers and not q.get("default_value"):
+                        q["default_value"] = previous_answers[q_id]
 
         # Generate questionnaire HTML as artifact
         artifact_path = ""

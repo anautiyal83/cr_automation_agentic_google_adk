@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ _SHORT_NAMES = {
 
 # Milestone names mapping
 _MILESTONE_NAMES = {
+    0: "Requirements Gathering",
+    2: "Requirements Summary",
     3: "Validation Rules",
     4: "JSON Output",
     5: "QA Validation",
@@ -111,6 +114,17 @@ class ProgressSection:
             # Error / retry detail area
             self.detail_container = ui.column().classes("w-full")
 
+            # Pre-built questionnaire dialog (populated on demand)
+            self._q_dialog = ui.dialog().props("maximized")
+            self._q_content = None  # will hold the card's content container
+            self._q_answer_inputs: dict[str, Any] = {}
+            with self._q_dialog:
+                self._q_card = ui.card().classes("w-full h-full p-0").style(
+                    "display:flex; flex-direction:column; max-height:100vh; "
+                    "background: #f8f9fc; color: #1a1a2e"
+                )
+            self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
+
             # Milestone review panel (hidden until milestone reached)
             self.milestone_row = ui.column().classes("w-full gap-3 mt-2")
             self.milestone_row.set_visibility(False)
@@ -140,6 +154,9 @@ class ProgressSection:
                     self.ms_cancel_btn = ui.button("Cancel Pipeline", icon="stop",
                         on_click=lambda: self._milestone_respond("cancel")) \
                         .props("unelevated color=negative size=sm no-caps")
+                # Container for questionnaire-specific button (cleared on each call)
+                self.ms_questionnaire_row = ui.row().classes("w-full gap-3")
+                self.ms_questionnaire_row.set_visibility(False)
 
             # Completion actions (hidden until pipeline finishes)
             self.completion_row = ui.row().classes("w-full items-center gap-3 mt-2")
@@ -288,41 +305,72 @@ class ProgressSection:
                 ))
                 event_bus.subscribe(self._on_event, run_id)
             elif status == "paused_milestone":
+                # Use milestone_step (which step the milestone is for) not current_step
+                run_info = self.runner._active_runs.get(str(run_id), {})
+                ms_step = run_info.get("milestone_step", step)
+
                 self.status_icon.name = "rate_review"
                 self.status_icon.classes(replace="cr-text-warning")
-                self.status_label.text = f"Milestone Review — {uc_name}"
-                self.status_detail.text = f"Step {step}/{TOTAL_STEPS} completed — awaiting review"
-                self.progress_bar.value = step / TOTAL_STEPS
                 self.progress_bar.props("color=deep-purple-6")
                 self.progress_bar.props(remove="animate")
                 self.banner.style(replace=(
                     "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
                 ))
 
-                # Resolve milestone artifacts
-                milestone_name = _MILESTONE_NAMES.get(step, f"Step {step}")
-                artifact_file = ""
-                extra_files = []
-                try:
-                    ms_state = await self.runner.get_state(str(run_id))
-                    artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
-                        ms_state, step
-                    )
-                except Exception:
-                    pass
+                milestone_name = _MILESTONE_NAMES.get(ms_step, f"Step {ms_step}")
 
-                # Check for test failures
-                has_failures = False
-                if step in (5, 7, 9):
+                if ms_step == 0:
+                    # Questionnaire — restore interactive dialog
+                    from src.nodes.milestone_nodes import milestone_waiting as _mw
+                    questions = _mw.get(0, {}).get("questions", [])
+                    self.status_icon.name = "quiz"
+                    self.status_label.text = f"Requirements Gathering — {uc_name}"
+                    self.status_detail.text = f"{len(questions)} questions need your input"
+                    self.progress_bar.value = 0
+                    self._show_questionnaire_dialog(questions, milestone_name)
+                elif ms_step == 2:
+                    # Requirements Summary review
+                    self.status_icon.name = "checklist"
+                    self.status_label.text = f"Review: Requirements Summary — {uc_name}"
+                    self.status_detail.text = "Review the gathered requirements before proceeding"
+                    self.progress_bar.value = 2 / TOTAL_STEPS
+                    artifact_file = ""
+                    extra_files = []
                     try:
-                        ms_state = ms_state if 'ms_state' in dir() else await self.runner.get_state(str(run_id))
-                        has_failures = ms_state.get(f"step_{step}_status") == "failed"
+                        ms_state = await self.runner.get_state(str(run_id))
+                        from src.nodes.milestone_nodes import milestone_waiting as _mw
+                        artifact_file = _mw.get(2, {}).get("artifact_file", "")
+                        if not artifact_file:
+                            artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
+                                ms_state, ms_step
+                            )
                     except Exception:
                         pass
-
-                self._show_milestone_review(step, milestone_name, artifact_file,
-                                            has_failures=has_failures,
-                                            extra_artifact_files=extra_files)
+                    self._show_milestone_review(ms_step, milestone_name, artifact_file,
+                                                extra_artifact_files=extra_files)
+                else:
+                    # Regular milestone (steps 3-9)
+                    self.status_label.text = f"Milestone Review — {uc_name}"
+                    self.status_detail.text = f"Step {ms_step}/{TOTAL_STEPS} completed — awaiting review"
+                    self.progress_bar.value = ms_step / TOTAL_STEPS
+                    artifact_file = ""
+                    extra_files = []
+                    try:
+                        ms_state = await self.runner.get_state(str(run_id))
+                        artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
+                            ms_state, ms_step
+                        )
+                    except Exception:
+                        pass
+                    has_failures = False
+                    if ms_step in (5, 7, 9):
+                        try:
+                            has_failures = ms_state.get(f"step_{ms_step}_status") == "failed"
+                        except Exception:
+                            pass
+                    self._show_milestone_review(ms_step, milestone_name, artifact_file,
+                                                has_failures=has_failures,
+                                                extra_artifact_files=extra_files)
                 event_bus.subscribe(self._on_event, run_id)
             elif status == "paused_hil":
                 self.status_icon.name = "help_outline"
@@ -386,10 +434,19 @@ class ProgressSection:
             try:
                 with self._client:
                     await self._handle_event(event)
-            except Exception:
-                await self._handle_event(event)
+            except Exception as e:
+                logger.error("Event handler failed (with client): %s — %s", event.event_type, e,
+                             exc_info=True)
+                try:
+                    await self._handle_event(event)
+                except Exception as e2:
+                    logger.error("Event handler failed (no client): %s — %s", event.event_type, e2,
+                                 exc_info=True)
         else:
-            await self._handle_event(event)
+            try:
+                await self._handle_event(event)
+            except Exception as e:
+                logger.error("Event handler failed: %s — %s", event.event_type, e, exc_info=True)
 
     async def _handle_event(self, event: PipelineEvent):
         if event.event_type == "step_started":
@@ -542,6 +599,7 @@ class ProgressSection:
                                extra_artifact_files: list[str] | None = None):
         self.milestone_row.set_visibility(True)
         self.action_btns.set_visibility(False)
+        self.ms_questionnaire_row.set_visibility(False)
         self._current_artifact_file = artifact_file
         self._current_milestone = milestone
         self._current_milestone_step = step_num
@@ -570,6 +628,12 @@ class ProgressSection:
             self.ms_rerun_btn.text = rerun_label
         else:
             self.ms_rerun_btn.text = "Re-run Step"
+
+        # Reset Continue button (may have been changed by questionnaire)
+        self.ms_continue_btn.text = "Continue"
+        self.ms_continue_btn._props["icon"] = "play_arrow"
+        self.ms_continue_btn.props("color=positive")
+        self.ms_rerun_btn.set_visibility(True)
 
         # For test steps with failures: disable Continue, show Skip & Continue
         if has_failures and step_num in (5, 7, 9):
@@ -628,20 +692,19 @@ class ProgressSection:
         self.ms_continue_btn.text = "Skip & Use Defaults"
         self.ms_continue_btn.props("color=grey-6")
 
-        # Add Answer Questions button in the action row
-        with self.milestone_row:
-            with ui.row().classes("w-full gap-3"):
-                ui.button("Answer Questions", icon="quiz",
-                          on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
-                    .props("unelevated color=deep-purple-6 size=sm no-caps")
+        # Populate questionnaire button row (cleared first to avoid duplicates)
+        self.ms_questionnaire_row.clear()
+        with self.ms_questionnaire_row:
+            ui.button("Answer Questions", icon="quiz",
+                      on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
+                .props("unelevated color=deep-purple-6 size=sm no-caps")
+        self.ms_questionnaire_row.set_visibility(True)
 
         # Auto-open the dialog on first show
         self._open_questionnaire_dialog(questions, milestone_name)
 
     def _open_questionnaire_dialog(self, questions: list, milestone_name: str):
-        """Open a maximized dialog with interactive question form — dark themed."""
-        import json as _json
-
+        """Populate and open the pre-built questionnaire dialog — light+dark hybrid theme."""
         cat_labels = {
             "node_activity": ("Node & Activity", "dns"),
             "commands": ("Commands & Parameters", "terminal"),
@@ -653,134 +716,222 @@ class ProgressSection:
             "optional": "grey-6",
         }
 
-        # Group questions by category
         by_cat: dict[str, list] = {}
         for q in questions:
             if isinstance(q, dict):
-                cat = q.get("category", "other")
-                by_cat.setdefault(cat, []).append(q)
+                by_cat.setdefault(q.get("category", "other"), []).append(q)
 
-        # Track answer inputs
-        answer_inputs: dict[str, Any] = {}
+        self._q_answer_inputs.clear()
+        dialog = self._q_dialog
+        card = self._q_card
 
-        dialog = ui.dialog().props("maximized")
-        with dialog:
-            # Inject CSS for input visibility
-            ui.add_head_html("""<style>
-                .cr-q-input .q-field__control { border: 1px solid #5a5a70 !important; border-radius: 4px; }
-                .cr-q-input .q-field__native { color: #e8e8f0 !important; }
-                .cr-q-input .q-field__native::placeholder { color: #6a6a80 !important; }
-                .cr-q-input .q-field__control:focus-within { border-color: #6C63FF !important; }
-            </style>""")
-        with dialog, ui.card().classes("w-full h-full p-0").style(
-            "display: flex; flex-direction: column; max-height: 100vh; "
-            "background: var(--cr-surface); color: var(--cr-text)"
-        ):
-            # Header
-            with ui.row().classes("items-center justify-between w-full px-5 py-3").style(
-                "border-bottom: 1px solid var(--cr-border); flex-shrink: 0; "
-                "background: var(--cr-surface-light)"
+        # Clear previous content and rebuild inside the pre-built card
+        card.clear()
+        with card:
+            # ── Header — dark accent bar ──
+            with ui.element("div").classes("w-full px-6 py-4").style(
+                "flex-shrink:0; "
+                "background: linear-gradient(135deg, #1e1e32 0%, #2d2b55 100%); "
+                "color: #ffffff"
             ):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("quiz", size="24px").classes("cr-text-accent")
-                    ui.label(milestone_name).classes("text-subtitle1 font-bold cr-stat-value")
-                with ui.row().classes("items-center gap-3"):
-                    critical_count = sum(1 for q in questions if isinstance(q, dict) and q.get("importance") == "critical")
-                    ui.badge(f"{len(questions)} questions", color="deep-purple-6").props("rounded")
-                    if critical_count:
-                        ui.badge(f"{critical_count} critical", color="negative").props("rounded")
-                    ui.button(icon="close", on_click=dialog.close) \
-                        .props("flat round size=sm color=grey-6")
+                with ui.row().classes("items-center justify-between w-full"):
+                    with ui.row().classes("items-center gap-3"):
+                        ui.icon("quiz", size="28px").style("color: #a78bfa")
+                        with ui.column().classes("gap-0"):
+                            ui.label(milestone_name).style(
+                                "font-size: 1.2rem; font-weight: 700; "
+                                "letter-spacing: 0.3px; color: #fff"
+                            )
+                            ui.label(
+                                "Answer the questions below to configure your pipeline run"
+                            ).style("font-size: 0.8rem; color: rgba(255,255,255,0.6)")
+                    with ui.row().classes("items-center gap-3"):
+                        critical_count = sum(
+                            1 for q in questions
+                            if isinstance(q, dict) and q.get("importance") == "critical"
+                        )
+                        ui.badge(f"{len(questions)} questions", color="deep-purple-4") \
+                            .props("rounded")
+                        if critical_count:
+                            ui.badge(f"{critical_count} critical", color="red-5") \
+                                .props("rounded")
+                        ui.button(icon="close", on_click=dialog.close) \
+                            .props("flat round size=sm") \
+                            .style("color: rgba(255,255,255,0.7)")
 
-            # Scrollable question form
-            with ui.scroll_area().style("flex: 1; min-height: 0"):
-                with ui.column().classes("w-full gap-3 pa-4").style("max-width: 800px; margin: 0 auto"):
+            # ── Scrollable question form — light background ──
+            with ui.scroll_area().style("flex:1; min-height:0"):
+                with ui.column().classes("w-full gap-5 pa-6").style(
+                    "max-width: 880px; margin: 0 auto"
+                ):
                     for cat, cat_questions in by_cat.items():
-                        label, icon = cat_labels.get(cat, (cat.replace("_", " ").title(), "help"))
-                        with ui.expansion(label, icon=icon).classes("w-full").style(
-                            "background: var(--cr-surface-light); border: 1px solid var(--cr-border); border-radius: 8px"
-                        ).props("default-opened dense header-class='text-subtitle2 font-bold'"):
-                            for q in cat_questions:
-                                if not isinstance(q, dict):
-                                    continue
-                                q_id = q.get("id", "")
-                                q_text = q.get("question", "?")
-                                q_type = q.get("input_type", "text")
-                                q_default = q.get("default_value", "")
-                                q_imp = q.get("importance", "optional")
-                                q_context = q.get("context", "")
-                                q_options = q.get("options", [])
-                                q_helper = q.get("helper_text", "")
+                        label, icon = cat_labels.get(
+                            cat, (cat.replace("_", " ").title(), "help")
+                        )
 
-                                with ui.element("div").classes("w-full").style(
-                                    "background: var(--cr-surface); border: 1px solid var(--cr-border); "
-                                    "border-radius: 6px; padding: 12px; margin: 4px 0"
-                                ):
-                                    # Question header
-                                    with ui.row().classes("items-start gap-2 w-full"):
-                                        ui.badge(q_imp.upper(), color=imp_colors.get(q_imp, "grey-6")) \
-                                            .props("rounded").style("margin-top: 2px")
-                                        with ui.column().classes("flex-1 gap-1"):
-                                            ui.label(q_text).classes("text-body2 font-semibold")
-                                            if q_context:
-                                                ui.label(q_context).classes("text-caption").style(
-                                                    "color: var(--cr-text-dim)"
-                                                )
+                        with ui.element("div").classes("w-full").style(
+                            "background: #ffffff; border: 1px solid #e2e5f1; "
+                            "border-radius: 12px; overflow: hidden; "
+                            "box-shadow: 0 1px 3px rgba(0,0,0,0.06)"
+                        ):
+                            with ui.element("div").classes("w-full px-5 py-3").style(
+                                "background: linear-gradient(90deg, #f0edff 0%, #f8f7ff 100%); "
+                                "border-bottom: 1px solid #e2e5f1"
+                            ):
+                                with ui.row().classes("items-center gap-2"):
+                                    ui.icon(icon, size="20px").style("color: #6C63FF")
+                                    ui.label(label).style(
+                                        "font-size: 0.95rem; font-weight: 600; color: #2d2b55"
+                                    )
+                                    ui.badge(f"{len(cat_questions)}", color="deep-purple-3") \
+                                        .props("rounded dense").style("color: #4a4578")
 
-                                    # Input — auto-detect best type, pre-fill defaults
+                            with ui.column().classes("w-full gap-0"):
+                                for idx, q in enumerate(cat_questions):
+                                    if not isinstance(q, dict):
+                                        continue
+                                    q_id = q.get("id", "")
+                                    q_text = q.get("question", "?")
+                                    q_type = q.get("input_type", "text")
+                                    q_default = q.get("default_value", "")
+                                    q_imp = q.get("importance", "optional")
+                                    q_context = q.get("context", "")
+                                    q_options = q.get("options", [])
+                                    q_helper = q.get("helper_text", "")
                                     default_str = str(q_default) if q_default is not None else ""
 
-                                    if q_type == "boolean" or (q_options and len(q_options) == 2 and
-                                            any(str(o).lower() in ("yes", "no", "true", "false") for o in q_options)):
-                                        default_val = default_str.lower() in ("true", "yes", "1")
-                                        inp = ui.switch("Yes", value=default_val) \
-                                            .props("color=deep-purple-6 dense")
-                                        answer_inputs[q_id] = inp
+                                    border_top = (
+                                        "border-top: 1px solid #eef0f6;" if idx > 0 else ""
+                                    )
+                                    with ui.element("div").classes("w-full").style(
+                                        f"padding: 16px 20px; {border_top}"
+                                    ):
+                                        with ui.row().classes("items-start gap-3 w-full"):
+                                            ui.badge(
+                                                q_imp.upper(),
+                                                color=imp_colors.get(q_imp, "grey-6"),
+                                            ).props("rounded dense").style(
+                                                "margin-top: 3px; font-size: 0.65rem"
+                                            )
+                                            with ui.column().classes("flex-1 gap-1"):
+                                                ui.label(q_text).style(
+                                                    "font-size: 0.9rem; font-weight: 500; "
+                                                    "color: #1a1a2e; line-height: 1.4"
+                                                )
+                                                if q_context:
+                                                    ui.label(q_context).style(
+                                                        "font-size: 0.78rem; color: #6b7280; "
+                                                        "line-height: 1.3"
+                                                    )
 
-                                    elif q_options and len(q_options) <= 5:
-                                        # Pre-select default or first option
-                                        sel = default_str if default_str in [str(o) for o in q_options] else str(q_options[0])
-                                        inp = ui.radio(q_options, value=sel) \
-                                            .props("dense color=deep-purple-6")
-                                        answer_inputs[q_id] = inp
+                                        with ui.element("div").classes("w-full").style(
+                                            "margin-top: 10px; padding-left: 36px"
+                                        ):
+                                            if q_type == "boolean" or (
+                                                q_options and len(q_options) == 2
+                                                and any(
+                                                    str(o).lower() in ("yes", "no", "true", "false")
+                                                    for o in q_options
+                                                )
+                                            ):
+                                                default_val = default_str.lower() in (
+                                                    "true", "yes", "1",
+                                                )
+                                                inp = ui.switch("Yes", value=default_val) \
+                                                    .props("color=deep-purple-6 dense")
+                                                self._q_answer_inputs[q_id] = inp
 
-                                    elif q_options:
-                                        sel = default_str if default_str in [str(o) for o in q_options] else str(q_options[0])
-                                        inp = ui.select(q_options, value=sel) \
-                                            .props("outlined dense dark filled").classes("w-full")
-                                        answer_inputs[q_id] = inp
+                                            elif q_options and len(q_options) <= 5:
+                                                opts_with_other = [str(o) for o in q_options] + ["Other"]
+                                                sel = (
+                                                    default_str
+                                                    if default_str in [str(o) for o in q_options]
+                                                    else str(q_options[0])
+                                                )
+                                                inp = ui.radio(opts_with_other, value=sel) \
+                                                    .props("dense color=deep-purple-6 inline")
+                                                other_input = (
+                                                    ui.input(placeholder="Specify your answer")
+                                                    .props("outlined dense")
+                                                    .classes("w-full mt-2")
+                                                    .style("max-width: 400px")
+                                                    .bind_visibility_from(
+                                                        inp, "value",
+                                                        backward=lambda v: v == "Other",
+                                                    )
+                                                )
+                                                self._q_answer_inputs[q_id] = (inp, other_input)
 
-                                    elif q_type == "password":
-                                        inp = ui.input(placeholder=q_helper or "Enter value",
-                                                       value=default_str,
-                                                       password=True, password_toggle=True) \
-                                            .props("outlined dense") \
-                                            .classes("w-full cr-q-input")
-                                        answer_inputs[q_id] = inp
+                                            elif q_options:
+                                                opts_with_other = [str(o) for o in q_options] + ["Other"]
+                                                sel = (
+                                                    default_str
+                                                    if default_str in [str(o) for o in q_options]
+                                                    else str(q_options[0])
+                                                )
+                                                inp = (
+                                                    ui.select(opts_with_other, value=sel)
+                                                    .props("outlined dense")
+                                                    .classes("w-full")
+                                                    .style("max-width: 400px")
+                                                )
+                                                other_input = (
+                                                    ui.input(placeholder="Specify your answer")
+                                                    .props("outlined dense")
+                                                    .classes("w-full mt-2")
+                                                    .style("max-width: 400px")
+                                                    .bind_visibility_from(
+                                                        inp, "value",
+                                                        backward=lambda v: v == "Other",
+                                                    )
+                                                )
+                                                self._q_answer_inputs[q_id] = (inp, other_input)
 
-                                    else:
-                                        inp = ui.input(placeholder=q_helper or "Enter value",
-                                                       value=default_str) \
-                                            .props("outlined dense") \
-                                            .classes("w-full cr-q-input")
-                                        answer_inputs[q_id] = inp
+                                            elif q_type == "password":
+                                                inp = (
+                                                    ui.input(
+                                                        placeholder=q_helper or "Enter value",
+                                                        value=default_str,
+                                                        password=True,
+                                                    )
+                                                    .props("outlined dense")
+                                                    .classes("w-full")
+                                                    .style("max-width: 400px")
+                                                )
+                                                self._q_answer_inputs[q_id] = inp
 
-                                    # Show pre-filled indicator
-                                    if default_str and q_type not in ("boolean",):
-                                        ui.label(f"Default: {default_str}").classes("text-caption") \
-                                            .style("color: var(--cr-accent); font-style: italic; margin-top: -4px")
+                                            else:
+                                                inp = (
+                                                    ui.input(
+                                                        placeholder=q_helper or "Enter value",
+                                                        value=default_str,
+                                                    )
+                                                    .props("outlined dense")
+                                                    .classes("w-full")
+                                                    .style("max-width: 400px")
+                                                )
+                                                self._q_answer_inputs[q_id] = inp
 
-            # Footer
-            with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style(
-                "border-top: 1px solid var(--cr-border); flex-shrink: 0; "
-                "background: var(--cr-surface-light)"
+                                            if default_str and q_type not in ("boolean",):
+                                                ui.label(f"Default: {default_str}").style(
+                                                    "font-size: 0.72rem; color: #6C63FF; "
+                                                    "font-style: italic; margin-top: 4px"
+                                                )
+
+            # ── Footer — dark accent bar ──
+            with ui.element("div").classes("w-full px-6 py-4").style(
+                "border-top: 1px solid #e2e5f1; flex-shrink:0; "
+                "background: linear-gradient(135deg, #1e1e32 0%, #2d2b55 100%)"
             ):
-                ui.button("Use All Defaults", icon="skip_next",
-                          on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=True)) \
-                    .props("flat color=grey-6 no-caps size=sm")
-                ui.button("Submit Answers", icon="send",
-                          on_click=lambda: self._submit_questionnaire(dialog, answer_inputs, use_defaults=False)) \
-                    .props("unelevated color=deep-purple-6 no-caps size=sm")
+                with ui.row().classes("w-full justify-end gap-3"):
+                    ui.button("Use All Defaults", icon="skip_next",
+                              on_click=lambda: self._submit_questionnaire(
+                                  dialog, self._q_answer_inputs, use_defaults=True)) \
+                        .props("flat no-caps").style("color: rgba(255,255,255,0.6)")
+                    ui.button("Submit Answers", icon="send",
+                              on_click=lambda: self._submit_questionnaire(
+                                  dialog, self._q_answer_inputs, use_defaults=False)) \
+                        .props("unelevated color=deep-purple-6 no-caps")
 
         dialog.open()
 
@@ -790,7 +941,14 @@ class ProgressSection:
 
         answers = {}
         for q_id, inp in answer_inputs.items():
-            val = inp.value if hasattr(inp, 'value') else ""
+            if isinstance(inp, tuple):
+                # Radio/select with "Other" option
+                main_inp, other_inp = inp
+                val = main_inp.value if hasattr(main_inp, 'value') else ""
+                if val == "Other":
+                    val = other_inp.value if hasattr(other_inp, 'value') else ""
+            else:
+                val = inp.value if hasattr(inp, 'value') else ""
             if val is not None and str(val).strip():
                 answers[q_id] = val
 
