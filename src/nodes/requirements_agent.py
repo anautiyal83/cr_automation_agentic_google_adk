@@ -281,18 +281,32 @@ class RequirementsGathererNode(BaseAgent):
         # ── Phase 2: Analyze UC type ──
         flow.flow("REQUIREMENTS Phase 2: Analyzing UC type")
         parsed["_raw_artifacts"] = raw_artifacts  # attach for richer context
-        analysis = await self._analyze_uc(parsed, uc_name, developer_notes)
+
+        # Pre-populate with answers from previous run of same UC (if any)
+        all_answers = dict(_previous_answers.get(uc_name, {}))
+        if all_answers:
+            flow.flow("REQUIREMENTS: Loaded %d previous answers for UC %s", len(all_answers), uc_name)
+
+        # Include previous answers in analysis so LLM evaluates readiness WITH them
+        analysis_notes = developer_notes
+        if all_answers:
+            analysis_notes += "\n\n=== Previously Answered Questions ===\n" + json.dumps(all_answers, indent=2)
+
+        analysis = await self._analyze_uc(parsed, uc_name, analysis_notes)
 
         readiness = analysis.get("overall_readiness", "INSUFFICIENT")
         flow.flow("REQUIREMENTS Phase 2 result: readiness=%s", readiness)
 
         # ── Phase 3: Gather missing requirements (iterate) ──
-        # Pre-populate with answers from previous run of same UC (if any)
-        all_answers = dict(_previous_answers.get(uc_name, {}))
-        if all_answers:
-            flow.flow("REQUIREMENTS: Loaded %d previous answers for UC %s", len(all_answers), uc_name)
-        round_num = 0
-        max_rounds = 3
+        # If we have previous answers and readiness is acceptable, skip questionnaire
+        if all_answers and readiness in ("COMPLETE", "PARTIAL"):
+            flow.flow("REQUIREMENTS: Reusing %d previous answers — readiness=%s, skipping questionnaire",
+                       len(all_answers), readiness)
+            round_num = 0
+            max_rounds = 0  # skip the loop entirely
+        else:
+            round_num = 0
+            max_rounds = 3
 
         while readiness != "COMPLETE" and round_num < max_rounds:
             round_num += 1
