@@ -659,6 +659,24 @@ class RequirementsGathererNode(BaseAgent):
             except Exception as e:
                 logger.debug("Could not read CIQ for summary: %s", e)
 
+        # Helper to safely get nested values without "?"
+        def _v(d, *keys, fallback="—"):
+            """Get nested dict value, return fallback if missing/empty."""
+            for k in keys:
+                if isinstance(d, dict):
+                    d = d.get(k)
+                else:
+                    return fallback
+            return d if d is not None and d != "" else fallback
+
+        # Primary data sources: requirements (compiled), analysis (LLM), answers (user)
+        cat1_req = requirements.get("category_1_node_activity", {})
+        cat2_req = requirements.get("category_2_commands", {})
+        cat3_req = requirements.get("category_3_orchestration", {})
+        cat1_an = analysis.get("category_1_node_activity", {})
+        cat2_an = analysis.get("category_2_commands", {})
+        cat3_an = analysis.get("category_3_orchestration", {})
+
         # Build HTML
         lines = [
             "<!DOCTYPE html>",
@@ -666,146 +684,145 @@ class RequirementsGathererNode(BaseAgent):
             "<meta charset='utf-8'>",
             f"<title>Requirements Summary — {uc_name}</title>",
             "<style>",
-            "body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 40px auto; color: #e2e4ed; background: #0f1117; padding: 20px; }",
-            "h1 { color: #6c8aff; border-bottom: 2px solid #2e3348; padding-bottom: 10px; }",
-            "h2 { color: #38bdf8; margin-top: 30px; }",
-            "h3 { color: #a78bfa; }",
-            "table { width: 100%; border-collapse: collapse; margin: 10px 0; }",
-            "th, td { text-align: left; padding: 8px 12px; border: 1px solid #2e3348; }",
+            "* { box-sizing: border-box; }",
+            "body { font-family: 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.5; "
+            "max-width: 960px; margin: 30px auto; color: #e2e4ed; background: #0f1117; padding: 20px; }",
+            "h1 { font-size: 1.4em; color: #6c8aff; border-bottom: 2px solid #2e3348; padding-bottom: 8px; margin-bottom: 16px; }",
+            "h2 { font-size: 1.1em; color: #38bdf8; margin-top: 24px; margin-bottom: 8px; }",
+            "h3 { font-size: 1em; color: #a78bfa; margin-top: 12px; }",
+            "p { margin: 4px 0; }",
+            "table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 0.92em; }",
+            "th, td { text-align: left; padding: 6px 10px; border: 1px solid #2e3348; }",
             "th { background: #1a1d27; color: #8b8fa8; font-size: 0.85em; text-transform: uppercase; }",
-            "td { background: #242836; }",
-            ".badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }",
+            "td { background: #242836; vertical-align: top; }",
+            "code { background: #2a2d3e; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }",
+            ".badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; font-weight: 600; }",
             ".badge-complete { background: #1a3a2a; color: #22c55e; }",
             ".badge-partial { background: #3d2f10; color: #f59e0b; }",
-            ".badge-critical { background: #2e1a1a; color: #ef4444; }",
-            ".badge-cat { background: #1e2a40; color: #38bdf8; }",
-            ".section { background: #1a1d27; border: 1px solid #2e3348; border-radius: 8px; padding: 16px; margin: 12px 0; }",
-            "pre { background: #242836; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }",
+            ".badge-insufficient { background: #2e1a1a; color: #ef4444; }",
+            ".section { background: #1a1d27; border: 1px solid #2e3348; border-radius: 8px; padding: 14px; margin: 8px 0; }",
+            "pre { background: #242836; padding: 10px; border-radius: 6px; overflow-x: auto; "
+            "font-size: 0.85em; white-space: pre-wrap; word-break: break-word; max-height: 300px; }",
             ".meta { color: #8b8fa8; font-size: 0.85em; }",
+            ".gap-item { background: #2e1a1a; border: 1px solid #5c2020; border-radius: 4px; "
+            "padding: 6px 10px; margin: 4px 0; color: #fca5a5; font-size: 0.9em; }",
+            ".answer-row td:first-child { width: 30%; font-weight: 600; color: #a78bfa; }",
             "</style>",
             "</head><body>",
-            f"<h1>Requirements Summary</h1>",
-            f"<p class='meta'>UC: <strong>{uc_name}</strong> | "
-            f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>",
+            f"<h1>Requirements Summary — {uc_name}</h1>",
+            f"<p class='meta'>Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            f" | Answers: {len(answers)} | Readiness: ",
         ]
 
-        # Readiness status
-        readiness = analysis.get("overall_readiness", "?")
-        badge_cls = "badge-complete" if readiness == "COMPLETE" else "badge-partial"
-        lines.append(f"<p>Readiness: <span class='badge {badge_cls}'>{readiness}</span> | "
-                     f"UC Type: <strong>{analysis.get('uc_type', '?')}</strong> | "
-                     f"Activity: <strong>{analysis.get('activity_type', '?')}</strong></p>")
+        readiness = analysis.get("overall_readiness", "INSUFFICIENT")
+        badge_cls = {"COMPLETE": "badge-complete", "PARTIAL": "badge-partial"}.get(readiness, "badge-insufficient")
+        lines.append(f"<span class='badge {badge_cls}'>{readiness}</span></p>")
 
-        # CIQ Structure
+        # ── CIQ Structure ──
         lines.append("<h2>CIQ Structure</h2>")
-        lines.append("<div class='section'><table><tr><th>Sheet</th><th>Columns</th><th>Rows</th></tr>")
-        for sname, sdata in per_sheet.items():
-            headers = sdata.get("headers", []) if isinstance(sdata, dict) else []
-            row_count = sdata.get("row_count", "?") if isinstance(sdata, dict) else "?"
-            lines.append(f"<tr><td><strong>{sname}</strong></td><td>{', '.join(str(h) for h in headers)}</td><td>{row_count}</td></tr>")
-        lines.append("</table></div>")
+        if per_sheet:
+            lines.append("<div class='section'><table><tr><th>Sheet</th><th>Columns</th><th>Rows</th></tr>")
+            for sname, sdata in per_sheet.items():
+                headers = sdata.get("headers", []) if isinstance(sdata, dict) else []
+                row_count = sdata.get("row_count", "—") if isinstance(sdata, dict) else "—"
+                lines.append(f"<tr><td><strong>{sname}</strong></td>"
+                             f"<td>{', '.join(str(h) for h in headers)}</td><td>{row_count}</td></tr>")
+            lines.append("</table></div>")
+        else:
+            lines.append("<div class='section'><p>No CIQ structure available</p></div>")
 
-        # Category 1: Node & Activity
-        cat1 = analysis.get("category_1_node_activity", {})
-        cat1_req = requirements.get("category_1_node_activity", {})
-        lines.append("<h2>Category 1: Node & Activity</h2>")
-        lines.append("<div class='section'>")
-
-        nodes_detected = cat1.get("nodes_detected", [])
-        if nodes_detected:
-            lines.append("<table><tr><th>Node</th><th>Type</th><th>Role</th></tr>")
-            for n in nodes_detected:
+        # ── Nodes ──
+        lines.append("<h2>Nodes</h2><div class='section'>")
+        nodes = cat1_req.get("nodes", []) or cat1_an.get("nodes_detected", [])
+        if nodes:
+            lines.append("<table><tr><th>Node</th><th>Role</th><th>SSH User</th>"
+                         "<th>Prompt</th><th>Escalation</th></tr>")
+            for n in nodes:
                 if isinstance(n, dict):
-                    lines.append(f"<tr><td>{n.get('name','?')}</td><td>{n.get('type','?')}</td><td>{n.get('role','?')}</td></tr>")
-                else:
-                    lines.append(f"<tr><td colspan='3'>{n}</td></tr>")
+                    esc = n.get("escalation", {})
+                    lines.append(
+                        f"<tr><td><strong>{_v(n, 'name')}</strong></td>"
+                        f"<td>{_v(n, 'role')}</td>"
+                        f"<td><code>{_v(n, 'ssh', 'user')}</code></td>"
+                        f"<td><code>{_v(n, 'prompt_regex')}</code></td>"
+                        f"<td><code>{_v(esc, 'method')}</code> → <code>{_v(esc, 'prompt_regex')}</code></td></tr>"
+                    )
             lines.append("</table>")
+        else:
+            lines.append("<p>No nodes detected</p>")
 
-        lines.append(f"<p>Login approach: <strong>{cat1.get('login_approach', '?')}</strong> | "
-                     f"NIAM columns: <strong>{cat1.get('niam_columns_count', '?')}</strong> | "
-                     f"Root escalation: <strong>{cat1.get('root_method', '?')}</strong></p>")
-
-        root_esc = cat1_req.get("root_escalation", {})
-        if root_esc:
-            lines.append(f"<p>Root method: <code>{root_esc.get('method', '?')}</code> | "
-                         f"Password: <code>{'***' if root_esc.get('password') else 'not set'}</code></p>")
+        lines.append(f"<p>NIAM failover: <strong>{_v(cat1_req, 'niam_failover')}</strong> | "
+                     f"Activity type: <strong>{_v(cat1_req, 'activity_type')}</strong> | "
+                     f"Data sheet: <strong>{_v(cat1_req, 'data_sheet')}</strong></p>")
         lines.append("</div>")
 
-        # Category 2: Commands & Parameters
-        cat2 = analysis.get("category_2_commands", {})
-        cat2_req = requirements.get("category_2_commands", {})
-        lines.append("<h2>Category 2: Commands & Parameters</h2>")
-        lines.append("<div class='section'>")
-
-        cmds = cat2.get("commands_found", []) or cat2_req.get("commands", [])
+        # ── Commands ──
+        lines.append("<h2>Commands</h2><div class='section'>")
+        cmds = cat2_req.get("commands", []) or cat2_an.get("commands_found", [])
         if cmds:
-            lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th><th>CIQ Params</th></tr>")
+            lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th></tr>")
             for c in cmds:
                 if isinstance(c, dict):
-                    params = ", ".join(c.get("ciq_params", c.get("params_from_ciq", [])))
-                    lines.append(f"<tr><td><code>{c.get('cmd', c.get('command', '?'))}</code></td>"
-                                 f"<td>{c.get('node', '?')}</td><td>{c.get('purpose', '?')}</td>"
-                                 f"<td>{params}</td></tr>")
+                    lines.append(
+                        f"<tr><td><code>{_v(c, 'cmd', fallback=_v(c, 'command'))}</code></td>"
+                        f"<td>{_v(c, 'node')}</td><td>{_v(c, 'purpose')}</td></tr>"
+                    )
             lines.append("</table>")
 
         ldap = cat2_req.get("ldap", {})
         if ldap:
-            lines.append(f"<p>LDAP: <code>{ldap.get('host', '?')}:{ldap.get('port', '?')}</code> | "
-                         f"Bind DN: <code>{ldap.get('bind_dn', '?')}</code> | "
-                         f"Password: <code>{'***' if ldap.get('password') else 'not set'}</code></p>")
+            lines.append(f"<p>LDAP: <code>{_v(ldap, 'host')}:{_v(ldap, 'port')}</code> | "
+                         f"Bind DN: <code>{_v(ldap, 'bind_dn')}</code></p>")
         lines.append("</div>")
 
-        # Category 3: Orchestration
-        cat3 = analysis.get("category_3_orchestration", {})
-        cat3_req = requirements.get("category_3_orchestration", {})
-        lines.append("<h2>Category 3: Orchestration</h2>")
-        lines.append("<div class='section'>")
-        lines.append(f"<p>Grouping: <strong>{cat3.get('grouping_column', cat3_req.get('grouping', {}).get('column', '?'))}</strong> | "
-                     f"NIAM failover: <strong>{cat3.get('niam_failover_needed', cat3_req.get('niam_failover', '?'))}</strong> | "
-                     f"Backup: <strong>{cat3.get('backup_mentioned', '?')}</strong></p>")
-
-        ssh = cat3_req.get("ssh", {})
-        if ssh:
-            lines.append(f"<p>SSH: connect={ssh.get('connect_timeout', '?')}s | "
-                         f"read={ssh.get('read_timeout', '?')}s | "
-                         f"kex={ssh.get('kex_algorithms', 'default')}</p>")
+        # ── Orchestration ──
+        lines.append("<h2>Orchestration</h2><div class='section'>")
+        grouping = cat3_req.get("grouping", {})
+        lines.append(f"<p>Grouping: <strong>{_v(grouping, 'column', fallback=_v(cat3_an, 'grouping_column'))}</strong> | "
+                     f"NIAM failover: <strong>{_v(cat3_req, 'niam_failover', fallback=_v(cat3_an, 'niam_failover_needed'))}</strong></p>")
 
         phases = cat3_req.get("phases", [])
         if phases:
-            lines.append(f"<p>Phases: {' → '.join(phases)}</p>")
+            lines.append(f"<p>Phases: <strong>{' → '.join(str(p) for p in phases)}</strong></p>")
+
+        ssh = cat3_req.get("ssh", {})
+        if ssh:
+            lines.append(f"<p>SSH timeout: {_v(ssh, 'connect_timeout_sec', fallback=_v(ssh, 'connect_timeout'))}s | "
+                         f"KEX: <code>{_v(ssh, 'kex_algorithms', fallback='default')}</code></p>")
         lines.append("</div>")
 
-        # Generation Hints
-        hints = requirements.get("generation_hints", {})
-        if hints:
-            lines.append("<h2>Generation Hints (per step)</h2>")
-            lines.append("<div class='section'>")
-            for step_key, hint in hints.items():
-                lines.append(f"<p><strong>{step_key}:</strong> {hint}</p>")
-            lines.append("</div>")
+        # ── Developer Answers ──
+        if answers:
+            lines.append("<h2>Developer Answers</h2><div class='section'>")
+            lines.append("<table class='answer-row'>")
+            for k, v in answers.items():
+                # Clean up key for display
+                display_key = k.replace("_", " ").replace("q ", "Q")
+                val_str = str(v) if not isinstance(v, bool) else ("Yes" if v else "No")
+                lines.append(f"<tr><td>{display_key}</td><td>{val_str}</td></tr>")
+            lines.append("</table></div>")
 
-        # Developer Notes & Answers
-        if developer_notes or answers:
-            lines.append("<h2>Developer Input</h2>")
-            lines.append("<div class='section'>")
-            if developer_notes:
-                lines.append(f"<h3>Notes</h3><pre>{developer_notes}</pre>")
-            if answers:
-                lines.append(f"<h3>Questionnaire Answers</h3><pre>{json.dumps(answers, indent=2, default=str)}</pre>")
-            lines.append("</div>")
-
-        # Gaps (if any remain)
+        # ── Remaining Gaps ──
         all_gaps = []
         for cat_key in ("category_1_node_activity", "category_2_commands", "category_3_orchestration"):
+            cat_label = cat_key.replace("category_", "").replace("_", " ").title()
             cat = analysis.get(cat_key, {})
             for gap in cat.get("gaps", []):
-                all_gaps.append(f"{cat_key}: {gap}")
+                all_gaps.append((cat_label, gap))
+
+        lines.append("<h2>Remaining Gaps</h2>")
         if all_gaps:
-            lines.append("<h2>Remaining Gaps</h2>")
             lines.append("<div class='section'>")
-            for g in all_gaps:
-                lines.append(f"<p class='badge badge-critical'>{g}</p>")
+            for cat_label, gap in all_gaps:
+                lines.append(f"<div class='gap-item'><strong>{cat_label}:</strong> {gap}</div>")
             lines.append("</div>")
+        else:
+            lines.append("<div class='section'><p style='color:#22c55e'>No remaining gaps — all requirements gathered.</p></div>")
+
+        # ── Developer Notes ──
+        if developer_notes:
+            lines.append("<h2>Developer Notes</h2>")
+            lines.append(f"<div class='section'><pre>{developer_notes}</pre></div>")
 
         lines.append("</body></html>")
 
