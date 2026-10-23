@@ -213,10 +213,26 @@ Produce a structured requirements package as JSON:
     "step_4": "specific instructions for json-output generation",
     "step_6": "specific instructions for workflow generation",
     "step_8": "specific instructions for simulator setup"
+  }},
+  "xml_templates": {{
+    "description": "Mapping of CIQ columns to XML modification templates",
+    "ciq_to_xml_mapping": [
+      {{"ciq_column": "CIQ column name", "xml_tag": "XML element/attribute to set",
+        "xml_sample_file": "which sample XML this comes from",
+        "spml_objectclass": "Subscriber type in SPML"}}
+    ],
+    "base_xml_structure": "The SPML batchRequest template with placeholders"
   }}
 }}
 
-Be concrete — use actual values from the answers, not placeholders."""
+CRITICAL for xml_templates:
+- Analyze the sample XML files provided and map each CIQ column to its XML tag
+- Use ACTUAL SPML format from the samples — do NOT invent dummy XML
+- Replace hardcoded values with ${{configData.COLUMN_NAME}} references
+- The IMSI field should always use ${{configData.TEST_IMSI}} or similar CIQ reference
+- Include the full SPML namespace and version from the samples
+
+Be concrete — use actual values from the answers and sample files, not placeholders."""
 
 
 class RequirementsGathererNode(BaseAgent):
@@ -349,7 +365,8 @@ class RequirementsGathererNode(BaseAgent):
         # ── Phase 4: Compile requirements ──
         flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
         requirements = await self._compile_requirements(
-            uc_name, analysis, developer_notes, all_answers
+            uc_name, analysis, developer_notes, all_answers,
+            raw_artifacts=raw_artifacts,
         )
 
         # ── Phase 4b: Enforce questionnaire answers as hard overrides ──
@@ -915,18 +932,33 @@ class RequirementsGathererNode(BaseAgent):
         return answers
 
     async def _compile_requirements(self, uc_name: str, analysis: dict,
-                                     developer_notes: str, answers: dict) -> dict:
+                                     developer_notes: str, answers: dict,
+                                     raw_artifacts: dict | None = None) -> dict:
         """Compile final requirements package."""
         from src.nodes.cr_import import import_cr_module
         agents_mod = import_cr_module("src.agents")
         call_llm = agents_mod.call_llm
+
+        # Include XML samples and MOP text for CIQ→XML mapping
+        extra_context = ""
+        raw_artifacts = raw_artifacts or {}
+        if raw_artifacts.get("xml_samples"):
+            extra_context += (
+                "\n\n=== SAMPLE XML FILES (use these as templates — map CIQ columns to XML tags) ===\n"
+                + raw_artifacts["xml_samples"][:6000]
+            )
+        if raw_artifacts.get("mop_text"):
+            extra_context += (
+                "\n\n=== RAW MOP DOCUMENT (extract exact commands and conditional logic) ===\n"
+                + raw_artifacts["mop_text"][:6000]
+            )
 
         prompt = COMPILE_PROMPT.format(
             uc_name=uc_name,
             analysis_json=json.dumps(analysis, indent=2, default=str),
             developer_notes=developer_notes or "None",
             answers_json=json.dumps(answers, indent=2, default=str) if answers else "No answers needed — all requirements auto-detected",
-        )
+        ) + extra_context
 
         try:
             response = await call_llm(prompt, system_prompt=SYSTEM_PROMPT)
