@@ -328,10 +328,11 @@ class RequirementsGathererNode(BaseAgent):
         flow.flow("REQUIREMENTS Phase 2 result: readiness=%s", readiness)
 
         # ── Phase 3: Gather missing requirements (iterate) ──
-        # If we have previous answers and readiness is acceptable, skip questionnaire
-        if all_answers and readiness in ("COMPLETE", "PARTIAL"):
-            flow.flow("REQUIREMENTS: Reusing %d previous answers — readiness=%s, skipping questionnaire",
-                       len(all_answers), readiness)
+        # Only skip questionnaire if readiness is COMPLETE (all requirements met)
+        # PARTIAL still has gaps — let the user decide via the continue/clarify dialog
+        if all_answers and readiness == "COMPLETE":
+            flow.flow("REQUIREMENTS: Reusing %d previous answers — readiness=COMPLETE, skipping questionnaire",
+                       len(all_answers))
         else:
             round_num = 0
             rounds_per_batch = 3
@@ -781,47 +782,56 @@ class RequirementsGathererNode(BaseAgent):
 
         # ── Commands ──
         lines.append("<h2>Commands</h2><div class='section'>")
-        cmds = cat2_req.get("commands", []) or cat2_an.get("commands_found", [])
+        # Merge commands from both sources (requirements has richer data, analysis has more entries)
+        cmds = cat2_req.get("commands", [])
+        if not cmds:
+            cmds = cat2_an.get("commands_found", [])
         if cmds:
             lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th>"
-                         "<th>Syntax</th><th>User</th><th>Validation Criteria</th></tr>")
+                         "<th>Syntax</th><th>Validation Criteria</th></tr>")
             for c in cmds:
-                if isinstance(c, dict):
-                    cmd_name = _v(c, 'cmd', fallback=_v(c, 'command'))
-                    syntax = _v(c, 'syntax')
-                    target_user = _v(c, 'target_user')
-                    # Build validation description
-                    val_rules = c.get('validation_rules', c.get('validation_success_patterns', []))
-                    val_desc = "—"
-                    if isinstance(val_rules, list) and val_rules:
-                        parts = []
-                        for vr in val_rules:
-                            if isinstance(vr, dict):
-                                msg = vr.get('description', vr.get('failure_message', ''))
-                                expr = vr.get('criteria', {})
-                                if isinstance(expr, dict):
-                                    expr = expr.get('expr', '')
-                                if msg:
-                                    parts.append(str(msg))
-                                elif expr:
-                                    parts.append(str(expr)[:80])
-                            elif isinstance(vr, str):
-                                parts.append(vr[:80])
-                        val_desc = "; ".join(parts) if parts else "—"
-                    # CIQ params
-                    ciq_params = c.get('ciq_params', c.get('params_from_ciq', []))
-                    params_str = f"<br><em>CIQ: {', '.join(str(p) for p in ciq_params)}</em>" if ciq_params else ""
-                    # Register captures
-                    register = c.get('register', [])
-                    reg_str = f"<br><em>Captures: {', '.join(str(r) for r in register)}</em>" if register else ""
-                    lines.append(
-                        f"<tr><td><code>{cmd_name}</code>{params_str}{reg_str}</td>"
-                        f"<td>{_v(c, 'node')}</td>"
-                        f"<td>{_v(c, 'purpose')}</td>"
-                        f"<td><code>{syntax}</code></td>"
-                        f"<td>{target_user}</td>"
-                        f"<td>{val_desc}</td></tr>"
-                    )
+                if not isinstance(c, dict):
+                    continue
+                cmd_name = _v(c, 'cmd', fallback=_v(c, 'command'))
+                syntax = _v(c, 'syntax')
+                # Clean up purpose: convert snake_case to readable text
+                purpose_raw = _v(c, 'purpose')
+                purpose = purpose_raw.replace("_", " ").replace("-", " ").title() if purpose_raw != "—" else "—"
+
+                # Build validation description from multiple possible formats
+                val_desc = "—"
+                val_rules = c.get('validation_rules', c.get('validation_success_patterns', []))
+                if isinstance(val_rules, list) and val_rules:
+                    parts = []
+                    for vr in val_rules:
+                        if isinstance(vr, dict):
+                            msg = vr.get('description', '') or vr.get('failure_message', '')
+                            if msg:
+                                parts.append(str(msg))
+                        elif isinstance(vr, str):
+                            parts.append(vr[:100])
+                    val_desc = "; ".join(parts) if parts else "—"
+
+                # CIQ params and register as sub-text
+                ciq_params = c.get('ciq_params', c.get('params_from_ciq', []))
+                register = c.get('register', [])
+                sub_parts = []
+                if ciq_params:
+                    sub_parts.append(f"CIQ: {', '.join(str(p) for p in ciq_params)}")
+                if register:
+                    sub_parts.append(f"Captures: {', '.join(str(r) for r in register)}")
+                target_user = c.get('target_user')
+                if target_user:
+                    sub_parts.append(f"User: {target_user}")
+                sub_text = f"<br><em style='color:#8b8fa8;font-size:0.85em'>{' | '.join(sub_parts)}</em>" if sub_parts else ""
+
+                lines.append(
+                    f"<tr><td><code>{cmd_name}</code>{sub_text}</td>"
+                    f"<td>{_v(c, 'node')}</td>"
+                    f"<td>{purpose}</td>"
+                    f"<td><code>{syntax}</code></td>"
+                    f"<td>{val_desc}</td></tr>"
+                )
             lines.append("</table>")
 
         ldap = cat2_req.get("ldap", {})
