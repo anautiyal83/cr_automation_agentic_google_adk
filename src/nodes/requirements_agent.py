@@ -225,12 +225,42 @@ Produce a structured requirements package as JSON:
   }},
   "category_2_commands": {{
     "commands": [
-      {{"cmd": "ldapsearch", "node": "RDS", "purpose": "query subscriber",
-        "syntax": "ldapsearch -x -h localhost -p 16611 ...",
-        "ciq_params": ["Test IMSI"], "register": ["profileName"]}}
+      — LIST EVERY SINGLE COMMAND from the MOP document. Include ALL of these:
+      — Health check commands (sar, ss, ndsLoadStats, provgw status, etc.)
+      — LDAP commands (ldapsearch, ldapmodify)
+      — File operations (copy, ls, sftp, scp)
+      — XML generation (python script, echo, cat)
+      — Monitoring commands (check response file, wait for output)
+      — Login/escalation commands (su, CTRL+P+E)
+      — Any other command mentioned in MOP
+
+      {{"cmd": "sar", "node": "RDS", "purpose": "Check CPU utilization during health check",
+        "syntax": "sar 1 10", "target_user": "sdfrun",
+        "validation_criteria": "%idle should be greater than 90%% in at least 8 samples",
+        "ciq_params": [], "register": ["idlePercent"]}},
+      {{"cmd": "ss", "node": "RDS", "purpose": "Verify network link status",
+        "syntax": "ss -tunap", "target_user": "sdfrun",
+        "validation_criteria": "All REMOTE NODE STATUS entries should show Link UP",
+        "ciq_params": [], "register": []}},
+      {{"cmd": "ldapsearch", "node": "RDS", "purpose": "Query subscriber profile before modification",
+        "syntax": "ldapsearch -x -h localhost -p 16611 -D 'cn=pgwAdminUser' -w ... -b 'imsi=${{TEST_IMSI}},dc=IMSI,dc=C-NTDB' ...",
+        "target_user": "sdfrun",
+        "validation_criteria": "LDAP search should return exactly 1 subscriber entry",
+        "ciq_params": ["Test IMSI"], "register": ["profileName", "mandatoryCap", "optionalCap"]}}
     ],
     "ldap": {{"host": "localhost", "port": 16611, "bind_dn": "...", "password": "..."}}
   }},
+
+  CRITICAL: The commands list must include EVERY command from the MOP — not just 3-4.
+  A typical MOP has 10-20 commands. Extract ALL of them with:
+  - cmd: the actual command string
+  - node: which node it runs on (RDS, PGW, etc.)
+  - purpose: plain English description of what this command does
+  - syntax: the full command syntax with placeholders
+  - target_user: which OS user runs this (oamsys, sdfrun, provgw, root)
+  - validation_criteria: plain English description of what success looks like
+  - ciq_params: which CIQ columns provide input to this command
+  - register: what values to capture from output
   "category_3_orchestration": {{
     "grouping": {{"column": "Zone", "label": "Zone"}},
     "niam_failover": true,
@@ -263,6 +293,140 @@ CRITICAL for xml_templates:
 - Include the full SPML namespace and version from the samples
 
 Be concrete — use actual values from the answers and sample files, not placeholders."""
+
+
+def _extract_from_documents(raw_artifacts: dict, parsed: dict) -> dict:
+    """Deterministically extract structured data directly from documents.
+
+    This is the PRIMARY source of truth — no LLM involved.
+    Parses: MOP commands, SSH prompts/credentials, XML schema, CIQ structure.
+    """
+    import re
+    result = {
+        "mop_commands": [],
+        "mop_phases": [],
+        "ssh_prompts": [],
+        "ssh_credentials": [],
+        "xml_files": [],
+        "ciq_sheets": {},
+    }
+
+    # ── MOP: Extract commands and phases from lines starting with -> ──
+    mop_text = raw_artifacts.get("mop_text", "")
+    if mop_text:
+        current_phase = "unknown"
+        current_node = "unknown"
+        current_user = "oamsys"
+        phases_seen = set()
+
+        for line in mop_text.splitlines():
+            stripped = line.strip()
+
+            # Detect phase headers: #1. Pre Health Check, #3. Activity, etc.
+            phase_match = re.match(r'^#\d+\.\s*(.+)', stripped)
+            if phase_match:
+                phase_name = phase_match.group(1).strip()
+                current_phase = phase_name
+                phases_seen.add(phase_name)
+                continue
+
+            # Detect node context: NIAM login to RDS/PGW
+            node_match = re.search(r'(?:NIAM\s+)?login\s+to\s+(\w+)', stripped, re.IGNORECASE)
+            if node_match:
+                current_node = node_match.group(1).upper()
+
+            # Detect user changes: su - sdfrun, su - provgw
+            su_match = re.search(r'su\s+-\s+(\w+)', stripped)
+            if su_match:
+                current_user = su_match.group(1)
+
+            # Extract command lines: ->command  #validation_comment
+            cmd_match = re.match(r'^->\s*(.+)', stripped)
+            if cmd_match:
+                cmd_line = cmd_match.group(1).strip()
+                # Split command from comment
+                comment = ""
+                if "#" in cmd_line:
+                    parts = cmd_line.split("#", 1)
+                    cmd_line = parts[0].strip()
+                    comment = parts[1].strip()
+
+                # Skip non-command lines
+                if not cmd_line or cmd_line.lower().startswith("read the ciq"):
+                    continue
+
+                result["mop_commands"].append({
+                    "command": cmd_line,
+                    "description": comment or cmd_line,
+                    "validation": comment,
+                    "node": current_node,
+                    "phase": current_phase,
+                    "user": current_user,
+                })
+
+        result["mop_phases"] = sorted(phases_seen)
+
+    # ── SSH logs: Extract prompts and credentials ──
+    ssh_logs = raw_artifacts.get("ssh_logs", "")
+    if ssh_logs:
+        # Prompts: [user@host ~]$ or hostname$
+        for m in re.finditer(r'^(\[?\w+@[\w.-]+\s*[~\w/]*\]?\s*[$#>]\s*)$', ssh_logs, re.MULTILINE):
+            prompt = m.group(1).strip()
+            if len(prompt) > 3 and prompt not in result["ssh_prompts"]:
+                result["ssh_prompts"].append(prompt)
+        for m in re.finditer(r'^([\w.-]+[$:#~>]+\s*)$', ssh_logs, re.MULTILINE):
+            prompt = m.group(1).strip()
+            if len(prompt) > 3 and prompt not in result["ssh_prompts"]:
+                result["ssh_prompts"].append(prompt)
+
+        # LDAP credentials: -D 'cn=user' -w password
+        for m in re.finditer(r"-D\s+'([^']+)'\s+-w\s+(\S+)", ssh_logs):
+            cred = {"bind_dn": m.group(1), "password": m.group(2)}
+            if cred not in result["ssh_credentials"]:
+                result["ssh_credentials"].append(cred)
+
+        # LDAP port
+        port_match = re.search(r'-p\s+(\d+)', ssh_logs)
+        if port_match:
+            result["ldap_port"] = port_match.group(1)
+
+    # ── XML samples: Parse structure ──
+    xml_text = raw_artifacts.get("xml_samples", "")
+    if xml_text:
+        # Split by file markers
+        for section in re.split(r'===\s+(\S+)\s+===', xml_text):
+            section = section.strip()
+            if not section or not section.startswith("<"):
+                continue
+            # Extract key XML elements
+            xml_entry = {"content": section[:2000]}
+            # Find identifier (IMSI)
+            imsi_match = re.search(r'<identifier\s+alias="IMSI">([^<]+)', section)
+            if imsi_match:
+                xml_entry["imsi_example"] = imsi_match.group(1)
+            # Find modification fields
+            mods = re.findall(r'<(\w+)>([^<]+)</\1>', section)
+            if mods:
+                xml_entry["fields"] = {k: v for k, v in mods}
+            result["xml_files"].append(xml_entry)
+
+    # ── CIQ: Structure from parsed data ──
+    ciq_data = parsed.get("ciq_data", {})
+    if isinstance(ciq_data, str):
+        try:
+            ciq_data = json.loads(ciq_data)
+        except Exception:
+            ciq_data = {}
+    per_sheet = ciq_data.get("per_sheet", {})
+    for sname, sdata in per_sheet.items():
+        if isinstance(sdata, dict):
+            result["ciq_sheets"][sname] = {
+                "columns": sdata.get("headers", []),
+                "row_count": sdata.get("row_count", 0),
+                "sample_rows": sdata.get("sample_rows", [])[:2],
+            }
+
+    return result
 
 
 class RequirementsGathererNode(BaseAgent):
@@ -301,16 +465,25 @@ class RequirementsGathererNode(BaseAgent):
             ctx.session.state["constraints"] = parsed["constraints"]
 
         # ── Phase 1b: Extract raw artifact content ──
-        # Read actual file contents (MOP text, SSH logs, XML samples) for richer context
         raw_artifacts = self._extract_raw_artifacts(ctx.session.state)
         ctx.session.state["raw_artifacts"] = raw_artifacts
         if raw_artifacts:
             flow.flow("REQUIREMENTS: Extracted raw artifacts — %s",
                        {k: f"{len(v)} chars" for k, v in raw_artifacts.items() if v})
 
-        # ── Phase 2: Analyze UC type ──
+        # ── Phase 1c: Deterministic document extraction ──
+        # Parse MOP commands, SSH prompts, XML schema, CIQ structure directly from files
+        # This is the PRIMARY source of truth — no LLM involved
+        doc_extracted = _extract_from_documents(raw_artifacts, parsed)
+        flow.flow("REQUIREMENTS: Direct extraction — %d MOP commands, %d prompts, %d XML samples",
+                   len(doc_extracted.get("mop_commands", [])),
+                   len(doc_extracted.get("ssh_prompts", [])),
+                   len(doc_extracted.get("xml_files", [])))
+
+        # ── Phase 2: Analyze UC type (LLM) ──
         flow.flow("REQUIREMENTS Phase 2: Analyzing UC type")
-        parsed["_raw_artifacts"] = raw_artifacts  # attach for richer context
+        parsed["_raw_artifacts"] = raw_artifacts
+        parsed["_doc_extracted"] = doc_extracted
 
         # Pre-populate with answers from previous run of same UC (if any)
         all_answers = dict(_load_previous_answers(uc_name))
@@ -414,10 +587,28 @@ class RequirementsGathererNode(BaseAgent):
             raw_artifacts=raw_artifacts,
         )
 
-        # ── Phase 4b: Enforce questionnaire answers as hard overrides ──
-        # LLM compilation may hallucinate — override with explicit user answers
+        # ── Phase 4b: Merge deterministic extractions ──
+        # doc_extracted has authoritative data parsed directly from files
+        # Merge into requirements — doc_extracted overrides LLM where available
+        requirements["doc_extracted"] = doc_extracted
+        if doc_extracted.get("mop_commands"):
+            # Ensure all MOP commands are in category_2 (LLM may miss some)
+            existing_cmds = requirements.get("category_2_commands", {}).get("commands", [])
+            existing_names = {c.get("cmd", c.get("command", "")).lower() for c in existing_cmds if isinstance(c, dict)}
+            for mc in doc_extracted["mop_commands"]:
+                if mc["command"].lower() not in existing_names:
+                    existing_cmds.append({
+                        "cmd": mc["command"], "node": mc["node"], "purpose": mc["description"],
+                        "syntax": mc["command"], "validation_criteria": mc.get("validation", ""),
+                        "target_user": mc.get("user", ""),
+                    })
+            if "category_2_commands" not in requirements:
+                requirements["category_2_commands"] = {}
+            requirements["category_2_commands"]["commands"] = existing_cmds
+
+        # ── Phase 4c: Enforce questionnaire answers as hard overrides ──
         requirements = self._enforce_answers(requirements, all_answers, raw_artifacts)
-        flow.flow("REQUIREMENTS Phase 4b: Enforced answer overrides")
+        flow.flow("REQUIREMENTS Phase 4c: Enforced answer overrides")
 
         # Store in shared dict (bypasses ADK session state)
         requirements_store[run_id] = requirements
@@ -433,7 +624,8 @@ class RequirementsGathererNode(BaseAgent):
         summary_path = ""
         if run_dir:
             summary_path = self._generate_summary_doc(
-                Path(run_dir), uc_name, parsed, analysis, requirements, developer_notes, all_answers
+                Path(run_dir), uc_name, parsed, analysis, requirements,
+                developer_notes, all_answers, doc_extracted,
             )
 
         # ── Phase 6: Milestone pause — developer reviews summary ──
@@ -619,7 +811,8 @@ class RequirementsGathererNode(BaseAgent):
 
     def _generate_summary_doc(self, run_dir: Path, uc_name: str, parsed: dict,
                                analysis: dict, requirements: dict,
-                               developer_notes: str, answers: dict) -> str:
+                               developer_notes: str, answers: dict,
+                               doc_extracted: dict | None = None) -> str:
         """Generate a human-readable HTML requirements summary document."""
         from datetime import datetime, timezone
 
@@ -780,59 +973,55 @@ class RequirementsGathererNode(BaseAgent):
                      f"Data sheet: <strong>{_v(cat1_req, 'data_sheet')}</strong></p>")
         lines.append("</div>")
 
-        # ── Commands ──
-        lines.append("<h2>Commands</h2><div class='section'>")
-        # Merge commands from both sources (requirements has richer data, analysis has more entries)
-        cmds = cat2_req.get("commands", [])
-        if not cmds:
-            cmds = cat2_an.get("commands_found", [])
-        if cmds:
+        # ── Commands (from MOP direct extraction + LLM compilation) ──
+        doc_extracted = doc_extracted or {}
+        mop_cmds = doc_extracted.get("mop_commands", [])
+        llm_cmds = cat2_req.get("commands", []) or cat2_an.get("commands_found", [])
+
+        lines.append("<h2>MOP Commands</h2><div class='section'>")
+        if mop_cmds:
+            lines.append(f"<p class='meta'>Extracted directly from MOP document — {len(mop_cmds)} commands</p>")
+            # Group by phase
+            by_phase: dict[str, list] = {}
+            for mc in mop_cmds:
+                phase = mc.get("phase", "unknown")
+                by_phase.setdefault(phase, []).append(mc)
+
+            for phase, phase_cmds in by_phase.items():
+                lines.append(f"<h3>{phase}</h3>")
+                lines.append("<table><tr><th>#</th><th>Command</th><th>Node</th>"
+                             "<th>User</th><th>Description / Validation</th></tr>")
+                for i, mc in enumerate(phase_cmds, 1):
+                    desc = mc.get("description", "") or mc.get("validation", "")
+                    lines.append(
+                        f"<tr><td>{i}</td>"
+                        f"<td><code>{mc.get('command', '—')}</code></td>"
+                        f"<td>{mc.get('node', '—')}</td>"
+                        f"<td>{mc.get('user', '—')}</td>"
+                        f"<td>{desc}</td></tr>"
+                    )
+                lines.append("</table>")
+        elif llm_cmds:
+            # Fallback to LLM-compiled commands
+            lines.append(f"<p class='meta'>From LLM analysis — {len(llm_cmds)} commands</p>")
             lines.append("<table><tr><th>Command</th><th>Node</th><th>Purpose</th>"
-                         "<th>Syntax</th><th>Validation Criteria</th></tr>")
-            for c in cmds:
+                         "<th>Validation Criteria</th></tr>")
+            for c in llm_cmds:
                 if not isinstance(c, dict):
                     continue
                 cmd_name = _v(c, 'cmd', fallback=_v(c, 'command'))
-                syntax = _v(c, 'syntax')
-                # Clean up purpose: convert snake_case to readable text
                 purpose_raw = _v(c, 'purpose')
-                purpose = purpose_raw.replace("_", " ").replace("-", " ").title() if purpose_raw != "—" else "—"
-
-                # Build validation description from multiple possible formats
-                val_desc = "—"
-                val_rules = c.get('validation_rules', c.get('validation_success_patterns', []))
-                if isinstance(val_rules, list) and val_rules:
-                    parts = []
-                    for vr in val_rules:
-                        if isinstance(vr, dict):
-                            msg = vr.get('description', '') or vr.get('failure_message', '')
-                            if msg:
-                                parts.append(str(msg))
-                        elif isinstance(vr, str):
-                            parts.append(vr[:100])
-                    val_desc = "; ".join(parts) if parts else "—"
-
-                # CIQ params and register as sub-text
-                ciq_params = c.get('ciq_params', c.get('params_from_ciq', []))
-                register = c.get('register', [])
-                sub_parts = []
-                if ciq_params:
-                    sub_parts.append(f"CIQ: {', '.join(str(p) for p in ciq_params)}")
-                if register:
-                    sub_parts.append(f"Captures: {', '.join(str(r) for r in register)}")
-                target_user = c.get('target_user')
-                if target_user:
-                    sub_parts.append(f"User: {target_user}")
-                sub_text = f"<br><em style='color:#8b8fa8;font-size:0.85em'>{' | '.join(sub_parts)}</em>" if sub_parts else ""
-
+                purpose = purpose_raw.replace("_", " ").title() if purpose_raw != "—" else "—"
+                val = _v(c, 'validation_criteria')
                 lines.append(
-                    f"<tr><td><code>{cmd_name}</code>{sub_text}</td>"
+                    f"<tr><td><code>{cmd_name}</code></td>"
                     f"<td>{_v(c, 'node')}</td>"
                     f"<td>{purpose}</td>"
-                    f"<td><code>{syntax}</code></td>"
-                    f"<td>{val_desc}</td></tr>"
+                    f"<td>{val}</td></tr>"
                 )
             lines.append("</table>")
+        else:
+            lines.append("<p>No commands extracted</p>")
 
         ldap = cat2_req.get("ldap", {})
         if ldap:
@@ -855,6 +1044,41 @@ class RequirementsGathererNode(BaseAgent):
             lines.append(f"<p>SSH timeout: {_v(ssh, 'connect_timeout_sec', fallback=_v(ssh, 'connect_timeout'))}s | "
                          f"KEX: <code>{_v(ssh, 'kex_algorithms', fallback='default')}</code></p>")
         lines.append("</div>")
+
+        # ── SSH Prompts & Credentials (from logs) ──
+        ssh_prompts = doc_extracted.get("ssh_prompts", [])
+        ssh_creds = doc_extracted.get("ssh_credentials", [])
+        if ssh_prompts or ssh_creds:
+            lines.append("<h2>SSH Details (from session logs)</h2><div class='section'>")
+            if ssh_prompts:
+                lines.append("<p><strong>Prompts found:</strong></p><ul>")
+                for p in ssh_prompts:
+                    lines.append(f"<li><code>{p}</code></li>")
+                lines.append("</ul>")
+            if ssh_creds:
+                lines.append("<p><strong>LDAP credentials found:</strong></p><ul>")
+                for cr in ssh_creds:
+                    lines.append(f"<li>Bind DN: <code>{cr.get('bind_dn', '?')}</code> | "
+                                 f"Port: <code>{doc_extracted.get('ldap_port', '?')}</code></li>")
+                lines.append("</ul>")
+            lines.append("</div>")
+
+        # ── XML Samples ──
+        xml_files = doc_extracted.get("xml_files", [])
+        if xml_files:
+            lines.append("<h2>XML Samples (from uploaded files)</h2><div class='section'>")
+            for i, xf in enumerate(xml_files, 1):
+                fields = xf.get("fields", {})
+                if fields:
+                    lines.append(f"<p><strong>Sample {i}:</strong> IMSI={xf.get('imsi_example', '?')}</p>")
+                    lines.append("<table><tr><th>XML Tag</th><th>Sample Value</th></tr>")
+                    for tag, val in fields.items():
+                        lines.append(f"<tr><td><code>{tag}</code></td><td>{val}</td></tr>")
+                    lines.append("</table>")
+                else:
+                    content = xf.get("content", "")[:500]
+                    lines.append(f"<p><strong>Sample {i}:</strong></p><pre>{content}</pre>")
+            lines.append("</div>")
 
         # ── Developer Answers ──
         if answers:
