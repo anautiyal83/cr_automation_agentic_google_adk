@@ -103,6 +103,12 @@ def import_cr_module(module_path: str) -> Any:
     if module_path in _module_cache:
         return _module_cache[module_path]
 
+    # Prefer the version already in sys.modules (ensures single instance for shared state)
+    if module_path in sys.modules:
+        mod = sys.modules[module_path]
+        _module_cache[module_path] = mod
+        return mod
+
     file_path = CR_AUTO_ROOT / module_path.replace(".", "/")
     py_path = file_path.with_suffix(".py")
     if not py_path.exists():

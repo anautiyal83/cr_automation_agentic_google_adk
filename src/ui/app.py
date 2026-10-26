@@ -42,6 +42,7 @@ from src.ui.pages.upload_section import UploadSection
 from src.ui.pages.progress_section import ProgressSection
 from src.ui.pages.history_section import HistorySection
 from src.ui.pages.cleanup_section import CleanupSection
+from src.ui.pages.usage_section import UsageSection
 from src.ui.pages.settings_section import SettingsSection
 from src.ui.pages.output_viewer_section import OutputViewerSection
 
@@ -488,6 +489,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
             ("outputs", "Output Documents", "source"),
             ("history", "Run History", "history"),
             ("cleanup", "Artifact Cleanup", "cleaning_services"),
+            ("usage", "LLM Usage", "analytics"),
             ("settings", "Settings", "tune"),
         ]
 
@@ -691,6 +693,15 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 with ui.card().classes("cr-section w-full p-4"):
                     cleanup_section = CleanupSection(runner=_runner, artifact_store=_artifact_store)
                     on_navigate_hooks.setdefault("cleanup", []).append(cleanup_section._refresh)
+
+            # LLM Usage
+            with ui.column().classes("w-full gap-2") as panel:
+                content_panels["usage"] = panel
+                panel.set_visibility(False)
+                ui.label("LLM Usage Statistics").classes("text-h6 font-bold cr-stat-value")
+                with ui.card().classes("cr-section w-full p-4"):
+                    usage_section = UsageSection()
+                    on_navigate_hooks.setdefault("usage", []).append(usage_section._refresh)
 
             # Settings
             with ui.column().classes("w-full gap-2") as panel:

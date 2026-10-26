@@ -68,12 +68,19 @@ def _get_config_from_state(state: dict) -> dict:
 
 def _get_step_data(state: dict) -> dict:
     """Build step_data dict from session state (same structure existing agents expect)."""
+    from src.nodes.requirements_agent import requirements_store
+
     # Remove empty/missing optional path keys from document_set
     # (prevents DocParserAgent from calling Path("") or Path(None))
     doc_set = dict(state.get("document_set", {}))
     for opt_key in ("mop_file_path", "constraints_file_path", "command_outputs_path"):
         if not doc_set.get(opt_key):
             doc_set.pop(opt_key, None)
+
+    # Get requirements from shared store (bypasses ADK session state)
+    run_id = state.get("run_id", "")
+    requirements = requirements_store.get(run_id, {})
+
     return {
         "uc_name": state.get("uc_name", ""),
         "run_dir": state.get("run_dir", ""),
@@ -90,6 +97,11 @@ def _get_step_data(state: dict) -> dict:
         "few_shot_examples": state.get("few_shot_examples", []),
         "step_results": state.get("step_results", []),
         "run_data": state.get("run_data", {}),
+        "requirements": requirements,
+        "developer_notes": doc_set.get("developer_notes", ""),
+        "generation_hints": requirements.get("generation_hints", {}),
+        "developer_answers": requirements.get("developer_answers", {}),
+        "raw_artifacts": state.get("raw_artifacts", {}),
     }
 
 

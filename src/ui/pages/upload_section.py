@@ -37,14 +37,13 @@ DOC_TYPES = [
      "desc": "Customer Installation Questionnaire", "required": True},
     {"key": "mop", "label": "MOP Document", "icon": "description", "accept": ".docx,.pdf,.txt",
      "desc": "Method of Procedure", "required": True},
-    {"key": "sample_io_xml", "label": "Sample I/O XMLs", "icon": "data_object", "accept": ".xml",
-     "desc": "Sample input/output XML request & response files", "required": True, "multiple": True},
+    {"key": "sample_io_xml", "label": "Sample I/O", "icon": "data_object",
+     "accept": ".xml,.txt,.doc,.docx,.pdf,.json,.yaml,.yml,.csv",
+     "desc": "Sample input/output request & response files", "required": False, "multiple": True},
     {"key": "constraints", "label": "Constraints", "icon": "rule", "accept": ".txt,.yaml,.yml,.json,.csv",
      "desc": "Validation rules & business rules", "required": False},
     {"key": "cmd_outputs", "label": "Command Outputs", "icon": "terminal", "accept": ".txt",
      "desc": "CLI/API session logs", "required": True},
-    {"key": "reference_yaml", "label": "Reference Workflow YAML", "icon": "file_present", "accept": ".yaml,.yml",
-     "desc": "Working workflow YAML from similar UC (used as template for generation)", "required": False},
 ]
 
 
@@ -393,7 +392,6 @@ class UploadSection:
 
         xml_paths = self.paths.get("sample_io_xml", [])
         notes = self.developer_notes.value.strip() if self.developer_notes.value else None
-        ref_yaml = self.paths.get("reference_yaml", "")
         doc_set = UCDocumentSet(
             uc_name=self.uc_name.strip(),
             ciq_file_path=self.paths["ciq"],
@@ -404,7 +402,6 @@ class UploadSection:
             additional_documents=self.additional_docs if self.additional_docs else None,
             validated=True,
             developer_notes=notes,
-            reference_yaml_path=ref_yaml or None,
         )
         self.start_btn.disable()
         self.start_btn.props("loading")

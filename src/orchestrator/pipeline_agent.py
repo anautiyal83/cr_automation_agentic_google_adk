@@ -54,6 +54,11 @@ class PipelineAgent(BaseAgent):
         # Register sub_agents for ADK framework
         self.sub_agents = list(agents_list)
 
+    # Agents that cover multiple display steps (name → list of step numbers)
+    _MULTI_STEP_AGENTS: dict[str, list[int]] = {
+        "requirements_gatherer": [1, 2],
+    }
+
     @staticmethod
     def _parse_step_number(agent_name: str) -> int | None:
         """Extract step number from agent name like 'step1_doc_parser' → 1."""
@@ -137,6 +142,7 @@ class PipelineAgent(BaseAgent):
                         _old_err.unlink()
 
             # ----- PUBLISH step_started -----
+            multi_steps = self._MULTI_STEP_AGENTS.get(agent.name, [])
             if step_num and run_id_str:
                 try:
                     await event_bus.publish(PipelineEvent(
@@ -145,6 +151,15 @@ class PipelineAgent(BaseAgent):
                     ))
                 except Exception:
                     pass
+            elif multi_steps and run_id_str:
+                for ms in multi_steps:
+                    try:
+                        await event_bus.publish(PipelineEvent(
+                            run_id=UUID(run_id_str), event_type="step_started",
+                            step_number=ms,
+                        ))
+                    except Exception:
+                        pass
 
             # ----- EXECUTE THE AGENT -----
             agent_t0 = _time.monotonic()
@@ -169,6 +184,16 @@ class PipelineAgent(BaseAgent):
                         ))
                     except Exception:
                         pass
+                elif multi_steps and run_id_str:
+                    for ms in multi_steps:
+                        try:
+                            await event_bus.publish(PipelineEvent(
+                                run_id=UUID(run_id_str), event_type="step_failed",
+                                step_number=ms,
+                                payload={"error": str(e)},
+                            ))
+                        except Exception:
+                            pass
                 break
 
             agent_elapsed = _time.monotonic() - agent_t0
@@ -195,6 +220,16 @@ class PipelineAgent(BaseAgent):
                     ))
                 except Exception:
                     pass
+            elif multi_steps and run_id_str:
+                for ms in multi_steps:
+                    try:
+                        await event_bus.publish(PipelineEvent(
+                            run_id=UUID(run_id_str), event_type="step_completed",
+                            step_number=ms,
+                            payload={"status": "passed"},
+                        ))
+                    except Exception:
+                        pass
 
             # ----- CHECK FOR ACTIONS SET DURING AGENT EXECUTION -----
             # (milestone nodes set pipeline_actions during their run)
@@ -267,10 +302,11 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
 
     # Import node factories
     from src.nodes.step_nodes import (
-        DocParserNode, UCAnalyzerNode, ValidationRulesNode,
+        ValidationRulesNode,
         JsonTemplateNode, CiqQANode, WorkflowGenNode,
         MopTestNode, SimulatorSetupNode, ExecutionTestNode, FinalReportNode,
     )
+    from src.nodes.requirements_agent import RequirementsGathererNode
     from src.nodes.milestone_nodes import create_milestone_node
     from src.nodes.router_nodes import (
         FailureRouterStep5, FailureRouterStep7, FailureRouterStep9,
@@ -283,61 +319,59 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
     )
 
     # Build ordered agent list (index → agent)
+    # RequirementsGatherer replaces Steps 1+2 (DocParser + UCAnalyzer)
     # Pattern: Step → MilestoneReviewer (skipped if passed) → Milestone (pause)
     agents = [
-        DocParserNode(),                          #  0 - Step 1
-        UCAnalyzerNode(),                         #  1 - Step 2
-        ValidationRulesNode(),                    #  2 - Step 3
-        create_milestone_reviewer(model, 3),      #  3 - Reviewer (if step 3 failed)
-        create_milestone_node(3, "Validation Rules"),  #  4 - Milestone
-        JsonTemplateNode(),                       #  5 - Step 4
-        create_milestone_reviewer(model, 4),      #  6 - Reviewer (if step 4 failed)
-        create_milestone_node(4, "JSON Output Template"),  #  7 - Milestone
-        CiqQANode(),                              #  8 - Step 5
-        create_qa_validation_reviewer(model),     #  9 - QA Reviewer (if step 5 failed)
-        create_milestone_node(5, "QA-Validation Results"),  # 10 - Milestone
-        FailureRouterStep5(),                     # 11 - Router
-        WorkflowGenNode(),                        # 12 - Step 6
-        create_milestone_reviewer(model, 6),      # 13 - Reviewer (if step 6 failed)
-        create_milestone_node(6, "Execution Config"),  # 14 - Milestone
-        MopTestNode(),                            # 15 - Step 7
-        create_qa_mop_reviewer(model),            # 16 - QA Reviewer (if step 7 failed)
-        create_milestone_node(7, "QA-MOP Results"),  # 17 - Milestone
-        FailureRouterStep7(),                     # 18 - Router
-        SimulatorSetupNode(),                     # 19 - Step 8
-        create_milestone_reviewer(model, 8),      # 20 - Reviewer (if step 8 failed)
-        create_milestone_node(8, "Simulator Config"),  # 21 - Milestone
-        ExecutionTestNode(),                      # 22 - Step 9
-        create_qa_execution_reviewer(model),      # 23 - QA Reviewer (if step 9 failed)
-        create_milestone_node(9, "QA-Execution Results"),  # 24 - Milestone
-        FailureRouterStep9(),                     # 25 - Router
-        FinalReportNode(),                        # 26 - Step 10
+        RequirementsGathererNode(),               #  0 - Requirements (replaces Steps 1+2)
+        ValidationRulesNode(),                    #  1 - Step 3
+        create_milestone_reviewer(model, 3),      #  2 - Reviewer (if step 3 failed)
+        create_milestone_node(3, "Validation Rules"),  #  3 - Milestone
+        JsonTemplateNode(),                       #  4 - Step 4
+        create_milestone_reviewer(model, 4),      #  5 - Reviewer (if step 4 failed)
+        create_milestone_node(4, "JSON Output Template"),  #  6 - Milestone
+        CiqQANode(),                              #  7 - Step 5
+        create_qa_validation_reviewer(model),     #  8 - QA Reviewer (if step 5 failed)
+        create_milestone_node(5, "QA-Validation Results"),  #  9 - Milestone
+        FailureRouterStep5(),                     # 10 - Router
+        WorkflowGenNode(),                        # 11 - Step 6
+        create_milestone_reviewer(model, 6),      # 12 - Reviewer (if step 6 failed)
+        create_milestone_node(6, "Execution Config"),  # 13 - Milestone
+        MopTestNode(),                            # 14 - Step 7
+        create_qa_mop_reviewer(model),            # 15 - QA Reviewer (if step 7 failed)
+        create_milestone_node(7, "QA-MOP Results"),  # 16 - Milestone
+        FailureRouterStep7(),                     # 17 - Router
+        SimulatorSetupNode(),                     # 18 - Step 8
+        create_milestone_reviewer(model, 8),      # 19 - Reviewer (if step 8 failed)
+        create_milestone_node(8, "Simulator Config"),  # 20 - Milestone
+        ExecutionTestNode(),                      # 21 - Step 9
+        create_qa_execution_reviewer(model),      # 22 - QA Reviewer (if step 9 failed)
+        create_milestone_node(9, "QA-Execution Results"),  # 23 - Milestone
+        FailureRouterStep9(),                     # 24 - Router
+        FinalReportNode(),                        # 25 - Step 10
     ]
 
     # Step number → agent index (for retry routing)
     step_to_index = {
-        1: 0,    # DocParserNode
-        2: 1,    # UCAnalyzerNode
-        3: 2,    # ValidationRulesNode
-        4: 5,    # JsonTemplateNode
-        5: 8,    # CiqQANode
-        6: 12,   # WorkflowGenNode
-        7: 15,   # MopTestNode
-        8: 19,   # SimulatorSetupNode
-        9: 22,   # ExecutionTestNode
+        3: 1,    # ValidationRulesNode
+        4: 4,    # JsonTemplateNode
+        5: 7,    # CiqQANode
+        6: 11,   # WorkflowGenNode
+        7: 14,   # MopTestNode
+        8: 18,   # SimulatorSetupNode
+        9: 21,   # ExecutionTestNode
     }
 
     # Reviewer indices and which step they review
     # Skipped if that step passed
-    reviewer_indices = {3, 6, 9, 13, 16, 20, 23}
+    reviewer_indices = {2, 5, 8, 12, 15, 19, 22}
     preceding_test_step = {
-        3: 3,    # Milestone reviewer step 3 → skip if step 3 passed
-        6: 4,    # Milestone reviewer step 4 → skip if step 4 passed
-        9: 5,    # QA Validation Reviewer → skip if step 5 passed
-        13: 6,   # Milestone reviewer step 6 → skip if step 6 passed
-        16: 7,   # QA MOP Reviewer → skip if step 7 passed
-        20: 8,   # Milestone reviewer step 8 → skip if step 8 passed
-        23: 9,   # QA Execution Reviewer → skip if step 9 passed
+        2: 3,    # Milestone reviewer step 3 → skip if step 3 passed
+        5: 4,    # Milestone reviewer step 4 → skip if step 4 passed
+        8: 5,    # QA Validation Reviewer → skip if step 5 passed
+        12: 6,   # Milestone reviewer step 6 → skip if step 6 passed
+        15: 7,   # QA MOP Reviewer → skip if step 7 passed
+        19: 8,   # Milestone reviewer step 8 → skip if step 8 passed
+        22: 9,   # QA Execution Reviewer → skip if step 9 passed
     }
 
     pipeline = PipelineAgent()
