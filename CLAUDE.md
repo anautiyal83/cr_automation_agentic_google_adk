@@ -1,39 +1,61 @@
-# CLAUDE.md — CR Automation Pipeline (Google ADK)
+# CLAUDE.md — NetConfig Pipeline (Google ADK)
 
 ## Project Overview
-- **Type**: Python agentic pipeline for telecom UC automation using Google ADK
+- **Type**: Python agentic pipeline for telecom network activity automation using Google ADK
 - **Orchestrator**: Custom PipelineAgent(BaseAgent) with backtracking retry loops
 - **LLM**: LiteLlm/OpenRouter (default: Gemini 2.5 Flash)
 - **UI**: NiceGUI (sidebar 140px, content area, single-row step tracker)
 - **Storage**: SQLite for metadata + file system for artifacts
 - **Port**: 8000, start via `start.ps1`
 
-## Architecture — 26 Agents
+## Architecture — 26 Agents + 6 Skills
+
+### Skills (Reusable Packages)
+| # | Skill | Files | Lines | Description |
+|---|-------|-------|-------|-------------|
+| 1 | `requirement_gathering` | 15 | 2,644 | Parse CIQ/MOP/SSH/XML, LLM analysis, questionnaire, compile requirements |
+| 2 | `ciq_validation_json_gen` | 6 | 995 | LLM generates validation-rules.yaml + json-output.yaml, autofix, regenerate() |
+| 3 | `ciq_validation_json_test` | 7 | 1,087 | QA engine: LLM test cases, JAR execution, HTML QA report |
+| 4 | `network_config_gen` | 5 | 759 | LLM generates workflow YAML with ${...} placeholders, autofix, regenerate() |
+| 5 | `network_simulator_setup` | 6 | 1,131 | Config gen, command-response mapping, start MockWire, sanity checks |
+| 6 | `network_config_test` | 7 | 1,160 | MOP test + execution test, failure classification, HTML QA report |
+
+### Skill Data Flow
+```
+requirement_gathering → requirements.json
+    ↓
+ciq_validation_json_gen → validation-rules.yaml + json-output.yaml
+    ↓
+ciq_validation_json_test ←→ ciq_validation_json_gen.regenerate()
+    ↓
+network_config_gen → workflow.yaml (${nodeGroups}, ${configData}, ${register})
+    ↓
+network_simulator_setup → simulator config + running MockWire + sanity verified
+    ↓
+network_config_test ←→ network_config_gen.regenerate() / network_simulator_setup.regenerate()
+```
 
 ### RequirementsGatherer (replaces Steps 1+2)
 - **File**: `src/agents/requirements_agent.py`
+- **Skill**: `src/skills/requirement_gathering/`
 - **Type**: BaseAgent — gatekeeper that blocks pipeline until requirements are gathered
 - **6 phases**: Parse → Analyze → Ask (iterative HIL, max 3 rounds) → Compile → Summary Doc → Review Pause
 - **3 requirement categories**: Node & Activity, Commands & Parameters, Orchestration
 - **Milestones**: Step 0 = interactive questionnaire dialog, Step 2 = summary review
-- **Questionnaire UI**: Light+dark hybrid dialog, pre-built in `_build_ui()`, category cards,
-  importance badges, "Other" option on radio/select, pre-filled defaults from previous runs
-- **Answer caching**: `_previous_answers` dict keyed by UC name — re-runs skip questionnaire
-  if all questions already answered from previous run
 - **Outputs**: requirements.json, {uc}_requirements-summary.html, {uc}_questionnaire_round{N}.html
 - **Shared state**: `requirements_store` dict (bypasses ADK session state)
 
 ### Pipeline Steps (8 remaining)
-| Step | Agent | Type | Description |
-|------|-------|------|-------------|
-| 3 | ValidationRulesNode | BaseAgent | Generate validation-rules.yaml via LLM |
-| 4 | JsonTemplateNode | BaseAgent | Generate json-output.yaml via LLM |
-| 5 | CiqQANode | BaseAgent | QA cycle via ciq-processor JAR |
-| 6 | WorkflowGenNode | BaseAgent | Generate workflow.yaml via LLM |
-| 7 | MopTestNode | BaseAgent | Test MOP generation via JAR |
-| 8 | SimulatorSetupNode | BaseAgent | Generate MockWire configs via LLM |
-| 9 | ExecutionTestNode | BaseAgent | Execute workflow via JAR + MockWire |
-| 10 | FinalReportNode | BaseAgent | Generate HTML + Excel reports |
+| Step | Agent | Skill | Description |
+|------|-------|-------|-------------|
+| 3 | ValidationRulesNode | `ciq_validation_json_gen` | Generate validation-rules.yaml via LLM |
+| 4 | JsonTemplateNode | `ciq_validation_json_gen` | Generate json-output.yaml via LLM |
+| 5 | CiqQANode | `ciq_validation_json_test` | QA cycle: generate TCs, run JAR, QA report |
+| 6 | WorkflowGenNode | `network_config_gen` | Generate workflow.yaml with ${...} placeholders |
+| 7 | MopTestNode | `network_config_test` | Test MOP generation via JAR |
+| 8 | SimulatorSetupNode | `network_simulator_setup` | Config gen → start MockWire → sanity checks |
+| 9 | ExecutionTestNode | `network_config_test` | Execute workflow against simulator, QA report |
+| 10 | FinalReportNode | — | Generate HTML + Excel reports |
 
 ### Milestone Reviewer Agents (7)
 | Reviewer | Triggered By | Analyzes |
@@ -48,9 +70,6 @@
 
 ### Milestone Nodes (7) + Router Nodes (3)
 - Milestones at Steps 0,2,3,4,5,6,7,8,9 — pause for user review
-- Step 0: Requirements questionnaire (interactive dialog)
-- Step 2: Requirements summary review
-- Steps 3-9: Standard milestone review (View Artifact, Continue, Re-run, Cancel)
 - Router5: Step 5 fail → retry Step 3
 - Router7: Step 7 fail → retry Step 6
 - Router9: Step 9 fail → retry Step 6 (workflow) or Step 8 (simulator)
@@ -72,6 +91,8 @@ Step 7 fail → QA MOP Reviewer → Router7 → _retry_target=6 → PipelineAgen
 Step 9 fail → QA Exec Reviewer → Router9 → _retry_target=6 or 8 → PipelineAgent jumps back
 ```
 
+Generation skills support regenerate(feedback) for test-driven correction loops.
+
 ## Shared Module-Level Dicts (ADK session state does NOT work for these)
 ```
 pipeline_actions      — cancel/rerun signals          (src.shared.state)
@@ -85,57 +106,90 @@ requirements_store    — requirements package           (src.agents.requirement
 ## Project Structure
 ```
 src/
-  agents/                          # All agent definitions
-    requirements_agent.py          # RequirementsGathererNode (gatekeeper)
-    step_agents.py                 # Step 3-10 agent wrappers
-    milestone_agents.py            # Milestone pause agents
-    reviewer_agents.py             # QA + milestone reviewer agents
-    router_agents.py               # Failure routing agents
+  skills/                            # 6 reusable skill packages (46 files, 7,776 lines)
+    requirement_gathering/           # Parse docs, LLM analysis, questionnaire, compile
+      skill.py                       # TelecomReqSkill: parse_and_analyze → incorporate_answers → compile_final
+      parsers/                       # 4 deterministic parsers (ciq, mop, ssh_log, xml_sample)
+      analyzer.py, questionnaire.py  # LLM wrappers
+      compiler.py                    # Merge + enforce + inject schema hints
+      schema_discovery.py            # Read schemas/*.yaml at runtime
+      models.py, prompts.py, html_report.py, schema_validator.py
 
-  tools/                           # Shared tools for agents
-    yaml_tools.py                  # validate_yaml_syntax, read/write artifact
-    report_tools.py                # read_exec_report, read_mop_report, etc.
-    ciq_tools.py                   # read_ciq_structure, classify_failure_type
+    ciq_validation_json_gen/         # LLM generates validation + JSON output YAMLs
+      skill.py                       # generate() + regenerate(feedback)
+      validation_gen.py              # Validation rules generation + autofix
+      json_output_gen.py             # JSON output generation + autofix
+      autofix.py                     # Column fuzzy-matching, sheet name correction
+      prompts.py
 
-  shared/                          # Module-level shared state + cross-project bridge
-    state.py                       # All module-level shared dicts
-    cr_bridge.py                   # Cross-project import bridge (cr_automation-agentic)
+    ciq_validation_json_test/        # QA engine for CIQ testing
+      skill.py                       # test(): generate TCs → run JAR → evaluate → report
+      test_case_gen.py               # LLM generates test scenarios
+      jar_executor.py                # Run ciq-processor JAR
+      result_parser.py               # Parse results, evaluate TCs
+      report.py                      # Professional HTML QA report (6 sections)
+      prompts.py
 
-  orchestrator/                    # Pipeline orchestration
-    pipeline_agent.py              # PipelineAgent with state-machine loop + backtracking
-    runner.py                      # PipelineRunner with DB persistence + EventBus
+    network_config_gen/              # LLM generates workflow YAML
+      skill.py                       # generate() + regenerate(feedback)
+      autofix.py                     # Field whitelist, validation.description, Java expr fix
+      validator.py                   # Structural validation, ${...} placeholder awareness
+      prompts.py                     # Variable pattern reference in prompts
 
-  skills/                          # Reusable skill packages
-    telecom_req/                   # TelecomReqSkill (14 files, ~2,600 lines)
+    network_simulator_setup/         # MockWire simulator lifecycle
+      skill.py                       # 4 phases: config → responses → start → sanity
+      simulator_runner.py            # Start/stop MockWire JAR, health-check ports
+      sanity_check.py                # Per-node: SSH, prompt, basic cmd, escalation, UC cmd
+      autofix.py                     # Port dedup, missing node stubs
+      prompts.py
 
-  core/                            # Infrastructure
-    config.py                      # ConfigManager, PipelineConfiguration
-    events.py                      # EventBus, PipelineEvent
-    logging_config.py              # setup_logging, get_flow_logger
-    retry.py                       # Retry logic
+    network_config_test/             # MOP + execution testing
+      skill.py                       # test() + test_mop_only()
+      test_case_gen.py               # LLM generates MOP/execution/integration TCs
+      jar_executor.py                # Run cli-automation JAR (MOP + exec modes)
+      result_parser.py               # Parse results, classify failures (workflow vs simulator)
+      report.py                      # Professional HTML QA report (7 sections)
+      prompts.py
 
-  models/                          # Domain models
-    domain.py                      # UCDocumentSet, PipelineRun, StepResult, etc.
-    validation.py                  # Document upload validation
+  agents/                            # Pipeline agent definitions
+    requirements_agent.py            # RequirementsGathererNode (delegates to skill)
+    step_agents.py                   # Step 3-10 agent wrappers
+    milestone_agents.py              # Milestone pause agents
+    reviewer_agents.py               # QA + milestone reviewer agents
+    router_agents.py                 # Failure routing agents
 
-  storage/                         # Persistence
-    db.py                          # SQLite database
-    artifact_store.py              # File system artifact store
+  tools/                             # Shared tools for agents
+    yaml_tools.py                    # validate_yaml_syntax, read/write artifact
+    report_tools.py                  # read_exec_report, read_mop_report, etc.
+    ciq_tools.py                     # read_ciq_structure, classify_failure_type
 
-  ui/                              # NiceGUI frontend
-    app.py                         # Entry point + CSS + layout
-    pages/                         # upload, progress, settings, history, etc.
+  shared/                            # Module-level shared state + cross-project bridge
+    state.py                         # All module-level shared dicts
+    cr_bridge.py                     # Cross-project import bridge
 
-knowledge/                         # OKF-ready knowledge directory (top-level)
-  index.md                         # OKF root index
-  schemas/                         # Schema reference docs
-  domain/                          # Telecom domain knowledge
-  framework/                       # CLI Automation framework docs
+  orchestrator/                      # Pipeline orchestration
+    pipeline_agent.py                # PipelineAgent with state-machine loop + backtracking
+    runner.py                        # PipelineRunner with DB persistence + EventBus
+
+  core/                              # Infrastructure
+    config.py, events.py, logging_config.py, retry.py
+
+  models/                            # Domain models
+    domain.py, validation.py
+
+  storage/                           # Persistence
+    db.py, artifact_store.py
+
+  ui/                                # NiceGUI frontend
+    app.py                           # Entry point + CSS + layout
+    pages/                           # upload, progress, settings, history, etc.
+
+schemas/                             # Authoritative YAML schemas (consumed by JARs)
+knowledge/                           # OKF-ready knowledge directory
+config/                              # Pipeline configuration
+data/                                # Runtime (runs, uploads, DB, logs)
+lib/                                 # JARs + MockWire
 ```
-
-## Cross-Project Imports
-Agents from `D:/my_workspace/cr_automation-agentic/src/agents/` are loaded via `src/shared/cr_bridge.py`
-using `importlib.util.spec_from_file_location` with namespace isolation to avoid `src` package conflicts.
 
 ## Running
 ```powershell
@@ -159,4 +213,3 @@ python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICA
 - **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar
 - **Templates**: lib/templates/*.html
 - **Schemas**: schemas/*.yaml
-- **Reference agents**: D:/my_workspace/cr_automation-agentic/src/agents/

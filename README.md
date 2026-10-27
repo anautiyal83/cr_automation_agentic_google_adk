@@ -1,6 +1,6 @@
-# CR Automation Pipeline — Google ADK
+# NetConfig — Network Configuration Automation (Google ADK)
 
-Telecom UC automation pipeline using Google ADK (Agent Development Kit) for orchestration. Parses CIQ/MOP documents, gathers developer requirements via interactive questionnaire, generates YAML configs via LLM agents, validates via Java JARs, tests against MockWire simulator, with automatic retry loops on failures.
+Agentic pipeline for telecom network activity automation using Google ADK (Agent Development Kit). Parses CIQ/MOP documents, gathers requirements via interactive questionnaire, generates YAML configs via LLM, validates via Java JARs, tests against MockWire simulator, with automatic retry loops on failures.
 
 ## Quick Start
 
@@ -40,83 +40,96 @@ python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICA
 Retry loops:  Step 5 fail → Step 3  |  Step 7 fail → Step 6  |  Step 9 fail → Step 6 or 8
 ```
 
+## Skills (Reusable Packages)
+
+Each skill is a self-contained package with clear SkillInput/SkillOutput contracts:
+
+| # | Skill | Lines | Description |
+|---|-------|-------|-------------|
+| 1 | `requirement_gathering` | 2,644 | Parse CIQ/MOP/SSH/XML, LLM analysis, interactive questionnaire, compile requirements |
+| 2 | `ciq_validation_json_gen` | 995 | LLM generates validation-rules.yaml + json-output.yaml with autofix + regenerate() |
+| 3 | `ciq_validation_json_test` | 1,087 | QA engine: LLM test cases, JAR execution, professional HTML QA report |
+| 4 | `network_config_gen` | 759 | LLM generates workflow YAML with ${...} runtime placeholders + autofix |
+| 5 | `network_simulator_setup` | 1,131 | Config gen + command-response mapping + start MockWire + sanity checks |
+| 6 | `network_config_test` | 1,160 | MOP test + execution test + failure classification + HTML QA report |
+
+### Skill Data Flow
+
+```
+requirement_gathering
+    ↓ requirements.json (nodes, commands, phases, CIQ structure)
+ciq_validation_json_gen
+    ↓ validation-rules.yaml + json-output.yaml
+ciq_validation_json_test ←→ ciq_validation_json_gen.regenerate()
+    ↓ test results feed back for correction
+network_config_gen
+    ↓ workflow.yaml (with ${nodeGroups}, ${configData}, ${register} placeholders)
+network_simulator_setup
+    ↓ simulator config + running MockWire process + sanity verified
+network_config_test ←→ network_config_gen.regenerate() / network_simulator_setup.regenerate()
+    ↓ MOP test + execution test results, failure classification
+```
+
 ## Pipeline Steps
 
-| # | Step | Type | Description |
-|---|------|------|-------------|
-| 1+2 | Requirements Gathering | LLM + HIL | Parse docs, analyze UC, interactive questionnaire, compile requirements |
-| 3 | CIQ Config Generation | LLM | Generate validation-rules.yaml |
-| 4 | Generate CIQ JSON Config | LLM | Generate json-output.yaml |
-| 5 | QA-Validation | JAR | Test rules via ciq-processor |
-| 6 | Generate Execution Config | LLM | Generate workflow.yaml |
-| 7 | QA-MOP | JAR | Test MOP generation |
-| 8 | Simulator Setup | LLM | Generate MockWire configs |
-| 9 | QA-Execution | JAR+MockWire | Execute workflow against simulator |
-| 10 | Final Report | Deterministic | HTML + Excel reports |
-
-## RequirementsGatherer Agent
-
-Replaces the original Steps 1 (DocParser) + 2 (UCAnalyzer) with an intelligent agent that:
-
-1. **Parses** CIQ/MOP/constraint documents
-2. **Analyzes** the UC type and identifies missing information
-3. **Asks** the developer via interactive questionnaire dialog (up to 3 rounds)
-4. **Compiles** a structured requirements package for downstream steps
-5. **Generates** an HTML summary document for review
-6. **Pauses** for developer review before proceeding
-
-Features:
-- Interactive questionnaire with category grouping, importance badges, pre-filled defaults
-- Light+dark hybrid themed dialog (dark header/footer, light content area)
-- "Other" option on radio/select inputs reveals a free-text field
-- Answer caching by UC name — re-runs skip questionnaire if all questions already answered
-
-## Reviewer Agents
-
-### Milestone Reviewers (4)
-After each LLM generation step (3, 4, 6, 8), a reviewer analyzes the output and provides feedback if there are issues. Skipped if the step passed.
-
-### QA Reviewers (3)
-When a test step fails, a QA reviewer analyzes the failure and generates fix instructions:
-- **QA Validation Reviewer**: Step 5 failures → fix instructions for Step 3
-- **QA MOP Reviewer**: Step 7 failures → fix instructions for Step 6
-- **QA Execution Reviewer**: Step 9 failures → classifies as workflow (→Step 6) or simulator (→Step 8)
-
-## Milestones (Human-in-the-Loop)
-
-The pipeline pauses at 9 milestones for human review:
-- **Step 0**: Requirements questionnaire — interactive dialog to answer questions
-- **Step 2**: Requirements summary — review compiled requirements before YAML generation
-- **Steps 3-9**: Standard review — view artifact, continue, re-run, or cancel
+| # | Step | Skill | Type | Description |
+|---|------|-------|------|-------------|
+| 1+2 | Requirements Gathering | `requirement_gathering` | LLM + HIL | Parse docs, analyze UC, interactive questionnaire, compile requirements |
+| 3 | CIQ Config Generation | `ciq_validation_json_gen` | LLM | Generate validation-rules.yaml |
+| 4 | Generate CIQ JSON Config | `ciq_validation_json_gen` | LLM | Generate json-output.yaml |
+| 5 | QA-Validation | `ciq_validation_json_test` | LLM + JAR | Generate test cases, run ciq-processor, QA report |
+| 6 | Generate Execution Config | `network_config_gen` | LLM | Generate workflow.yaml with ${...} placeholders |
+| 7 | QA-MOP | `network_config_test` | LLM + JAR | MOP generation test |
+| 8 | Simulator Setup | `network_simulator_setup` | LLM + JAR | Config gen → start MockWire → sanity checks |
+| 9 | QA-Execution | `network_config_test` | LLM + JAR | Execute workflow against simulator, QA report |
+| 10 | Final Report | — | Deterministic | HTML + Excel reports |
 
 ## Project Structure
 
 ```
-├── main.py                    CLI entry point
-├── start.ps1                  Server launcher
-├── CLAUDE.md                  Project documentation for AI assistants
-├── config/pipeline_config.yaml
-├── lib/                       JARs + templates + MockWire
-├── schemas/                   YAML validation schemas
-├── src/
-│   ├── orchestrator/          PipelineAgent + PipelineRunner
-│   │   ├── pipeline_agent.py  State-machine loop + backtracking + _MULTI_STEP_AGENTS
-│   │   └── runner.py          DB persistence + EventBus + milestone polling
-│   ├── nodes/
-│   │   ├── requirements_agent.py  RequirementsGatherer (Steps 1+2) + answer caching
-│   │   ├── step_nodes.py      8 step agent wrappers (Steps 3-10)
-│   │   ├── milestone_nodes.py 7 milestone pause agents
-│   │   ├── router_nodes.py    3 failure router agents
-│   │   ├── reviewer_agents.py 7 reviewer agents (4 milestone + 3 QA)
-│   │   ├── tools.py           Shared tools
-│   │   └── cr_import.py       Cross-project import bridge
-│   ├── core/                  Models, events, config, retry, logging
-│   ├── storage/               SQLite DB + artifact store
-│   └── ui/
-│       ├── app.py             NiceGUI entry point + CSS + layout
-│       └── pages/             Upload, progress, settings, history, output, usage, cleanup
-├── data/                      Runtime (runs, uploads, DB)
-└── specs/                     Feature specifications
+src/
+  skills/                            # 6 reusable skill packages (46 files, 7,776 lines)
+    requirement_gathering/           # Parse docs, LLM analysis, questionnaire, compile
+    ciq_validation_json_gen/         # LLM generates validation + JSON output YAMLs
+    ciq_validation_json_test/        # QA engine: test cases, JAR execution, QA report
+    network_config_gen/              # LLM generates workflow YAML with ${...} placeholders
+    network_simulator_setup/         # Config gen, start MockWire, sanity checks
+    network_config_test/             # MOP test, execution test, failure classification
+
+  agents/                            # Pipeline agent definitions
+    requirements_agent.py            # RequirementsGathererNode (delegates to skill)
+    step_agents.py                   # Step 3-10 agent wrappers
+    milestone_agents.py              # Milestone pause agents
+    reviewer_agents.py               # QA + milestone reviewer agents
+    router_agents.py                 # Failure routing agents
+
+  tools/                             # Shared tools
+    yaml_tools.py                    # YAML validation, file I/O
+    report_tools.py                  # Report reading for reviewers
+    ciq_tools.py                     # CIQ structure reading, failure classification
+
+  shared/                            # Module-level shared state
+    state.py                         # Shared dicts (milestone events, pipeline actions)
+    cr_bridge.py                     # Cross-project import bridge
+
+  orchestrator/                      # Pipeline orchestration
+    pipeline_agent.py                # State-machine loop with backtracking
+    runner.py                        # PipelineRunner with DB + EventBus
+
+  core/                              # Infrastructure
+    config.py, events.py, logging_config.py, retry.py
+
+  models/                            # Domain models
+    domain.py, validation.py
+
+  storage/                           # SQLite DB + artifact store
+  ui/                                # NiceGUI frontend
+
+schemas/                             # Authoritative YAML schemas (consumed by JARs)
+knowledge/                           # OKF-ready knowledge docs
+config/                              # Pipeline configuration
+data/                                # Runtime (runs, uploads, DB)
+lib/                                 # JARs + MockWire
 ```
 
 ## Requirements
