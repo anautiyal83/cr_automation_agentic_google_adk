@@ -1,7 +1,7 @@
-"""RequirementsGatherer Agent — thin pipeline adapter over TelecomReqSkill.
+"""RequirementsGatherer Agent — thin pipeline adapter over RequirementGatheringSkill.
 
 Replaces Steps 1 (DocParser) and 2 (UCAnalyzer) with a single agent that
-delegates to the reusable TelecomReqSkill for document parsing, LLM analysis,
+delegates to the reusable RequirementGatheringSkill for document parsing, LLM analysis,
 questionnaire generation, and requirements compilation.
 
 Pipeline-specific concerns (milestone events, session state, cr_import) stay here.
@@ -22,7 +22,7 @@ from src.shared.state import (
     milestone_decisions,
     milestone_waiting,
 )
-from src.skills.requirement_gathering import TelecomReqSkill, SkillInput, SkillOutput
+from src.skills.requirement_gathering import RequirementGatheringSkill, SkillInput, SkillOutput
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
@@ -34,7 +34,7 @@ requirements_store: dict[str, dict] = {}  # run_id -> requirements package
 class RequirementsGathererNode(BaseAgent):
     """Gatekeeper agent that gathers complete requirements before YAML generation.
 
-    Delegates all logic to TelecomReqSkill, keeping only pipeline integration.
+    Delegates all logic to RequirementGatheringSkill, keeping only pipeline integration.
     """
     name: str = "requirements_gatherer"
     description: str = "Parse documents, analyze UC, gather developer requirements"
@@ -50,7 +50,7 @@ class RequirementsGathererNode(BaseAgent):
 
         flow.flow("REQUIREMENTS START — run_id=%s, uc=%s", run_id[:8], uc_name)
 
-        # ── Phase 1: Parse documents via existing cr_automation agents ──
+        # ── Phase 1: Extract pre-parsed data from session state ──
         flow.flow("REQUIREMENTS Phase 1: Parsing documents")
         parsed = await self._parse_documents(ctx)
 
@@ -70,12 +70,11 @@ class RequirementsGathererNode(BaseAgent):
             developer_notes=developer_notes,
         )
 
-        # ── Create skill with LLM from cr_import ──
-        from src.shared.cr_bridge import import_cr_module
-        agents_mod = import_cr_module("src.agents")
-        call_llm = agents_mod.call_llm
+        # ── Create skill with local LLM wrapper ──
+        from src.shared.llm import get_llm_fn
+        config = ctx.session.state.get("pipeline_config", {})
 
-        skill = TelecomReqSkill(llm_fn=call_llm)
+        skill = RequirementGatheringSkill(llm_fn=get_llm_fn(config))
 
         # ── Phase 1+2: Parse + Analyze ──
         flow.flow("REQUIREMENTS Phase 1+2: Deterministic extraction + LLM analysis")
@@ -192,40 +191,16 @@ class RequirementsGathererNode(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _parse_documents(self, ctx) -> dict:
-        """Parse CIQ, MOP, and command outputs using existing cr_automation agents."""
-        from src.shared.cr_bridge import get_agent_class
-        from src.agents.step_agents import _get_step_data, _call_existing_agent, _get_config_from_state
+        """Extract initial data from session state for the skill.
 
-        step_data = _get_step_data(ctx.session.state)
-        config = _get_config_from_state(ctx.session.state)
-
+        The requirement_gathering skill handles all document parsing internally
+        via its deterministic parsers (CIQ, MOP, SSH, XML). This method just
+        extracts any pre-parsed data from session state.
+        """
         parsed: dict[str, Any] = {}
-
-        # Run DocParser
-        try:
-            DocParserAgent = get_agent_class("src.agents.doc_parser_agent", "DocParserAgent")
-            parse_result = await _call_existing_agent(DocParserAgent(), step_data, config)
-            parsed = parse_result.get("output_data", {})
-            for key in ("intermediate_repr", "ciq_data", "mop_data", "constraints", "command_outputs"):
-                if key in parsed:
-                    step_data[key] = parsed[key]
-                    ctx.session.state[key] = parsed[key]
-            flow.flow("REQUIREMENTS: DocParser — %s", parse_result.get("status", "?"))
-        except Exception as e:
-            logger.error("DocParser failed: %s", e)
-
-        # Run UCAnalyzer
-        try:
-            UCAnalyzerAgent = get_agent_class("src.agents.uc_analyzer_agent", "UCAnalyzerAgent")
-            analyze_result = await _call_existing_agent(UCAnalyzerAgent(), step_data, config)
-            analyzer_output = analyze_result.get("output_data", {})
-            for key in ("intermediate_repr", "ciq_data", "mop_data"):
-                if key in analyzer_output:
-                    parsed[key] = analyzer_output[key]
-            flow.flow("REQUIREMENTS: UCAnalyzer — %s", analyze_result.get("status", "?"))
-        except Exception as e:
-            logger.error("UCAnalyzer failed: %s", e)
-
+        for key in ("intermediate_repr", "ciq_data", "mop_data", "constraints", "command_outputs"):
+            if ctx.session.state.get(key):
+                parsed[key] = ctx.session.state[key]
         return parsed
 
     async def _ask_developer(self, ctx, questions: list, round_num: int,

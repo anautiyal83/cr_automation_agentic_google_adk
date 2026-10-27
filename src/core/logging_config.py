@@ -1,4 +1,4 @@
-"""Structured logging for CR Automation Pipeline.
+"""Structured logging for NetConfig Pipeline.
 
 Three log categories written to separate files + combined console output:
 

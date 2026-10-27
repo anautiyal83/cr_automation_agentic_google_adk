@@ -1,4 +1,4 @@
-"""LLM prompt templates for telecom requirement gathering."""
+"""LLM prompt templates for network activity requirement gathering."""
 
 SYSTEM_PROMPT = """You are a Nokia telecom UC automation expert and cr-automation framework specialist.
 

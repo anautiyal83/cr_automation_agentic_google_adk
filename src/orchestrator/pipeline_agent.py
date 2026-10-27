@@ -1,386 +1,350 @@
-"""Custom PipelineAgent — state-machine orchestrator with backtracking support.
+"""PipelineAgent — 7-agent orchestrator with built-in milestones and retry routing.
 
-Replaces ADK's deprecated SequentialAgent with a loop that:
-1. Executes agents in index order (0..N)
-2. Checks session state for _retry_target after each agent
-3. Jumps to the target index if set (backtracking)
-4. Skips reviewer agents if the preceding test step passed
-5. Stops on pipeline_cancelled or pipeline_failed
+Executes 7 agents sequentially:
+1. RequirementsGatherer — parse docs, questionnaire, compile requirements
+2. CiqValidationJsonGen — generate validation-rules.yaml + json-output.yaml
+3. CiqValidationJsonQA — test generated YAMLs via JAR
+4. NetworkConfigGen — generate workflow YAML
+5. NetworkSimulatorSetup — generate simulator config, start MockWire, sanity check
+6. NetworkConfigQA — MOP test + execution test
+7. ReportGenerator — final HTML + Excel report
+
+After each agent (except requirements and report), the pipeline:
+- Publishes step events for the UI progress tracker
+- Pauses for milestone review (built-in, not a separate agent)
+- Handles user decisions (continue/rerun/cancel)
+- On QA failure, reads _retry_target from state and jumps back
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from google.adk.agents import BaseAgent
 
+from src.core.events import PipelineEvent, event_bus
 from src.core.logging_config import get_flow_logger
-from src.shared.state import pipeline_actions
+from src.shared.state import (
+    pipeline_actions,
+    milestone_events,
+    milestone_decisions,
+    milestone_waiting,
+)
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
+# Maps agent name → display step numbers for the UI (10-step tracker)
+_AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
+    "requirements_gatherer": [1, 2],
+    "ciq_validation_json_gen": [3, 4],
+    "ciq_validation_json_qa": [5],
+    "network_config_gen": [6],
+    "network_simulator_setup": [8],
+    "network_config_qa": [7, 9],
+    "report_generator": [10],
+}
+
+# Maps agent name → milestone config (step_num, name) for pause after execution
+_AGENT_MILESTONES: dict[str, tuple[int, str]] = {
+    "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
+    "ciq_validation_json_qa": (5, "QA-Validation Results"),
+    "network_config_gen": (6, "Execution Workflow"),
+    "network_simulator_setup": (8, "Simulator Setup"),
+    "network_config_qa": (9, "Network Configuration QA"),
+}
+
+# Maps agent name → index for retry routing
+_AGENT_NAMES = [
+    "requirements_gatherer",       # 0
+    "ciq_validation_json_gen",     # 1
+    "ciq_validation_json_qa",      # 2
+    "network_config_gen",          # 3
+    "network_simulator_setup",     # 4
+    "network_config_qa",           # 5
+    "report_generator",            # 6
+]
+
+# Retry target step → agent index
+_RETRY_STEP_TO_INDEX: dict[int, int] = {
+    3: 1,   # retry CiqValidationJsonGen
+    4: 1,   # retry CiqValidationJsonGen
+    6: 3,   # retry NetworkConfigGen
+    8: 4,   # retry NetworkSimulatorSetup
+}
+
 
 class PipelineAgent(BaseAgent):
-    """Custom orchestrator with conditional backtracking for retry loops.
+    """7-agent orchestrator with built-in milestone pauses and retry routing."""
 
-    Agents are indexed 0..N. The _step_to_index mapping connects logical
-    step numbers (3, 6, 8) to agent indices so failure routers can set
-    _retry_target=6 and the loop jumps to the correct agent.
-    """
-    name: str = "cr_automation_pipeline"
-    description: str = "10-step CR Automation pipeline with backtracking retry loops"
+    name: str = "netconfig_pipeline"
+    description: str = "NetConfig pipeline: 7 agents with milestone review and retry loops"
 
-    # Set by build_pipeline() after construction
     _agents_list: list[BaseAgent] = []
-    _step_to_index: dict[int, int] = {}
-    _reviewer_indices: set[int] = set()    # indices of reviewer agents (conditional)
-    _preceding_test_step: dict[int, int] = {}  # reviewer_index → test step number
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def _configure(
-        self,
-        agents_list: list[BaseAgent],
-        step_to_index: dict[int, int],
-        reviewer_indices: set[int] | None = None,
-        preceding_test_step: dict[int, int] | None = None,
-    ):
-        """Configure the pipeline after construction (Pydantic model limitation)."""
+    def _configure(self, agents_list: list[BaseAgent]):
+        """Configure after construction (Pydantic model limitation)."""
         self._agents_list = agents_list
-        self._step_to_index = step_to_index
-        self._reviewer_indices = reviewer_indices or set()
-        self._preceding_test_step = preceding_test_step or {}
-        # Register sub_agents for ADK framework
         self.sub_agents = list(agents_list)
 
-    # Agents that cover multiple display steps (name → list of step numbers)
-    _MULTI_STEP_AGENTS: dict[str, list[int]] = {
-        "requirements_gatherer": [1, 2],
-    }
-
-    @staticmethod
-    def _parse_step_number(agent_name: str) -> int | None:
-        """Extract step number from agent name like 'step1_doc_parser' → 1."""
-        if agent_name.startswith("step"):
-            try:
-                return int(agent_name.split("_")[0][4:])
-            except (ValueError, IndexError):
-                pass
-        return None
-
     async def _run_async_impl(self, ctx):
-        """Execute agents sequentially with backtracking on _retry_target."""
-        from uuid import UUID
-        from pathlib import Path as _Path
-        from src.core.events import PipelineEvent, event_bus
-
         index = 0
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
-        import time as _time
-
         flow.flow("PIPELINE START — %d agents, run_id=%s", total, run_id_str[:8] if run_id_str else "?")
-        pipeline_t0 = _time.monotonic()
+        pipeline_t0 = time.monotonic()
 
         while index < total:
             agent = self._agents_list[index]
-            step_num = self._parse_step_number(agent.name)
 
-            # ----- CHECK PIPELINE ACTIONS (cancel/rerun from milestones) -----
+            # ----- CHECK PIPELINE ACTIONS -----
             action = pipeline_actions.pop(run_id_str, None)
             if action:
-                act = action.get("action")
-                if act == "cancel":
-                    flow.flow("PIPELINE CANCELLED by user at index %d", index)
-                    ctx.session.state["pipeline_cancelled"] = True
+                result = await self._handle_action(action, ctx, index, run_id_str)
+                if result == "break":
                     break
-                elif act == "rerun":
-                    target = action.get("target_step")
-                    if target and target in self._step_to_index:
-                        target_index = self._step_to_index[target]
-                        flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
-                        if run_id_str:
-                            try:
-                                await event_bus.publish(PipelineEvent(
-                                    run_id=UUID(run_id_str), event_type="retry_started",
-                                    step_number=target,
-                                ))
-                            except Exception:
-                                pass
-                        index = target_index
-                        continue
+                elif isinstance(result, int):
+                    index = result
+                    continue
 
-            # ----- CHECK TERMINATION FLAGS -----
-            if ctx.session.state.get("pipeline_cancelled"):
-                flow.flow("PIPELINE CANCELLED (state flag) at index %d", index)
-                break
-            if ctx.session.state.get("pipeline_failed"):
-                flow.flow("PIPELINE FAILED at index %d", index)
+            # ----- CHECK TERMINATION -----
+            if ctx.session.state.get("pipeline_cancelled") or ctx.session.state.get("pipeline_failed"):
                 break
 
-            # ----- SKIP REVIEWERS if preceding test passed -----
-            if index in self._reviewer_indices:
-                test_step = self._preceding_test_step.get(index)
-                if test_step:
-                    # Check error file on disk (reliable) — ADK state may not reflect sub-agent writes
-                    _run_dir = ctx.session.state.get("run_dir", "")
-                    _err_file = _Path(_run_dir) / f"step_{test_step}_error.json" if _run_dir else None
-                    step_failed = _err_file and _err_file.exists()
-                    if not step_failed:
-                        logger.debug("Skipping reviewer at index %d — step %d passed (no error file)", index, test_step)
-                        index += 1
-                        continue
-
-            # ----- CLEAR old error file before re-run -----
-            if step_num:
-                _run_dir = ctx.session.state.get("run_dir", "")
-                if _run_dir:
-                    _old_err = _Path(_run_dir) / f"step_{step_num}_error.json"
-                    if _old_err.exists():
-                        _old_err.unlink()
+            # ----- CLEAR old error files before re-run -----
+            run_dir = ctx.session.state.get("run_dir", "")
+            for step_num in _AGENT_DISPLAY_STEPS.get(agent.name, []):
+                if run_dir:
+                    err = Path(run_dir) / f"step_{step_num}_error.json"
+                    if err.exists():
+                        err.unlink()
 
             # ----- PUBLISH step_started -----
-            multi_steps = self._MULTI_STEP_AGENTS.get(agent.name, [])
-            if step_num and run_id_str:
-                try:
-                    await event_bus.publish(PipelineEvent(
-                        run_id=UUID(run_id_str), event_type="step_started",
-                        step_number=step_num,
-                    ))
-                except Exception:
-                    pass
-            elif multi_steps and run_id_str:
-                for ms in multi_steps:
-                    try:
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id_str), event_type="step_started",
-                            step_number=ms,
-                        ))
-                    except Exception:
-                        pass
+            display_steps = _AGENT_DISPLAY_STEPS.get(agent.name, [])
+            for sn in display_steps:
+                await self._publish(run_id_str, "step_started", sn)
 
-            # ----- EXECUTE THE AGENT -----
-            agent_t0 = _time.monotonic()
-            flow.flow("AGENT START [%d/%d] %s%s", index + 1, total, agent.name,
-                       f" (step {step_num})" if step_num else "")
+            # ----- EXECUTE AGENT -----
+            agent_t0 = time.monotonic()
+            flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
+
             try:
-                async for event in agent.run_async(ctx):
-                    yield event
+                async for evt in agent.run_async(ctx):
+                    yield evt
             except Exception as e:
-                agent_elapsed = _time.monotonic() - agent_t0
-                logger.error("Agent %s failed after %.1fs: %s", agent.name, agent_elapsed, e)
-                logger.debug("Agent %s traceback:", agent.name, exc_info=True)
-                flow.flow("AGENT FAILED [%d/%d] %s — %.1fs — %s", index + 1, total, agent.name, agent_elapsed, e)
+                elapsed = time.monotonic() - agent_t0
+                logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
+                flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
                 ctx.session.state["pipeline_failed"] = True
                 ctx.session.state["pipeline_error"] = str(e)
-                if step_num and run_id_str:
-                    try:
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id_str), event_type="step_failed",
-                            step_number=step_num,
-                            payload={"error": str(e)},
-                        ))
-                    except Exception:
-                        pass
-                elif multi_steps and run_id_str:
-                    for ms in multi_steps:
-                        try:
-                            await event_bus.publish(PipelineEvent(
-                                run_id=UUID(run_id_str), event_type="step_failed",
-                                step_number=ms,
-                                payload={"error": str(e)},
-                            ))
-                        except Exception:
-                            pass
+                for sn in display_steps:
+                    await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
                 break
 
-            agent_elapsed = _time.monotonic() - agent_t0
-
-            # Determine step status — check disk first (reliable), fallback to session state
-            if step_num:
-                _run_dir = ctx.session.state.get("run_dir", "")
-                _err = _Path(_run_dir) / f"step_{step_num}_error.json" if _run_dir else None
-                status = "failed" if (_err and _err.exists()) else \
-                         ctx.session.state.get(f"step_{step_num}_status", "passed")
-            else:
-                status = "ok"
-            flow.flow("AGENT DONE  [%d/%d] %s — %.1fs — status=%s",
-                       index + 1, total, agent.name, agent_elapsed, status)
+            elapsed = time.monotonic() - agent_t0
+            flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
 
             # ----- PUBLISH step_completed -----
-            if step_num and run_id_str:
-                try:
-                    evt_type = "step_completed" if status != "failed" else "step_failed"
-                    await event_bus.publish(PipelineEvent(
-                        run_id=UUID(run_id_str), event_type=evt_type,
-                        step_number=step_num,
-                        payload={"status": status},
-                    ))
-                except Exception:
-                    pass
-            elif multi_steps and run_id_str:
-                for ms in multi_steps:
-                    try:
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id_str), event_type="step_completed",
-                            step_number=ms,
-                            payload={"status": "passed"},
-                        ))
-                    except Exception:
-                        pass
+            for sn in display_steps:
+                status = ctx.session.state.get(f"step_{sn}_status", "passed")
+                evt_type = "step_completed" if status != "failed" else "step_failed"
+                await self._publish(run_id_str, evt_type, sn, {"status": status})
 
-            # ----- CHECK FOR ACTIONS SET DURING AGENT EXECUTION -----
-            # (milestone nodes set pipeline_actions during their run)
+            # ----- CHECK post-agent actions (set during agent execution) -----
             action = pipeline_actions.pop(run_id_str, None)
             if action:
-                act = action.get("action")
-                if act == "cancel":
-                    flow.flow("PIPELINE CANCELLED after agent %s", agent.name)
-                    ctx.session.state["pipeline_cancelled"] = True
+                result = await self._handle_action(action, ctx, index, run_id_str)
+                if result == "break":
                     break
-                elif act == "rerun":
-                    target = action.get("target_step")
-                    if target and target in self._step_to_index:
-                        target_index = self._step_to_index[target]
-                        flow.flow("RERUN after milestone — jumping to step %d (index %d)", target, target_index)
-                        if run_id_str:
-                            try:
-                                await event_bus.publish(PipelineEvent(
-                                    run_id=UUID(run_id_str), event_type="retry_started",
-                                    step_number=target,
-                                ))
-                            except Exception:
-                                pass
-                        index = target_index
-                        continue
+                elif isinstance(result, int):
+                    index = result
+                    continue
 
-            # ----- ALSO CHECK session state _retry_target (from router agents) -----
+            # ----- MILESTONE PAUSE (built-in) -----
+            milestone_cfg = _AGENT_MILESTONES.get(agent.name)
+            if milestone_cfg:
+                ms_step, ms_name = milestone_cfg
+                decision = await self._milestone_pause(ctx, ms_step, ms_name, run_id_str)
+
+                if decision == "cancel":
+                    ctx.session.state["pipeline_cancelled"] = True
+                    pipeline_actions[run_id_str] = {"action": "cancel"}
+                    break
+                elif decision == "rerun":
+                    # Determine retry target from the agent's output
+                    retry_target = ctx.session.state.pop("_retry_target", None)
+                    if retry_target and retry_target in _RETRY_STEP_TO_INDEX:
+                        target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                    else:
+                        target_index = index  # re-run same agent
+                    flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
+                    await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
+                    index = target_index
+                    continue
+
+            # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)
-            if retry_target is not None and retry_target in self._step_to_index:
-                target_index = self._step_to_index[retry_target]
-                flow.flow("RETRY ROUTING — step %d (index %d)", retry_target, target_index)
-                if run_id_str:
-                    try:
-                        await event_bus.publish(PipelineEvent(
-                            run_id=UUID(run_id_str), event_type="retry_started",
-                            step_number=retry_target,
-                        ))
-                    except Exception:
-                        pass
+            if retry_target is not None and retry_target in _RETRY_STEP_TO_INDEX:
+                target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                retry_count_key = f"retry_count_{retry_target}"
+                ctx.session.state[retry_count_key] = ctx.session.state.get(retry_count_key, 0) + 1
+                flow.flow("AUTO-RETRY — step %d → agent index %d (count=%d)",
+                           retry_target, target_index, ctx.session.state[retry_count_key])
+                await self._publish(run_id_str, "retry_started", retry_target)
                 index = target_index
                 continue
 
-            # Advance to next agent
             index += 1
 
-        pipeline_elapsed = _time.monotonic() - pipeline_t0
-        final_state = "cancelled" if ctx.session.state.get("pipeline_cancelled") else \
-                      "failed" if ctx.session.state.get("pipeline_failed") else "completed"
-        flow.flow("PIPELINE END — %s at index %d, total %.1fs", final_state, index, pipeline_elapsed)
-        # Must be async generator but don't yield None
+        pipeline_elapsed = time.monotonic() - pipeline_t0
+        final = "cancelled" if ctx.session.state.get("pipeline_cancelled") else \
+                "failed" if ctx.session.state.get("pipeline_failed") else "completed"
+        flow.flow("PIPELINE END — %s, %.1fs", final, pipeline_elapsed)
         return
-        yield  # unreachable — makes this an async generator
+        yield  # async generator
+
+    # ------------------------------------------------------------------
+    # Built-in milestone pause
+    # ------------------------------------------------------------------
+
+    async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
+        """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""
+        run_dir = ctx.session.state.get("run_dir", "")
+        err_file = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
+        status = "failed" if (err_file and err_file.exists()) else "passed"
+
+        flow.flow("MILESTONE Step %d (%s): status=%s — awaiting review", step_num, name, status)
+
+        # Signal to UI
+        milestone_waiting[step_num] = {"waiting": True, "name": name, "status": status}
+        ctx.session.state[f"milestone_{step_num}_waiting"] = True
+        ctx.session.state[f"milestone_{step_num}_step_name"] = name
+        ctx.session.state[f"milestone_{step_num}_step_status"] = status
+
+        # Publish milestone_reached event for the UI
+        artifact_file = ""
+        extra_files = []
+        if run_dir:
+            artifact_file, extra_files = self._resolve_artifacts(
+                ctx.session.state, step_num
+            )
+        await self._publish(run_id_str, "milestone_reached", step_num, {
+            "milestone": name,
+            "artifact_file": artifact_file,
+            "test_status": status,
+            "extra_artifact_files": extra_files,
+        })
+
+        # Wait for user decision via asyncio.Event
+        evt = milestone_events.get(step_num)
+        if evt:
+            await evt.wait()
+            evt.clear()
+        else:
+            while step_num not in milestone_decisions:
+                await asyncio.sleep(0.5)
+
+        decision = milestone_decisions.pop(step_num, "continue")
+        milestone_waiting.pop(step_num, None)
+        flow.flow("MILESTONE Step %d: decision=%s", step_num, decision)
+        return decision
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _handle_action(self, action: dict, ctx, index: int, run_id_str: str):
+        """Handle a pipeline action. Returns 'break', target_index (int), or None."""
+        act = action.get("action")
+        if act == "cancel":
+            flow.flow("PIPELINE CANCELLED at index %d", index)
+            ctx.session.state["pipeline_cancelled"] = True
+            return "break"
+        elif act == "rerun":
+            target = action.get("target_step")
+            if target and target in _RETRY_STEP_TO_INDEX:
+                target_index = _RETRY_STEP_TO_INDEX[target]
+                flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
+                await self._publish(run_id_str, "retry_started", target)
+                return target_index
+        return None
+
+    async def _publish(self, run_id_str: str, event_type: str, step_num: int = 0, payload: dict | None = None):
+        """Publish a pipeline event to the event bus."""
+        if not run_id_str:
+            return
+        try:
+            await event_bus.publish(PipelineEvent(
+                run_id=UUID(run_id_str),
+                event_type=event_type,
+                step_number=step_num,
+                payload=payload or {},
+            ))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resolve_artifacts(state: dict, step_num: int) -> tuple[str, list[str]]:
+        """Find the primary artifact file and extra files for milestone review."""
+        run_dir = state.get("run_dir", "")
+        uc_name = state.get("uc_name", "")
+        if not run_dir or not uc_name:
+            return "", []
+
+        _ARTIFACT_MAP = {
+            4: (f"{uc_name}_validation-rules.yaml", [f"{uc_name}_json-output.yaml"]),
+            5: (f"{uc_name}_ciq-qa-report.html", []),
+            6: (f"{uc_name}.yaml", []),
+            8: (f"{uc_name}_simulator-config.yaml", []),
+            9: (f"{uc_name}_network-qa-report.html", []),
+        }
+
+        primary, extras = _ARTIFACT_MAP.get(step_num, ("", []))
+        primary_path = str(Path(run_dir) / primary) if primary else ""
+        extra_paths = [str(Path(run_dir) / e) for e in extras if (Path(run_dir) / e).exists()]
+
+        return primary_path, extra_paths
 
 
 def build_pipeline(config: dict | None = None) -> PipelineAgent:
-    """Build the complete pipeline with all 23 agents.
+    """Build the 7-agent pipeline.
 
     Returns a configured PipelineAgent ready for execution.
     """
     import os
-    from google.adk.models.lite_llm import LiteLlm
 
     config = config or {}
-    model_name = config.get("default_model", "openrouter/google/gemini-2.5-flash")
     api_key = config.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
     if api_key:
         os.environ["OPENROUTER_API_KEY"] = api_key
 
-    model = LiteLlm(model=model_name)
-
-    # Import node factories
-    from src.agents.step_agents import (
-        ValidationRulesNode,
-        JsonTemplateNode, CiqQANode, WorkflowGenNode,
-        MopTestNode, SimulatorSetupNode, ExecutionTestNode, FinalReportNode,
-    )
     from src.agents.requirements_agent import RequirementsGathererNode
-    from src.agents.milestone_agents import create_milestone_node
-    from src.agents.router_agents import (
-        FailureRouterStep5, FailureRouterStep7, FailureRouterStep9,
-    )
-    from src.agents.reviewer_agents import (
-        create_milestone_reviewer,
-        create_qa_validation_reviewer,
-        create_qa_mop_reviewer,
-        create_qa_execution_reviewer,
-    )
+    from src.agents.ciq_validation_json_gen_agent import CiqValidationJsonGenAgent
+    from src.agents.ciq_validation_json_qa_agent import CiqValidationJsonQAAgent
+    from src.agents.network_config_gen_agent import NetworkConfigGenAgent
+    from src.agents.network_simulator_setup_agent import NetworkSimulatorSetupAgent
+    from src.agents.network_config_qa_agent import NetworkConfigQAAgent
+    from src.agents.report_agent import ReportAgent
 
-    # Build ordered agent list (index → agent)
-    # RequirementsGatherer replaces Steps 1+2 (DocParser + UCAnalyzer)
-    # Pattern: Step → MilestoneReviewer (skipped if passed) → Milestone (pause)
     agents = [
-        RequirementsGathererNode(),               #  0 - Requirements (replaces Steps 1+2)
-        ValidationRulesNode(),                    #  1 - Step 3
-        create_milestone_reviewer(model, 3),      #  2 - Reviewer (if step 3 failed)
-        create_milestone_node(3, "Validation Rules"),  #  3 - Milestone
-        JsonTemplateNode(),                       #  4 - Step 4
-        create_milestone_reviewer(model, 4),      #  5 - Reviewer (if step 4 failed)
-        create_milestone_node(4, "JSON Output Template"),  #  6 - Milestone
-        CiqQANode(),                              #  7 - Step 5
-        create_qa_validation_reviewer(model),     #  8 - QA Reviewer (if step 5 failed)
-        create_milestone_node(5, "QA-Validation Results"),  #  9 - Milestone
-        FailureRouterStep5(),                     # 10 - Router
-        WorkflowGenNode(),                        # 11 - Step 6
-        create_milestone_reviewer(model, 6),      # 12 - Reviewer (if step 6 failed)
-        create_milestone_node(6, "Execution Config"),  # 13 - Milestone
-        MopTestNode(),                            # 14 - Step 7
-        create_qa_mop_reviewer(model),            # 15 - QA Reviewer (if step 7 failed)
-        create_milestone_node(7, "QA-MOP Results"),  # 16 - Milestone
-        FailureRouterStep7(),                     # 17 - Router
-        SimulatorSetupNode(),                     # 18 - Step 8
-        create_milestone_reviewer(model, 8),      # 19 - Reviewer (if step 8 failed)
-        create_milestone_node(8, "Simulator Config"),  # 20 - Milestone
-        ExecutionTestNode(),                      # 21 - Step 9
-        create_qa_execution_reviewer(model),      # 22 - QA Reviewer (if step 9 failed)
-        create_milestone_node(9, "QA-Execution Results"),  # 23 - Milestone
-        FailureRouterStep9(),                     # 24 - Router
-        FinalReportNode(),                        # 25 - Step 10
+        RequirementsGathererNode(),       # 0 - Steps 1+2
+        CiqValidationJsonGenAgent(),      # 1 - Steps 3+4
+        CiqValidationJsonQAAgent(),       # 2 - Step 5
+        NetworkConfigGenAgent(),          # 3 - Step 6
+        NetworkSimulatorSetupAgent(),     # 4 - Step 8
+        NetworkConfigQAAgent(),           # 5 - Steps 7+9
+        ReportAgent(),                    # 6 - Step 10
     ]
 
-    # Step number → agent index (for retry routing)
-    step_to_index = {
-        3: 1,    # ValidationRulesNode
-        4: 4,    # JsonTemplateNode
-        5: 7,    # CiqQANode
-        6: 11,   # WorkflowGenNode
-        7: 14,   # MopTestNode
-        8: 18,   # SimulatorSetupNode
-        9: 21,   # ExecutionTestNode
-    }
-
-    # Reviewer indices and which step they review
-    # Skipped if that step passed
-    reviewer_indices = {2, 5, 8, 12, 15, 19, 22}
-    preceding_test_step = {
-        2: 3,    # Milestone reviewer step 3 → skip if step 3 passed
-        5: 4,    # Milestone reviewer step 4 → skip if step 4 passed
-        8: 5,    # QA Validation Reviewer → skip if step 5 passed
-        12: 6,   # Milestone reviewer step 6 → skip if step 6 passed
-        15: 7,   # QA MOP Reviewer → skip if step 7 passed
-        19: 8,   # Milestone reviewer step 8 → skip if step 8 passed
-        22: 9,   # QA Execution Reviewer → skip if step 9 passed
-    }
-
     pipeline = PipelineAgent()
-    pipeline._configure(
-        agents_list=agents,
-        step_to_index=step_to_index,
-        reviewer_indices=reviewer_indices,
-        preceding_test_step=preceding_test_step,
-    )
+    pipeline._configure(agents)
 
-    logger.info("Pipeline built: %d agents (step_to_index=%s)", len(agents), step_to_index)
+    logger.info("Pipeline built: %d agents", len(agents))
     return pipeline

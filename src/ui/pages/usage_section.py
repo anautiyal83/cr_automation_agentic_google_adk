@@ -33,13 +33,44 @@ class UsageSection:
         ui.timer(0.5, self._refresh, once=True)
 
     async def _refresh(self):
-        try:
-            from src.shared.cr_bridge import import_cr_module
-            agents_mod = import_cr_module("src.agents")
-            stats = agents_mod.get_usage_stats()
-        except Exception:
-            stats = {"total_calls": 0, "total_tokens": 0, "total_prompt": 0,
-                     "total_completion": 0, "total_time": 0, "by_model": {}, "calls": []}
+        from src.shared.llm import get_usage_stats
+        raw = get_usage_stats()
+
+        # Aggregate into the format the UI expects
+        by_model: dict[str, dict] = {}
+        total_tokens = 0
+        total_prompt = 0
+        total_completion = 0
+        total_time = 0.0
+
+        for entry in raw:
+            m = entry.get("model", "unknown")
+            t = entry.get("total_tokens", 0)
+            p = entry.get("prompt_tokens", 0)
+            c = entry.get("completion_tokens", 0)
+            e = entry.get("elapsed_sec", 0.0)
+
+            total_tokens += t
+            total_prompt += p
+            total_completion += c
+            total_time += e
+
+            md = by_model.setdefault(m, {"calls": 0, "tokens": 0, "prompt": 0, "completion": 0, "time": 0.0})
+            md["calls"] += 1
+            md["tokens"] += t
+            md["prompt"] += p
+            md["completion"] += c
+            md["time"] += e
+
+        stats = {
+            "total_calls": len(raw),
+            "total_tokens": total_tokens,
+            "total_prompt": total_prompt,
+            "total_completion": total_completion,
+            "total_time": total_time,
+            "by_model": by_model,
+            "calls": raw,
+        }
 
         self._render_summary(stats)
         self._render_model_breakdown(stats)
@@ -127,7 +158,7 @@ class UsageSection:
                     "comp_tok": f"{c['completion_tokens']:,}",
                     "total_tok": f"{c['total_tokens']:,}",
                     "elapsed": f"{c['elapsed_sec']:.1f}",
-                    "chars": f"{c['prompt_chars']:,}",
+                    "chars": f"{c.get('prompt_chars', c.get('prompt_tokens', 0)):,}",
                 })
             ui.table(columns=columns, rows=rows, row_key="time") \
                 .props("dense flat bordered dark").classes("w-full")

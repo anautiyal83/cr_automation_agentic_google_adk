@@ -6,9 +6,9 @@ specification for downstream YAML generation.
 
 Usage::
 
-    from src.skills.requirement_gathering import TelecomReqSkill, SkillInput, SkillOutput
+    from src.skills.requirement_gathering import RequirementGatheringSkill, SkillInput, SkillOutput
 
-    skill = TelecomReqSkill(llm_fn=my_async_llm)
+    skill = RequirementGatheringSkill(llm_fn=my_async_llm)
     output = await skill.parse_and_analyze(SkillInput(uc_name="...", ...))
 
     while output.questions:
@@ -17,7 +17,7 @@ Usage::
 
     output = await skill.compile_final()
 """
-from .skill import TelecomReqSkill, SkillInput, SkillOutput
+from .skill import RequirementGatheringSkill, SkillInput, SkillOutput
 from .schema_discovery import discover_schemas, DiscoveredSchemas
 from .schema_validator import (
     validate_validation_rules,
@@ -27,7 +27,7 @@ from .schema_validator import (
 )
 
 __all__ = [
-    "TelecomReqSkill", "SkillInput", "SkillOutput",
+    "RequirementGatheringSkill", "SkillInput", "SkillOutput",
     "discover_schemas", "DiscoveredSchemas",
     "validate_validation_rules", "validate_json_output",
     "check_requirements_coverage", "ValidationResult",

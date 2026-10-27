@@ -1,8 +1,8 @@
-"""TelecomReqSkill — main orchestrator for telecom activity requirement gathering.
+"""RequirementGatheringSkill — main orchestrator for telecom activity requirement gathering.
 
 Usage::
 
-    skill = TelecomReqSkill(llm_fn=my_async_llm_function)
+    skill = RequirementGatheringSkill(llm_fn=my_async_llm_function)
 
     output = await skill.parse_and_analyze(SkillInput(
         uc_name="PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION",
@@ -68,7 +68,7 @@ class SkillOutput:
     round_num: int = 0
 
 
-class TelecomReqSkill:
+class RequirementGatheringSkill:
     """Stateful skill for gathering telecom UC activity requirements.
 
     Phases:

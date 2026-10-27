@@ -1,5 +1,5 @@
 """
-Configuration manager for the CR Automation pipeline.
+Configuration manager for the NetConfig pipeline.
 
 Loads configuration from YAML files, supports DB-stored overrides,
 per-step model assignments, and API key masking.

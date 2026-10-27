@@ -108,7 +108,7 @@ requirements_store    — requirements package           (src.agents.requirement
 src/
   skills/                            # 6 reusable skill packages (46 files, 7,776 lines)
     requirement_gathering/           # Parse docs, LLM analysis, questionnaire, compile
-      skill.py                       # TelecomReqSkill: parse_and_analyze → incorporate_answers → compile_final
+      skill.py                       # RequirementGatheringSkill: parse_and_analyze → incorporate_answers → compile_final
       parsers/                       # 4 deterministic parsers (ciq, mop, ssh_log, xml_sample)
       analyzer.py, questionnaire.py  # LLM wrappers
       compiler.py                    # Merge + enforce + inject schema hints
