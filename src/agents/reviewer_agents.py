@@ -22,7 +22,7 @@ from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 
-from src.nodes.milestone_nodes import reviewer_feedback as _reviewer_feedback_store
+from src.shared.state import reviewer_feedback as _reviewer_feedback_store
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +463,7 @@ class MilestoneReviewerNode(BaseAgent):
 
         # Call LLM
         try:
-            from src.nodes.cr_import import import_cr_module
+            from src.shared.cr_bridge import import_cr_module
             agents_mod = import_cr_module("src.agents")
             call_llm = agents_mod.call_llm
             config = ctx.session.state.get("pipeline_config", {})
@@ -554,7 +554,7 @@ class QAReviewerNode(BaseAgent):
         prompt = "\n".join(context_parts)
 
         try:
-            from src.nodes.cr_import import import_cr_module
+            from src.shared.cr_bridge import import_cr_module
             agents_mod = import_cr_module("src.agents")
             call_llm = agents_mod.call_llm
             config = ctx.session.state.get("pipeline_config", {})
@@ -608,4 +608,4 @@ def create_qa_execution_reviewer(model) -> QAReviewerNode:
 
 
 # Import helper for read_file_content
-from src.nodes.tools import read_file_content
+from src.tools.yaml_tools import read_file_content

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine
 
-from src.core.models import RetryAttempt, RetryContext, RetryOutcome, RetryType
+from src.models.domain import RetryAttempt, RetryContext, RetryOutcome, RetryType
 
 logger = logging.getLogger(__name__)
 

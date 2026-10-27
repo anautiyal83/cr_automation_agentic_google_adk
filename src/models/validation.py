@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.core.models import ValidationError, ValidationResult
+from src.models.domain import ValidationError, ValidationResult
 
 
 async def validate_documents(

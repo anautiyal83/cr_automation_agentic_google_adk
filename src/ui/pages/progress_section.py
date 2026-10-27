@@ -321,7 +321,7 @@ class ProgressSection:
 
                 if ms_step == 0:
                     # Questionnaire — restore interactive dialog
-                    from src.nodes.milestone_nodes import milestone_waiting as _mw
+                    from src.shared.state import milestone_waiting as _mw
                     questions = _mw.get(0, {}).get("questions", [])
                     self.status_icon.name = "quiz"
                     self.status_label.text = f"Requirements Gathering — {uc_name}"
@@ -338,7 +338,7 @@ class ProgressSection:
                     extra_files = []
                     try:
                         ms_state = await self.runner.get_state(str(run_id))
-                        from src.nodes.milestone_nodes import milestone_waiting as _mw
+                        from src.shared.state import milestone_waiting as _mw
                         artifact_file = _mw.get(2, {}).get("artifact_file", "")
                         if not artifact_file:
                             artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
@@ -512,7 +512,7 @@ class ProgressSection:
                 # Get questions from event payload or milestone_waiting
                 questions = event.payload.get("questions", [])
                 if not questions:
-                    from src.nodes.milestone_nodes import milestone_waiting as _mw
+                    from src.shared.state import milestone_waiting as _mw
                     questions = _mw.get(0, {}).get("questions", [])
 
                 # Update banner to show paused state
@@ -613,7 +613,7 @@ class ProgressSection:
             rerun_label = "Re-run Steps 6-9"
             try:
                 import json as _json
-                from src.nodes.milestone_nodes import reviewer_feedback as _fb
+                from src.shared.state import reviewer_feedback as _fb
                 run_id_str = str(self.active_run_id) if self.active_run_id else ""
                 fb = _fb.get(f"{run_id_str}:9", "")
                 if fb:
@@ -1083,7 +1083,7 @@ class ProgressSection:
                 rerun_from = 6  # default
                 try:
                     import json as _json
-                    from src.nodes.milestone_nodes import reviewer_feedback as _fb
+                    from src.shared.state import reviewer_feedback as _fb
                     run_id_str = str(self.active_run_id) if self.active_run_id else ""
                     fb = _fb.get(f"{run_id_str}:9", "")
                     if fb:

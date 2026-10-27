@@ -1,4 +1,4 @@
-"""Milestone nodes — pause pipeline for user review.
+"""Milestone agents — pause pipeline for user review.
 
 Each milestone sets milestone_N_waiting=True in session state and
 waits on an asyncio.Event until the runner signals a decision.
@@ -10,19 +10,15 @@ import logging
 
 from google.adk.agents import BaseAgent
 
+from src.shared.state import (
+    milestone_events,
+    milestone_decisions,
+    milestone_waiting,
+    pipeline_actions,
+    reviewer_feedback,
+)
+
 logger = logging.getLogger(__name__)
-
-# Shared registries — used by milestone nodes, runner, and pipeline agent
-milestone_events: dict[int, asyncio.Event] = {}   # step → Event (signaled by runner)
-milestone_decisions: dict[int, str] = {}            # step → decision
-milestone_waiting: dict[int, dict] = {}             # step → {waiting, name, status}
-
-# Pipeline-level actions — set by milestone nodes, read by PipelineAgent
-# This bypasses ADK session state which may use copies/deltas
-pipeline_actions: dict[str, dict] = {}  # run_id → {"action": "rerun"/"cancel", "target_step": N}
-
-# Reviewer feedback — set by MilestoneReviewerNode, read by step nodes on retry
-reviewer_feedback: dict[str, str] = {}  # "run_id:step_num" → feedback text
 
 
 class MilestoneNode(BaseAgent):

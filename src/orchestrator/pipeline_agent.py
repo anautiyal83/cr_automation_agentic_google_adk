@@ -15,7 +15,7 @@ from typing import Any
 from google.adk.agents import BaseAgent
 
 from src.core.logging_config import get_flow_logger
-from src.nodes.milestone_nodes import pipeline_actions
+from src.shared.state import pipeline_actions
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
@@ -301,17 +301,17 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
     model = LiteLlm(model=model_name)
 
     # Import node factories
-    from src.nodes.step_nodes import (
+    from src.agents.step_agents import (
         ValidationRulesNode,
         JsonTemplateNode, CiqQANode, WorkflowGenNode,
         MopTestNode, SimulatorSetupNode, ExecutionTestNode, FinalReportNode,
     )
-    from src.nodes.requirements_agent import RequirementsGathererNode
-    from src.nodes.milestone_nodes import create_milestone_node
-    from src.nodes.router_nodes import (
+    from src.agents.requirements_agent import RequirementsGathererNode
+    from src.agents.milestone_agents import create_milestone_node
+    from src.agents.router_agents import (
         FailureRouterStep5, FailureRouterStep7, FailureRouterStep9,
     )
-    from src.nodes.reviewer_agents import (
+    from src.agents.reviewer_agents import (
         create_milestone_reviewer,
         create_qa_validation_reviewer,
         create_qa_mop_reviewer,

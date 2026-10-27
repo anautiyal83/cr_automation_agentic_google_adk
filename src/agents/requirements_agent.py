@@ -17,7 +17,7 @@ from typing import Any
 from google.adk.agents import BaseAgent
 
 from src.core.logging_config import get_flow_logger
-from src.nodes.milestone_nodes import (
+from src.shared.state import (
     milestone_events,
     milestone_decisions,
     milestone_waiting,
@@ -71,7 +71,7 @@ class RequirementsGathererNode(BaseAgent):
         )
 
         # ── Create skill with LLM from cr_import ──
-        from src.nodes.cr_import import import_cr_module
+        from src.shared.cr_bridge import import_cr_module
         agents_mod = import_cr_module("src.agents")
         call_llm = agents_mod.call_llm
 
@@ -176,7 +176,7 @@ class RequirementsGathererNode(BaseAgent):
         milestone_waiting.pop(milestone_step, None)
 
         if decision == "cancel":
-            from src.nodes.milestone_nodes import pipeline_actions
+            from src.shared.state import pipeline_actions
             pipeline_actions[run_id] = {"action": "cancel"}
 
         flow.flow(
@@ -193,8 +193,8 @@ class RequirementsGathererNode(BaseAgent):
 
     async def _parse_documents(self, ctx) -> dict:
         """Parse CIQ, MOP, and command outputs using existing cr_automation agents."""
-        from src.nodes.cr_import import get_agent_class
-        from src.nodes.step_nodes import _get_step_data, _call_existing_agent, _get_config_from_state
+        from src.shared.cr_bridge import get_agent_class
+        from src.agents.step_agents import _get_step_data, _call_existing_agent, _get_config_from_state
 
         step_data = _get_step_data(ctx.session.state)
         config = _get_config_from_state(ctx.session.state)

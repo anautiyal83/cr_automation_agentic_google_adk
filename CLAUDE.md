@@ -11,7 +11,7 @@
 ## Architecture — 26 Agents
 
 ### RequirementsGatherer (replaces Steps 1+2)
-- **File**: `src/nodes/requirements_agent.py`
+- **File**: `src/agents/requirements_agent.py`
 - **Type**: BaseAgent — gatekeeper that blocks pipeline until requirements are gathered
 - **6 phases**: Parse → Analyze → Ask (iterative HIL, max 3 rounds) → Compile → Summary Doc → Review Pause
 - **3 requirement categories**: Node & Activity, Commands & Parameters, Orchestration
@@ -74,35 +74,67 @@ Step 9 fail → QA Exec Reviewer → Router9 → _retry_target=6 or 8 → Pipeli
 
 ## Shared Module-Level Dicts (ADK session state does NOT work for these)
 ```
-pipeline_actions      — cancel/rerun signals
-reviewer_feedback     — retry feedback from reviewers
-milestone_events      — asyncio.Event per milestone step
-milestone_decisions   — user decision per milestone step
-milestone_waiting     — milestone pause state + questions
-requirements_store    — requirements package (RequirementsGatherer → step nodes)
-_previous_answers     — cached questionnaire answers by UC name (for re-runs)
+pipeline_actions      — cancel/rerun signals          (src.shared.state)
+reviewer_feedback     — retry feedback from reviewers  (src.shared.state)
+milestone_events      — asyncio.Event per milestone    (src.shared.state)
+milestone_decisions   — user decision per milestone    (src.shared.state)
+milestone_waiting     — milestone pause state          (src.shared.state)
+requirements_store    — requirements package           (src.agents.requirements_agent)
 ```
 
-## Key Files
+## Project Structure
 ```
-src/orchestrator/pipeline_agent.py  — PipelineAgent with state-machine loop + backtracking + _MULTI_STEP_AGENTS
-src/orchestrator/runner.py          — PipelineRunner with DB persistence + EventBus + milestones
-src/nodes/requirements_agent.py     — RequirementsGatherer (replaces Steps 1+2) + _previous_answers cache
-src/nodes/step_nodes.py             — 8 BaseAgent step wrappers (Steps 3-10, call agents via cr_import)
-src/nodes/milestone_nodes.py        — 7 milestone pause agents (asyncio.Event based)
-src/nodes/router_nodes.py           — 3 failure router agents (classify + set _retry_target)
-src/nodes/reviewer_agents.py        — 7 reviewer agents (3 QA + 4 milestone reviewers)
-src/nodes/tools.py                  — Shared tools (YAML validation, report reading, classification)
-src/nodes/cr_import.py              — Cross-project import bridge to cr_automation-agentic
-src/core/                           — models.py, events.py, config.py, retry.py
-src/storage/                        — db.py, artifact_store.py
-src/ui/app.py                       — NiceGUI entry point + CSS + layout
-src/ui/pages/progress_section.py    — Pipeline tracker + pre-built questionnaire dialog + milestone restore
-src/ui/pages/                       — upload, progress, settings, history, output_viewer, cleanup, usage
+src/
+  agents/                          # All agent definitions
+    requirements_agent.py          # RequirementsGathererNode (gatekeeper)
+    step_agents.py                 # Step 3-10 agent wrappers
+    milestone_agents.py            # Milestone pause agents
+    reviewer_agents.py             # QA + milestone reviewer agents
+    router_agents.py               # Failure routing agents
+
+  tools/                           # Shared tools for agents
+    yaml_tools.py                  # validate_yaml_syntax, read/write artifact
+    report_tools.py                # read_exec_report, read_mop_report, etc.
+    ciq_tools.py                   # read_ciq_structure, classify_failure_type
+
+  shared/                          # Module-level shared state + cross-project bridge
+    state.py                       # All module-level shared dicts
+    cr_bridge.py                   # Cross-project import bridge (cr_automation-agentic)
+
+  orchestrator/                    # Pipeline orchestration
+    pipeline_agent.py              # PipelineAgent with state-machine loop + backtracking
+    runner.py                      # PipelineRunner with DB persistence + EventBus
+
+  skills/                          # Reusable skill packages
+    telecom_req/                   # TelecomReqSkill (14 files, ~2,600 lines)
+
+  core/                            # Infrastructure
+    config.py                      # ConfigManager, PipelineConfiguration
+    events.py                      # EventBus, PipelineEvent
+    logging_config.py              # setup_logging, get_flow_logger
+    retry.py                       # Retry logic
+
+  models/                          # Domain models
+    domain.py                      # UCDocumentSet, PipelineRun, StepResult, etc.
+    validation.py                  # Document upload validation
+
+  storage/                         # Persistence
+    db.py                          # SQLite database
+    artifact_store.py              # File system artifact store
+
+  ui/                              # NiceGUI frontend
+    app.py                         # Entry point + CSS + layout
+    pages/                         # upload, progress, settings, history, etc.
+
+knowledge/                         # OKF-ready knowledge directory (top-level)
+  index.md                         # OKF root index
+  schemas/                         # Schema reference docs
+  domain/                          # Telecom domain knowledge
+  framework/                       # CLI Automation framework docs
 ```
 
 ## Cross-Project Imports
-Agents from `D:/my_workspace/cr_automation-agentic/src/agents/` are loaded via `cr_import.py`
+Agents from `D:/my_workspace/cr_automation-agentic/src/agents/` are loaded via `src/shared/cr_bridge.py`
 using `importlib.util.spec_from_file_location` with namespace isolation to avoid `src` package conflicts.
 
 ## Running

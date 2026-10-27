@@ -16,7 +16,7 @@ from google.genai import types
 
 from src.core.events import PipelineEvent, event_bus
 from src.core.logging_config import get_flow_logger
-from src.nodes.milestone_nodes import milestone_events, milestone_decisions, milestone_waiting
+from src.shared.state import milestone_events, milestone_decisions, milestone_waiting
 from src.orchestrator.pipeline_agent import build_pipeline
 
 logger = logging.getLogger(__name__)
