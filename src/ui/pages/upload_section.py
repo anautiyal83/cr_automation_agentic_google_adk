@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nicegui import events, ui
 
-from src.core.models import UCDocumentSet
+from src.models.domain import UCDocumentSet
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
@@ -320,7 +320,7 @@ class UploadSection:
 
         # Document validation — try to import, skip if not available
         try:
-            from src.core.document_validator import validate_documents
+            from src.models.validation import validate_documents
             try:
                 result = await validate_documents(
                     uc_name=self.uc_name,

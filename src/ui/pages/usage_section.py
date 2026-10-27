@@ -34,7 +34,7 @@ class UsageSection:
 
     async def _refresh(self):
         try:
-            from src.nodes.cr_import import import_cr_module
+            from src.shared.cr_bridge import import_cr_module
             agents_mod = import_cr_module("src.agents")
             stats = agents_mod.get_usage_stats()
         except Exception:

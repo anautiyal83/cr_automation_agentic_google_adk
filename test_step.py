@@ -132,10 +132,10 @@ async def run_step(step_num: int, run_id: str):
     """Run a single step using state from a previous run."""
     loaded_config = await _ensure_api_key()
     # Clear module cache to pick up latest cr_automation-agentic changes
-    from src.nodes.cr_import import clear_cache
+    from src.shared.cr_bridge import clear_cache
     clear_cache()
-    from src.nodes.cr_import import get_agent_class, import_cr_module
-    from src.nodes.step_nodes import _get_step_data, _save_step_result, _call_existing_agent, _inject_retry_context
+    from src.shared.cr_bridge import get_agent_class, import_cr_module
+    from src.agents.step_agents import _get_step_data, _save_step_result, _call_existing_agent, _inject_retry_context
 
     run_dir = Path("data/runs") / run_id
     if not run_dir.exists():
@@ -218,7 +218,7 @@ async def run_step(step_num: int, run_id: str):
 
 async def test_autofix_validation(yaml_path: str, ciq_path: str):
     """Test auto-fix on a validation rules YAML."""
-    from src.nodes.cr_import import import_cr_module
+    from src.shared.cr_bridge import import_cr_module
     mod = import_cr_module("src.agents.validation_gen_agent")
 
     yaml_content = Path(yaml_path).read_text(encoding="utf-8")
@@ -250,7 +250,7 @@ async def test_autofix_validation(yaml_path: str, ciq_path: str):
 
 async def test_autofix_workflow(yaml_path: str):
     """Test auto-fix on a workflow YAML."""
-    from src.nodes.cr_import import import_cr_module
+    from src.shared.cr_bridge import import_cr_module
     mod = import_cr_module("src.agents.workflow_gen_agent")
 
     yaml_content = Path(yaml_path).read_text(encoding="utf-8")
@@ -290,8 +290,8 @@ async def test_autofix_workflow(yaml_path: str):
 async def test_reviewer(step_num: int, run_id: str):
     """Test reviewer analysis on a failed step."""
     await _ensure_api_key()
-    from src.nodes.milestone_nodes import reviewer_feedback
-    from src.nodes.cr_import import import_cr_module
+    from src.shared.state import reviewer_feedback
+    from src.shared.cr_bridge import import_cr_module
 
     run_dir = Path("data/runs") / run_id
     if not run_dir.exists():
@@ -327,7 +327,7 @@ async def test_reviewer(step_num: int, run_id: str):
 
     if step_num in (5, 7, 9):
         # QA reviewer — read test results
-        from src.nodes.reviewer_agents import read_qa_report, read_exec_report, read_mop_report
+        from src.agents.reviewer_agents import read_qa_report, read_exec_report, read_mop_report
         if step_num == 5:
             report = read_qa_report(str(run_dir))
             print(f"QA Report: {report.get('total', 0)} TCs, {report.get('passed', 0)} passed, {report.get('failed', 0)} failed")
@@ -348,7 +348,7 @@ async def test_reviewer(step_num: int, run_id: str):
     call_llm = agents_mod.call_llm
     config = state.get("pipeline_config", {})
 
-    from src.nodes.reviewer_agents import MILESTONE_REVIEWER_PROMPT
+    from src.agents.reviewer_agents import MILESTONE_REVIEWER_PROMPT
     prompt = MILESTONE_REVIEWER_PROMPT.format(
         step_name=_STEP_CONTEXT.get(step_num, {}).get("name", f"Step {step_num}"),
         step_number=step_num,
@@ -373,7 +373,7 @@ async def test_reviewer(step_num: int, run_id: str):
 
 async def test_validate(yaml_path: str, ciq_path: str):
     """Validate a YAML file against CIQ."""
-    from src.nodes.cr_import import import_cr_module
+    from src.shared.cr_bridge import import_cr_module
     mod = import_cr_module("src.agents.validation_gen_agent")
 
     yaml_content = Path(yaml_path).read_text(encoding="utf-8")

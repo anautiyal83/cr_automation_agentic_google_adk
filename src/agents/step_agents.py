@@ -28,7 +28,7 @@ from src.core.logging_config import get_flow_logger
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
-from src.nodes.cr_import import get_agent_class, import_cr_module
+from src.shared.cr_bridge import get_agent_class, import_cr_module
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ def _get_config_from_state(state: dict) -> dict:
 
 def _get_step_data(state: dict) -> dict:
     """Build step_data dict from session state (same structure existing agents expect)."""
-    from src.nodes.requirements_agent import requirements_store
+    from src.agents.requirements_agent import requirements_store
 
     # Remove empty/missing optional path keys from document_set
     # (prevents DocParserAgent from calling Path("") or Path(None))
@@ -182,7 +182,7 @@ def _save_step_result(state: dict, step_num: int, result: dict):
 
 def _inject_retry_context(state: dict, step_num: int, step_data: dict):
     """If this step has been retried, inject reviewer feedback into step_data."""
-    from src.nodes.milestone_nodes import reviewer_feedback as _fb_store
+    from src.shared.state import reviewer_feedback as _fb_store
 
     retries = state.get(f"retry_count_{step_num}", 0)
     if retries == 0:
