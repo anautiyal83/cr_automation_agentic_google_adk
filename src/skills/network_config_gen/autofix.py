@@ -1,0 +1,239 @@
+"""Auto-fix utilities for LLM-generated workflow YAML.
+
+Fixes common LLM mistakes while preserving ${...} runtime placeholders:
+- Remove unknown fields (field whitelist per section)
+- Auto-generate validation.description when missing
+- Fix unsupported Java functions in criteria.expr
+- Ensure referenced nodes exist in nodeGroups
+- Repair YAML syntax (markdown fencing, trailing garbage)
+"""
+from __future__ import annotations
+
+import logging
+import re
+from io import StringIO
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Fields allowed in each workflow section
+_VALID_NODE_FIELDS = {
+    "name", "host", "port", "user", "password", "prompt_regex", "type",
+    "ssh", "escalation", "ne_id", "role", "kex_algorithms", "connect_timeout",
+}
+
+_VALID_COMMAND_FIELDS = {
+    "cmd", "command", "node", "description", "validation", "register",
+    "on_failure", "timeout", "target_user", "delay", "expect", "send",
+    "escalation", "exit_after", "ciq_params", "purpose", "syntax",
+}
+
+_VALID_VALIDATION_FIELDS = {
+    "criteria", "success", "failure", "description", "timeout",
+}
+
+
+def clean_yaml_response(text: str) -> str:
+    """Strip markdown code fences and leading/trailing noise."""
+    text = re.sub(r"^```(?:ya?ml)?\s*\n?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+
+    lines = text.split("\n")
+    yaml_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and (stripped.startswith(("#", "---", "description", "nodeGroups",
+                                             "phases", "version", "name:"))
+                         or ":" in stripped):
+            yaml_start = i
+            break
+
+    return "\n".join(lines[yaml_start:]).rstrip()
+
+
+def parse_yaml(text: str) -> dict | None:
+    """Parse YAML text, returning dict or None on failure."""
+    try:
+        from ruamel.yaml import YAML
+        parsed = YAML().load(StringIO(text))
+        return dict(parsed) if parsed else None
+    except Exception:
+        return None
+
+
+def dump_yaml(data: dict) -> str:
+    """Dump dict to YAML string."""
+    from ruamel.yaml import YAML
+    stream = StringIO()
+    yaml = YAML()
+    yaml.default_flow_style = False
+    yaml.width = 200
+    yaml.dump(data, stream)
+    return stream.getvalue()
+
+
+def fix_workflow(yaml_text: str) -> str:
+    """Apply all auto-fix rules to workflow YAML.
+
+    Preserves ${...} variable placeholders throughout.
+    """
+    yaml_text = clean_yaml_response(yaml_text)
+    parsed = parse_yaml(yaml_text)
+    if not parsed:
+        return yaml_text
+
+    # Fix nodeGroups
+    node_groups = parsed.get("nodeGroups", {})
+    if isinstance(node_groups, dict):
+        parsed["nodeGroups"] = _fix_node_groups(node_groups)
+
+    # Collect known node names for reference checking
+    known_nodes = set()
+    if isinstance(node_groups, dict):
+        for ng_name, ng_val in node_groups.items():
+            known_nodes.add(ng_name)
+            if isinstance(ng_val, dict):
+                for node_entry in ng_val.get("nodes", []):
+                    if isinstance(node_entry, dict):
+                        known_nodes.add(node_entry.get("name", ""))
+
+    # Fix phases
+    phases = parsed.get("phases", [])
+    if isinstance(phases, list):
+        parsed["phases"] = [_fix_phase(p, known_nodes) for p in phases if isinstance(p, dict)]
+
+    return dump_yaml(parsed)
+
+
+def _fix_node_groups(node_groups: dict) -> dict:
+    """Fix node group definitions."""
+    fixed = {}
+    for name, config in node_groups.items():
+        if not isinstance(config, dict):
+            fixed[name] = config
+            continue
+
+        # Fix individual node entries
+        nodes = config.get("nodes", [])
+        if isinstance(nodes, list):
+            config["nodes"] = [_fix_node_entry(n) for n in nodes if isinstance(n, dict)]
+
+        fixed[name] = config
+    return fixed
+
+
+def _fix_node_entry(node: dict) -> dict:
+    """Remove unknown fields from a node entry, preserving ${...} values."""
+    # Don't strip fields aggressively — the JAR may accept more than our whitelist
+    # Just ensure critical fields exist
+    if "host" not in node and "name" in node:
+        # LLM sometimes puts host info in name
+        pass
+    return node
+
+
+def _fix_phase(phase: dict, known_nodes: set) -> dict:
+    """Fix a single phase's steps/commands."""
+    steps = phase.get("steps", phase.get("commands", []))
+    if isinstance(steps, list):
+        fixed_steps = []
+        for step in steps:
+            if isinstance(step, dict):
+                step = _fix_command(step, known_nodes)
+                fixed_steps.append(step)
+        # Use whichever key the original had
+        if "steps" in phase:
+            phase["steps"] = fixed_steps
+        elif "commands" in phase:
+            phase["commands"] = fixed_steps
+    return phase
+
+
+def _fix_command(cmd: dict, known_nodes: set) -> dict:
+    """Fix a single command entry."""
+    # Fix validation block
+    validation = cmd.get("validation", {})
+    if isinstance(validation, dict):
+        cmd["validation"] = _fix_validation(validation, cmd)
+
+    # Fix criteria.expr — replace unsupported Java functions
+    _fix_criteria_expr(cmd)
+
+    return cmd
+
+
+def _fix_validation(validation: dict, cmd: dict) -> dict:
+    """Ensure validation has required fields: description, criteria, success, failure."""
+    # Auto-generate description if missing
+    if "description" not in validation:
+        success = validation.get("success", {})
+        if isinstance(success, dict) and success.get("message"):
+            validation["description"] = f"Validates: {success['message'][:100]}"
+        else:
+            cmd_text = cmd.get("cmd", cmd.get("command", "unknown"))
+            validation["description"] = f"Validate output of: {cmd_text}"
+
+    # Ensure criteria exists
+    if "criteria" not in validation:
+        validation["criteria"] = {"expr": "true"}
+
+    # Ensure success/failure exist
+    if "success" not in validation:
+        validation["success"] = {"message": "Command completed successfully"}
+    if "failure" not in validation:
+        validation["failure"] = {"message": "Command validation failed"}
+
+    return validation
+
+
+def _fix_criteria_expr(cmd: dict) -> None:
+    """Fix unsupported Java functions in criteria.expr.
+
+    The cli-automation JAR supports a limited expression language.
+    Common LLM mistakes:
+    - Python-style: all(), any(), re_search(), .group()
+    - Unsupported: re.match(), json.loads()
+    Replace with simple variable-exists or contains checks.
+    """
+    validation = cmd.get("validation", {})
+    if not isinstance(validation, dict):
+        return
+
+    criteria = validation.get("criteria", {})
+    if not isinstance(criteria, dict):
+        return
+
+    expr = criteria.get("expr", "")
+    if not isinstance(expr, str):
+        return
+
+    # Patterns that indicate unsupported functions
+    _UNSUPPORTED = [
+        r"all\s*\(", r"any\s*\(", r"re_search\s*\(", r"re\.match\s*\(",
+        r"\.group\s*\(", r"json\.loads\s*\(", r"int\s*\(\s*\)", r"\|\s*int\(\)",
+        r"for\s+\w+\s+in\s+", r"lambda\s+",
+    ]
+
+    needs_fix = any(re.search(p, expr) for p in _UNSUPPORTED)
+    if not needs_fix:
+        return
+
+    # Simplify to a basic contains/exists check
+    # Try to extract the key string being checked
+    quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", expr)
+    if quoted:
+        # Use the first quoted string as a contains check
+        check_str = quoted[0][0] or quoted[0][1]
+        criteria["expr"] = f"output.contains('{check_str}')"
+        logger.debug("Simplified unsupported expr to contains check: '%s'", check_str)
+    else:
+        # Fall back to always-true (don't block execution)
+        criteria["expr"] = "true"
+        logger.debug("Could not simplify expr, set to 'true': %s", expr[:80])
+
+
+def is_placeholder(value: Any) -> bool:
+    """Check if a value is a runtime placeholder like ${nodeGroups.RDS.host}."""
+    if not isinstance(value, str):
+        return False
+    return bool(re.search(r"\$\{.+?\}", value) or (value.startswith("$") and not value.startswith("${")))

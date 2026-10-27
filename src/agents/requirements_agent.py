@@ -22,7 +22,7 @@ from src.shared.state import (
     milestone_decisions,
     milestone_waiting,
 )
-from src.skills.telecom_req import TelecomReqSkill, SkillInput, SkillOutput
+from src.skills.requirement_gathering import TelecomReqSkill, SkillInput, SkillOutput
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)

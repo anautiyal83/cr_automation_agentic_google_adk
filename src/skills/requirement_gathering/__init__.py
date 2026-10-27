@@ -1,12 +1,12 @@
-"""Telecom Activity Requirement Gathering Skill.
+"""Requirement Gathering Skill.
 
-Reusable skill for gathering telecom UC activity requirements from
+Reusable skill for gathering network activity requirements from
 documents (CIQ, MOP, SSH logs, XML samples). Produces a complete
 specification for downstream YAML generation.
 
 Usage::
 
-    from src.skills.telecom_req import TelecomReqSkill, SkillInput, SkillOutput
+    from src.skills.requirement_gathering import TelecomReqSkill, SkillInput, SkillOutput
 
     skill = TelecomReqSkill(llm_fn=my_async_llm)
     output = await skill.parse_and_analyze(SkillInput(uc_name="...", ...))
