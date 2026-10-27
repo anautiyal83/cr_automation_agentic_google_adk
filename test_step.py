@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.core.logging_config import setup_logging
+from core.logging_config import setup_logging
 setup_logging()
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 async def _ensure_api_key():
     """Load API key from DB settings / config."""
-    from src.storage.db import init_database
+    from storage.db import init_database
 
     try:
         db = await init_database("data/pipeline.db")
@@ -50,7 +50,7 @@ async def _ensure_api_key():
 
     config = {}
     try:
-        from src.core.config import ConfigManager
+        from core.config import ConfigManager
         mgr = ConfigManager()
         cfg = await mgr.get_config()
         config = cfg.model_dump()
@@ -64,7 +64,7 @@ async def _ensure_api_key():
 
 async def list_runs():
     """List recent pipeline runs."""
-    from src.storage.db import init_database
+    from storage.db import init_database
     db = await init_database("data/pipeline.db")
     rows = await db.execute(
         "SELECT r.id, r.status, r.current_step, r.started_at, d.uc_name "
@@ -114,7 +114,7 @@ async def show_status(run_id: str):
 
 async def validate_yaml(yaml_path: str):
     """Validate a YAML file syntax."""
-    from src.tools.yaml_tools import validate_yaml_syntax
+    from tools.yaml_tools import validate_yaml_syntax
     content = Path(yaml_path).read_text(encoding="utf-8")
     result = validate_yaml_syntax(content)
     if result["valid"]:
@@ -127,7 +127,7 @@ async def validate_yaml(yaml_path: str):
 async def test_skill(skill_name: str, run_id: str):
     """Test a skill using data from a previous run."""
     config = await _ensure_api_key()
-    from src.shared.llm import get_llm_fn
+    from shared.llm import get_llm_fn
 
     run_dir = Path("data/runs") / run_id
     if not run_dir.exists():
@@ -156,7 +156,7 @@ async def test_skill(skill_name: str, run_id: str):
     t0 = time.monotonic()
 
     if skill_name == "ciq_validation_json_gen":
-        from src.skills.ciq_validation_json_gen import CiqValidationJsonGenSkill, SkillInput
+        from skills.ciq_validation_json_gen import CiqValidationJsonGenSkill, SkillInput
         skill = CiqValidationJsonGenSkill(llm_fn=llm_fn)
         output = await skill.generate(SkillInput(
             uc_name=uc_name,
@@ -169,7 +169,7 @@ async def test_skill(skill_name: str, run_id: str):
         print(f"JSON output: {len(output.json_output_yaml)} chars, {len(output.json_output_errors)} errors")
 
     elif skill_name == "network_config_gen":
-        from src.skills.network_config_gen import NetworkConfigGenSkill, SkillInput
+        from skills.network_config_gen import NetworkConfigGenSkill, SkillInput
         skill = NetworkConfigGenSkill(llm_fn=llm_fn)
         output = await skill.generate(SkillInput(
             uc_name=uc_name,

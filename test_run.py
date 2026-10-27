@@ -35,8 +35,8 @@ CIQ_FILE = str(PROJECT_ROOT / "data" / "uploads" / "1a5ad4cd_1058_IFCCapabilityM
 
 
 async def main():
-    from src.orchestrator.runner import PipelineRunner
-    from src.core.events import event_bus
+    from orchestrator.runner import PipelineRunner
+    from core.events import event_bus
 
     async def on_event(event):
         print(f"\n>>> [{event.event_type}] Step {event.step_number or '-'}: {event.payload}")

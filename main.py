@@ -4,7 +4,7 @@ Usage:
     python main.py --ciq <ciq_file> --uc-name <uc_name> [--model <model>] [--api-key <key>]
 
 Or as a library:
-    from src.orchestrator.runner import PipelineRunner
+    from orchestrator.runner import PipelineRunner
     runner = PipelineRunner(config={...})
     run_id = await runner.start(document_set={...})
 """
@@ -24,7 +24,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logging.getLogger("src").setLevel(logging.DEBUG)
+logging.getLogger("agents").setLevel(logging.DEBUG)
+logging.getLogger("skills").setLevel(logging.DEBUG)
+logging.getLogger("orchestrator").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -32,7 +34,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
 
-from src.orchestrator.runner import PipelineRunner
+from orchestrator.runner import PipelineRunner
 
 
 def on_event(event_type: str, payload: dict):
