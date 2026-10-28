@@ -110,7 +110,7 @@ def _build_requirements_summary(requirements: dict) -> str:
     if phases:
         parts.append(f"Phases: {', '.join(phases)}")
 
-    xml = requirements.get("xml_templates", {})
+    xml = requirements.get("xml_templates") or {}
     mappings = xml.get("ciq_to_xml_mapping", [])
     if mappings:
         cols = [m.get("ciq_column", "?") for m in mappings if isinstance(m, dict)]

@@ -38,6 +38,8 @@ from shared.state import (
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
+MAX_RETRIES = 3
+
 # Maps agent name → display step numbers for the UI (10-step tracker)
 _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
     "requirements_gatherer": [1, 2],
@@ -192,14 +194,20 @@ class PipelineAgent(BaseAgent):
             # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)
             if retry_target is not None and retry_target in _RETRY_STEP_TO_INDEX:
-                target_index = _RETRY_STEP_TO_INDEX[retry_target]
                 retry_count_key = f"retry_count_{retry_target}"
-                ctx.session.state[retry_count_key] = ctx.session.state.get(retry_count_key, 0) + 1
-                flow.flow("AUTO-RETRY — step %d → agent index %d (count=%d)",
-                           retry_target, target_index, ctx.session.state[retry_count_key])
-                await self._publish(run_id_str, "retry_started", retry_target)
-                index = target_index
-                continue
+                current_count = ctx.session.state.get(retry_count_key, 0) + 1
+                ctx.session.state[retry_count_key] = current_count
+
+                if current_count > MAX_RETRIES:
+                    flow.flow("MAX RETRIES exceeded for step %d (count=%d) — continuing pipeline",
+                               retry_target, current_count)
+                else:
+                    target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                    flow.flow("AUTO-RETRY — step %d -> agent index %d (count=%d/%d)",
+                               retry_target, target_index, current_count, MAX_RETRIES)
+                    await self._publish(run_id_str, "retry_started", retry_target)
+                    index = target_index
+                    continue
 
             index += 1
 

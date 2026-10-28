@@ -30,8 +30,10 @@ if not API_KEY:
         except Exception:
             pass
 
-# Default CIQ file — update this for your test
-CIQ_FILE = str(PROJECT_ROOT / "data" / "uploads" / "1a5ad4cd_1058_IFCCapabilityModification_CIQ_v3.xlsx")
+# Default CIQ file — find the first available CIQ xlsx in uploads
+_uploads = PROJECT_ROOT / "data" / "uploads"
+_ciq_candidates = sorted(_uploads.glob("*CIQ*.xlsx")) + sorted(_uploads.glob("*ciq*.xlsx"))
+CIQ_FILE = str(_ciq_candidates[0]) if _ciq_candidates else str(_uploads / "ciq.xlsx")
 
 
 async def main():

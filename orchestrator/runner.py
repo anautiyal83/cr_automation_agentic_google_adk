@@ -189,11 +189,14 @@ class PipelineRunner:
             )
             # Also check if pipeline ended before step 10 (final report)
             if not is_failed and not is_cancelled and run_dir:
-                step_10_done = state.get("step_10_status") or (
-                    Path(run_dir) / "step_10_error.json"
-                ).exists()
+                uc_name = state.get("uc_name", "")
+                step_10_done = (
+                    state.get("step_10_status")
+                    or (Path(run_dir) / "step_10_error.json").exists()
+                    or (Path(run_dir) / f"{uc_name}_report.html").exists()
+                    or any(Path(run_dir).glob("*_report.html"))
+                )
                 if not step_10_done:
-                    # Pipeline ended early without reaching step 10
                     is_failed = True
                     state["pipeline_error"] = state.get("pipeline_error", "Pipeline ended before completing all steps")
 

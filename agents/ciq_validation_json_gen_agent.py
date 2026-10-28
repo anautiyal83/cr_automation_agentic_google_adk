@@ -95,8 +95,12 @@ class CiqValidationJsonGenAgent(BaseAgent):
                 err_file = Path(run_dir) / "step_3_error.json"
                 err_file.write_text(json.dumps({"error": state["step_3_error"]}, indent=2))
 
-        flow.flow("CIQ_VAL_JSON_GEN DONE — status=%s, val_errors=%d, json_errors=%d",
-                   output.status, len(output.validation_errors), len(output.json_output_errors))
+        if output.error:
+            flow.flow("CIQ_VAL_JSON_GEN DONE — status=%s, error=%s",
+                       output.status, output.error[:200])
+        else:
+            flow.flow("CIQ_VAL_JSON_GEN DONE — status=%s, val_errors=%d, json_errors=%d",
+                       output.status, len(output.validation_errors), len(output.json_output_errors))
 
         return
         yield
