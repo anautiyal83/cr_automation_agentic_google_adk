@@ -1,10 +1,10 @@
-"""CR Automation Pipeline — Google ADK Orchestrator.
+"""NetConfig Pipeline — Google ADK Orchestrator.
 
 Usage:
     python main.py --ciq <ciq_file> --uc-name <uc_name> [--model <model>] [--api-key <key>]
 
 Or as a library:
-    from src.orchestrator.runner import PipelineRunner
+    from orchestrator.runner import PipelineRunner
     runner = PipelineRunner(config={...})
     run_id = await runner.start(document_set={...})
 """
@@ -24,16 +24,17 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logging.getLogger("src").setLevel(logging.DEBUG)
+logging.getLogger("agents").setLevel(logging.DEBUG)
+logging.getLogger("skills").setLevel(logging.DEBUG)
+logging.getLogger("orchestrator").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-# Add cr_automation-agentic to path
-CR_AUTO_ROOT = Path("D:/my_workspace/cr_automation-agentic")
-if str(CR_AUTO_ROOT) not in sys.path:
-    sys.path.insert(0, str(CR_AUTO_ROOT))
+# Ensure project root is in path
+if str(Path(__file__).parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).parent))
 
-from src.orchestrator.runner import PipelineRunner
+from orchestrator.runner import PipelineRunner
 
 
 def on_event(event_type: str, payload: dict):
@@ -111,7 +112,7 @@ async def run_pipeline(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CR Automation Pipeline (Google ADK)")
+    parser = argparse.ArgumentParser(description="NetConfig Pipeline (Google ADK)")
     parser.add_argument("--ciq", required=True, help="Path to CIQ Excel file")
     parser.add_argument("--uc-name", required=True, help="UC name (e.g. DSR_1058_IFC_CAPABILITY_MODIFICATION)")
     parser.add_argument("--mop", help="Path to MOP document")

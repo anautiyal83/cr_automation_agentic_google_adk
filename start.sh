@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start CR Automation ADK Pipeline Server
+# Start NetConfig Pipeline Server
 cd "$(dirname "$0")"
 
 # Activate venv if present
@@ -8,16 +8,16 @@ if [ -f ".venv/bin/activate" ]; then
 fi
 
 # Ensure data directories
-mkdir -p data/uploads data/runs data/logs
+mkdir -p data/uploads data/runs data/logs logs
 
 # Set PYTHONPATH
-export PYTHONPATH="$(pwd):D:/my_workspace/cr_automation-agentic"
+export PYTHONPATH="$(pwd)"
 export PYTHONWARNINGS="ignore"
 
 echo "============================================"
-echo "  CR Automation ADK Pipeline Server"
+echo "  NetConfig Pipeline Server"
 echo "============================================"
 echo "  URL:  http://localhost:8000"
 echo "============================================"
 
-python -u -W ignore src/ui/app.py
+python -u -W ignore ui/app.py
