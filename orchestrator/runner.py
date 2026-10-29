@@ -455,7 +455,7 @@ class PipelineRunner:
             2: f"{uc_name}_requirements-summary.html",
             3: f"{uc_name}_validation-rules.yaml",
             4: f"{uc_name}_json-output.yaml",
-            5: "qa/qa-execution-report.html",
+            5: f"{uc_name}_ciq-qa-report.html",
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-generation-report.html",
             8: f"{uc_name}_simulator-config.yaml",

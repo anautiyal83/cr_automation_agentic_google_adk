@@ -66,6 +66,7 @@ async def call_llm(
     Returns:
         LLM response text.
     """
+    import asyncio
     import litellm
 
     config = config or {}
@@ -82,46 +83,63 @@ async def call_llm(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
 
+    max_retries = 3
+    retry_delays = [5, 15, 30]  # seconds
+
     t0 = time.monotonic()
-    try:
-        response = await litellm.acompletion(
-            model=model,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=16000,
-        )
-        elapsed = time.monotonic() - t0
+    last_error = None
 
-        text = response.choices[0].message.content or ""
+    for attempt in range(max_retries + 1):
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=16000,
+            )
+            break  # success
+        except (litellm.ServiceUnavailableError, litellm.RateLimitError,
+                litellm.Timeout, litellm.APIConnectionError) as e:
+            last_error = e
+            if attempt < max_retries:
+                delay = retry_delays[attempt]
+                logger.warning("LLM call failed (attempt %d/%d): %s — retrying in %ds",
+                               attempt + 1, max_retries + 1, type(e).__name__, delay)
+                await asyncio.sleep(delay)
+            else:
+                logger.error("LLM call failed after %d attempts: %s", max_retries + 1, e)
+                raise
+        except Exception:
+            raise  # Non-retryable errors propagate immediately
 
-        # Track usage with context
-        usage = response.usage
-        prompt_tok = getattr(usage, "prompt_tokens", 0)
-        comp_tok = getattr(usage, "completion_tokens", 0)
-        total_tok = getattr(usage, "total_tokens", 0)
-        cost = _estimate_cost(model, prompt_tok, comp_tok)
+    elapsed = time.monotonic() - t0
+    text = response.choices[0].message.content or ""
 
-        _usage_log.append({
-            "model": model,
-            "prompt_tokens": prompt_tok,
-            "completion_tokens": comp_tok,
-            "total_tokens": total_tok,
-            "cost_usd": round(cost, 6),
-            "elapsed_sec": round(elapsed, 1),
-            "timestamp": time.time(),
-            "run_id": _current_context.get("run_id", ""),
-            "uc_name": _current_context.get("uc_name", ""),
-            "step": _current_context.get("step", ""),
-        })
+    # Track usage with context
+    usage = response.usage
+    prompt_tok = getattr(usage, "prompt_tokens", 0)
+    comp_tok = getattr(usage, "completion_tokens", 0)
+    total_tok = getattr(usage, "total_tokens", 0)
+    cost = _estimate_cost(model, prompt_tok, comp_tok)
 
-        logger.debug("LLM call: model=%s, %d prompt chars, %d response chars, %.1fs, $%.4f",
-                      model, len(user_prompt), len(text), elapsed, cost)
-        return text
+    _usage_log.append({
+        "model": model,
+        "prompt_tokens": prompt_tok,
+        "completion_tokens": comp_tok,
+        "total_tokens": total_tok,
+        "cost_usd": round(cost, 6),
+        "elapsed_sec": round(elapsed, 1),
+        "timestamp": time.time(),
+        "run_id": _current_context.get("run_id", ""),
+        "uc_name": _current_context.get("uc_name", ""),
+        "step": _current_context.get("step", ""),
+    })
 
-    except Exception as e:
-        elapsed = time.monotonic() - t0
-        logger.error("LLM call failed after %.1fs: %s", elapsed, e)
-        raise
+    if attempt > 0:
+        logger.info("LLM call succeeded after %d retries (%.1fs total)", attempt, elapsed)
+    logger.debug("LLM call: model=%s, %d prompt chars, %d response chars, %.1fs, $%.4f",
+                  model, len(user_prompt), len(text), elapsed, cost)
+    return text
 
 
 def get_llm_fn(config: dict | None = None):

@@ -34,18 +34,29 @@ def generate_qa_report(
     skipped = sum(1 for r in test_results if r.status == "SKIPPED")
     pass_rate = (passed / total * 100) if total > 0 else 0
 
-    # Risk assessment
-    critical_fails = sum(1 for r in test_results if r.status == "FAIL" and r.severity == "critical")
+    # Separate positive (blocking) vs negative (warning) failures
+    positive_fails = sum(1 for r in test_results
+                         if r.status == "FAIL" and getattr(r, "test_type", "positive") != "negative")
+    negative_fails = sum(1 for r in test_results
+                         if r.status == "FAIL" and getattr(r, "test_type", "positive") == "negative")
+
+    # Risk assessment — negative test failures are warnings, not blocking
+    critical_fails = sum(1 for r in test_results
+                         if r.status == "FAIL" and r.severity == "critical"
+                         and getattr(r, "test_type", "positive") != "negative")
     if critical_fails > 0:
         risk_level, risk_color = "HIGH", "#DC2626"
-    elif failed > total * 0.3:
+    elif positive_fails > total * 0.3:
         risk_level, risk_color = "MEDIUM", "#D97706"
-    elif failed > 0:
+    elif positive_fails > 0:
         risk_level, risk_color = "LOW", "#2563EB"
+    elif negative_fails > 0:
+        risk_level, risk_color = "LOW", "#D97706"  # warnings only
     else:
         risk_level, risk_color = "NONE", "#16A34A"
 
-    verdict = "PASS" if failed == 0 and errors == 0 else "FAIL"
+    # Verdict: PASS if no positive test failures (negative failures are warnings)
+    verdict = "PASS" if positive_fails == 0 and errors == 0 else "FAIL"
     verdict_color = "#16A34A" if verdict == "PASS" else "#DC2626"
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -125,6 +136,7 @@ def generate_qa_report(
   .badge {{ display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.3px; }}
   .badge-pass {{ background: #dcfce7; color: #166534; }}
   .badge-fail {{ background: #fce4ec; color: #991b1b; }}
+  .badge-warn {{ background: #fef3c7; color: #92400e; }}
   .badge-error {{ background: #fef3c7; color: #92400e; }}
   .badge-skip {{ background: #f1f5f9; color: #64748b; }}
   .badge-critical {{ background: #fce4ec; color: #991b1b; }}
@@ -163,8 +175,8 @@ def generate_qa_report(
       <div class="donut"></div>
       <div class="legend">
         <div class="legend-item"><div class="legend-dot" style="background:#16A34A"></div> Passed: {passed}</div>
-        <div class="legend-item"><div class="legend-dot" style="background:#DC2626"></div> Failed: {failed}</div>
-        <div class="legend-item"><div class="legend-dot" style="background:#D97706"></div> Errors: {errors}</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#DC2626"></div> Failed: {positive_fails}</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#D97706"></div> Warnings: {negative_fails}</div>
         <div class="legend-item"><div class="legend-dot" style="background:#94A3B8"></div> Skipped: {skipped}</div>
       </div>
     </div>
@@ -182,8 +194,12 @@ def generate_qa_report(
         <div class="label">Passed</div>
       </div>
       <div class="metric">
-        <div class="value" style="color:#DC2626">{failed}</div>
+        <div class="value" style="color:#DC2626">{positive_fails}</div>
         <div class="label">Failed</div>
+      </div>
+      <div class="metric">
+        <div class="value" style="color:#D97706">{negative_fails}</div>
+        <div class="label">Warnings</div>
       </div>
       <div class="metric">
         <div class="value">{pass_rate:.1f}%</div>
@@ -264,7 +280,9 @@ def _e(text: str) -> str:
     return html.escape(str(text)) if text else ""
 
 
-def _status_badge(status: str) -> str:
+def _status_badge(status: str, test_type: str = "positive") -> str:
+    if status == "FAIL" and test_type == "negative":
+        return '<span class="badge badge-warn">WARN</span>'
     cls = {"PASS": "badge-pass", "FAIL": "badge-fail", "ERROR": "badge-error", "SKIPPED": "badge-skip"}.get(status, "badge-skip")
     return f'<span class="badge {cls}">{status}</span>'
 
@@ -321,7 +339,7 @@ def _result_rows(results: list[TestCaseResult]) -> str:
         rows.append(
             f'<tr>'
             f'<td><strong>{_e(r.id)}</strong></td>'
-            f'<td>{_status_badge(r.status)}</td>'
+            f'<td>{_status_badge(r.status, r.test_type)}</td>'
             f'<td>{_severity_badge(r.severity)}</td>'
             f'<td>{_e(r.category)}</td>'
             f'<td>{_e(r.description)}</td>'

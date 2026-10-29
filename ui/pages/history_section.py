@@ -351,34 +351,23 @@ class HistorySection:
             return
 
         uc_name = row.get("uc_name", "UC")
-
-        # Navigate to progress immediately — don't wait for pipeline start
         ui.notify(f"Starting re-run for {uc_name}...", type="info")
-        if self.on_rerun:
-            await self.on_rerun(None)  # Navigate to progress page now
 
-        # Start pipeline in background
-        import asyncio
+        try:
+            doc = await self._find_document_set(run_id, uc_name)
+            if not doc:
+                ui.notify("Could not find original documents for re-run", type="warning")
+                return
 
-        async def _start_rerun():
-            try:
-                doc = await self._find_document_set(run_id, uc_name)
-                if not doc:
-                    ui.notify("Could not find original documents for re-run", type="warning")
-                    return
-                from uuid import uuid4
-                doc["document_set_id"] = str(uuid4())
+            from uuid import uuid4
+            doc["document_set_id"] = str(uuid4())
 
-                new_run_id = await self.runner.start(doc)
-                ui.notify(f"Pipeline started for {uc_name}", type="positive")
-
-                # Start tracking the new run in progress section
-                if self.on_rerun:
-                    await self.on_rerun(new_run_id)
-            except Exception as exc:
-                ui.notify(f"Re-run failed: {exc}", type="negative")
-
-        asyncio.create_task(_start_rerun())
+            new_run_id = await self.runner.start(doc)
+            ui.notify(f"Pipeline started for {uc_name}", type="positive")
+            if self.on_rerun:
+                await self.on_rerun(new_run_id)
+        except Exception as exc:
+            ui.notify(f"Re-run failed: {exc}", type="negative")
 
     async def _find_document_set(self, run_id: str, uc_name: str) -> dict | None:
         """Find the original document set for a run, with multiple fallbacks."""

@@ -61,18 +61,7 @@ class RequirementsGathererNode(BaseAgent):
 
         # ── Build SkillInput ──
         vendor_profile = doc_set.get("vendor_profile") or None
-        flow.flow("REQUIREMENTS: vendor_profile present=%s, type=%s, doc_set_keys=%s",
-                   vendor_profile is not None,
-                   type(vendor_profile).__name__ if vendor_profile else "None",
-                   list(doc_set.keys()) if doc_set else "empty")
-        if vendor_profile:
-            gw = vendor_profile.get("vendor", {}).get("access_gateway", {})
-            flow.flow("REQUIREMENTS: gateway_enabled=%s, gateway_name=%s, ssh_user=%s, nodes=%d",
-                       gw.get("enabled"), gw.get("name"),
-                       vendor_profile.get("vendor", {}).get("ssh_defaults", {}).get("user"),
-                       len(vendor_profile.get("category_1_node_activity", {}).get("nodes", [])))
-        else:
-            flow.flow("REQUIREMENTS: NO vendor_profile — SSH/PAM questions will NOT be filtered")
+        flow.flow("REQUIREMENTS: vendor_profile=%s", bool(vendor_profile))
         skill_input = SkillInput(
             uc_name=uc_name,
             ciq_file_path=ctx.session.state.get("ciq_file_path", ""),

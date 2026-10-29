@@ -40,17 +40,61 @@ def clean_yaml_response(text: str) -> str:
             yaml_start = i
             break
 
-    return "\n".join(lines[yaml_start:]).rstrip()
+    cleaned = "\n".join(lines[yaml_start:]).rstrip()
+    return sanitize_yaml(cleaned)
+
+
+def sanitize_yaml(text: str) -> str:
+    """Fix common LLM YAML mistakes before parsing.
+
+    Handles:
+    - Unquoted values containing colons (e.g., ``type: _col: $X`` → ``type: '_col: $X'``)
+    - List items with colons in values
+    """
+    fixed_lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if ":" in stripped and not stripped.startswith("#"):
+            indent = len(line) - len(stripped)
+            # Handle list items: "- key: value"
+            list_prefix = ""
+            content = stripped
+            if content.startswith("- "):
+                list_prefix = "- "
+                content = content[2:]
+            match = re.match(r'^([\w_.-]+)\s*:\s*(.+)$', content)
+            if match:
+                key, val = match.group(1), match.group(2)
+                if ":" in val and not val.startswith(('"', "'", "[", "{", "|", ">")):
+                    val = val.replace("'", "''")
+                    val = f"'{val}'"
+                    line = " " * indent + f"{list_prefix}{key}: {val}"
+        fixed_lines.append(line)
+    return "\n".join(fixed_lines)
 
 
 def parse_yaml(text: str) -> dict | None:
-    """Parse YAML text, returning dict or None on failure."""
+    """Parse YAML text, returning dict or None on failure.
+
+    Tries raw parse first, then sanitized parse if raw fails.
+    """
+    from ruamel.yaml import YAML
+    # Try raw first
     try:
-        from ruamel.yaml import YAML
         parsed = YAML().load(StringIO(text))
         return dict(parsed) if parsed else None
     except Exception:
-        return None
+        pass
+    # Try after sanitizing
+    try:
+        sanitized = sanitize_yaml(text)
+        parsed = YAML().load(StringIO(sanitized))
+        if parsed:
+            logger.info("YAML parsed after sanitizing (fixed quoting issues)")
+            return dict(parsed)
+    except Exception:
+        pass
+    return None
 
 
 def dump_yaml(data: dict) -> str:

@@ -5,7 +5,7 @@ import logging
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import clean_yaml_response, fix_validation_rules, parse_yaml, _ciq_prompt_summary
+from .autofix import clean_yaml_response, fix_validation_rules, parse_yaml, dump_yaml, _ciq_prompt_summary
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ async def generate_validation_rules(
     yaml_text = clean_yaml_response(raw_response)
 
     yaml_text = fix_validation_rules(yaml_text, ciq_sheets)
+
+    # Re-dump through parse→dump to ensure valid YAML on disk
+    parsed = parse_yaml(yaml_text)
+    if parsed:
+        yaml_text = dump_yaml(parsed)
+
     errors = _validate_structure(yaml_text)
 
     logger.info("Validation rules generated: %d chars, %d errors", len(yaml_text), len(errors))

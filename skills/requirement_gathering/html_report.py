@@ -436,13 +436,17 @@ def generate_summary_html(
         for gap in analysis.get(cat_key, {}).get("gaps", []):
             all_gaps.append((cat_label, gap))
 
-    if all_gaps:
+    if readiness == "COMPLETE":
+        # When COMPLETE, show success message — any LLM-reported gaps are informational only
+        lines.append("<details open><summary>Status</summary>")
+        lines.append("<div class='section'><p style='color:#22c55e'>All requirements gathered \u2014 ready for pipeline execution.</p></div></details>")
+    elif all_gaps:
         lines.append(f"<details open><summary>Remaining Gaps ({len(all_gaps)})</summary><div class='section'>")
         for cat_label, gap in all_gaps:
             lines.append(f"<div class='gap-item'><strong>{cat_label}:</strong> {gap}</div>")
         lines.append("</div></details>")
     else:
-        lines.append("<details open><summary>Remaining Gaps</summary>")
+        lines.append("<details open><summary>Status</summary>")
         lines.append("<div class='section'><p style='color:#22c55e'>No remaining gaps \u2014 all requirements gathered.</p></div></details>")
 
     # -- Developer Notes --

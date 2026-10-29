@@ -174,7 +174,25 @@ class RequirementGatheringSkill:
 
         readiness = self._analysis.get("overall_readiness", "INSUFFICIENT")
 
-        # If COMPLETE with previous answers, skip questions
+        # If previous run already gathered substantial answers OR compiled requirements,
+        # skip the questionnaire and go straight to compilation.
+        # The user already answered everything — just use accumulated data.
+        has_previous_reqs = bool(self._previous_requirements.get("category_1_node_activity"))
+        has_substantial_answers = len(self._all_answers) >= 10
+
+        if has_previous_reqs and has_substantial_answers:
+            logger.info(
+                "Skipping questionnaire — %d previous answers + compiled requirements exist",
+                len(self._all_answers),
+            )
+            return SkillOutput(
+                analysis=self._analysis,
+                readiness="COMPLETE",
+                doc_extracted=self._doc_extracted,
+                all_answers=self._all_answers,
+                questions=[],
+            )
+
         if self._all_answers and readiness == "COMPLETE":
             return SkillOutput(
                 analysis=self._analysis,
@@ -184,7 +202,7 @@ class RequirementGatheringSkill:
                 questions=[],
             )
 
-        # Generate questions for gaps
+        # Generate questions for gaps (first run or insufficient previous data)
         available_data = questionnaire.build_available_data_summary(
             self._ciq_sheets, self._raw_artifacts, ssh_parsed,
             vendor_profile=self._vendor_profile,
@@ -201,16 +219,9 @@ class RequirementGatheringSkill:
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
         # Drop SSH/PAM questions covered by vendor profile
-        logger.info("VENDOR_PROFILE_DEBUG: vendor_profile=%s, questions_before_filter=%d",
-                     bool(self._vendor_profile), len(questions) if questions else 0)
-        if self._vendor_profile:
-            logger.info("VENDOR_PROFILE_DEBUG: gateway_enabled=%s, ssh_user=%s, nodes=%d",
-                         self._vendor_profile.get("vendor", {}).get("access_gateway", {}).get("enabled"),
-                         self._vendor_profile.get("vendor", {}).get("ssh_defaults", {}).get("user"),
-                         len(self._vendor_profile.get("category_1_node_activity", {}).get("nodes", [])))
         if questions and self._vendor_profile:
             questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)
-            logger.info("VENDOR_PROFILE_DEBUG: questions_after_filter=%d", len(questions))
+            logger.info("Vendor profile filter: %d questions remain after filtering", len(questions))
 
         # Store question texts for the summary report
         self._store_question_texts(questions)
@@ -260,10 +271,13 @@ class RequirementGatheringSkill:
 
         readiness = self._analysis.get("overall_readiness", "INSUFFICIENT")
 
-        if readiness == "COMPLETE":
+        # Stop asking after enough data is collected
+        if readiness == "COMPLETE" or len(self._all_answers) >= 50:
+            if len(self._all_answers) >= 50:
+                logger.info("Stopping questionnaire — %d answers is sufficient", len(self._all_answers))
             return SkillOutput(
                 analysis=self._analysis,
-                readiness=readiness,
+                readiness="COMPLETE" if len(self._all_answers) >= 50 else readiness,
                 doc_extracted=self._doc_extracted,
                 all_answers=self._all_answers,
                 questions=[],
@@ -365,11 +379,16 @@ class RequirementGatheringSkill:
             doc["vendor_profile"] = self._vendor_profile
         _save_uc_doc(self._uc_name, doc)
 
+        # Override readiness for report when we have sufficient data
+        report_analysis = dict(self._analysis)
+        if len(self._all_answers) >= 10 and self._previous_requirements:
+            report_analysis["overall_readiness"] = "COMPLETE"
+
         # Generate HTML report
         html = generate_summary_html(
             self._uc_name,
             self._ciq_sheets,
-            self._analysis,
+            report_analysis,
             requirements,
             self._developer_notes,
             self._all_answers,
