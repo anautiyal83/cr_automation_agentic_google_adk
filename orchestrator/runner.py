@@ -16,7 +16,7 @@ from google.genai import types
 
 from core.events import PipelineEvent, event_bus
 from core.logging_config import get_flow_logger
-from shared.state import milestone_events, milestone_decisions, milestone_waiting
+from shared.state import milestone_events, milestone_decisions, milestone_waiting, pipeline_actions
 from orchestrator.pipeline_agent import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ class PipelineRunner:
         flow.flow("RUN START — run_id=%s, uc=%s", run_id[:8], document_set.get("uc_name", "?"))
         user_id = "pipeline_user"
 
+        # Cancel any active runs first — milestone state is global (keyed by step, not run_id)
+        await self._cancel_active_runs()
+
         # Build initial state
         initial_state = self._build_initial_state(run_id, document_set)
 
@@ -80,6 +83,14 @@ class PipelineRunner:
         )
         self._sessions = getattr(self, '_sessions', {})
         self._sessions[run_id] = session
+
+        # Rebuild pipeline to avoid stale agent state from previous runs
+        self._pipeline = build_pipeline(self._config)
+        self._runner = Runner(
+            agent=self._pipeline,
+            app_name="netconfig",
+            session_service=self._session_service,
+        )
 
         # Create milestone events for this run
         # Step 0 = requirements questionnaire, Step 2 = requirements summary review
@@ -98,8 +109,9 @@ class PipelineRunner:
                 await self._db.execute_insert(
                     "INSERT OR REPLACE INTO uc_document_sets "
                     "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
-                    "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, selected_sheets) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, "
+                    "selected_sheets, developer_notes, vendor_profile) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_set_id,
                      document_set.get("uc_name") or "",
                      document_set.get("ciq_file_path") or "",
@@ -109,7 +121,9 @@ class PipelineRunner:
                      document_set.get("command_outputs_path") or "",
                      now,
                      json.dumps(document_set.get("additional_documents") or {}),
-                     json.dumps(document_set.get("selected_sheets") or [])),
+                     json.dumps(document_set.get("selected_sheets") or []),
+                     document_set.get("developer_notes") or "",
+                     json.dumps(document_set.get("vendor_profile") or {})),
                 )
 
                 # Save pipeline run
@@ -356,6 +370,43 @@ class PipelineRunner:
         if session and session.state:
             return dict(session.state)
         return {}
+
+    async def _cancel_active_runs(self):
+        """Cancel all active pipeline/monitor tasks and clear stale milestone state."""
+        for rid, info in list(self._active_runs.items()):
+            if info.get("status") in ("running", "paused_milestone"):
+                flow.flow("Cancelling stale run %s before new start", rid[:8])
+                # Cancel background tasks
+                for task_key in ("pipeline_task", "monitor_task"):
+                    task = info.get(task_key)
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                            pass
+                info["status"] = "cancelled"
+                await self._persist_run_status(rid, "cancelled", "Superseded by new run")
+
+        # Clear all global shared state
+        milestone_events.clear()
+        milestone_decisions.clear()
+        milestone_waiting.clear()
+        pipeline_actions.clear()
+
+        # Clear stale requirements store
+        try:
+            from agents.requirements_agent import requirements_store
+            requirements_store.clear()
+        except ImportError:
+            pass
+
+        # Clear stale reviewer feedback
+        try:
+            from shared.state import reviewer_feedback
+            reviewer_feedback.clear()
+        except ImportError:
+            pass
 
     async def cancel_run(self, run_id: str):
         """Cancel a running pipeline."""

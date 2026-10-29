@@ -19,3 +19,4 @@ Thumbs.db
 lib/*.jar
 lib/mockwire/target/
 lib/mockwire/mockwire-simulator/mockwire.jar
+config/seed.json

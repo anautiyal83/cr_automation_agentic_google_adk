@@ -53,45 +53,66 @@ class UploadSection:
     _node_types: list[str] = _options["node_types"]
     _activity_names: list[str] = _options["activity_names"]
 
-    def __init__(self, on_start_pipeline=None) -> None:
+    def __init__(self, on_start_pipeline=None, db=None) -> None:
         self.on_start_pipeline = on_start_pipeline
+        self._db = db
         self.uc_name = ""
         self.node_type = ""
         self.activity_name = ""
+        self.selected_vendor_id = ""
+        self.selected_node_types: list[str] = []
+        self.selected_activity_name = ""
         self.paths: dict[str, str | list[str] | None] = {d["key"]: None for d in DOC_TYPES}
-        self.additional_docs: list[dict[str, str]] = []  # [{"name": filename, "path": saved_path}]
+        self.additional_docs: list[dict[str, str]] = []
         self.statuses: dict[str, ui.label] = {}
         self.cards: dict[str, ui.element] = {}
         self.is_valid = False
+        self._vendors_cache: list = []
         self._build_ui()
 
     def _build_ui(self) -> None:
         with ui.column().classes("w-full gap-2"):
-            # UC Name selection — compact single row
+            # Pipeline Configuration — vendor-driven cascading selectors
             with ui.card().classes("w-full p-3 cr-card-inner").style(
                 "background: rgba(108,99,255,0.06)"
             ):
                 with ui.row().classes("w-full gap-2 items-end"):
-                    ui.icon("badge", size="20px").classes("cr-text-accent")
+                    ui.icon("business", size="20px").classes("cr-text-accent")
+                    self.vendor_select = ui.select(
+                        {}, label="Vendor",
+                        on_change=self._on_vendor_change,
+                    ).classes("flex-1").props("outlined dense")
+
                     self.node_select = ui.select(
-                        self._node_types, label="Node Type",
-                        with_input=True, new_value_mode="add-unique",
+                        [], label="Node Types",
+                        multiple=True,
                         on_change=self._on_node_change,
+                    ).classes("flex-1").props("outlined dense use-chips")
+
+                    self.activity_select = ui.select(
+                        {}, label="Activity",
+                        on_change=self._on_activity_change,
                     ).classes("flex-1").props("outlined dense")
-                    self.custom_node_input = ui.input(
-                        "Custom Node Type",
-                        placeholder="e.g., CSCF",
-                    ).classes("flex-1").props("outlined dense")
-                    self.custom_node_input.set_visibility(False)
-                    self.custom_node_input.on("update:model-value", self._on_custom_node_change)
-                    self.activity_input = ui.input(
-                        "Activity Name",
-                        placeholder="e.g., Provisioning",
-                        autocomplete=self._activity_names,
-                    ).classes("flex-1").props("outlined dense")
-                    self.activity_input.on("update:model-value", self._on_activity_change)
+
                     self.uc_name_label = ui.label("") \
                         .classes("text-body2 font-mono font-semibold cr-text-accent")
+
+                # Fallback: manual entry when no vendor profiles exist
+                with ui.row().classes("w-full gap-2 items-end") as self._manual_row:
+                    ui.icon("edit", size="16px").classes("cr-text-dim")
+                    self.manual_node_input = ui.input(
+                        "Node Type (manual)", placeholder="e.g., PGW",
+                    ).classes("flex-1").props("outlined dense")
+                    self.manual_node_input.on("update:model-value", self._on_manual_node_change)
+                    self.manual_activity_input = ui.input(
+                        "Activity Name (manual)", placeholder="e.g., IFC_Capability_Modification",
+                        autocomplete=self._activity_names,
+                    ).classes("flex-1").props("outlined dense")
+                    self.manual_activity_input.on("update:model-value", self._on_manual_activity_change)
+                self._manual_row.set_visibility(False)
+
+            # Load vendor data
+            ui.timer(0.5, self._load_vendors, once=True)
 
             # Document upload grid — all 5 + additional in 2 rows
             with ui.row().classes("w-full gap-2 flex-wrap"):
@@ -182,29 +203,92 @@ class UploadSection:
                     status = ui.label("").classes("text-xs")
                     self.statuses[key] = status
 
-    async def _on_node_change(self, e) -> None:
-        raw = (self.node_select.value or "").strip().upper()
-        if raw == "OTHER":
-            self.custom_node_input.set_visibility(True)
-            self.custom_node_input.value = ""
-            self.node_type = ""
+    # ------------------------------------------------------------------
+    # Vendor-driven cascading selectors
+    # ------------------------------------------------------------------
+
+    async def _load_vendors(self):
+        """Load vendor profiles from DB for the cascading selectors."""
+        if not self._db:
+            self._manual_row.set_visibility(True)
+            return
+        try:
+            from shared.profiles import ProfileManager
+            pm = ProfileManager(self._db)
+            self._vendors_cache = await pm.list_vendors()
+        except Exception:
+            self._vendors_cache = []
+
+        if self._vendors_cache:
+            vendor_options = {v.id: v.name for v in self._vendors_cache}
+            self.vendor_select.options = vendor_options
+            self.vendor_select.update()
+            self._manual_row.set_visibility(False)
         else:
-            self.custom_node_input.set_visibility(False)
-            self.node_type = raw
+            # No vendors configured — show manual entry
+            self._manual_row.set_visibility(True)
+
+    async def _on_vendor_change(self, e) -> None:
+        """When vendor changes, populate node types and activities."""
+        self.selected_vendor_id = self.vendor_select.value or ""
+        vendor = next((v for v in self._vendors_cache if v.id == self.selected_vendor_id), None)
+
+        if vendor:
+            # Populate node types
+            node_options = [nt.name for nt in vendor.node_types]
+            self.node_select.options = node_options
+            self.node_select.value = []
+            self.node_select.update()
+
+            # Populate activities
+            activity_options = {a.name: a.display_name or a.name for a in vendor.activities}
+            self.activity_select.options = activity_options
+            self.activity_select.value = None
+            self.activity_select.update()
+        else:
+            self.node_select.options = []
+            self.node_select.update()
+            self.activity_select.options = {}
+            self.activity_select.update()
+
         self._update_uc_name()
         await self._validate()
 
-    async def _on_custom_node_change(self, e) -> None:
-        val = e.args if isinstance(e.args, str) else (e.args or "")
-        self.node_type = val.strip().upper().replace(" ", "_")
-        if self.node_type and self.node_type not in self._node_types:
-            self._node_types.insert(-1, self.node_type)  # before OTHER
-            self.node_select.options = list(self._node_types)
-            self.node_select.update()
+    async def _on_node_change(self, e) -> None:
+        """When node types change, update UC name and filter activities."""
+        selected = self.node_select.value or []
+        if isinstance(selected, str):
+            selected = [selected]
+        self.selected_node_types = selected
+        self.node_type = "_".join(selected) if selected else ""
+
+        # Filter activities by selected node types
+        vendor = next((v for v in self._vendors_cache if v.id == self.selected_vendor_id), None)
+        if vendor and selected:
+            matching = [a for a in vendor.activities
+                        if not a.node_types or any(n in a.node_types for n in selected)]
+            activity_options = {a.name: a.display_name or a.name for a in matching}
+            self.activity_select.options = activity_options
+            self.activity_select.update()
+
         self._update_uc_name()
         await self._validate()
 
     async def _on_activity_change(self, e) -> None:
+        """When activity changes, update UC name."""
+        self.selected_activity_name = self.activity_select.value or ""
+        self.activity_name = self.selected_activity_name.upper().replace(" ", "_")
+        self._update_uc_name()
+        await self._validate()
+
+    # Manual entry fallback (when no vendor profiles exist)
+    async def _on_manual_node_change(self, e) -> None:
+        val = e.args if isinstance(e.args, str) else (e.args or "")
+        self.node_type = val.strip().upper().replace(" ", "_")
+        self._update_uc_name()
+        await self._validate()
+
+    async def _on_manual_activity_change(self, e) -> None:
         val = e.args if isinstance(e.args, str) else (e.args or "")
         self.activity_name = val.strip().upper().replace(" ", "_")
         self._update_uc_name()
@@ -213,7 +297,7 @@ class UploadSection:
     def _update_uc_name(self) -> None:
         if self.node_type and self.activity_name:
             self.uc_name = f"{self.node_type}_{self.activity_name}"
-            self.uc_name_label.text = f"UC Name: {self.uc_name}"
+            self.uc_name_label.text = f"UC: {self.uc_name}"
         else:
             self.uc_name = ""
             self.uc_name_label.text = ""
@@ -390,6 +474,32 @@ class UploadSection:
             self._activity_names.sort()
         _save_uc_options(self._node_types, self._activity_names)
 
+        # Build vendor profile context (if vendor selected)
+        vendor_profile = {}
+        if self.selected_vendor_id and self._db:
+            try:
+                from shared.profiles import ProfileManager
+                pm = ProfileManager(self._db)
+                vendor_profile = await pm.build_profile_context(
+                    self.selected_vendor_id,
+                    self.selected_node_types,
+                    self.selected_activity_name,
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("Failed to build vendor profile: %s", e)
+
+        if vendor_profile:
+            gw = vendor_profile.get("vendor", {}).get("access_gateway", {})
+            n_nodes = len(vendor_profile.get("category_1_node_activity", {}).get("nodes", []))
+            ui.notify(
+                f"Vendor profile loaded: gateway={'enabled' if gw.get('enabled') else 'disabled'}, "
+                f"{n_nodes} nodes",
+                type="info",
+            )
+        elif self.selected_vendor_id:
+            ui.notify("Warning: Vendor selected but profile context is empty", type="warning")
+
         xml_paths = self.paths.get("sample_io_xml", [])
         notes = self.developer_notes.value.strip() if self.developer_notes.value else None
         doc_set = UCDocumentSet(
@@ -402,6 +512,7 @@ class UploadSection:
             additional_documents=self.additional_docs if self.additional_docs else None,
             validated=True,
             developer_notes=notes,
+            vendor_profile=vendor_profile,
         )
         self.start_btn.disable()
         self.start_btn.props("loading")

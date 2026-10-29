@@ -60,6 +60,19 @@ class RequirementsGathererNode(BaseAgent):
                 ctx.session.state[key] = parsed[key]
 
         # ── Build SkillInput ──
+        vendor_profile = doc_set.get("vendor_profile") or None
+        flow.flow("REQUIREMENTS: vendor_profile present=%s, type=%s, doc_set_keys=%s",
+                   vendor_profile is not None,
+                   type(vendor_profile).__name__ if vendor_profile else "None",
+                   list(doc_set.keys()) if doc_set else "empty")
+        if vendor_profile:
+            gw = vendor_profile.get("vendor", {}).get("access_gateway", {})
+            flow.flow("REQUIREMENTS: gateway_enabled=%s, gateway_name=%s, ssh_user=%s, nodes=%d",
+                       gw.get("enabled"), gw.get("name"),
+                       vendor_profile.get("vendor", {}).get("ssh_defaults", {}).get("user"),
+                       len(vendor_profile.get("category_1_node_activity", {}).get("nodes", [])))
+        else:
+            flow.flow("REQUIREMENTS: NO vendor_profile — SSH/PAM questions will NOT be filtered")
         skill_input = SkillInput(
             uc_name=uc_name,
             ciq_file_path=ctx.session.state.get("ciq_file_path", ""),
@@ -68,6 +81,7 @@ class RequirementsGathererNode(BaseAgent):
             ssh_log_path=doc_set.get("command_outputs_path", ""),
             xml_sample_paths=doc_set.get("sample_io_xml_paths", []) or [],
             developer_notes=developer_notes,
+            vendor_profile=vendor_profile,
         )
 
         # ── Create skill with local LLM wrapper ──

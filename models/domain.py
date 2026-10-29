@@ -78,6 +78,7 @@ class UCDocumentSet(BaseModel):
     validation_errors: list[dict[str, Any]] | None = None
     selected_sheets: list[str] | None = None  # None = all sheets
     developer_notes: str | None = None  # Free-form domain guidance for LLM agents
+    vendor_profile: dict[str, Any] | None = None  # Pre-filled from vendor profile selection
 
 
 class PipelineRun(BaseModel):

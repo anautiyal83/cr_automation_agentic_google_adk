@@ -19,6 +19,183 @@ from .schema_discovery import (
 logger = logging.getLogger(__name__)
 
 
+def merge_previous_requirements(current: dict, previous: dict) -> dict:
+    """Merge previously saved requirements into the current run's output.
+
+    Strategy: for each category, fill in gaps from previous data without
+    overwriting what the current LLM compilation produced. This way each
+    re-run accumulates information — new runs add to/refine previous data.
+    """
+    if not previous:
+        return current
+
+    for cat_key in ("category_1_node_activity", "category_2_commands",
+                    "category_3_orchestration", "xml_templates"):
+        prev_cat = previous.get(cat_key)
+        if not prev_cat or not isinstance(prev_cat, dict):
+            continue
+        curr_cat = current.setdefault(cat_key, {})
+
+        for key, prev_val in prev_cat.items():
+            curr_val = curr_cat.get(key)
+
+            # Skip if current already has a non-empty value
+            if curr_val and curr_val != "\u2014":
+                # Special case: merge lists (nodes, commands) by appending missing items
+                if isinstance(curr_val, list) and isinstance(prev_val, list):
+                    curr_cat[key] = _merge_lists(curr_val, prev_val)
+                continue
+
+            # Current is empty — use previous value
+            if prev_val and prev_val != "\u2014":
+                curr_cat[key] = prev_val
+
+    # Merge developer_answers from previous run
+    prev_answers = previous.get("developer_answers", {})
+    if prev_answers:
+        curr_answers = current.setdefault("developer_answers", {})
+        for k, v in prev_answers.items():
+            if k not in curr_answers:
+                curr_answers[k] = v
+
+    logger.info("Merged previous requirements: %d categories checked",
+                sum(1 for k in previous if k.startswith("category_")))
+    return current
+
+
+def _merge_lists(current: list, previous: list) -> list:
+    """Merge two lists of dicts, adding items from previous that aren't in current.
+
+    Uses 'name' or 'cmd' as identity keys for dedup.
+    """
+    if not previous:
+        return current
+    if not current:
+        return list(previous)
+
+    # Build set of identity keys from current list
+    current_ids = set()
+    for item in current:
+        if isinstance(item, dict):
+            ident = item.get("name") or item.get("cmd") or item.get("command", "")
+            if ident:
+                current_ids.add(str(ident).lower())
+
+    # Add missing items from previous
+    for item in previous:
+        if isinstance(item, dict):
+            ident = item.get("name") or item.get("cmd") or item.get("command", "")
+            if ident and str(ident).lower() not in current_ids:
+                current.append(item)
+                current_ids.add(str(ident).lower())
+
+    return current
+
+
+def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
+    """Merge vendor profile data into compiled requirements.
+
+    Ensures nodes, SSH config, escalation, gateway, and CIQ mappings
+    from the vendor profile appear in the final requirements even if
+    the LLM compiler omitted them.
+    """
+    if not vendor_profile:
+        return requirements
+
+    vendor = vendor_profile.get("vendor", {})
+    vp_cat1 = vendor_profile.get("category_1_node_activity", {})
+    vp_cat3 = vendor_profile.get("category_3_orchestration", {})
+
+    cat1 = requirements.setdefault("category_1_node_activity", {})
+    cat3 = requirements.setdefault("category_3_orchestration", {})
+
+    # -- Nodes: merge vendor profile nodes into requirements --
+    vp_nodes = vp_cat1.get("nodes", [])
+    existing_nodes = cat1.get("nodes", [])
+    existing_names = {
+        n.get("name", "").upper() for n in existing_nodes if isinstance(n, dict)
+    }
+
+    for vn in vp_nodes:
+        name = vn.get("name", "")
+        if name.upper() not in existing_names:
+            existing_nodes.append(vn)
+            existing_names.add(name.upper())
+        else:
+            # Existing node — vendor profile OVERRIDES LLM values
+            for en in existing_nodes:
+                if isinstance(en, dict) and en.get("name", "").upper() == name.upper():
+                    vn_ssh = vn.get("ssh", {})
+                    vn_esc = vn.get("escalation", {})
+                    if vn_ssh:
+                        en_ssh = en.setdefault("ssh", {})
+                        # Profile wins for user, prompt, port, login_via_pam
+                        for k in ("user", "port", "prompt_pattern", "login_via_pam"):
+                            if vn_ssh.get(k):
+                                en_ssh[k] = vn_ssh[k]
+                    if vn_esc and vn_esc.get("method", "none") != "none":
+                        en["escalation"] = vn_esc
+                    break
+
+    cat1["nodes"] = existing_nodes
+
+    # -- Gateway config --
+    gw = vendor.get("access_gateway", {})
+    if gw.get("enabled"):
+        cat1["access_gateway"] = gw
+        cat1.setdefault("niam_failover", True)
+
+    # -- SSH defaults --
+    ssh_defaults = vendor.get("ssh_defaults", {})
+    if ssh_defaults:
+        cat3_ssh = cat3.setdefault("ssh", {})
+        for key in ("user", "port", "kex_algorithms", "host_key_algorithms", "connect_timeout_sec"):
+            if ssh_defaults.get(key) and not cat3_ssh.get(key):
+                cat3_ssh[key] = ssh_defaults[key]
+        if ssh_defaults.get("user"):
+            default_user = ssh_defaults["user"]
+            default_port = ssh_defaults.get("port", 22)
+            for node in existing_nodes:
+                if isinstance(node, dict):
+                    node_ssh = node.setdefault("ssh", {})
+                    # Override LLM hallucinations (e.g. "niamuser") with profile user
+                    current_user = node_ssh.get("user", "")
+                    if not current_user or current_user.lower() in ("niamuser", "niam_user", ""):
+                        node_ssh["user"] = default_user
+                    if not node_ssh.get("port"):
+                        node_ssh["port"] = default_port
+
+    # -- Phases from vendor profile --
+    vp_phases = vp_cat3.get("phases", [])
+    if vp_phases and not cat3.get("phases"):
+        cat3["phases"] = vp_phases
+
+    # -- Grouping from vendor profile --
+    vp_grouping = vp_cat3.get("grouping", {})
+    if vp_grouping and not cat3.get("grouping"):
+        cat3["grouping"] = vp_grouping
+
+    # -- CIQ field mappings --
+    if vendor_profile.get("ciq_field_mappings"):
+        cat1.setdefault("ciq_field_mappings", vendor_profile["ciq_field_mappings"])
+
+    # -- Node ID config --
+    if vendor_profile.get("node_id_config"):
+        cat1.setdefault("node_id_config", vendor_profile["node_id_config"])
+
+    # -- Data sheet --
+    if vp_cat1.get("data_sheet") and not cat1.get("data_sheet"):
+        cat1["data_sheet"] = vp_cat1["data_sheet"]
+
+    requirements["category_1_node_activity"] = cat1
+    requirements["category_3_orchestration"] = cat3
+
+    logger.info("Merged vendor profile: %d nodes, gateway=%s",
+                len(existing_nodes), bool(gw.get("enabled")))
+
+    return requirements
+
+
 def merge_doc_extracted(requirements: dict, doc_extracted: dict) -> dict:
     """Merge deterministic document extractions into LLM-compiled requirements.
 
@@ -98,20 +275,46 @@ def enforce_answers(
     orch["phases"] = phases
     requirements["category_3_orchestration"] = orch
 
-    # -- Prompt regex from SSH logs --
-    if ssh_prompts:
-        node_list = nodes.get("nodes", [])
-        for node in node_list:
-            node_name = node.get("name", "").upper()
+    # -- Map prompt/escalation answers to node config --
+    node_list = nodes.get("nodes", [])
+    for node in node_list:
+        if not isinstance(node, dict):
+            continue
+        node_name = node.get("name", "").lower()
+        node_ssh = node.setdefault("ssh", {})
+        node_esc = node.setdefault("escalation", {})
+
+        for k, v in answers.items():
+            v_str = str(v).strip()
+            if not v_str:
+                continue
+            # Match answers containing node name + prompt/escalation context
+            k_lower = k.lower()
+            if node_name and node_name in v_str.lower():
+                # "rdsggn01:~ #" contains "rds" → this is the RDS prompt
+                if any(pw in k_lower for pw in ("prompt", "root_prompt", "escalat")):
+                    if not node_esc.get("prompt_pattern"):
+                        node_esc["prompt_pattern"] = v_str
+                        logger.info("Enforced escalation prompt for %s: %s", node_name, v_str[:40])
+
+        # Also check SSH log prompts
+        if ssh_prompts:
             for prompt_str in ssh_prompts:
-                if node_name.lower() in prompt_str.lower():
-                    if not any(
-                        "prompt" in k.lower() and node_name.lower() in k.lower()
-                        for k in answers
-                    ):
-                        node["prompt_regex_from_logs"] = prompt_str
-        nodes["nodes"] = node_list
-        requirements["category_1_node_activity"] = nodes
+                if node_name in prompt_str.lower():
+                    if not node_ssh.get("prompt_pattern"):
+                        node_ssh["prompt_pattern"] = prompt_str
+                        logger.info("Set prompt from SSH logs for %s: %s", node_name, prompt_str[:40])
+
+    # Infer activity_type from MOP if missing
+    if not nodes.get("activity_type"):
+        mop_text = raw_artifacts.get("mop_text", "").lower()
+        if any(kw in mop_text for kw in ("imsi", "subscriber", "per subscriber", "ldapsearch")):
+            nodes["activity_type"] = "per_subscriber"
+        elif any(kw in mop_text for kw in ("per node", "node-level", "software")):
+            nodes["activity_type"] = "per_node"
+
+    nodes["nodes"] = node_list
+    requirements["category_1_node_activity"] = nodes
 
     # -- Generation hints with raw artifacts --
     wf_hints = hints.get("workflow_yaml", {}) if isinstance(hints.get("workflow_yaml"), dict) else {}

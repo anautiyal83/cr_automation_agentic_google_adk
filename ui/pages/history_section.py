@@ -349,23 +349,36 @@ class HistorySection:
         run_id = row.get("id")
         if not run_id or not self.runner:
             return
-        try:
-            doc = await self._find_document_set(run_id, row.get("uc_name", ""))
-            if not doc:
-                ui.notify("Could not find original documents for re-run", type="warning")
-                return
 
-            # Create a NEW copy — don't reference the old document_set_id
-            # This ensures the new run is independent and survives cleanup
-            from uuid import uuid4
-            doc["document_set_id"] = str(uuid4())
+        uc_name = row.get("uc_name", "UC")
 
-            new_run_id = await self.runner.start(doc)
-            ui.notify(f"Re-running {row.get('uc_name', 'UC')}...", type="positive")
-            if self.on_rerun:
-                await self.on_rerun(new_run_id)
-        except Exception as exc:
-            ui.notify(f"Re-run failed: {exc}", type="negative")
+        # Navigate to progress immediately — don't wait for pipeline start
+        ui.notify(f"Starting re-run for {uc_name}...", type="info")
+        if self.on_rerun:
+            await self.on_rerun(None)  # Navigate to progress page now
+
+        # Start pipeline in background
+        import asyncio
+
+        async def _start_rerun():
+            try:
+                doc = await self._find_document_set(run_id, uc_name)
+                if not doc:
+                    ui.notify("Could not find original documents for re-run", type="warning")
+                    return
+                from uuid import uuid4
+                doc["document_set_id"] = str(uuid4())
+
+                new_run_id = await self.runner.start(doc)
+                ui.notify(f"Pipeline started for {uc_name}", type="positive")
+
+                # Start tracking the new run in progress section
+                if self.on_rerun:
+                    await self.on_rerun(new_run_id)
+            except Exception as exc:
+                ui.notify(f"Re-run failed: {exc}", type="negative")
+
+        asyncio.create_task(_start_rerun())
 
     async def _find_document_set(self, run_id: str, uc_name: str) -> dict | None:
         """Find the original document set for a run, with multiple fallbacks."""
@@ -411,7 +424,7 @@ class HistorySection:
         import json as _json
         doc = dict(row)
         # Parse JSON-encoded fields back to Python objects
-        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets"):
+        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets", "vendor_profile"):
             val = doc.get(json_field)
             if isinstance(val, str):
                 try:

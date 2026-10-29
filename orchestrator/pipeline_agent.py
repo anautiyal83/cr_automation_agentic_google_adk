@@ -133,6 +133,11 @@ class PipelineAgent(BaseAgent):
             for sn in display_steps:
                 await self._publish(run_id_str, "step_started", sn)
 
+            # ----- SET LLM CONTEXT for usage tracking -----
+            from shared.llm import set_llm_context
+            uc_name = ctx.session.state.get("uc_name", "")
+            set_llm_context(run_id=run_id_str, uc_name=uc_name, step=agent.name)
+
             # ----- EXECUTE AGENT -----
             agent_t0 = time.monotonic()
             flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)

@@ -44,6 +44,7 @@ from ui.pages.history_section import HistorySection
 from ui.pages.cleanup_section import CleanupSection
 from ui.pages.usage_section import UsageSection
 from ui.pages.settings_section import SettingsSection
+from ui.pages.vendor_section import VendorSection
 from ui.pages.output_viewer_section import OutputViewerSection
 
 _db: Database | None = None
@@ -566,8 +567,10 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
         with ui.column().classes("cr-content"):
 
             # Dashboard
-            with ui.column().classes("w-full gap-5") as panel:
+            with ui.column().classes("w-full gap-4") as panel:
                 content_panels["dashboard"] = panel
+
+                # Hero banner
                 with ui.element("div").classes("cr-hero"):
                     with ui.row().classes("items-center justify-between w-full"):
                         with ui.column().classes("gap-1"):
@@ -577,30 +580,205 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                                 "Upload telecom UC documents, generate YAML configs via LLM agents, "
                                 "validate and test automatically"
                             ).classes("text-body2 cr-text-dim max-w-xl")
-                        with ui.row().classes("gap-3"):
-                            runs_label = _stat_card("Pipeline Runs", "0", "rocket_launch", "#6C63FF")
-                            success_label = _stat_card("Success Rate", "—", "check_circle", "#4ADE80")
-                            duration_label = _stat_card("Avg Duration", "—", "timer", "#00D9FF")
+
+                # Summary stat cards
+                with ui.row().classes("w-full gap-3 flex-wrap"):
+                    runs_label = _stat_card("Total Runs", "0", "rocket_launch", "#6C63FF")
+                    success_label = _stat_card("Success Rate", "\u2014", "check_circle", "#4ADE80")
+                    failed_label = _stat_card("Failed", "0", "cancel", "#F87171")
+                    duration_label = _stat_card("Avg Duration", "\u2014", "timer", "#00D9FF")
+                    tokens_label = _stat_card("LLM Tokens", "0", "token", "#A78BFA")
+                    cost_label = _stat_card("Est. Cost", "$0", "attach_money", "#FBBF24")
+
+                # Charts row
+                with ui.row().classes("w-full gap-3"):
+                    # Status pie chart
+                    with ui.card().classes("cr-card-inner flex-1 p-3").style("min-height:220px"):
+                        ui.label("Run Status").classes("text-caption font-bold cr-text-dim")
+                        status_chart = ui.echart({
+                            "tooltip": {"trigger": "item"},
+                            "series": [{"type": "pie", "radius": ["40%", "70%"],
+                                        "label": {"color": "#9090A8", "fontSize": 11},
+                                        "data": []}],
+                        }).classes("w-full").style("height: 180px")
+
+                    # UC breakdown bar chart
+                    with ui.card().classes("cr-card-inner flex-1 p-3").style("min-height:220px"):
+                        ui.label("Runs by Use Case").classes("text-caption font-bold cr-text-dim")
+                        uc_chart = ui.echart({
+                            "tooltip": {"trigger": "axis"},
+                            "xAxis": {"type": "category", "data": [],
+                                      "axisLabel": {"color": "#9090A8", "fontSize": 10, "rotate": 25}},
+                            "yAxis": {"type": "value", "axisLabel": {"color": "#9090A8"}},
+                            "series": [
+                                {"type": "bar", "name": "Completed", "stack": "total",
+                                 "itemStyle": {"color": "#4ADE80"}, "data": []},
+                                {"type": "bar", "name": "Failed", "stack": "total",
+                                 "itemStyle": {"color": "#F87171"}, "data": []},
+                            ],
+                        }).classes("w-full").style("height: 180px")
+
+                # Per-UC table + LLM usage
+                with ui.row().classes("w-full gap-3"):
+                    with ui.card().classes("cr-card-inner flex-1 p-3"):
+                        ui.label("Use Case Summary").classes("text-caption font-bold cr-text-dim mb-1")
+                        uc_table = ui.table(
+                            columns=[
+                                {"name": "uc", "label": "Use Case", "field": "uc", "align": "left", "sortable": True},
+                                {"name": "runs", "label": "Runs", "field": "runs", "sortable": True},
+                                {"name": "pass", "label": "Pass", "field": "pass", "sortable": True},
+                                {"name": "fail", "label": "Fail", "field": "fail", "sortable": True},
+                                {"name": "rate", "label": "Success %", "field": "rate", "sortable": True},
+                                {"name": "avg_dur", "label": "Avg Time", "field": "avg_dur", "sortable": True},
+                            ],
+                            rows=[], row_key="uc",
+                        ).props("dense flat bordered").classes("w-full")
+
+                    with ui.card().classes("cr-card-inner flex-1 p-3"):
+                        ui.label("LLM Usage (current session)").classes("text-caption font-bold cr-text-dim mb-1")
+                        llm_table = ui.table(
+                            columns=[
+                                {"name": "step", "label": "Step", "field": "step", "align": "left", "sortable": True},
+                                {"name": "calls", "label": "Calls", "field": "calls", "sortable": True},
+                                {"name": "tokens", "label": "Tokens", "field": "tokens", "sortable": True},
+                                {"name": "cost", "label": "Cost", "field": "cost", "sortable": True},
+                            ],
+                            rows=[], row_key="step",
+                        ).props("dense flat bordered").classes("w-full")
+
+                # Recent runs
+                with ui.card().classes("cr-card-inner w-full p-3"):
+                    ui.label("Recent Runs").classes("text-caption font-bold cr-text-dim mb-1")
+                    recent_table = ui.table(
+                        columns=[
+                            {"name": "uc", "label": "Use Case", "field": "uc", "align": "left"},
+                            {"name": "status", "label": "Status", "field": "status", "align": "center"},
+                            {"name": "started", "label": "Started", "field": "started", "align": "left"},
+                            {"name": "duration", "label": "Duration", "field": "duration"},
+                            {"name": "error", "label": "Error", "field": "error", "align": "left"},
+                        ],
+                        rows=[], row_key="id",
+                    ).props("dense flat bordered").classes("w-full")
+
+                _STEP_LABELS = {
+                    "requirements_gatherer": "Requirements",
+                    "ciq_validation_json_gen": "CIQ Gen",
+                    "ciq_validation_json_qa": "CIQ QA",
+                    "network_config_gen": "Config Gen",
+                    "network_simulator_setup": "Simulator",
+                    "network_config_qa": "Config QA",
+                    "report_generator": "Report",
+                }
 
                 async def refresh_dashboard():
                     try:
-                        rows = await _db.execute(
-                            "SELECT status, duration_seconds FROM pipeline_runs", ()
+                        # --- DB data ---
+                        runs = await _db.execute(
+                            "SELECT r.id, r.status, r.started_at, r.duration_seconds, "
+                            "r.error_summary, d.uc_name "
+                            "FROM pipeline_runs r "
+                            "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                            "ORDER BY r.started_at DESC", ()
                         )
-                        total = len(rows)
-                        completed = sum(1 for r in rows if 'completed' in str(r.get('status') or '').lower())
-                        durations = [r['duration_seconds'] for r in rows
+                        total = len(runs)
+                        completed = sum(1 for r in runs if 'completed' in str(r.get('status') or '').lower())
+                        failed = sum(1 for r in runs if 'failed' in str(r.get('status') or '').lower())
+                        cancelled = sum(1 for r in runs if 'cancelled' in str(r.get('status') or '').lower())
+                        running = total - completed - failed - cancelled
+                        durations = [r['duration_seconds'] for r in runs
                                      if r.get('duration_seconds') and 'completed' in str(r.get('status') or '').lower()]
+
+                        # Summary cards
                         runs_label.text = str(total)
-                        if total > 0:
-                            success_label.text = f"{completed * 100 // total}%"
-                        else:
-                            success_label.text = "—"
-                        if durations:
-                            avg = sum(durations) / len(durations)
-                            duration_label.text = f"{avg:.0f}s"
-                        else:
-                            duration_label.text = "—"
+                        success_label.text = f"{completed * 100 // total}%" if total > 0 else "\u2014"
+                        failed_label.text = str(failed)
+                        duration_label.text = f"{sum(durations) / len(durations):.0f}s" if durations else "\u2014"
+
+                        # LLM stats
+                        from shared.llm import get_usage_stats
+                        llm_raw = get_usage_stats()
+                        total_tokens = sum(e.get("total_tokens", 0) for e in llm_raw)
+                        total_cost = sum(e.get("cost_usd", 0) for e in llm_raw)
+                        tokens_label.text = f"{total_tokens:,}" if total_tokens else "0"
+                        cost_label.text = f"${total_cost:.2f}" if total_cost else "$0"
+
+                        # Status pie chart
+                        pie_data = []
+                        if completed: pie_data.append({"value": completed, "name": "Completed", "itemStyle": {"color": "#4ADE80"}})
+                        if failed: pie_data.append({"value": failed, "name": "Failed", "itemStyle": {"color": "#F87171"}})
+                        if cancelled: pie_data.append({"value": cancelled, "name": "Cancelled", "itemStyle": {"color": "#9090A8"}})
+                        if running: pie_data.append({"value": running, "name": "Running", "itemStyle": {"color": "#6C63FF"}})
+                        status_chart.options["series"][0]["data"] = pie_data or [{"value": 0, "name": "No runs"}]
+                        status_chart.update()
+
+                        # Per-UC aggregation
+                        uc_stats: dict[str, dict] = {}
+                        for r in runs:
+                            uc = r.get("uc_name") or "Unknown"
+                            s = uc_stats.setdefault(uc, {"runs": 0, "pass": 0, "fail": 0, "durations": []})
+                            s["runs"] += 1
+                            status = str(r.get("status") or "").lower()
+                            if "completed" in status:
+                                s["pass"] += 1
+                                if r.get("duration_seconds"):
+                                    s["durations"].append(r["duration_seconds"])
+                            elif "failed" in status:
+                                s["fail"] += 1
+
+                        # UC bar chart
+                        uc_names = list(uc_stats.keys())[:10]
+                        uc_chart.options["xAxis"]["data"] = [n.split("_")[0] if "_" in n else n for n in uc_names]
+                        uc_chart.options["series"][0]["data"] = [uc_stats[n]["pass"] for n in uc_names]
+                        uc_chart.options["series"][1]["data"] = [uc_stats[n]["fail"] for n in uc_names]
+                        uc_chart.update()
+
+                        # UC table
+                        uc_rows = []
+                        for uc, s in sorted(uc_stats.items(), key=lambda x: x[1]["runs"], reverse=True):
+                            avg_d = sum(s["durations"]) / len(s["durations"]) if s["durations"] else 0
+                            rate = f"{s['pass'] * 100 // s['runs']}%" if s["runs"] > 0 else "\u2014"
+                            uc_rows.append({
+                                "uc": uc, "runs": s["runs"], "pass": s["pass"],
+                                "fail": s["fail"], "rate": rate,
+                                "avg_dur": f"{avg_d:.0f}s" if avg_d else "\u2014",
+                            })
+                        uc_table.rows = uc_rows
+
+                        # LLM per-step table
+                        by_step: dict[str, dict] = {}
+                        for e in llm_raw:
+                            step = e.get("step", "unknown")
+                            sd = by_step.setdefault(step, {"calls": 0, "tokens": 0, "cost": 0.0})
+                            sd["calls"] += 1
+                            sd["tokens"] += e.get("total_tokens", 0)
+                            sd["cost"] += e.get("cost_usd", 0)
+                        llm_rows = []
+                        for step, sd in sorted(by_step.items(), key=lambda x: x[1]["cost"], reverse=True):
+                            llm_rows.append({
+                                "step": _STEP_LABELS.get(step, step.replace("_", " ").title()),
+                                "calls": sd["calls"],
+                                "tokens": f"{sd['tokens']:,}",
+                                "cost": f"${sd['cost']:.4f}",
+                            })
+                        llm_table.rows = llm_rows
+
+                        # Recent runs table (last 10)
+                        recent_rows = []
+                        for r in runs[:10]:
+                            status = str(r.get("status") or "").replace("PipelineStatus.", "")
+                            started = str(r.get("started_at") or "")[:19]
+                            dur = r.get("duration_seconds")
+                            err = (r.get("error_summary") or "")[:60]
+                            recent_rows.append({
+                                "id": r.get("id", ""),
+                                "uc": r.get("uc_name") or "\u2014",
+                                "status": status,
+                                "started": started,
+                                "duration": f"{dur:.1f}s" if dur else "\u2014",
+                                "error": err or "\u2014",
+                            })
+                        recent_table.rows = recent_rows
+
                     except Exception:
                         pass
 
@@ -613,7 +791,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 panel.set_visibility(False)
                 ui.label("New Pipeline Run").classes("text-h6 font-bold cr-stat-value")
                 with ui.card().classes("cr-section w-full p-4"):
-                    UploadSection(on_start_pipeline=on_start_pipeline)
+                    upload_section = UploadSection(on_start_pipeline=on_start_pipeline, db=_db)
+                    on_navigate_hooks.setdefault("new_run", []).append(upload_section._load_vendors)
 
             # Pipeline Progress
             with ui.column().classes("w-full gap-2") as panel:
@@ -663,13 +842,13 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 ui.label("Run History").classes("text-h6 font-bold cr-stat-value")
                 with ui.card().classes("cr-section w-full p-4"):
                     async def on_rerun(run):
-                        if progress:
+                        navigate("progress")
+                        if run and progress:
                             from uuid import UUID as _UUID
                             run_id = run.id if hasattr(run, 'id') else run
                             if isinstance(run_id, str):
                                 run_id = _UUID(run_id)
                             await progress.start_tracking(run_id)
-                        navigate("progress")
 
                     async def on_view_outputs(run_id):
                         navigate("outputs")
@@ -703,13 +882,48 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                     usage_section = UsageSection()
                     on_navigate_hooks.setdefault("usage", []).append(usage_section._refresh)
 
-            # Settings
+            # Settings (tabbed: Pipeline Config | Vendor Profiles)
             with ui.column().classes("w-full gap-2") as panel:
                 content_panels["settings"] = panel
                 panel.set_visibility(False)
-                ui.label("Settings").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    settings_section = SettingsSection(config_manager=_config_manager, db=_db)
+
+                settings_tab_panels = {}
+                active_settings_tab = {"value": "config"}
+
+                def switch_settings_tab(tab_key: str):
+                    prev = active_settings_tab["value"]
+                    active_settings_tab["value"] = tab_key
+                    for k, p in settings_tab_panels.items():
+                        p.set_visibility(k == tab_key)
+                    if prev in settings_tab_btns:
+                        settings_tab_btns[prev].classes(remove="active")
+                    if tab_key in settings_tab_btns:
+                        settings_tab_btns[tab_key].classes(add="active")
+
+                settings_tab_btns = {}
+                with ui.row().classes("w-full gap-2 mb-2"):
+                    for key, label, icon in [
+                        ("config", "Pipeline Config", "tune"),
+                        ("vendors", "Vendor Profiles", "business"),
+                    ]:
+                        btn = ui.button(label, icon=icon,
+                                        on_click=lambda _, k=key: switch_settings_tab(k)) \
+                            .props("flat no-caps size=sm") \
+                            .classes(f"cr-settings-tab {'active' if key == 'config' else ''}")
+                        settings_tab_btns[key] = btn
+
+                # Tab: Pipeline Config
+                with ui.column().classes("w-full") as config_panel:
+                    settings_tab_panels["config"] = config_panel
+                    with ui.card().classes("cr-section w-full p-4"):
+                        settings_section = SettingsSection(config_manager=_config_manager, db=_db)
+
+                # Tab: Vendor Profiles
+                with ui.column().classes("w-full") as vendor_panel:
+                    settings_tab_panels["vendors"] = vendor_panel
+                    vendor_panel.set_visibility(False)
+                    with ui.card().classes("cr-section w-full p-4"):
+                        vendor_section = VendorSection(db=_db)
 
             # Load saved settings
             await settings_section.load_saved_settings()

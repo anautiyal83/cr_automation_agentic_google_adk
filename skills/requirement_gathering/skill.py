@@ -51,6 +51,7 @@ class SkillInput:
     developer_notes: str = ""
     previous_answers: dict | None = None
     schema_dir: str | None = None
+    vendor_profile: dict | None = None  # Pre-filled from vendor profile selection
 
 
 @dataclass
@@ -86,10 +87,13 @@ class RequirementGatheringSkill:
         self._ciq_sheets: dict[str, dict] = {}
         self._analysis: dict[str, Any] = {}
         self._all_answers: dict[str, Any] = {}
+        self._question_texts: dict[str, str] = {}  # q_id -> question text
         self._round_num = 0
         self._parsed_data: dict[str, Any] = {}
         self._schemas: DiscoveredSchemas | None = None
         self._schema_dir: str | None = None
+        self._vendor_profile: dict | None = None
+        self._previous_requirements: dict = {}
 
     # ------------------------------------------------------------------
     # Phase 1: Parse + Analyze
@@ -104,17 +108,20 @@ class RequirementGatheringSkill:
         self._uc_name = inp.uc_name
         self._developer_notes = inp.developer_notes
         self._schema_dir = inp.schema_dir
+        self._vendor_profile = inp.vendor_profile
 
         # Discover project schemas early (for downstream hints)
         self._schemas = discover_schemas(inp.schema_dir)
         if self._schemas.missing:
             logger.warning("Missing schemas: %s", self._schemas.missing)
 
-        # Load previous answers
+        # Load previous data (accumulated across re-runs)
         if inp.previous_answers:
             self._all_answers = dict(inp.previous_answers)
         else:
             self._all_answers = dict(_load_answers(inp.uc_name))
+        self._question_texts = dict(_load_question_texts(inp.uc_name))
+        self._previous_requirements = _load_requirements(inp.uc_name)
 
         # --- Deterministic parsing ---
         self._raw_artifacts = self._read_raw_artifacts(inp)
@@ -150,6 +157,8 @@ class RequirementGatheringSkill:
         cmd_summary = self._build_cmd_summary()
 
         analysis_notes = self._developer_notes
+        if self._vendor_profile:
+            analysis_notes += "\n\n" + _vendor_profile_summary(self._vendor_profile)
         if self._all_answers:
             analysis_notes += "\n\n=== Previously Answered Questions ===\n" + json.dumps(self._all_answers, indent=2)
 
@@ -178,6 +187,7 @@ class RequirementGatheringSkill:
         # Generate questions for gaps
         available_data = questionnaire.build_available_data_summary(
             self._ciq_sheets, self._raw_artifacts, ssh_parsed,
+            vendor_profile=self._vendor_profile,
         )
         questions = await questionnaire.generate_questions(
             self._llm_fn,
@@ -190,6 +200,20 @@ class RequirementGatheringSkill:
         # Filter already-answered
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
+        # Drop SSH/PAM questions covered by vendor profile
+        logger.info("VENDOR_PROFILE_DEBUG: vendor_profile=%s, questions_before_filter=%d",
+                     bool(self._vendor_profile), len(questions) if questions else 0)
+        if self._vendor_profile:
+            logger.info("VENDOR_PROFILE_DEBUG: gateway_enabled=%s, ssh_user=%s, nodes=%d",
+                         self._vendor_profile.get("vendor", {}).get("access_gateway", {}).get("enabled"),
+                         self._vendor_profile.get("vendor", {}).get("ssh_defaults", {}).get("user"),
+                         len(self._vendor_profile.get("category_1_node_activity", {}).get("nodes", [])))
+        if questions and self._vendor_profile:
+            questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)
+            logger.info("VENDOR_PROFILE_DEBUG: questions_after_filter=%d", len(questions))
+
+        # Store question texts for the summary report
+        self._store_question_texts(questions)
 
         self._round_num = 1
         return SkillOutput(
@@ -216,6 +240,8 @@ class RequirementGatheringSkill:
 
         # Re-analyze with new answers
         combined_notes = self._developer_notes
+        if self._vendor_profile:
+            combined_notes += "\n\n" + _vendor_profile_summary(self._vendor_profile)
         if self._all_answers:
             combined_notes += "\n\n=== Developer Answers ===\n" + json.dumps(self._all_answers, indent=2)
 
@@ -248,6 +274,7 @@ class RequirementGatheringSkill:
         ssh_parsed = parse_ssh_logs(self._raw_artifacts.get("ssh_logs", ""))
         available_data = questionnaire.build_available_data_summary(
             self._ciq_sheets, self._raw_artifacts, ssh_parsed,
+            vendor_profile=self._vendor_profile,
         )
         questions = await questionnaire.generate_questions(
             self._llm_fn,
@@ -259,6 +286,12 @@ class RequirementGatheringSkill:
 
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
+        # Drop SSH/PAM questions covered by vendor profile
+        if questions and self._vendor_profile:
+            questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)
+
+        # Store question texts for the summary report
+        self._store_question_texts(questions)
 
         self._round_num += 1
         return SkillOutput(
@@ -277,10 +310,14 @@ class RequirementGatheringSkill:
     async def compile_final(self) -> SkillOutput:
         """Compile final requirements package and generate HTML report.
 
+        Merges with previously saved requirements so each re-run
+        accumulates data rather than starting from scratch.
+
         Returns ``SkillOutput`` with ``requirements``, ``requirements_json``,
         and ``requirements_html`` populated.
         """
         _save_answers(self._uc_name, self._all_answers)
+        _save_question_texts(self._uc_name, self._question_texts)
 
         requirements = await analyzer.compile_requirements(
             self._llm_fn,
@@ -290,6 +327,16 @@ class RequirementGatheringSkill:
             self._all_answers,
             raw_artifacts=self._raw_artifacts,
         )
+
+        # Merge with previous run's requirements (fill gaps, keep existing data)
+        if self._previous_requirements:
+            requirements = compiler.merge_previous_requirements(
+                requirements, self._previous_requirements,
+            )
+
+        # Merge vendor profile data (nodes, SSH, escalation, CIQ mappings)
+        if self._vendor_profile:
+            requirements = compiler.merge_vendor_profile(requirements, self._vendor_profile)
 
         # Merge deterministic extractions (override LLM gaps)
         requirements = compiler.merge_doc_extracted(requirements, self._doc_extracted)
@@ -309,6 +356,15 @@ class RequirementGatheringSkill:
             schema_dir=self._schema_dir,
         )
 
+        # Persist all data to the canonical UC document
+        _save_requirements(self._uc_name, requirements)
+        # Also save analysis and vendor profile snapshot
+        doc = _load_uc_doc(self._uc_name) or {}
+        doc["analysis"] = self._analysis
+        if self._vendor_profile:
+            doc["vendor_profile"] = self._vendor_profile
+        _save_uc_doc(self._uc_name, doc)
+
         # Generate HTML report
         html = generate_summary_html(
             self._uc_name,
@@ -318,6 +374,7 @@ class RequirementGatheringSkill:
             self._developer_notes,
             self._all_answers,
             self._doc_extracted,
+            question_texts=self._question_texts,
         )
 
         req_json = json.dumps(requirements, indent=2, default=str)
@@ -344,6 +401,14 @@ class RequirementGatheringSkill:
     ) -> str:
         """Generate questionnaire HTML for a round. Returns HTML string."""
         return generate_questionnaire_html(self._uc_name, questions, round_num)
+
+    def _store_question_texts(self, questions: list[dict] | None):
+        """Store question ID → question text mapping for the summary report."""
+        if not questions:
+            return
+        for q in questions:
+            if isinstance(q, dict) and q.get("id") and q.get("question"):
+                self._question_texts[q["id"]] = q["question"]
 
     # ------------------------------------------------------------------
     # Remaining gaps (for continue/clarify dialog)
@@ -427,32 +492,205 @@ class RequirementGatheringSkill:
 
 
 # ------------------------------------------------------------------
-# Answer persistence (module-level, shared across instances)
+# Vendor profile → developer notes summary
 # ------------------------------------------------------------------
 
-_answer_cache: dict[str, dict] = {}
+def _vendor_profile_summary(vp: dict) -> str:
+    """Convert vendor profile dict to a text block for LLM context.
+
+    This tells the analyzer that SSH, PAM, escalation, and prompt details
+    are ALREADY KNOWN so it should NOT list them as gaps.
+    """
+    lines = [
+        "=== VENDOR PROFILE (pre-configured — treat ALL of these as KNOWN, not gaps) ===",
+    ]
+    vendor = vp.get("vendor", {})
+    if vendor.get("name"):
+        lines.append(f"Vendor: {vendor['name']}")
+
+    gw = vendor.get("access_gateway", {})
+    if gw.get("enabled"):
+        lines.append(f"Access Gateway: {gw.get('name', 'PAM')} — ENABLED")
+        lines.append(f"  Host: {gw.get('host', '?')}:{gw.get('port', 22)}")
+        lines.append(f"  Username: {gw.get('username', '?')}")
+        lines.append(f"  Auth method: {gw.get('auth_method', 'key')}")
+        if gw.get("prompt_pattern"):
+            lines.append(f"  Gateway prompt: {gw['prompt_pattern']}")
+        lines.append("  >> SSH goes through this gateway — direct SSH details are NOT needed")
+
+    ssh = vendor.get("ssh_defaults", {})
+    if ssh:
+        lines.append(f"SSH defaults: user={ssh.get('user', '?')}, port={ssh.get('port', 22)}")
+        if ssh.get("kex_algorithms"):
+            lines.append(f"  KEX: {ssh['kex_algorithms']}")
+        if ssh.get("host_key_algorithms"):
+            lines.append(f"  Host key: {ssh['host_key_algorithms']}")
+        lines.append("  >> SSH config is KNOWN — do not ask about SSH user, port, password, or KEX")
+
+    nodes = vp.get("category_1_node_activity", {}).get("nodes", [])
+    for n in nodes:
+        name = n.get("name", "?")
+        node_ssh = n.get("ssh", {})
+        node_esc = n.get("escalation", {})
+        via_pam = node_ssh.get("login_via_pam", False)
+        lines.append(f"Node {name}: login={'via gateway' if via_pam else 'direct SSH'}")
+        if node_ssh.get("prompt_pattern"):
+            lines.append(f"  Prompt: {node_ssh['prompt_pattern']} — KNOWN")
+        if node_esc.get("method") and node_esc["method"] != "none":
+            lines.append(f"  Escalation: {node_esc['method']} → {node_esc.get('target_user', '?')} — KNOWN")
+            if node_esc.get("prompt_pattern"):
+                lines.append(f"  Escalated prompt: {node_esc['prompt_pattern']} — KNOWN")
+        if via_pam:
+            lines.append(f"  >> {name} connects via gateway — do NOT ask SSH host/port/user/password for {name}")
+
+    if vp.get("node_id_config"):
+        nc = vp["node_id_config"]
+        lines.append(f"Node ID column: {nc.get('node_column', '?')} — KNOWN")
+        if nc.get("gateway_id_column"):
+            lines.append(f"Gateway ID column: {nc['gateway_id_column']} — KNOWN")
+
+    if vp.get("ciq_field_mappings"):
+        lines.append(f"CIQ field mappings: {len(vp['ciq_field_mappings'])} fields pre-mapped — KNOWN")
+
+    lines.append(">> ALL items above are KNOWN — do NOT report them as gaps or ask questions about them")
+    return "\n".join(lines)
 
 
-def _load_answers(uc_name: str) -> dict:
-    if uc_name in _answer_cache:
-        return _answer_cache[uc_name]
-    fpath = _ANSWERS_DIR / f"{uc_name}_answers.json"
+# ------------------------------------------------------------------
+# UC Knowledge Document — single canonical file per UC
+# ------------------------------------------------------------------
+#
+# Location: data/knowledge/{uc_name}/requirements.json
+#
+# Structure:
+#   {
+#     "uc_name": "...",
+#     "version": 3,                    // incremented each save
+#     "last_updated": "...",
+#     "developer_answers": { "q_id": "answer", ... },
+#     "question_texts":    { "q_id": "question text", ... },
+#     "compiled_requirements": { ... },  // category_1, category_2, category_3, xml_templates
+#     "vendor_profile": { ... },         // last-used vendor profile snapshot
+#     "analysis": { ... },               // last LLM analysis
+#   }
+
+_uc_doc_cache: dict[str, dict] = {}
+
+
+def _uc_doc_path(uc_name: str) -> Path:
+    return _ANSWERS_DIR / uc_name / "requirements.json"
+
+
+def _load_uc_doc(uc_name: str) -> dict:
+    """Load the canonical UC knowledge document. Returns empty dict if none."""
+    if uc_name in _uc_doc_cache:
+        return _uc_doc_cache[uc_name]
+
+    fpath = _uc_doc_path(uc_name)
     if fpath.exists():
         try:
-            answers = json.loads(fpath.read_text(encoding="utf-8"))
-            _answer_cache[uc_name] = answers
-            logger.info("Loaded %d cached answers for UC %s", len(answers), uc_name)
-            return answers
+            doc = json.loads(fpath.read_text(encoding="utf-8"))
+            _uc_doc_cache[uc_name] = doc
+            logger.info("Loaded UC doc v%d for %s (%d answers)",
+                        doc.get("version", 0), uc_name,
+                        len(doc.get("developer_answers", {})))
+            return doc
         except Exception as e:
-            logger.debug("Could not load answers for %s: %s", uc_name, e)
+            logger.debug("Could not load UC doc for %s: %s", uc_name, e)
+
+    # Migrate from old flat files if they exist
+    doc = _migrate_old_files(uc_name)
+    if doc:
+        _uc_doc_cache[uc_name] = doc
+        _save_uc_doc(uc_name, doc)
+        return doc
+
     return {}
 
 
-def _save_answers(uc_name: str, answers: dict):
-    _answer_cache[uc_name] = answers
+def _save_uc_doc(uc_name: str, doc: dict):
+    """Save the canonical UC knowledge document."""
+    from datetime import datetime, timezone
+    doc["uc_name"] = uc_name
+    doc["version"] = doc.get("version", 0) + 1
+    doc["last_updated"] = datetime.now(timezone.utc).isoformat()
+    _uc_doc_cache[uc_name] = doc
     try:
-        _ANSWERS_DIR.mkdir(parents=True, exist_ok=True)
-        fpath = _ANSWERS_DIR / f"{uc_name}_answers.json"
-        fpath.write_text(json.dumps(answers, indent=2, default=str), encoding="utf-8")
+        fpath = _uc_doc_path(uc_name)
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
+        logger.info("Saved UC doc v%d for %s", doc["version"], uc_name)
     except Exception as e:
-        logger.error("Could not save answers for %s: %s", uc_name, e)
+        logger.error("Could not save UC doc for %s: %s", uc_name, e)
+
+
+def _migrate_old_files(uc_name: str) -> dict | None:
+    """Migrate old scattered files (_answers.json, _questions.json, _requirements.json)
+    into the new canonical format. Returns None if no old files found."""
+    doc: dict = {}
+    found = False
+
+    answers_file = _ANSWERS_DIR / f"{uc_name}_answers.json"
+    if answers_file.exists():
+        try:
+            doc["developer_answers"] = json.loads(answers_file.read_text(encoding="utf-8"))
+            found = True
+        except Exception:
+            pass
+
+    questions_file = _ANSWERS_DIR / f"{uc_name}_questions.json"
+    if questions_file.exists():
+        try:
+            doc["question_texts"] = json.loads(questions_file.read_text(encoding="utf-8"))
+            found = True
+        except Exception:
+            pass
+
+    reqs_file = _ANSWERS_DIR / f"{uc_name}_requirements.json"
+    if reqs_file.exists():
+        try:
+            doc["compiled_requirements"] = json.loads(reqs_file.read_text(encoding="utf-8"))
+            found = True
+        except Exception:
+            pass
+
+    if found:
+        logger.info("Migrated old files to UC doc for %s", uc_name)
+        return doc
+    return None
+
+
+# Convenience accessors — used by the skill
+def _load_answers(uc_name: str) -> dict:
+    return _load_uc_doc(uc_name).get("developer_answers", {})
+
+
+def _load_question_texts(uc_name: str) -> dict[str, str]:
+    return _load_uc_doc(uc_name).get("question_texts", {})
+
+
+def _load_requirements(uc_name: str) -> dict:
+    return _load_uc_doc(uc_name).get("compiled_requirements", {})
+
+
+def _save_answers(uc_name: str, answers: dict):
+    doc = _load_uc_doc(uc_name) or {}
+    doc["developer_answers"] = answers
+    _save_uc_doc(uc_name, doc)
+
+
+def _save_question_texts(uc_name: str, texts: dict[str, str]):
+    doc = _load_uc_doc(uc_name) or {}
+    existing = doc.get("question_texts", {})
+    existing.update(texts)
+    doc["question_texts"] = existing
+    _save_uc_doc(uc_name, doc)
+
+
+def _save_requirements(uc_name: str, requirements: dict):
+    doc = _load_uc_doc(uc_name) or {}
+    # Strip transient fields before persisting
+    to_save = {k: v for k, v in requirements.items()
+               if k not in ("doc_extracted", "generation_hints")}
+    doc["compiled_requirements"] = to_save
+    _save_uc_doc(uc_name, doc)

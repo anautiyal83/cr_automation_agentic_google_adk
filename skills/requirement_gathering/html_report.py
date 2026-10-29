@@ -29,9 +29,15 @@ pre { background: #242836; padding: 10px; border-radius: 6px; overflow-x: auto;
 .meta { color: #8b8fa8; font-size: 0.85em; }
 .gap-item { background: #2e1a1a; border: 1px solid #5c2020; border-radius: 4px;
   padding: 6px 10px; margin: 4px 0; color: #fca5a5; font-size: 0.9em; }
-.answer-row td:first-child { width: 30%; font-weight: 600; color: #a78bfa; }
+.answer-row td:first-child { width: 40%; font-weight: 600; color: #a78bfa; }
 .context { color: #8b8fa8; font-size: 0.85em; margin-top: 4px; }
 .default { color: #6c8aff; font-family: monospace; font-size: 0.9em; }
+details { margin: 8px 0; }
+details > summary { cursor: pointer; color: #38bdf8; font-size: 1.1em; font-weight: 600;
+  padding: 6px 0; user-select: none; list-style: none; }
+details > summary::before { content: '\\25B6  '; font-size: 0.7em; transition: transform 0.2s; display: inline-block; }
+details[open] > summary::before { transform: rotate(90deg); }
+details > summary::-webkit-details-marker { display: none; }
 """
 
 
@@ -53,11 +59,17 @@ def generate_summary_html(
     developer_notes: str,
     answers: dict,
     doc_extracted: dict,
+    question_texts: dict[str, str] | None = None,
 ) -> str:
     """Generate a human-readable HTML requirements summary document.
 
+    Args:
+        question_texts: Optional mapping of question ID → question text,
+            used to display actual questions alongside answers.
+
     Returns the full HTML string.
     """
+    question_texts = question_texts or {}
     cat1_req = requirements.get("category_1_node_activity", {})
     cat2_req = requirements.get("category_2_commands", {})
     cat3_req = requirements.get("category_3_orchestration", {})
@@ -66,6 +78,13 @@ def generate_summary_html(
     cat3_an = analysis.get("category_3_orchestration", {})
 
     readiness = analysis.get("overall_readiness", "INSUFFICIENT")
+    # Override: if all gaps are resolved and answers exist, show COMPLETE
+    all_gaps_empty = all(
+        not analysis.get(cat, {}).get("gaps", [])
+        for cat in ("category_1_node_activity", "category_2_commands", "category_3_orchestration")
+    )
+    if all_gaps_empty and answers:
+        readiness = "COMPLETE"
     badge_cls = {"COMPLETE": "badge-complete", "PARTIAL": "badge-partial"}.get(readiness, "badge-insufficient")
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -79,62 +98,129 @@ def generate_summary_html(
     ]
 
     # -- CIQ Structure --
-    lines.append("<h2>CIQ Structure</h2>")
+    lines.append(f"<details open><summary>CIQ Structure ({len(ciq_sheets)} sheets)</summary>")
     if ciq_sheets:
-        lines.append("<div class='section'><table><tr><th>Sheet</th><th>Columns</th><th>Rows</th></tr>")
         for sname, sdata in ciq_sheets.items():
             headers = sdata.get("columns", sdata.get("headers", []))
+            col_types = sdata.get("column_types", {})
             row_count = sdata.get("row_count", "\u2014")
-            lines.append(
-                f"<tr><td><strong>{sname}</strong></td>"
-                f"<td>{', '.join(str(h) for h in headers)}</td><td>{row_count}</td></tr>"
-            )
-        lines.append("</table></div>")
+            sample_rows = sdata.get("sample_rows", [])
+
+            lines.append(f"<div class='section'><h3>{sname} <span class='meta'>({row_count} rows)</span></h3>")
+            lines.append("<table><tr><th>Column</th><th>Type</th><th>Sample</th></tr>")
+            for h in headers:
+                ctype = col_types.get(h, "text")
+                # Get sample value from first data row
+                sample_val = "\u2014"
+                if sample_rows:
+                    first = sample_rows[0] if isinstance(sample_rows[0], dict) else {}
+                    sv = first.get(h)
+                    if sv is not None:
+                        sample_val = str(sv)[:60]
+                type_badge = {
+                    "number": "badge-complete", "identifier": "badge-cat",
+                    "email": "badge-partial", "ip": "badge-partial",
+                    "list": "badge-partial", "boolean": "badge-cat",
+                    "date": "badge-cat",
+                }.get(ctype, "")
+                type_html = f"<span class='badge {type_badge}'>{ctype}</span>" if type_badge else ctype
+                lines.append(
+                    f"<tr><td><code>{h}</code></td>"
+                    f"<td>{type_html}</td>"
+                    f"<td class='meta'>{sample_val}</td></tr>"
+                )
+            lines.append("</table></div>")
     else:
         lines.append("<div class='section'><p>No CIQ structure available</p></div>")
+    lines.append("</details>")
+
+    # -- CIQ Field Mappings --
+    ciq_field_mappings = cat1_req.get("ciq_field_mappings")
+    if ciq_field_mappings:
+        lines.append("<h2>CIQ Field Mappings</h2><div class='section'>")
+        if isinstance(ciq_field_mappings, list):
+            lines.append("<table><tr><th>CIQ Column</th><th>Node Field</th><th>Description</th></tr>")
+            for mapping in ciq_field_mappings:
+                if not isinstance(mapping, dict):
+                    continue
+                col = _v(mapping, "ciq_column", fallback=_v(mapping, "column"))
+                field = _v(mapping, "node_field", fallback=_v(mapping, "field"))
+                desc = _v(mapping, "description", fallback="")
+                lines.append(f"<tr><td><code>{col}</code></td><td><code>{field}</code></td><td>{desc}</td></tr>")
+            lines.append("</table>")
+        elif isinstance(ciq_field_mappings, dict):
+            lines.append("<table><tr><th>CIQ Column</th><th>Node Field</th></tr>")
+            for col, field in ciq_field_mappings.items():
+                lines.append(f"<tr><td><code>{col}</code></td><td><code>{field}</code></td></tr>")
+            lines.append("</table>")
+        lines.append("</div>")
 
     # -- Nodes --
-    lines.append("<h2>Nodes</h2><div class='section'>")
+    lines.append("<details open><summary>Nodes</summary><div class='section'>")
     nodes = cat1_req.get("nodes", []) or cat1_an.get("nodes_detected", [])
+    gateway = cat1_req.get("access_gateway", {})
+    gateway_enabled = gateway.get("enabled", False) if isinstance(gateway, dict) else False
+    niam_failover = cat1_req.get("niam_failover", False) or cat3_req.get("niam_failover", False)
+    niam_cols = cat1_req.get("niam_columns", [])
     if nodes:
         lines.append(
-            "<table><tr><th>Node</th><th>Role</th><th>SSH User</th>"
-            "<th>Prompt</th><th>Escalation</th></tr>"
+            "<table><tr><th>Node</th><th>SSH User</th>"
+            "<th>Prompt</th><th>Root Escalation</th></tr>"
         )
         for n in nodes:
             if not isinstance(n, dict):
                 continue
+            n_ssh = n.get("ssh", {})
+            prompt = _v(n, 'ssh', 'prompt_pattern', fallback=_v(n, 'prompt_regex'))
+            elevate = n_ssh.get("elevate_to_root", False)
             esc = n.get("escalation", {})
+            esc_method = _v(esc, "method", fallback="none")
+            if elevate or esc_method == "ctrl_p_e":
+                esc_display = '<span class="badge badge-complete">elevate_to_root</span>'
+            elif esc_method and esc_method not in ("none", "\u2014"):
+                esc_display = f"<code>{esc_method}</code>"
+            else:
+                esc_display = "\u2014"
             lines.append(
                 f"<tr><td><strong>{_v(n, 'name')}</strong></td>"
-                f"<td>{_v(n, 'role')}</td>"
                 f"<td><code>{_v(n, 'ssh', 'user')}</code></td>"
-                f"<td><code>{_v(n, 'prompt_regex')}</code></td>"
-                f"<td><code>{_v(esc, 'method')}</code> \u2192 <code>{_v(esc, 'prompt_regex')}</code></td></tr>"
+                f"<td><code>{prompt}</code></td>"
+                f"<td>{esc_display}</td></tr>"
             )
         lines.append("</table>")
 
         # Login workflow
         lines.append("<h3>Login Workflow</h3>")
-        niam_failover = cat1_req.get("niam_failover", False)
-        niam_cols = cat1_req.get("niam_columns", [])
         for n in nodes:
             if not isinstance(n, dict):
                 continue
             name = _v(n, "name")
+            n_ssh = n.get("ssh", {})
             ssh_user = _v(n, "ssh", "user")
             ssh_host = _v(n, "ssh", "host")
-            prompt = _v(n, "prompt_regex")
+            prompt = _v(n, "ssh", "prompt_pattern", fallback=_v(n, "prompt_regex"))
+            elevate = n_ssh.get("elevate_to_root", False)
             esc = n.get("escalation", {})
-            esc_method = _v(esc, "method")
-            esc_prompt = _v(esc, "prompt_regex")
+            esc_method = _v(esc, "method", fallback="none")
 
-            steps = [f"SSH to <code>{ssh_host}</code> as <code>{ssh_user}</code>"]
+            if gateway_enabled:
+                gw_host = _v(gateway, "host")
+                gw_port = _v(gateway, "port")
+                gw_user = _v(gateway, "username", fallback=_v(gateway, "user"))
+                gw_niam_id = _v(gateway, "niam_id_field", fallback="NIAM_NAME")
+                steps = [
+                    f"SSH to NIAM gateway (<code>{gw_host}:{gw_port}</code>) as <code>{gw_user}</code>",
+                    f"Enter node NIAM_ID (from CIQ <code>{gw_niam_id}</code> columns)",
+                    f"Wait for node prompt: <code>{prompt}</code>",
+                ]
+            else:
+                steps = [f"SSH to <code>{ssh_host}</code> as <code>{ssh_user}</code>"]
+                steps.append(f"Wait for prompt: <code>{prompt}</code>")
+
             if niam_failover and niam_cols:
                 steps[0] += f" (NIAM failover: try {' \u2192 '.join(niam_cols)} in order)"
-            steps.append(f"Wait for prompt: <code>{prompt}</code>")
-            if esc_method and esc_method != "\u2014":
-                steps.append(f"Escalate: <code>{esc_method}</code> \u2192 wait for <code>{esc_prompt}</code>")
+            if elevate or esc_method == "ctrl_p_e":
+                steps.append("<code>elevate_to_root: true</code> (auto Ctrl+P+E)")
             lines.append(f"<p><strong>{name}:</strong> " + " \u2192 ".join(steps) + "</p>")
     else:
         lines.append("<p>No nodes detected</p>")
@@ -143,13 +229,62 @@ def generate_summary_html(
         f"<p>Activity type: <strong>{_v(cat1_req, 'activity_type')}</strong> | "
         f"Data sheet: <strong>{_v(cat1_req, 'data_sheet')}</strong></p>"
     )
-    lines.append("</div>")
+    lines.append("</div></details>")
+
+    # -- Access Configuration (Vendor Profile) --
+    lines.append("<details open><summary>Access Configuration</summary><div class='section'>")
+    if gateway_enabled:
+        gw_name = _v(gateway, "name", fallback="NIAM Gateway")
+        gw_host = _v(gateway, "host")
+        gw_port = _v(gateway, "port")
+        gw_auth = _v(gateway, "auth_method", fallback=_v(gateway, "authentication", fallback="password"))
+        lines.append("<h3>Gateway</h3>")
+        lines.append(
+            "<table><tr><th>Name</th><th>Host:Port</th><th>Auth Method</th></tr>"
+            f"<tr><td>{gw_name}</td><td><code>{gw_host}:{gw_port}</code></td>"
+            f"<td>{gw_auth}</td></tr></table>"
+        )
+    else:
+        lines.append("<p>Gateway: <strong>Not enabled</strong> (direct SSH)</p>")
+
+    # SSH defaults from orchestration config
+    ssh_defaults = cat3_req.get("ssh", {})
+    if ssh_defaults:
+        ssh_def_user = _v(ssh_defaults, "user", fallback=_v(ssh_defaults, "default_user", fallback="\u2014"))
+        ssh_def_port = _v(ssh_defaults, "port", fallback=_v(ssh_defaults, "default_port", fallback="22"))
+        ssh_def_kex = _v(ssh_defaults, "kex_algorithms", fallback="default")
+        ssh_def_hka = _v(ssh_defaults, "host_key_algorithms", fallback="default")
+        lines.append("<h3>SSH Defaults</h3>")
+        lines.append(
+            "<table><tr><th>User</th><th>Port</th><th>KEX Algorithms</th><th>Host Key Algorithms</th></tr>"
+            f"<tr><td><code>{ssh_def_user}</code></td><td>{ssh_def_port}</td>"
+            f"<td><code>{ssh_def_kex}</code></td><td><code>{ssh_def_hka}</code></td></tr></table>"
+        )
+
+    # Per-node access method
+    if nodes:
+        lines.append("<h3>Per-Node Access</h3>")
+        lines.append("<table><tr><th>Node</th><th>Access Method</th><th>SSH User</th><th>SSH Host</th></tr>")
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            n_name = _v(n, "name")
+            n_user = _v(n, "ssh", "user")
+            n_host = _v(n, "ssh", "host")
+            access = "Via NIAM Gateway" if gateway_enabled else "Direct SSH"
+            lines.append(
+                f"<tr><td><strong>{n_name}</strong></td><td>{access}</td>"
+                f"<td><code>{n_user}</code></td><td><code>{n_host}</code></td></tr>"
+            )
+        lines.append("</table>")
+    lines.append("</div></details>")
 
     # -- MOP Commands --
     mop_cmds = doc_extracted.get("mop_commands", [])
     llm_cmds = cat2_req.get("commands", []) or cat2_an.get("commands_found", [])
 
-    lines.append("<h2>MOP Commands</h2><div class='section'>")
+    cmd_count = len(mop_cmds) or len(llm_cmds)
+    lines.append(f"<details><summary>MOP Commands ({cmd_count})</summary><div class='section'>")
     if mop_cmds:
         lines.append(f"<p class='meta'>Extracted directly from MOP document \u2014 {len(mop_cmds)} commands</p>")
         by_phase: dict[str, list] = {}
@@ -203,15 +338,30 @@ def generate_summary_html(
             f"<p>LDAP: <code>{_v(ldap, 'host')}:{_v(ldap, 'port')}</code> | "
             f"Bind DN: <code>{_v(ldap, 'bind_dn')}</code></p>"
         )
-    lines.append("</div>")
+    lines.append("</div></details>")
 
     # -- Orchestration --
-    lines.append("<h2>Orchestration</h2><div class='section'>")
+    lines.append("<details open><summary>Orchestration</summary><div class='section'>")
     grouping = cat3_req.get("grouping", {})
+    # Check both cat1 and cat3 for niam_failover
+    niam_failover_val = (
+        cat1_req.get("niam_failover")
+        or cat3_req.get("niam_failover")
+        or cat3_an.get("niam_failover_needed")
+        or False
+    )
+    niam_failover_display = "Yes" if niam_failover_val else "No"
     lines.append(
         f"<p>Grouping: <strong>{_v(grouping, 'column', fallback=_v(cat3_an, 'grouping_column'))}</strong> | "
-        f"NIAM failover: <strong>{_v(cat3_req, 'niam_failover', fallback=_v(cat3_an, 'niam_failover_needed'))}</strong></p>"
+        f"NIAM failover: <strong>{niam_failover_display}</strong></p>"
     )
+    # Show NIAM columns from CIQ structure if available
+    niam_cols_display = cat1_req.get("niam_columns", []) or cat3_req.get("niam_columns", [])
+    if niam_failover_val and niam_cols_display:
+        lines.append(
+            f"<p>NIAM columns (failover order): <strong>"
+            f"{' \u2192 '.join(str(c) for c in niam_cols_display)}</strong></p>"
+        )
 
     phases = cat3_req.get("phases", [])
     if phases:
@@ -223,13 +373,13 @@ def generate_summary_html(
             f"<p>SSH timeout: {_v(ssh, 'connect_timeout_sec', fallback=_v(ssh, 'connect_timeout'))}s | "
             f"KEX: <code>{_v(ssh, 'kex_algorithms', fallback='default')}</code></p>"
         )
-    lines.append("</div>")
+    lines.append("</div></details>")
 
     # -- SSH Prompts & Credentials --
     ssh_prompts = doc_extracted.get("ssh_prompts", doc_extracted.get("prompts", []))
     ssh_creds = doc_extracted.get("ssh_credentials", doc_extracted.get("credentials", []))
     if ssh_prompts or ssh_creds:
-        lines.append("<h2>SSH Details (from session logs)</h2><div class='section'>")
+        lines.append("<details><summary>SSH Details (from session logs)</summary><div class='section'>")
         if ssh_prompts:
             lines.append("<p><strong>Prompts found:</strong></p><ul>")
             for p in ssh_prompts:
@@ -244,12 +394,12 @@ def generate_summary_html(
                     f"Port: <code>{doc_extracted.get('ldap_port', '?')}</code></li>"
                 )
             lines.append("</ul>")
-        lines.append("</div>")
+        lines.append("</div></details>")
 
     # -- XML Samples --
     xml_files = doc_extracted.get("xml_files", [])
     if xml_files:
-        lines.append("<h2>XML Samples (from uploaded files)</h2><div class='section'>")
+        lines.append(f"<details><summary>XML Samples ({len(xml_files)})</summary><div class='section'>")
         for i, xf in enumerate(xml_files, 1):
             if not isinstance(xf, dict):
                 continue
@@ -263,16 +413,21 @@ def generate_summary_html(
             else:
                 content = xf.get("content", "")[:500]
                 lines.append(f"<p><strong>Sample {i}:</strong></p><pre>{content}</pre>")
-        lines.append("</div>")
+        lines.append("</div></details>")
 
     # -- Developer Answers --
     if answers:
-        lines.append("<h2>Developer Answers</h2><div class='section'><table class='answer-row'>")
+        lines.append(f"<details><summary>Developer Answers ({len(answers)})</summary><div class='section'>")
+        lines.append("<table class='answer-row'><tr><th>Question</th><th>Answer</th></tr>")
         for k, v in answers.items():
-            display_key = k.replace("_", " ").replace("q ", "Q")
+            q_text = question_texts.get(k, "")
+            if q_text:
+                display_q = q_text
+            else:
+                display_q = k.replace("_", " ").replace("q ", "Q")
             val_str = str(v) if not isinstance(v, bool) else ("Yes" if v else "No")
-            lines.append(f"<tr><td>{display_key}</td><td>{val_str}</td></tr>")
-        lines.append("</table></div>")
+            lines.append(f"<tr><td>{display_q}</td><td>{val_str}</td></tr>")
+        lines.append("</table></div></details>")
 
     # -- Remaining Gaps --
     all_gaps = []
@@ -281,19 +436,19 @@ def generate_summary_html(
         for gap in analysis.get(cat_key, {}).get("gaps", []):
             all_gaps.append((cat_label, gap))
 
-    lines.append("<h2>Remaining Gaps</h2>")
     if all_gaps:
-        lines.append("<div class='section'>")
+        lines.append(f"<details open><summary>Remaining Gaps ({len(all_gaps)})</summary><div class='section'>")
         for cat_label, gap in all_gaps:
             lines.append(f"<div class='gap-item'><strong>{cat_label}:</strong> {gap}</div>")
-        lines.append("</div>")
+        lines.append("</div></details>")
     else:
-        lines.append("<div class='section'><p style='color:#22c55e'>No remaining gaps \u2014 all requirements gathered.</p></div>")
+        lines.append("<details open><summary>Remaining Gaps</summary>")
+        lines.append("<div class='section'><p style='color:#22c55e'>No remaining gaps \u2014 all requirements gathered.</p></div></details>")
 
     # -- Developer Notes --
     if developer_notes:
-        lines.append("<h2>Developer Notes</h2>")
-        lines.append(f"<div class='section'><pre>{developer_notes}</pre></div>")
+        lines.append("<details><summary>Developer Notes</summary>")
+        lines.append(f"<div class='section'><pre>{developer_notes}</pre></div></details>")
 
     lines.append("</body></html>")
     return "\n".join(lines)
