@@ -141,6 +141,33 @@ def _find_closest_sheet(target: str, sheet_names: list[str]) -> str | None:
     return None
 
 
+def _strip_broken_sections(yaml_text: str) -> str:
+    """Strip non-essential top-level sections that often cause YAML parse errors.
+
+    Keeps only 'sheets:' and 'settings:' sections from the raw text.
+    """
+    import re
+    lines = yaml_text.split("\n")
+    result = []
+    in_safe_section = False
+    # Top-level keys we want to keep
+    safe_keys = {"sheets", "settings"}
+
+    for line in lines:
+        # Detect top-level key (no leading whitespace, ends with colon)
+        m = re.match(r"^(\w[\w_]*):", line)
+        if m:
+            key = m.group(1)
+            in_safe_section = key in safe_keys
+        if in_safe_section:
+            result.append(line)
+
+    stripped = "\n".join(result)
+    if stripped != yaml_text:
+        logger.info("Stripped broken sections from validation-rules, kept: sheets + settings")
+    return stripped
+
+
 def _get_sheet_names(ciq_sheets: dict) -> list[str]:
     return list(ciq_sheets.keys())
 
@@ -184,7 +211,11 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
     if not parsed:
-        return yaml_text
+        # Try stripping problematic top-level sections that LLM often breaks
+        yaml_text = _strip_broken_sections(yaml_text)
+        parsed = parse_yaml(yaml_text)
+        if not parsed:
+            return yaml_text
 
     sheet_names = _get_sheet_names(ciq_sheets)
 
@@ -205,9 +236,14 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
 
     parsed["sheets"] = fixed_sheets
 
-    wb_rules = parsed.get("workbook_rules", [])
-    if isinstance(wb_rules, list):
-        parsed["workbook_rules"] = _fix_workbook_rule_refs(wb_rules, ciq_sheets)
+    # Remove workbook_rules — LLM generates broken structures that cause
+    # both YAML parse failures and JAR deserialization errors
+    parsed.pop("workbook_rules", None)
+
+    # Remove other non-essential LLM-generated sections
+    for key in list(parsed.keys()):
+        if key not in ("sheets", "settings"):
+            parsed.pop(key)
 
     return dump_yaml(parsed)
 
