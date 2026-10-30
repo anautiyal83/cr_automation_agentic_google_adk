@@ -261,6 +261,13 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
     - IP sheet → node niamIDs per Node_Name
     - Data sheet (Profile Modification etc.) → configSequences records
     """
+    # Derive nodeType and activity from UC name
+    import re
+    node_type, activity = uc_name, uc_name
+    m = re.match(r"^([A-Za-z_]+?)_(\d+_.+)$", uc_name)
+    if m:
+        node_type, activity = m.group(1), m.group(2)
+
     sheet_names = _get_sheet_names(ciq_sheets)
 
     # Find key sheets
@@ -312,16 +319,14 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
     if not niam_cols:
         niam_cols = [c for c in ip_cols if "niam" in c.lower()]
 
-    # Build nodes block — one per node type with niamIDs
-    nodes_block = {
-        "_each": f"DISTINCT {ip_sheet}.{node_col} WHERE {ip_sheet}.{zone_col} = $zone AS $node",
-        "node": "$zone",
-    }
+    # Build nodes block — single entry per zone, each node type as a subkey
+    # Production JSON: nodes[0].PGW = {niamID-1,...}, nodes[0].RDS = {niamID-1,...}
+    single_node = {"node": "$zone"}
     for nn in node_names:
         node_niam = {}
         for i, nc in enumerate(niam_cols, 1):
             node_niam[f"niamID-{i}"] = f"{ip_sheet}.{nc} WHERE {ip_sheet}.{node_col} = {nn} AND {ip_sheet}.{zone_col} = $zone"
-        nodes_block[nn] = node_niam
+        single_node[nn] = node_niam
 
     # Build records data block — all columns from data sheet
     records_data = {}
@@ -338,6 +343,10 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
         },
         "data": {
             "schemaVersion": "2",
+            "meta": {
+                "nodeType": node_type,
+                "activity": activity,
+            },
             "nodeGroups": {
                 "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.CRGroup = $cr AS $zone"
                          if "CRGroup" in index_cols
@@ -346,7 +355,7 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
                 "crGroup": "$cr",
                 "email": f"{index_sheet}.Email WHERE {index_sheet}.{zone_col} = $zone"
                          if "Email" in index_cols else "",
-                "nodes": nodes_block,
+                "nodes": [single_node],
                 "configSequences": {
                     "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.{zone_col} = $zone AS $seq",
                     "configSeq": "Step1",
