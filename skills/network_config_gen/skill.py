@@ -46,6 +46,7 @@ class RegenerateFeedback:
 class SkillOutput:
     """Output from network configuration generation."""
     workflow_yaml: str = ""
+    helper_scripts: dict[str, str] = field(default_factory=dict)  # filename → script content
     validation_errors: list[str] = field(default_factory=list)
     status: str = "pending"  # "passed" | "failed" | "pending"
     error: str = ""
