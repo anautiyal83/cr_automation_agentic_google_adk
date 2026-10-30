@@ -74,7 +74,8 @@ class HistorySection:
             ).classes("w-full").props(
                 'flat bordered separator=cell dense '
                 'table-header-class="cr-bg-surface-light cr-text-dim" '
-                'no-data-label="No pipeline runs found"'
+                'no-data-label="No pipeline runs found" '
+                'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
             )
             # Custom body slot for error column — show clickable "Details" link
             self.table.add_slot('body-cell-error', '''
@@ -107,11 +108,13 @@ class HistorySection:
 
             # Pagination row
             with ui.row().classes("w-full items-center justify-center gap-2 py-1"):
-                self.btn_prev = ui.button(icon="chevron_left", on_click=lambda: self._go_page(self._current_page - 1)) \
-                    .props("flat dense round size=sm")
+                self.btn_prev = ui.button(icon="chevron_left",
+                                          on_click=lambda: self._go_page(self._current_page - 1)) \
+                    .props("flat dense round size=sm disable")
                 self.page_label = ui.label("Page 1 / 1").classes("text-caption cr-text-dim")
-                self.btn_next = ui.button(icon="chevron_right", on_click=lambda: self._go_page(self._current_page + 1)) \
-                    .props("flat dense round size=sm")
+                self.btn_next = ui.button(icon="chevron_right",
+                                          on_click=lambda: self._go_page(self._current_page + 1)) \
+                    .props("flat dense round size=sm disable")
                 self.total_label = ui.label("").classes("text-caption cr-text-dim ml-4")
 
             # Detail panel (shown below table when a run is selected)
