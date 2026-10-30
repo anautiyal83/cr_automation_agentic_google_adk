@@ -169,7 +169,43 @@ def fix_workflow(yaml_text: str) -> str:
                 fixed_phases[phase_name] = _fix_phase({"steps": phase_body}, known_nodes)
         parsed["phases"] = fixed_phases
 
+    # --- Add missing nodes referenced in steps ---
+    nodes = parsed.get("nodes", {})
+    if isinstance(nodes, dict):
+        referenced = _collect_referenced_nodes(parsed.get("phases", {}))
+        for node_name in referenced - set(nodes.keys()):
+            if node_name.upper() == "LOCAL":
+                nodes[node_name] = {"type": "local", "plugin": "local"}
+            else:
+                nodes[node_name] = {
+                    "type": "remote", "plugin": "ssh",
+                    "prompt_regex": f"{node_name.lower()}:~ #",
+                    "ssh": {
+                        "host": f"${{node_row.{node_name}.NIAM_NAME1}}",
+                        "port": "22", "user": "oamsys",
+                        "auth": {"password": "${SECRET.password}"},
+                    },
+                }
+            logger.info("Added missing node '%s' referenced in workflow steps", node_name)
+        parsed["nodes"] = nodes
+
     return dump_yaml(parsed)
+
+
+def _collect_referenced_nodes(phases: dict) -> set[str]:
+    """Collect all node names referenced in phase steps."""
+    refs = set()
+    if not isinstance(phases, dict):
+        return refs
+    for phase_body in phases.values():
+        if not isinstance(phase_body, dict):
+            continue
+        for step in phase_body.get("steps", []):
+            if isinstance(step, dict):
+                node = step.get("node", "")
+                if node and not node.startswith("${"):
+                    refs.add(node)
+    return refs
 
 
 def _fix_nodes(nodes: dict) -> dict:
