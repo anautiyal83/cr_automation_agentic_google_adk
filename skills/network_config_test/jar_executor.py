@@ -46,12 +46,17 @@ async def run_mop_test(
 
     # --- Step 1: Run ciq-processor to produce JSON data ---
     if ciq_file_path and Path(ciq_processor_jar).exists():
+        # Sanitize validation-rules for JAR compatibility
+        rules_for_jar = validation_rules_path
+        if rules_for_jar:
+            rules_for_jar = _sanitize_rules_for_jar(rules_for_jar)
+
         ciq_cmd = [
             java, "-jar", str(ciq_processor_jar),
             "--ciq", str(ciq_file_path),
             "--node-type", node_type,
             "--activity", activity,
-            "--rules", str(validation_rules_path or json_output_path),
+            "--rules", str(rules_for_jar or json_output_path),
             "--output", str(json_data_dir),
             "--format", "JSON",
         ]
@@ -72,6 +77,17 @@ async def run_mop_test(
     json_input = str(json_files[0]) if json_files else ""
 
     if not json_input:
+        # Check if ciq-processor reported validation failures
+        ciq_stdout = ciq_result.get("stdout", "") if ciq_file_path else ""
+        if "STATUS=FAILED" in ciq_stdout:
+            logger.warning("CIQ validation failed — no JSON data for MOP generation")
+            return {
+                "success": False,
+                "exit_code": 2,
+                "stdout": ciq_stdout,
+                "stderr": "CIQ validation failed — cannot generate MOP without valid CIQ data. "
+                          "Fix validation-rules.yaml or CIQ data first.",
+            }
         logger.error("No JSON data file produced by ciq-processor")
         return {
             "success": False,
@@ -136,12 +152,13 @@ async def run_execution_test(
     # If no JSON data, run ciq-processor first
     if not json_input and ciq_file_path and Path(ciq_processor_jar).exists():
         json_data_dir.mkdir(parents=True, exist_ok=True)
+        rules_for_jar = _sanitize_rules_for_jar(validation_rules_path) if validation_rules_path else ""
         ciq_cmd = [
             java, "-jar", str(ciq_processor_jar),
             "--ciq", str(ciq_file_path),
             "--node-type", node_type,
             "--activity", activity,
-            "--rules", str(validation_rules_path or json_output_path),
+            "--rules", str(rules_for_jar or json_output_path),
             "--output", str(json_data_dir),
             "--format", "JSON",
         ]
@@ -195,6 +212,84 @@ def _java_cmd(java_home: str | None) -> str:
     if java_home:
         return str(Path(java_home) / "bin" / "java")
     return "java"
+
+
+def _sanitize_rules_for_jar(rules_path: str) -> str:
+    """Strip LLM-generated fields unsupported by the ciq-processor JAR.
+
+    The JAR uses SnakeYAML with strict JavaBean mapping, so any unknown
+    property causes a fatal deserialization error. This function strips:
+    - crossRef: keep only {sheet, column}
+    - Row rules: strip 'message' from one_of, only_one, all_or_none, unique_key
+    - workbook_rules: strip 'message' from subset, superset, etc.
+    Writes a sanitized copy next to the original and returns its path.
+    """
+    from io import StringIO
+    p = Path(rules_path)
+    if not p.exists():
+        return rules_path
+
+    try:
+        from ruamel.yaml import YAML
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        data = yaml.load(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return rules_path
+
+        changed = False
+
+        # --- Sanitize sheet columns ---
+        sheets = data.get("sheets", {})
+        if isinstance(sheets, dict):
+            for sheet_name, sheet_data in sheets.items():
+                if not isinstance(sheet_data, dict):
+                    continue
+
+                # Sanitize column definitions
+                columns = sheet_data.get("columns", {})
+                if isinstance(columns, dict):
+                    for col_name, col_def in columns.items():
+                        if not isinstance(col_def, dict):
+                            continue
+                        cr = col_def.get("crossRef")
+                        if isinstance(cr, dict):
+                            unsupported = [k for k in cr if k not in ("sheet", "column")]
+                            for k in unsupported:
+                                del cr[k]
+                                changed = True
+
+                # Sanitize row rules
+                rules = sheet_data.get("rules", [])
+                if isinstance(rules, list):
+                    for rule in rules:
+                        if isinstance(rule, dict) and "message" in rule:
+                            del rule["message"]
+                            changed = True
+
+        # --- Remove top-level keys the LLM often generates incorrectly ---
+        # Only keep keys the JAR can reliably parse from LLM output
+        _SAFE_TOP_KEYS = {"sheets", "settings"}
+        for key in list(data.keys()):
+            if key not in _SAFE_TOP_KEYS:
+                del data[key]
+                changed = True
+
+        if not changed:
+            return rules_path
+
+        sanitized = p.with_stem(p.stem + "_sanitized")
+        stream = StringIO()
+        yaml.default_flow_style = False
+        yaml.width = 200
+        yaml.dump(data, stream)
+        sanitized.write_text(stream.getvalue(), encoding="utf-8")
+        logger.info("Wrote sanitized validation rules: stripped unsupported fields -> %s", sanitized.name)
+        return str(sanitized)
+
+    except Exception as e:
+        logger.warning("Failed to sanitize rules: %s", e)
+        return rules_path
 
 
 def _parse_uc_name(uc_name: str) -> tuple[str, str]:
