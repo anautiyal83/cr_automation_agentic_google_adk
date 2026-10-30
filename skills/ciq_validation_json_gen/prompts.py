@@ -126,54 +126,104 @@ Generate a json-output.yaml for this CIQ workbook.
 {schema_summary}
 
 === CORRECT _each SYNTAX ===
-IMPORTANT: _each creates an array by iterating. The template fields are SIBLING keys, not list items.
+IMPORTANT: Use "DISTINCT Sheet.Column AS $var" for iterating unique values from a CIQ sheet.
+Template fields are SIBLING keys of _each, NOT list items.
 
-CORRECT (fields are sibling keys of _each):
+CORRECT — iterate distinct node names from CIQ:
+  nodes:
+    _each: "DISTINCT IP.Node_Name WHERE IP.ZONE = $Zone AS $node"
+    name: $node
+    niam: "IP.NIAM_NAME1 WHERE IP.Node_Name = $node AND IP.ZONE = $Zone"
+
+CORRECT — iterate rows from a sheet with filter:
+  subscribers:
+    _each: "Profile Modification WHERE Zone = $Zone"
+    Test_IMSI: Profile Modification.Test IMSI
+
+WRONG — static list _each does NOT support WHERE lookups on siblings:
   nodes:
     _each:
     - PGW
     - RDS
     name: $value
-    niam: IP.NIAM_NAME1 WHERE IP.Node_Name = $value
 
-WRONG (fields as list items under _each — NEVER do this):
+WRONG — list items mixed with mapping keys:
   nodes:
     _each:
     - PGW
-    - RDS
     - name: $value
 
-=== EXAMPLE OUTPUT ===
+=== TARGET JSON STRUCTURE (the JSON the ciq-processor must produce) ===
+The MOP generator and execution engine expect this EXACT structure:
+{{
+  "nodeGroups": [{{
+    "nodeGroup": "<Zone>",
+    "crGroup": "<CRGroup>",
+    "email": "<email>",
+    "nodes": [{{
+      "node": "<Zone>",
+      "<NodeType1>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }},
+      "<NodeType2>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }}
+    }}],
+    "configSequences": [{{
+      "configSeq": "Step1",
+      "records": [{{
+        "data": {{ ... all CIQ columns per subscriber row ... }}
+      }}]
+    }}]
+  }}]
+}}
+
+=== EXAMPLE json-output.yaml (produces the target structure) ===
 output_mode: individual
 segregate_by:
   sheet: Index
   column: ZONE
   as: $Zone
 data:
-  Zone: $Zone
-  CRGroup: Index.CRGroup WHERE Index.ZONE = $Zone
-  nodes:
-    _each:
-    - PGW
-    - RDS
-    name: $value
-    niam_name: IP.NIAM_NAME1 WHERE IP.Node_Name = $value AND IP.ZONE = $Zone
-  subscribers:
-    _each: "Profile Modification WHERE Zone = $Zone"
-    Test_IMSI: Profile Modification.Test IMSI
-    Test_MSISDN: Profile Modification.Test MSISDN
-  configData:
-    tables:
-      Profile Modification:
-        Mandatory Cap: Profile Modification.Mandatory Cap
+  nodeGroups:
+    _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $Zone AS $zoneNode"
+    nodeGroup: $zoneNode
+    crGroup: "Index.CRGroup WHERE Index.ZONE = $zoneNode"
+    email: "Index.Email WHERE Index.ZONE = $zoneNode"
+    nodes:
+      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zoneNode AS $n"
+      node: $n
+      PGW:
+        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
+        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
+        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
+      RDS:
+        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
+        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
+        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
+    configSequences:
+      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zoneNode AS $seq"
+      configSeq: Step1
+      records:
+        _each: "Profile Modification WHERE Zone = $zoneNode"
+        data:
+          Zone: Zone
+          Test IMSI: Test IMSI
+          Test MSISDN: Test MSISDN
+          Mandatory Cap: Mandatory Cap
+          Optional Cap: Optional Cap
+          IFC: IFC
+          VNI: VNI
+          refinmocName: refinmocName
+          refinmtcName: refinmtcName
+          APN: APN
+          Packet Data Network Type: Packet Data Network Type
 
 === INSTRUCTIONS ===
-1. Set output_mode to "individual" (per-zone/group output) or "single".
-2. Configure segregate_by with grouping sheet/column from requirements.
-3. Use EXACT "Sheet Name.Column Name" syntax for all column references.
-4. _each value is a YAML list; template fields are SIBLING KEYS (not list items).
-5. Use WHERE clauses to filter cross-sheet lookups.
-6. Include configData.tables for CIQ columns needed during command execution.
+1. Your json-output.yaml must produce JSON matching the TARGET STRUCTURE above.
+2. Use output_mode: individual with segregate_by on the grouping column (usually Index.ZONE).
+3. Use "DISTINCT Sheet.Column AS $var" for iterating unique values.
+4. Use "Sheet WHERE Col = $var" for row iteration with filter.
+5. Inside a row iteration (_each: Sheet), use plain column names (no Sheet. prefix).
+6. Map ALL CIQ data columns into records[].data — the execution engine needs them.
+7. Node niamID-1/2/3 come from the IP sheet filtered by Node_Name and ZONE.
+8. Use EXACT column names from the CIQ structure.
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """

@@ -15,8 +15,8 @@ ROOT KEYS:
   phases:  Map<String, PhaseBlock>       — ordered map of named phases with steps
 
 NODE DEFINITION (nodes.<name>):
-  type: remote              # always "remote" for SSH nodes
-  plugin: ssh               # always "ssh"
+  type: remote              # "remote" for SSH nodes, "local" for local commands
+  plugin: ssh               # "ssh" for remote, "local" for local
   prompt_regex: '<regex>'   # regex matching the shell prompt after login
   ssh:
     host: '<host or ${var}>'
@@ -141,6 +141,10 @@ nodes:
       kex_algorithms: '+diffie-hellman-group14-sha1'
       host_key_algorithms: '+ssh-rsa'
       connect_timeout_sec: '30'
+
+  LOCAL:
+    type: local
+    plugin: local
 
 phases:
   preNodeHealthCheck:
