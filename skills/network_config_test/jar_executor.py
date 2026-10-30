@@ -259,13 +259,12 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
                                 del cr[k]
                                 changed = True
 
-                # Sanitize row rules
-                rules = sheet_data.get("rules", [])
-                if isinstance(rules, list):
-                    for rule in rules:
-                        if isinstance(rule, dict) and "message" in rule:
-                            del rule["message"]
-                            changed = True
+                # Remove sheet-level row rules entirely — LLM-generated
+                # when/require/forbid structures are often incompatible
+                # with the JAR's strict SnakeYAML deserialization
+                if "rules" in sheet_data:
+                    del sheet_data["rules"]
+                    changed = True
 
         # --- Remove top-level keys the LLM often generates incorrectly ---
         # Only keep keys the JAR can reliably parse from LLM output
