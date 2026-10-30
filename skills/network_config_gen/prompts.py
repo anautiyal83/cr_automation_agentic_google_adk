@@ -149,10 +149,23 @@ nodes:
 phases:
   preNodeHealthCheck:
     name: 'Pre-activity health checks'
+    on_failure: continue
     steps:
       - node: rds_node
+        send: 'su - sdfrun'
+        command_description: 'Switch to sdfrun user on RDS'
+        validation:
+          description: 'User switch to sdfrun'
+          success:
+            criteria:
+              regex: '\\$'
+            message: 'Switched to sdfrun user'
+          failure:
+            message: 'Failed to switch to sdfrun'
+      - node: rds_node
         send: 'sar 1 10'
-        command_description: 'Check CPU utilization on RDS'
+        command_description: 'sar on RDS [Pre-health check: CPU idle percentage]'
+        on_failure: continue
         register:
           - regex: 'Average:.*(?P<idle>\\d+\\.\\d+)\\s*$'
             name: rds_cpu_idle
@@ -164,12 +177,36 @@ phases:
             message: 'CPU idle is healthy on RDS'
           failure:
             message: 'CPU idle is below 90% on RDS'
+      - node: rds_node
+        send: 'ss'
+        command_description: 'ss on RDS [Pre-health check: Remote node status]'
+        on_failure: continue
+        validation:
+          description: 'All remote nodes should show Link UP'
+          success:
+            criteria:
+              regex: 'Link UP'
+            message: 'Remote nodes healthy'
+          failure:
+            message: 'Some remote nodes not UP'
+      - node: rds_node
+        send: 'ndsLoadStats'
+        command_description: 'ndsLoadStats on RDS [Pre-health check: NDS load statistics]'
+        on_failure: continue
+        validation:
+          description: 'Updates/Queries Rejected should be 0'
+          success:
+            criteria:
+              regex: 'Updates Rejected:\\s*0.*Queries Rejected:\\s*0'
+            message: 'NDS load healthy'
+          failure:
+            message: 'NDS load has rejected operations'
 
-  activity:
+  activity_configuration:
     name: 'Main subscriber modification activity'
     steps:
       - node: rds_node
-        send: "ldapsearch -x -h localhost -p 16611 -D 'cn=pgwAdminUser' -w 8123Admi -b \\"imsi=${{configData.tables.Profile Modification.Test IMSI}},dc=IMSI,dc=C-NTDB\\" -a always -s sub objectclass=*"
+        send: "ldapsearch -x -h localhost -p 16611 -b \\"imsi=${{configData.tables.'Profile Modification'.'Test IMSI'}},dc=IMSI,dc=C-NTDB\\" objectclass=*"
         command_description: 'Query subscriber profile before modification'
         register:
           - regex: '(?P<profile_data>[\\s\\S]+)'
@@ -185,10 +222,12 @@ phases:
 
   postNodeHealthCheck:
     name: 'Post-activity health checks'
+    on_failure: continue
     steps:
       - node: rds_node
         send: 'sar 1 10'
-        command_description: 'Check CPU utilization on RDS (post-activity)'
+        command_description: 'sar on RDS [Post-health check: CPU idle percentage]'
+        on_failure: continue
         validation:
           description: 'CPU idle should be >= 90%'
           success:
@@ -200,14 +239,38 @@ phases:
 
 === INSTRUCTIONS ===
 1. Define nodes for each network element. Use ne_id for NIAM access, elevate_to_root for Ctrl+P+E.
-2. Create phases as a MAP: {phases}
+2. Phase names MUST be exactly: preNodeHealthCheck, activity_configuration, postNodeHealthCheck
 3. For each phase, list steps using "send" and "command_description".
 4. Validation uses success/failure branches with criteria inside.
 5. Register outputs with regex + name format.
 6. Use ${{configData.tables...}} for CIQ values, ${{nodeGroups...}} for node properties.
 7. Do NOT generate NIAM login commands or Ctrl+P+E commands — framework handles these via node config.
-8. Do NOT generate "su" commands — configure the target user on the node or use expect_reply.
+8. Do NOT generate "su" commands as inline wrappers (e.g. su - sdfrun -c "cmd").
+   Instead: first step does "su - sdfrun" to switch user, subsequent steps run commands directly.
 9. Quote all YAML values containing colons, brackets, or special characters.
+
+=== PHASE BEHAVIOR RULES ===
+- preNodeHealthCheck: any command failure is NON-BLOCKING — the step fails but execution continues
+  to remaining health check commands. Phase status is "failed" if any step failed,
+  but the next phase (activity_configuration) STILL executes.
+- activity_configuration: command failures BLOCK — stop execution on first failure.
+- postNodeHealthCheck: same as preNodeHealthCheck — non-blocking per command, but if any step
+  fails the phase status is "failed" and no further phases execute.
+
+=== LOCAL COMMANDS (Python scripts) ===
+- The pipeline framework creates Python scripts (like create_xml.py) at runtime.
+  Do NOT reference scripts that don't exist — the framework handles XML generation.
+- add_xml_wrapper.py is NOT needed — the create_xml.py script handles wrapper/header/footer.
+- For XML modification UCs: create_xml.py generates ONE XML per subscriber record using CIQ data.
+  Multiple XMLs are created automatically when there are multiple records.
+- Use node: LOCAL for local commands (Python scripts, file operations).
+
+=== MOP HEADER VARIABLES ===
+The MOP report needs these values. Set them in the workflow or they will be null:
+  ${{env.NODE_TYPE}}          — e.g. "PGW_RDS" (from requirements)
+  ${{env.ACTIVITY}}           — e.g. "1058_IFC_CAPABILITY_MODIFICATION"
+  ${{env.CR_GROUP}}           — e.g. from ${{nodeGroups.crGroup}} or Index sheet
+  ${{env.TARGET_NODES}}       — e.g. "PGW, RDS"
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
