@@ -154,21 +154,24 @@ WRONG — list items mixed with mapping keys:
     - name: $value
 
 === TARGET JSON STRUCTURE (the JSON the ciq-processor must produce) ===
-The MOP generator and execution engine expect this EXACT structure:
+The MOP generator and execution engine expect this EXACT hierarchy:
 {{
-  "nodeGroups": [{{
-    "nodeGroup": "<Zone>",
+  "crGroups": [{{
     "crGroup": "<CRGroup>",
-    "email": "<email>",
-    "nodes": [{{
-      "node": "<Zone>",
-      "<NodeType1>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }},
-      "<NodeType2>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }}
-    }}],
-    "configSequences": [{{
-      "configSeq": "Step1",
-      "records": [{{
-        "data": {{ ... all CIQ columns per subscriber row ... }}
+    "nodeGroups": [{{
+      "nodeGroup": "<Zone>",
+      "crGroup": "<CRGroup>",
+      "email": "<email>",
+      "nodes": [{{
+        "node": "<Zone>",
+        "<NodeType1>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }},
+        "<NodeType2>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }}
+      }}],
+      "configSequences": [{{
+        "configSeq": "Step1",
+        "records": [{{
+          "data": {{ ... all CIQ columns per subscriber row ... }}
+        }}]
       }}]
     }}]
   }}]
@@ -178,42 +181,45 @@ The MOP generator and execution engine expect this EXACT structure:
 output_mode: individual
 segregate_by:
   sheet: Index
-  column: ZONE
-  as: $Zone
+  column: CRGroup
+  as: $cr
 data:
-  nodeGroups:
-    _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $Zone AS $zoneNode"
-    nodeGroup: $zoneNode
-    crGroup: "Index.CRGroup WHERE Index.ZONE = $zoneNode"
-    email: "Index.Email WHERE Index.ZONE = $zoneNode"
-    nodes:
-      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zoneNode AS $n"
-      node: $n
-      PGW:
-        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
-        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
-        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = PGW AND IP.ZONE = $zoneNode"
-      RDS:
-        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
-        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
-        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = RDS AND IP.ZONE = $zoneNode"
-    configSequences:
-      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zoneNode AS $seq"
-      configSeq: Step1
-      records:
-        _each: "Profile Modification WHERE Zone = $zoneNode"
-        data:
-          Zone: Zone
-          Test IMSI: Test IMSI
-          Test MSISDN: Test MSISDN
-          Mandatory Cap: Mandatory Cap
-          Optional Cap: Optional Cap
-          IFC: IFC
-          VNI: VNI
-          refinmocName: refinmocName
-          refinmtcName: refinmtcName
-          APN: APN
-          Packet Data Network Type: Packet Data Network Type
+  crGroups:
+    _each: "DISTINCT Index.CRGroup AS $crg"
+    crGroup: $crg
+    nodeGroups:
+      _each: "DISTINCT Index.ZONE WHERE Index.CRGroup = $crg AS $zone"
+      nodeGroup: $zone
+      crGroup: $crg
+      email: "Index.Email WHERE Index.ZONE = $zone AND Index.CRGroup = $crg"
+      nodes:
+        _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zone AS $n"
+        node: $zone
+        PGW:
+          niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+          niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+          niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+        RDS:
+          niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+          niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+          niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+      configSequences:
+        _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zone AS $seq"
+        configSeq: Step1
+        records:
+          _each: "Profile Modification WHERE Zone = $zone"
+          data:
+            Zone: Zone
+            Test IMSI: Test IMSI
+            Test MSISDN: Test MSISDN
+            Mandatory Cap: Mandatory Cap
+            Optional Cap: Optional Cap
+            IFC: IFC
+            VNI: VNI
+            refinmocName: refinmocName
+            refinmtcName: refinmtcName
+            APN: APN
+            Packet Data Network Type: Packet Data Network Type
 
 === INSTRUCTIONS ===
 1. Your json-output.yaml must produce JSON matching the TARGET STRUCTURE above.
