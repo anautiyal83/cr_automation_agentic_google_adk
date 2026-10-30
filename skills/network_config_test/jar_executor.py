@@ -99,12 +99,14 @@ async def run_mop_test(
 
     # --- Step 2: Run cli-automation generate ---
     mop_output = str(mop_dir / f"{uc_name}_mop.html")
+    # Use sanitized rules for schema too (same stripping needed)
+    schema_path = rules_for_jar or validation_rules_path or json_output_path
     cmd = [
         java, "-jar", str(cli_jar),
         "generate",
         "--json", json_input,
-        "--schema", str(validation_rules_path or json_output_path),
-        "--yaml", uc_name,
+        "--schema", str(schema_path),
+        "--yaml", str(workflow_path),
         "--output", mop_output,
     ]
     if html_template_path and Path(html_template_path).exists():
@@ -142,6 +144,9 @@ async def run_execution_test(
     uc_name = Path(workflow_path).stem
     node_type, activity = _parse_uc_name(uc_name)
 
+    # Sanitize rules for JAR compatibility
+    sanitized_rules = _sanitize_rules_for_jar(validation_rules_path) if validation_rules_path else ""
+
     # Find JSON data from earlier ciq-processor run
     json_input = ""
     if json_data_dir.exists():
@@ -152,13 +157,12 @@ async def run_execution_test(
     # If no JSON data, run ciq-processor first
     if not json_input and ciq_file_path and Path(ciq_processor_jar).exists():
         json_data_dir.mkdir(parents=True, exist_ok=True)
-        rules_for_jar = _sanitize_rules_for_jar(validation_rules_path) if validation_rules_path else ""
         ciq_cmd = [
             java, "-jar", str(ciq_processor_jar),
             "--ciq", str(ciq_file_path),
             "--node-type", node_type,
             "--activity", activity,
-            "--rules", str(rules_for_jar or json_output_path),
+            "--rules", str(sanitized_rules or json_output_path),
             "--output", str(json_data_dir),
             "--format", "JSON",
         ]
@@ -179,12 +183,13 @@ async def run_execution_test(
             "stderr": "No JSON data file for execution test.",
         }
 
+    schema_path = sanitized_rules or validation_rules_path or json_output_path
     cmd = [
         java, "-jar", str(cli_jar),
         "execute",
         "--json", json_input,
-        "--schema", str(validation_rules_path or json_output_path),
-        "--yaml", uc_name,
+        "--schema", str(schema_path),
+        "--yaml", str(workflow_path),
         "--node", node_type,
         "--output-dir", str(exec_dir),
     ]
