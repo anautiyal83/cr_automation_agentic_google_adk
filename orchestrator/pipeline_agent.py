@@ -327,8 +327,22 @@ class PipelineAgent(BaseAgent):
         }
 
         primary, extras = _ARTIFACT_MAP.get(step_num, ("", []))
-        primary_path = str(Path(run_dir) / primary) if primary else ""
-        extra_paths = [str(Path(run_dir) / e) for e in extras if (Path(run_dir) / e).exists()]
+        rd = Path(run_dir)
+        primary_path = str(rd / primary) if primary and (rd / primary).exists() else ""
+        extra_paths = [str(rd / e) for e in extras if (rd / e).exists()]
+
+        # For step 7: also include MOP output HTML from mop_output/ subdir
+        if step_num == 7:
+            mop_dir = rd / "mop_output"
+            if mop_dir.exists():
+                for f in mop_dir.glob("*.html"):
+                    extra_paths.append(str(f))
+
+        # Fallback: if primary not found, search for any matching file
+        if not primary_path and primary:
+            candidates = list(rd.glob(f"*{primary.split('_', 1)[-1] if '_' in primary else primary}"))
+            if candidates:
+                primary_path = str(candidates[0])
 
         return primary_path, extra_paths
 
