@@ -9,16 +9,22 @@ from nicegui import ui
 AVAILABLE_MODELS = [
     # Tier 1: Best value (paid)
     {"id": "openrouter/google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier": "Best Value", "cost": "$0.15/$0.60"},
-    {"id": "openrouter/deepseek/deepseek-chat", "label": "DeepSeek V3", "tier": "Best Value", "cost": "$0.14/$0.28"},
     {"id": "openrouter/google/gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite", "tier": "Best Value", "cost": "$0.075/$0.30"},
+    {"id": "openrouter/deepseek/deepseek-chat", "label": "DeepSeek V3 0324", "tier": "Best Value", "cost": "$0.14/$0.28"},
+    {"id": "openrouter/deepseek/deepseek-r1", "label": "DeepSeek R1", "tier": "Best Value", "cost": "$0.55/$2.19"},
+    {"id": "openrouter/qwen/qwen3-235b-a22b", "label": "Qwen3 235B", "tier": "Best Value", "cost": "$0.20/$0.60"},
     # Tier 2: Premium
     {"id": "openrouter/anthropic/claude-sonnet-4", "label": "Claude Sonnet 4", "tier": "Premium", "cost": "$3/$15"},
+    {"id": "openrouter/anthropic/claude-haiku-4", "label": "Claude Haiku 4", "tier": "Premium", "cost": "$0.80/$4"},
     {"id": "openrouter/google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "tier": "Premium", "cost": "$1.25/$10"},
     {"id": "openrouter/openai/gpt-4o", "label": "GPT-4o", "tier": "Premium", "cost": "$2.50/$10"},
+    {"id": "openrouter/openai/gpt-4.1-mini", "label": "GPT-4.1 Mini", "tier": "Premium", "cost": "$0.40/$1.60"},
     # Tier 3: Free (rate limited)
     {"id": "openrouter/google/gemini-2.5-flash:free", "label": "Gemini 2.5 Flash (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/meta-llama/llama-3.3-70b-instruct:free", "label": "Llama 3.3 70B (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/deepseek/deepseek-chat:free", "label": "DeepSeek V3 (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/google/gemini-2.5-flash-lite:free", "label": "Gemini 2.5 Flash Lite (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/meta-llama/llama-4-maverick:free", "label": "Llama 4 Maverick (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/qwen/qwen3-235b-a22b:free", "label": "Qwen3 235B (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/deepseek/deepseek-r1:free", "label": "DeepSeek R1 (Free)", "tier": "Free", "cost": "Free"},
 ]
 
 MODEL_OPTIONS = {m["id"]: f'{m["label"]}  —  {m["cost"]}' for m in AVAILABLE_MODELS}
