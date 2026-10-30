@@ -140,6 +140,7 @@ class NetworkSimulatorSetupSkill:
 
         # Validate
         errors = self._validate(config_yaml)
+        yaml_valid = not any("Invalid YAML" in e for e in errors)
 
         # --- Phase 3: Write files and start simulator ---
         config_dir = ""
@@ -151,7 +152,11 @@ class NetworkSimulatorSetupSkill:
                 inp.run_dir, inp.uc_name, config_yaml, response_configs
             )
 
-            if inp.auto_start:
+            if inp.auto_start and not yaml_valid:
+                logger.error("Skipping simulator start — YAML is invalid")
+                errors.append("Simulator not started: generated config has invalid YAML syntax")
+
+            elif inp.auto_start:
                 try:
                     simulator = await start_simulator(
                         mockwire_jar=inp.mockwire_jar,

@@ -53,11 +53,15 @@ class NetworkConfigMopQAAgent(BaseAgent):
             uc_name=uc_name,
             workflow_yaml=artifacts.get("workflow_yaml", ""),
             json_output_yaml=artifacts.get("json_template_yaml", ""),
+            validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
             ciq_file_path=state.get("ciq_file_path", ""),
             requirements=requirements,
             run_dir=run_dir,
             cli_automation_jar=config.get("cli_automation_jar",
                 "lib/cli-automation-standalone.jar"),
+            ciq_processor_jar=config.get("ciq_processor_jar",
+                "lib/ciq-processor-1.0.3-cli.jar"),
+            html_template_path=config.get("mop_template", ""),
             java_home=config.get("java_home"),
         )
 

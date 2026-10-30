@@ -40,11 +40,14 @@ class SkillInput:
     workflow_yaml: str = ""
     simulator_config_yaml: str = ""
     json_output_yaml: str = ""
+    validation_rules_yaml: str = ""
     ciq_file_path: str = ""
     requirements: dict = field(default_factory=dict)
     run_dir: str = ""
     cli_automation_jar: str = "lib/cli-automation-standalone.jar"
+    ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar"
     mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
+    html_template_path: str = ""
     java_home: str | None = None
     simulator_host: str = "localhost"
     simulator_port: int = 2222
@@ -109,12 +112,21 @@ class NetworkConfigTestSkill:
             except Exception as e:
                 logger.error("TC generation failed: %s", e, exc_info=True)
 
+        # Write validation-rules if provided
+        rules_path = ""
+        if inp.validation_rules_yaml:
+            rules_path = write_yaml_to_file(inp.validation_rules_yaml, inp.run_dir,
+                                            f"{inp.uc_name}_validation-rules.yaml")
+
         # Phase 2: MOP generation test
         mop_scenarios: list[MopScenario] = []
         if wf_path and json_path and inp.ciq_file_path:
             mop_result = await run_mop_test(
                 cli_jar, wf_path, json_path, inp.ciq_file_path,
                 inp.run_dir, inp.java_home,
+                ciq_processor_jar=inp.ciq_processor_jar,
+                validation_rules_path=rules_path,
+                html_template_path=inp.html_template_path,
             )
             mop_scenarios = parse_mop_results(inp.run_dir, inp.uc_name)
             logger.info("Phase 2: MOP test — %d scenarios, jar_success=%s",
@@ -127,6 +139,8 @@ class NetworkConfigTestSkill:
                 cli_jar, wf_path, json_path, inp.ciq_file_path,
                 inp.run_dir, inp.simulator_host, inp.simulator_port,
                 inp.java_home,
+                ciq_processor_jar=inp.ciq_processor_jar,
+                validation_rules_path=rules_path,
             )
             command_results = parse_execution_results(inp.run_dir)
             logger.info("Phase 3: Execution test — %d commands, jar_success=%s",
@@ -190,9 +204,18 @@ class NetworkConfigTestSkill:
         if not wf_path or not json_path or not inp.ciq_file_path:
             return SkillOutput(status="error", error="workflow_yaml, json_output_yaml, and ciq_file_path are required")
 
+        # Write validation-rules.yaml if provided
+        rules_path = ""
+        if inp.validation_rules_yaml:
+            rules_path = write_yaml_to_file(inp.validation_rules_yaml, inp.run_dir,
+                                            f"{inp.uc_name}_validation-rules.yaml")
+
         mop_result = await run_mop_test(
             cli_jar, wf_path, json_path, inp.ciq_file_path,
             inp.run_dir, inp.java_home,
+            ciq_processor_jar=inp.ciq_processor_jar,
+            validation_rules_path=rules_path,
+            html_template_path=inp.html_template_path,
         )
         mop_scenarios = parse_mop_results(inp.run_dir, inp.uc_name)
 
@@ -212,6 +235,7 @@ class NetworkConfigTestSkill:
         ]
 
         if not results:
+            error_detail = mop_result.get("stderr", "") or f"exit {mop_result['exit_code']}"
             results = [TestCaseResult(
                 id="MOP_BASE",
                 description="MOP generation JAR execution",
@@ -219,8 +243,9 @@ class NetworkConfigTestSkill:
                 severity="critical",
                 test_type="mop_test",
                 expected_outcome="JAR exits successfully",
-                actual_outcome="Success" if mop_result["success"] else f"Failed: exit {mop_result['exit_code']}",
+                actual_outcome="Success" if mop_result["success"] else f"Failed: {error_detail[:120]}",
                 status="PASS" if mop_result["success"] else "FAIL",
+                errors=[error_detail[:300]] if not mop_result["success"] else [],
             )]
 
         total = len(results)

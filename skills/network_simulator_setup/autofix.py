@@ -60,10 +60,47 @@ def dump_yaml(data: dict) -> str:
     return stream.getvalue()
 
 
+def _repair_truncated_yaml(yaml_text: str) -> str:
+    """Attempt to repair YAML truncated by LLM token limits.
+
+    Fixes:
+    - Unclosed quotes (single or double)
+    - Incomplete list items
+    - Missing trailing newline
+    """
+    lines = yaml_text.split("\n")
+
+    # Remove trailing incomplete lines (no colon, not a valid list item)
+    while lines:
+        last = lines[-1].rstrip()
+        if not last:
+            lines.pop()
+            continue
+        # Check for unclosed quotes on the last line
+        for q in ("'", '"'):
+            count = last.count(q)
+            if count % 2 != 0:
+                # Try closing the quote
+                lines[-1] = last + q
+                logger.info("Repaired unclosed %s quote on last line", q)
+                return "\n".join(lines)
+        # If last line looks incomplete (no value after colon, or bare text)
+        stripped = last.strip()
+        if stripped and not stripped.endswith(":") and ":" not in stripped and not stripped.startswith("-"):
+            # Likely a truncated value — remove the line
+            logger.info("Removed truncated line: %s", stripped[:60])
+            lines.pop()
+            continue
+        break
+
+    return "\n".join(lines)
+
+
 def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None) -> str:
     """Apply auto-fix rules to simulator config YAML.
 
     Handles:
+    - Truncated YAML repair (unclosed quotes, incomplete lines)
     - List-at-root → extract first map element
     - hosts/servers nested format → flatten to MockWire format
     - Port collisions
@@ -76,7 +113,12 @@ def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
     if parsed is None:
-        return yaml_text
+        # Try repairing truncated YAML
+        yaml_text = _repair_truncated_yaml(yaml_text)
+        parsed = parse_yaml(yaml_text)
+        if parsed is None:
+            logger.warning("YAML repair failed — returning raw text")
+            return yaml_text
 
     # Fix: if root is a list, extract the first dict element
     if isinstance(parsed, list):

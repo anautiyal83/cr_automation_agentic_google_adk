@@ -146,9 +146,9 @@ async def start_simulator(
         await asyncio.wait_for(_wait_for_ready(sim, sim._ports), timeout=timeout)
         logger.info("MockWire ready: %d processes on ports %s", len(sim._processes), sim._ports)
     except asyncio.TimeoutError:
-        stderr = await _collect_stderr(sim)
+        stderr = await _collect_output(sim)
         await sim.stop()
-        raise RuntimeError(f"MockWire failed to start within {timeout}s. stderr: {stderr[:500]}")
+        raise RuntimeError(f"MockWire failed to start within {timeout}s. Output: {stderr[:500]}")
 
     return sim
 
@@ -160,8 +160,8 @@ async def _wait_for_ready(sim: SimulatorProcess, ports: list[int]) -> None:
     # Check if any process crashed immediately
     for proc in sim._processes:
         if proc.returncode is not None:
-            stderr = await _collect_stderr(sim)
-            raise RuntimeError(f"Simulator exited immediately (code={proc.returncode}): {stderr[:300]}")
+            stderr = await _collect_output(sim)
+            raise RuntimeError(f"Simulator exited immediately (code={proc.returncode}): {stderr[:500]}")
 
     if not ports:
         await asyncio.sleep(2)
@@ -171,8 +171,8 @@ async def _wait_for_ready(sim: SimulatorProcess, ports: list[int]) -> None:
         # Check for crashes
         for proc in sim._processes:
             if proc.returncode is not None:
-                stderr = await _collect_stderr(sim)
-                raise RuntimeError(f"Simulator exited during startup (code={proc.returncode}): {stderr[:300]}")
+                stderr = await _collect_output(sim)
+                raise RuntimeError(f"Simulator exited during startup (code={proc.returncode}): {stderr[:500]}")
 
         all_ready = True
         for port in ports:
@@ -191,15 +191,20 @@ async def _wait_for_ready(sim: SimulatorProcess, ports: list[int]) -> None:
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
 
-async def _collect_stderr(sim: SimulatorProcess) -> str:
-    """Collect stderr from all processes."""
+async def _collect_output(sim: SimulatorProcess) -> str:
+    """Collect stdout + stderr from all processes for diagnostics."""
     parts = []
     for proc in sim._processes:
-        try:
-            stderr_bytes = await asyncio.wait_for(proc.stderr.read(2000), timeout=2)
-            parts.append(stderr_bytes.decode("utf-8", errors="replace"))
-        except Exception:
-            pass
+        for stream, label in [(proc.stdout, "stdout"), (proc.stderr, "stderr")]:
+            if not stream:
+                continue
+            try:
+                data = await asyncio.wait_for(stream.read(4000), timeout=2)
+                text = data.decode("utf-8", errors="replace").strip()
+                if text:
+                    parts.append(f"[{label}] {text}")
+            except Exception:
+                pass
     return "\n".join(parts)
 
 
