@@ -494,13 +494,13 @@ class ProgressSection:
                     "background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3)"
                 ))
             elif has_failures:
-                # LLM generation step had validation issues but produced output
+                # Generation step failed — block progression
                 self._update_step_visual(event.step_number, "failed")
-                self.status_icon.name = "warning"
-                self.status_icon.classes(replace="cr-text-warning")
-                self.status_detail.text = "Generated artifact has validation warnings — review below, then continue or re-run."
+                self.status_icon.name = "error_outline"
+                self.status_icon.classes(replace="cr-text-error")
+                self.status_detail.text = "Generation failed — re-run to fix, or cancel the pipeline."
                 self.banner.style(replace=(
-                    "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
+                    "background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3)"
                 ))
             else:
                 self._update_step_visual(event.step_number, "passed")
@@ -669,10 +669,16 @@ class ProgressSection:
         self.ms_continue_btn.props("color=positive")
         self.ms_rerun_btn.set_visibility(True)
 
-        # For test steps with failures: disable Continue, show Skip & Continue
-        if has_failures and step_num in (5, 7, 9):
-            self.ms_continue_btn.set_visibility(False)
-            self.ms_skip_btn.set_visibility(True)
+        # On failure: block Continue for all step types
+        if has_failures:
+            if step_num in (5, 7, 9):
+                # Test step failure — allow skip as workaround
+                self.ms_continue_btn.set_visibility(False)
+                self.ms_skip_btn.set_visibility(True)
+            else:
+                # Generation step failure — must re-run or cancel, no skip
+                self.ms_continue_btn.set_visibility(False)
+                self.ms_skip_btn.set_visibility(False)
         else:
             self.ms_continue_btn.set_visibility(True)
             self.ms_skip_btn.set_visibility(False)
