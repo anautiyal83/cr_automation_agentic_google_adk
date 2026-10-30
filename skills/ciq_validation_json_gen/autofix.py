@@ -337,6 +337,7 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
             "as": "$cr",
         },
         "data": {
+            "schemaVersion": "2",
             "nodeGroups": {
                 "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.CRGroup = $cr AS $zone"
                          if "CRGroup" in index_cols
