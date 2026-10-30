@@ -1,10 +1,13 @@
-"""Run history section — filterable table with re-run, view, and detail support."""
+"""Run history section — filterable, paginated table with re-run, view, cleanup, and detail support."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from uuid import UUID
 
 from nicegui import ui
+
+PAGE_SIZE = 10
 
 
 class HistorySection:
@@ -12,6 +15,9 @@ class HistorySection:
         self.runner = runner
         self.on_rerun = on_rerun  # callback(run) -> navigate to progress
         self.on_view_outputs = on_view_outputs  # callback(run_id) -> navigate to outputs
+        self._current_page = 1
+        self._total_pages = 1
+        self._all_filtered_runs: list[dict] = []
         self._build_ui()
         # Auto-load on init
         if runner:
@@ -30,18 +36,22 @@ class HistorySection:
                 with ui.row().classes("w-full items-end gap-3"):
                     self.node_filter = ui.select(
                         {"": "All Nodes"}, value="", label="Node Type",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
                     self.activity_filter = ui.select(
                         {"": "All Activities"}, value="", label="Activity",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
                     self.status_filter = ui.select(
                         {"all": "All Statuses", "completed": "Completed",
                          "failed": "Failed", "cancelled": "Cancelled", "running": "Running"},
                         value="all", label="Status",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
+                    ui.space()
+                    ui.button("Cleanup Old Runs", icon="delete_sweep",
+                              on_click=self._confirm_cleanup) \
+                        .props("flat dense no-caps color=red-6 size=sm")
 
             # Results table
             self.table = ui.table(
@@ -94,6 +104,15 @@ class HistorySection:
             self.table.on('rerun', self._on_rerun)
             self.table.on('view', self._on_view)
             self.table.on('details', self._on_details)
+
+            # Pagination row
+            with ui.row().classes("w-full items-center justify-center gap-2 py-1"):
+                self.btn_prev = ui.button(icon="chevron_left", on_click=lambda: self._go_page(self._current_page - 1)) \
+                    .props("flat dense round size=sm")
+                self.page_label = ui.label("Page 1 / 1").classes("text-caption cr-text-dim")
+                self.btn_next = ui.button(icon="chevron_right", on_click=lambda: self._go_page(self._current_page + 1)) \
+                    .props("flat dense round size=sm")
+                self.total_label = ui.label("").classes("text-caption cr-text-dim ml-4")
 
             # Detail panel (shown below table when a run is selected)
             self.detail_panel = ui.card().classes("w-full p-4 cr-card-inner")
@@ -187,8 +206,29 @@ class HistorySection:
             r["status"] = str(r.get("status") or "").replace("PipelineStatus.", "")
             r["has_error"] = bool(r.get("error_summary"))
             r["error_summary"] = r.get("error_summary") or ""
-        self.table.rows = runs
-        self.empty_state.set_visibility(len(runs) == 0)
+
+        # Paginate
+        self._all_filtered_runs = runs
+        total = len(runs)
+        self._total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        self._current_page = min(self._current_page, self._total_pages)
+        start = (self._current_page - 1) * PAGE_SIZE
+        page_runs = runs[start:start + PAGE_SIZE]
+
+        self.table.rows = page_runs
+        self.empty_state.set_visibility(total == 0)
+
+        # Update pagination controls
+        self.page_label.text = f"Page {self._current_page} / {self._total_pages}"
+        self.total_label.text = f"({total} runs)"
+        if self._current_page <= 1:
+            self.btn_prev.props("disable")
+        else:
+            self.btn_prev.props(remove="disable")
+        if self._current_page >= self._total_pages:
+            self.btn_next.props("disable")
+        else:
+            self.btn_next.props(remove="disable")
 
     async def _on_details(self, e):
         row = e.args
@@ -368,6 +408,97 @@ class HistorySection:
                 await self.on_rerun(new_run_id)
         except Exception as exc:
             ui.notify(f"Re-run failed: {exc}", type="negative")
+
+    async def _go_page(self, page: int):
+        """Navigate to a specific page and refresh."""
+        self._current_page = max(1, page)
+        await self._refresh()
+
+    async def _confirm_cleanup(self):
+        """Show confirmation dialog for artifact cleanup."""
+        if not self.runner or not self.runner._db:
+            ui.notify("No database available", type="warning")
+            return
+
+        db = self.runner._db
+        try:
+            rows = await db.execute(
+                "SELECT COUNT(*) as cnt FROM pipeline_runs WHERE status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE')", ()
+            )
+            total = rows[0]["cnt"] if rows else 0
+        except Exception:
+            total = 0
+
+        dialog = ui.dialog()
+        with dialog, ui.card().classes("p-4").style("min-width: 400px"):
+            ui.label("Cleanup Old Runs").classes("text-subtitle1 font-bold")
+            ui.separator()
+            ui.label(f"Found {total} completed/failed/cancelled runs.").classes("text-body2 my-2")
+            keep_input = ui.number("Keep last N runs:", value=5, min=0, max=100, step=1) \
+                .props("outlined dense").classes("w-full")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+
+                async def do_cleanup():
+                    keep = int(keep_input.value or 5)
+                    dialog.close()
+                    await self._cleanup_runs(keep)
+
+                ui.button("Delete", icon="delete", on_click=do_cleanup) \
+                    .props("unelevated no-caps color=negative")
+        dialog.open()
+
+    async def _cleanup_runs(self, keep: int = 5):
+        """Delete old runs from DB and disk, keeping the last N."""
+        if not self.runner or not self.runner._db:
+            return
+
+        db = self.runner._db
+        try:
+            # Get runs to delete (keep the most recent N)
+            runs = await db.execute(
+                "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r "
+                "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                "ORDER BY r.started_at DESC", ()
+            )
+        except Exception:
+            ui.notify("Failed to query runs", type="negative")
+            return
+
+        if len(runs) <= keep:
+            ui.notify(f"Only {len(runs)} runs found — nothing to clean up", type="info")
+            return
+
+        to_delete = runs[keep:]
+        deleted_count = 0
+        disk_cleaned = 0
+
+        for run in to_delete:
+            run_id = run["id"]
+            try:
+                # Delete disk artifacts
+                run_dir = Path("data/runs") / run_id
+                if run_dir.exists():
+                    shutil.rmtree(run_dir, ignore_errors=True)
+                    disk_cleaned += 1
+
+                # Delete from DB tables
+                for table in ("step_results", "generated_configs"):
+                    try:
+                        await db.execute_insert(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+                    except Exception:
+                        pass
+                await db.execute_insert("DELETE FROM pipeline_runs WHERE id = ?", (run_id,))
+                deleted_count += 1
+            except Exception:
+                pass
+
+        ui.notify(f"Cleaned up {deleted_count} runs ({disk_cleaned} disk directories removed)", type="positive")
+        self._current_page = 1
+        await self._refresh()
 
     async def _find_document_set(self, run_id: str, uc_name: str) -> dict | None:
         """Find the original document set for a run, with multiple fallbacks."""

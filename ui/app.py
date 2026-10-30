@@ -763,9 +763,9 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                             })
                         llm_table.rows = llm_rows
 
-                        # Recent runs table (last 10)
+                        # Recent runs table (last 5)
                         recent_rows = []
-                        for r in runs[:10]:
+                        for r in runs[:5]:
                             status = str(r.get("status") or "").replace("PipelineStatus.", "")
                             started = str(r.get("started_at") or "")[:19]
                             dur = r.get("duration_seconds")
