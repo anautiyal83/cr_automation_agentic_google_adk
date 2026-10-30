@@ -286,6 +286,13 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
                             if k not in _SAFE_COL_KEYS:
                                 del col_def[k]
                                 changed = True
+                        # allowedValues only valid on enum columns — strip from string
+                        # LLM hallucinates allowedValues on string columns; only enum
+                        # columns should constrain values (user must explicitly define)
+                        col_type = col_def.get("type", "string")
+                        if col_type != "enum" and "allowedValues" in col_def:
+                            del col_def["allowedValues"]
+                            changed = True
                         # Sanitize crossRef
                         cr = col_def.get("crossRef")
                         if isinstance(cr, dict):
