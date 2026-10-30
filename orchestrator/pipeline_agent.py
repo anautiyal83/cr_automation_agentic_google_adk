@@ -236,8 +236,29 @@ class PipelineAgent(BaseAgent):
     async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
         """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""
         run_dir = ctx.session.state.get("run_dir", "")
-        err_file = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
-        status = "failed" if (err_file and err_file.exists()) else "passed"
+
+        # Determine status: check error files AND session state for ALL display steps
+        # belonging to the current agent (e.g. step 4 milestone checks steps 3+4)
+        status = "passed"
+        # Find which agent owns this milestone step
+        agent_name = None
+        for aname, (ms_step, _) in _AGENT_MILESTONES.items():
+            if ms_step == step_num:
+                agent_name = aname
+                break
+        check_steps = _AGENT_DISPLAY_STEPS.get(agent_name, [step_num]) if agent_name else [step_num]
+
+        for sn in check_steps:
+            # Check error file on disk
+            if run_dir:
+                err_file = Path(run_dir) / f"step_{sn}_error.json"
+                if err_file.exists():
+                    status = "failed"
+                    break
+            # Check session state
+            if ctx.session.state.get(f"step_{sn}_status") == "failed":
+                status = "failed"
+                break
 
         flow.flow("MILESTONE Step %d (%s): status=%s — awaiting review", step_num, name, status)
 
