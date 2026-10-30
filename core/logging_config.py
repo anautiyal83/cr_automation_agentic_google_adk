@@ -68,9 +68,13 @@ def setup_logging(log_dir: Path | str | None = None, console_level: int = loggin
     for h in root.handlers[:]:
         root.removeHandler(h)
 
-    # ---- 1. FLOW log (level >= FLOW from * loggers) ----
+    # ---- 1. FLOW log (level >= FLOW from project loggers) ----
+    _PROJECT_PREFIXES = ("agents.", "skills.", "orchestrator.", "core.", "shared.", "ui.", "tools.", "models.", "storage.")
+
     def flow_filter(record: logging.LogRecord) -> bool:
-        return record.levelno == FLOW and record.name.startswith("src.")
+        return record.levelno == FLOW and (
+            record.name.startswith(_PROJECT_PREFIXES) or record.name.startswith("src.")
+        )
 
     flow_handler = _make_handler(
         log_dir / "flow.log", FLOW, file_fmt, datefmt, flow_filter
@@ -83,9 +87,9 @@ def setup_logging(log_dir: Path | str | None = None, console_level: int = loggin
     )
     root.addHandler(error_handler)
 
-    # ---- 3. TRACE log (level >= DEBUG from * loggers) ----
+    # ---- 3. TRACE log (level >= DEBUG from project loggers) ----
     def trace_filter(record: logging.LogRecord) -> bool:
-        return record.name.startswith("src.")
+        return record.name.startswith(_PROJECT_PREFIXES) or record.name.startswith("src.")
 
     trace_handler = _make_handler(
         log_dir / "trace.log", logging.DEBUG, file_fmt, datefmt, trace_filter
@@ -107,7 +111,9 @@ def setup_logging(log_dir: Path | str | None = None, console_level: int = loggin
     ):
         logging.getLogger(name).setLevel(logging.CRITICAL)
 
-    logging.getLogger("src").setLevel(logging.DEBUG)
+    # Set project loggers to DEBUG
+    for prefix in _PROJECT_PREFIXES:
+        logging.getLogger(prefix.rstrip(".")).setLevel(logging.DEBUG)
 
 
 def get_flow_logger(name: str) -> FlowLogger:
