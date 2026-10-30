@@ -30,8 +30,12 @@ async def generate_json_output(
     requirements_summary = _build_requirements_summary(requirements)
     ciq_summary = _ciq_prompt_summary(ciq_sheets)
 
+    node_type, activity = _parse_uc_name(uc_name)
+
     user_prompt = prompts.JSON_OUTPUT_USER.format(
         uc_name=uc_name,
+        node_type=node_type,
+        activity=activity,
         ciq_summary=ciq_summary,
         requirements_summary=requirements_summary,
         schema_summary=schema_summary,
@@ -127,6 +131,18 @@ def _build_requirements_summary(requirements: dict) -> str:
         parts.append(f"Developer answers: {len(answers)} responses")
 
     return "\n".join(parts) if parts else "No requirements available"
+
+
+def _parse_uc_name(uc_name: str) -> tuple[str, str]:
+    """Extract node_type and activity from UC name."""
+    import re
+    m = re.match(r"^([A-Za-z_]+?)_(\d+_.+)$", uc_name)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r"^([A-Za-z_]+)_(.+)$", uc_name)
+    if m:
+        return m.group(1), m.group(2)
+    return uc_name, uc_name
 
 
 def _validate_structure(yaml_text: str) -> list[str]:
