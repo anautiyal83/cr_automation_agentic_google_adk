@@ -117,13 +117,18 @@ class CiqValidationJsonTestSkill:
                 f"{inp.uc_name}_json-output.yaml",
             )
 
+        # Sanitize rules for JAR compatibility (strip LLM-generated unsupported fields)
+        from skills.network_config_test.jar_executor import _sanitize_rules_for_jar
+        sanitized_val_path = _sanitize_rules_for_jar(val_path) if val_path else val_path
+
         jar_result = await run_ciq_processor(
             jar_path=jar_path,
             ciq_file_path=inp.ciq_file_path,
-            validation_rules_path=val_path,
+            validation_rules_path=sanitized_val_path,
             json_output_path=json_path,
             output_dir=inp.run_dir,
             java_home=inp.java_home,
+            uc_name=inp.uc_name,
         )
 
         # Phase 3: Parse results
