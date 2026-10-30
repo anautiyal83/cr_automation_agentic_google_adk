@@ -473,8 +473,21 @@ class ProgressSection:
             self._update_step_visual(event.step_number, "failed")
         elif event.event_type == "retry_started":
             n = event.payload.get("attempt", 1)
+            # Reset all steps from retry target onward to pending
+            for sn in range(event.step_number, TOTAL_STEPS + 1):
+                if sn in self.step_widgets:
+                    self._update_step_visual(sn, "pending")
             self._update_step_visual(event.step_number, "retrying")
-            self.status_detail.text = f"Retrying step {event.step_number} (attempt {n})..."
+            self.status_detail.text = f"Retrying from step {event.step_number} (attempt {n})..."
+            self.milestone_row.set_visibility(False)
+            self.action_btns.set_visibility(True)
+            self.progress_bar.props("color=deep-purple-6 stripe animate")
+            self.status_icon.name = "sync"
+            self.status_icon.classes(replace="cr-text-accent cr-spin")
+            self.status_label.text = "Pipeline Running"
+            self.banner.style(replace=(
+                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+            ))
         elif event.event_type == "milestone_reached":
             milestone = event.payload.get("milestone", "")
             artifact_file = event.payload.get("artifact_file", "")
