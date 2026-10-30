@@ -253,61 +253,120 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
-    """Auto-fix json-output YAML against actual CIQ structure.
+    """Build deterministic json-output YAML from CIQ structure.
 
-    Args:
-        yaml_text: LLM-generated YAML string.
-        ciq_sheets: CIQ structure from requirements.doc_extracted.ciq_sheets.
-        uc_name: UC name for deriving nodeType/activity.
+    The json-output template is too complex for reliable LLM generation.
+    We build it programmatically from the CIQ sheet structure:
+    - Index sheet → segregate_by CRGroup, nodeGroup per ZONE
+    - IP sheet → node niamIDs per Node_Name
+    - Data sheet (Profile Modification etc.) → configSequences records
     """
-    yaml_text = clean_yaml_response(yaml_text)
-    parsed = parse_yaml(yaml_text)
-    if not parsed:
-        return yaml_text
-
     sheet_names = _get_sheet_names(ciq_sheets)
 
-    # --- Fix segregate_by: must use CRGroup from Index sheet ---
-    seg = parsed.get("segregate_by", {})
-    if isinstance(seg, dict):
-        seg_sheet = seg.get("sheet", "")
-        if seg_sheet:
-            actual = _find_closest_sheet(seg_sheet, sheet_names)
-            if actual:
-                seg["sheet"] = actual
-                seg_col = seg.get("column", "")
-                if seg_col:
-                    actual_col = find_closest_column(seg_col, _get_columns(ciq_sheets, actual))
-                    if actual_col:
-                        seg["column"] = actual_col
-        # Force CRGroup segregation if Index sheet has CRGroup
-        index_cols = _get_columns(ciq_sheets, "Index")
-        if "CRGroup" in index_cols:
-            seg["sheet"] = "Index"
-            seg["column"] = "CRGroup"
-            seg["as"] = "$cr"
-            logger.info("Fixed segregate_by to Index.CRGroup")
-        parsed["segregate_by"] = seg
+    # Find key sheets
+    index_sheet = _find_closest_sheet("Index", sheet_names) or "Index"
+    ip_sheet = _find_closest_sheet("IP", sheet_names) or "IP"
+    index_cols = _get_columns(ciq_sheets, index_sheet)
+    ip_cols = _get_columns(ciq_sheets, ip_sheet)
 
-    data = parsed.get("data", {})
-    if isinstance(data, dict):
-        # --- Fix: unwrap crGroups → promote nodeGroups to root of data ---
-        cr_groups = data.get("crGroups")
-        if isinstance(cr_groups, dict) and "nodeGroups" in cr_groups:
-            # LLM wrapped nodeGroups inside crGroups — unwrap
-            node_groups = cr_groups.pop("nodeGroups")
-            data.pop("crGroups")
-            data["nodeGroups"] = node_groups
-            logger.info("Unwrapped nodeGroups from crGroups to data root")
+    # Find the data sheet (not Index, not IP — the one with subscriber data)
+    data_sheet = ""
+    data_cols = []
+    for sn in sheet_names:
+        if sn.lower() not in ("index", "ip", "node_id", "node_details"):
+            data_sheet = sn
+            data_cols = _get_columns(ciq_sheets, sn)
+            break
 
-        # Remove schemaVersion/meta from data — ciq-processor injects these
-        # from --node-type and --activity CLI flags at runtime
-        data.pop("schemaVersion", None)
-        data.pop("meta", None)
+    # Determine zone column in Index
+    zone_col = "ZONE"
+    for c in index_cols:
+        if c.upper() in ("ZONE", "ZONE_NAME", "NODE_GROUP"):
+            zone_col = c
+            break
 
-        parsed["data"] = _fix_dotted_refs(data, ciq_sheets)
+    # Determine grouping column in data sheet
+    data_zone_col = "Zone"
+    for c in data_cols:
+        if c.lower() in ("zone", "zone_name"):
+            data_zone_col = c
+            break
 
-    return dump_yaml(parsed)
+    # Find node names from IP sheet
+    node_names = []
+    ip_data = ciq_sheets.get(ip_sheet, {})
+    sample_rows = ip_data.get("sample_rows", [])
+    node_col = "Node_Name"
+    for c in ip_cols:
+        if "node" in c.lower() and "name" in c.lower():
+            node_col = c
+            break
+    for row in sample_rows:
+        if isinstance(row, dict):
+            nn = row.get(node_col, "")
+            if nn and nn not in node_names:
+                node_names.append(str(nn))
+
+    # Find NIAM columns from IP sheet
+    niam_cols = [c for c in ip_cols if c.upper().startswith("NIAM_NAME") or c.upper().startswith("NIAM_ID")]
+    if not niam_cols:
+        niam_cols = [c for c in ip_cols if "niam" in c.lower()]
+
+    # Build nodes block — one per node type with niamIDs
+    nodes_block = {
+        "_each": f"DISTINCT {ip_sheet}.{node_col} WHERE {ip_sheet}.{zone_col} = $zone AS $node",
+        "node": "$zone",
+    }
+    for nn in node_names:
+        node_niam = {}
+        for i, nc in enumerate(niam_cols, 1):
+            node_niam[f"niamID-{i}"] = f"{ip_sheet}.{nc} WHERE {ip_sheet}.{node_col} = {nn} AND {ip_sheet}.{zone_col} = $zone"
+        nodes_block[nn] = node_niam
+
+    # Build records data block — all columns from data sheet
+    records_data = {}
+    for col in data_cols:
+        records_data[col] = col  # Inside _each row iteration, plain column name
+
+    # Build the complete template
+    template = {
+        "output_mode": "individual",
+        "segregate_by": {
+            "sheet": index_sheet,
+            "column": "CRGroup" if "CRGroup" in index_cols else index_cols[0] if index_cols else "CRGroup",
+            "as": "$cr",
+        },
+        "data": {
+            "nodeGroups": {
+                "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.CRGroup = $cr AS $zone"
+                         if "CRGroup" in index_cols
+                         else f"DISTINCT {index_sheet}.{zone_col} AS $zone",
+                "nodeGroup": "$zone",
+                "crGroup": "$cr",
+                "email": f"{index_sheet}.Email WHERE {index_sheet}.{zone_col} = $zone"
+                         if "Email" in index_cols else "",
+                "nodes": nodes_block,
+                "configSequences": {
+                    "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.{zone_col} = $zone AS $seq",
+                    "configSeq": "Step1",
+                    "records": {
+                        "_each": f"{data_sheet} WHERE {data_zone_col} = $zone" if data_sheet else "Data",
+                        "data": records_data,
+                    },
+                },
+            },
+        },
+    }
+
+    # Remove empty email if not available
+    ng = template["data"]["nodeGroups"]
+    if not ng.get("email"):
+        ng.pop("email", None)
+
+    result = dump_yaml(template)
+    logger.info("Built deterministic json-output template: %d chars, %d data columns, %d nodes",
+                len(result), len(data_cols), len(node_names))
+    return result
 
 
 # ---------------------------------------------------------------------------
