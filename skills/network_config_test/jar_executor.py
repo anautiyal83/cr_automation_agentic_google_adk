@@ -239,12 +239,36 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
 
         changed = False
 
-        # --- Sanitize sheet columns ---
+        # --- Sanitize sheets: whitelist safe column properties only ---
+        # The JAR uses strict SnakeYAML JavaBean mapping. LLM-generated columns
+        # often include complex properties (allowedValuesWhen, conditionalPattern,
+        # etc.) with structures that don't match the JAR's expected types.
+        # Only keep simple, scalar properties that reliably deserialize.
+        _SAFE_COL_KEYS = {
+            "type", "required", "unique", "ignoreCase", "description",
+            "minLength", "maxLength", "pattern", "patternMessage",
+            "allowedValues", "values",  # enum values
+            "minValue", "maxValue", "precision",
+            "minDecimal", "maxDecimal",
+            "format", "accept", "accepts",
+            "multi", "sheetRef", "sheetRefIgnoreCase",
+            "aliases", "dropdownDisabled",
+            "crossRef",  # sanitized separately below
+        }
+        _SAFE_CROSSREF_KEYS = {"sheet", "column"}
+        _SAFE_SHEET_KEYS = {"columns", "required", "required_if_listed_in", "aliases", "settings"}
+
         sheets = data.get("sheets", {})
         if isinstance(sheets, dict):
             for sheet_name, sheet_data in sheets.items():
                 if not isinstance(sheet_data, dict):
                     continue
+
+                # Strip unknown sheet-level keys (rules, etc.)
+                for k in list(sheet_data.keys()):
+                    if k not in _SAFE_SHEET_KEYS:
+                        del sheet_data[k]
+                        changed = True
 
                 # Sanitize column definitions
                 columns = sheet_data.get("columns", {})
@@ -252,19 +276,18 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
                     for col_name, col_def in columns.items():
                         if not isinstance(col_def, dict):
                             continue
+                        # Strip unknown column properties
+                        for k in list(col_def.keys()):
+                            if k not in _SAFE_COL_KEYS:
+                                del col_def[k]
+                                changed = True
+                        # Sanitize crossRef
                         cr = col_def.get("crossRef")
                         if isinstance(cr, dict):
-                            unsupported = [k for k in cr if k not in ("sheet", "column")]
-                            for k in unsupported:
-                                del cr[k]
-                                changed = True
-
-                # Remove sheet-level row rules entirely — LLM-generated
-                # when/require/forbid structures are often incompatible
-                # with the JAR's strict SnakeYAML deserialization
-                if "rules" in sheet_data:
-                    del sheet_data["rules"]
-                    changed = True
+                            for k in list(cr.keys()):
+                                if k not in _SAFE_CROSSREF_KEYS:
+                                    del cr[k]
+                                    changed = True
 
         # --- Remove top-level keys the LLM often generates incorrectly ---
         # Only keep keys the JAR can reliably parse from LLM output
