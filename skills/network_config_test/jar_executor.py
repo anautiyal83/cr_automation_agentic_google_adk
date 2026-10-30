@@ -37,6 +37,9 @@ async def run_mop_test(
     java = _java_cmd(java_home)
     mop_dir = Path(output_dir) / "mop_output"
     mop_dir.mkdir(parents=True, exist_ok=True)
+    # Separate dirs: validation report vs JSON data for MOP
+    ciq_val_dir = Path(output_dir) / "ciq_validation"
+    ciq_val_dir.mkdir(parents=True, exist_ok=True)
     json_data_dir = Path(output_dir) / "json_data"
     json_data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -45,6 +48,7 @@ async def run_mop_test(
     node_type, activity = _parse_uc_name(uc_name)
 
     # --- Step 1: Run ciq-processor to produce JSON data ---
+    ciq_result = {"success": False, "stdout": "", "stderr": "ciq-processor not run"}
     if ciq_file_path and Path(ciq_processor_jar).exists():
         # Sanitize validation-rules for JAR compatibility
         rules_for_jar = validation_rules_path
@@ -57,7 +61,7 @@ async def run_mop_test(
             "--node-type", node_type,
             "--activity", activity,
             "--rules", str(rules_for_jar or json_output_path),
-            "--output", str(json_data_dir),
+            "--output", str(ciq_val_dir),
             "--format", "JSON",
         ]
         if json_output_path:
@@ -69,32 +73,28 @@ async def run_mop_test(
             logger.warning("ciq-processor failed (exit %d): %s",
                           ciq_result["exit_code"], ciq_result["stderr"][:300])
 
-    # Find the generated JSON file
-    json_files = list(json_data_dir.glob("*.json"))
-    if not json_files:
-        # Fallback: check mop_output dir
-        json_files = list(mop_dir.glob("*.json"))
+    # Find the generated JSON data file (NOT the validation report)
+    json_files = [f for f in json_data_dir.glob("*.json")
+                  if "VALIDATION_REPORT" not in f.name]
     json_input = str(json_files[0]) if json_files else ""
 
     if not json_input:
-        # Check if ciq-processor reported validation failures
-        ciq_stdout = ciq_result.get("stdout", "") if ciq_file_path else ""
+        # CIQ validation failed or no JSON output produced
+        ciq_stdout = ciq_result.get("stdout", "")
         if "STATUS=FAILED" in ciq_stdout:
             logger.warning("CIQ validation failed — no JSON data for MOP generation")
             return {
                 "success": False,
                 "exit_code": 2,
                 "stdout": ciq_stdout,
-                "stderr": "CIQ validation failed — cannot generate MOP without valid CIQ data. "
-                          "Fix validation-rules.yaml or CIQ data first.",
+                "stderr": "CIQ validation failed — fix validation-rules or CIQ data, then re-run from step 3.",
             }
         logger.error("No JSON data file produced by ciq-processor")
         return {
             "success": False,
             "exit_code": -1,
-            "stdout": "",
-            "stderr": "No JSON data file produced by ciq-processor. "
-                      "Cannot run MOP generation without processed CIQ data.",
+            "stdout": ciq_result.get("stdout", ""),
+            "stderr": ciq_result.get("stderr", "") or "No JSON data file produced by ciq-processor.",
         }
 
     # --- Step 2: Run cli-automation generate ---
