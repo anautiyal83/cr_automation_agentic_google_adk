@@ -252,12 +252,13 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
 # JSON output auto-fix
 # ---------------------------------------------------------------------------
 
-def fix_json_output(yaml_text: str, ciq_sheets: dict) -> str:
+def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
     """Auto-fix json-output YAML against actual CIQ structure.
 
     Args:
         yaml_text: LLM-generated YAML string.
         ciq_sheets: CIQ structure from requirements.doc_extracted.ciq_sheets.
+        uc_name: UC name for deriving nodeType/activity.
     """
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
@@ -266,6 +267,7 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict) -> str:
 
     sheet_names = _get_sheet_names(ciq_sheets)
 
+    # --- Fix segregate_by: must use CRGroup from Index sheet ---
     seg = parsed.get("segregate_by", {})
     if isinstance(seg, dict):
         seg_sheet = seg.get("sheet", "")
@@ -278,10 +280,31 @@ def fix_json_output(yaml_text: str, ciq_sheets: dict) -> str:
                     actual_col = find_closest_column(seg_col, _get_columns(ciq_sheets, actual))
                     if actual_col:
                         seg["column"] = actual_col
+        # Force CRGroup segregation if Index sheet has CRGroup
+        index_cols = _get_columns(ciq_sheets, "Index")
+        if "CRGroup" in index_cols:
+            seg["sheet"] = "Index"
+            seg["column"] = "CRGroup"
+            seg["as"] = "$cr"
+            logger.info("Fixed segregate_by to Index.CRGroup")
         parsed["segregate_by"] = seg
 
     data = parsed.get("data", {})
     if isinstance(data, dict):
+        # --- Fix: unwrap crGroups → promote nodeGroups to root of data ---
+        cr_groups = data.get("crGroups")
+        if isinstance(cr_groups, dict) and "nodeGroups" in cr_groups:
+            # LLM wrapped nodeGroups inside crGroups — unwrap
+            node_groups = cr_groups.pop("nodeGroups")
+            data.pop("crGroups")
+            data["nodeGroups"] = node_groups
+            logger.info("Unwrapped nodeGroups from crGroups to data root")
+
+        # Remove schemaVersion/meta from data — ciq-processor injects these
+        # from --node-type and --activity CLI flags at runtime
+        data.pop("schemaVersion", None)
+        data.pop("meta", None)
+
         parsed["data"] = _fix_dotted_refs(data, ciq_sheets)
 
     return dump_yaml(parsed)

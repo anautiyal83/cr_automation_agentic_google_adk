@@ -153,12 +153,10 @@ WRONG — list items mixed with mapping keys:
     - PGW
     - name: $value
 
-=== TARGET JSON STRUCTURE (the JSON the ciq-processor must produce) ===
+=== TARGET JSON STRUCTURE (the JSON the ciq-processor produces) ===
 The MOP generator looks for "nodeGroups" at the ROOT of the JSON (not nested).
-schemaVersion and meta are REQUIRED at root level.
+NOTE: schemaVersion and meta are injected by the JAR at runtime — do NOT include them in data:.
 {{
-  "schemaVersion": "2",
-  "meta": {{ "nodeType": "{node_type}", "activity": "{activity}" }},
   "nodeGroups": [{{
     "nodeGroup": "<Zone>",
     "crGroup": "<CRGroup>",
@@ -184,10 +182,6 @@ segregate_by:
   column: CRGroup
   as: $cr
 data:
-  schemaVersion: "2"
-  meta:
-    nodeType: {node_type}
-    activity: {activity}
   nodeGroups:
     _each: "DISTINCT Index.ZONE WHERE Index.CRGroup = $cr AS $zone"
     nodeGroup: $zone

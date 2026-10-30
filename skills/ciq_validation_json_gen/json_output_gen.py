@@ -45,7 +45,7 @@ async def generate_json_output(
     raw_response = await llm_fn(prompts.JSON_OUTPUT_SYSTEM, user_prompt)
     yaml_text = clean_yaml_response(raw_response)
 
-    yaml_text = fix_json_output(yaml_text, ciq_sheets)
+    yaml_text = fix_json_output(yaml_text, ciq_sheets, uc_name=uc_name)
 
     # Re-dump through parse→dump to ensure valid YAML on disk
     parsed = parse_yaml(yaml_text)
@@ -81,7 +81,7 @@ async def regenerate_json_output(
     raw_response = await llm_fn(prompts.JSON_OUTPUT_SYSTEM, user_prompt)
     yaml_text = clean_yaml_response(raw_response)
 
-    yaml_text = fix_json_output(yaml_text, ciq_sheets)
+    yaml_text = fix_json_output(yaml_text, ciq_sheets, uc_name=uc_name)
     errors = _validate_structure(yaml_text)
 
     logger.info("JSON output regenerated: %d chars, %d errors", len(yaml_text), len(errors))
