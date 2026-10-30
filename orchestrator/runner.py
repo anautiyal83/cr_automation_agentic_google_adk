@@ -457,7 +457,7 @@ class PipelineRunner:
             4: f"{uc_name}_json-output.yaml",
             5: f"{uc_name}_ciq-qa-report.html",
             6: f"{uc_name}.yaml",
-            7: f"{uc_name}_mop-generation-report.html",
+            7: f"{uc_name}_mop-qa-report.html",
             8: f"{uc_name}_simulator-config.yaml",
             9: f"exec_report/{uc_name}_execution-report.html",
         }
@@ -501,6 +501,14 @@ class PipelineRunner:
             ep = Path(run_dir) / ef
             if ep.exists() and str(ep) != primary:
                 extra.append(str(ep))
+
+        # Step 7: include MOP output HTMLs from mop_output/ subdir
+        if step_num == 7:
+            mop_dir = Path(run_dir) / "mop_output"
+            if mop_dir.exists():
+                for f in mop_dir.glob("*.html"):
+                    if str(f) != primary:
+                        extra.append(str(f))
         # For step 8, also add per-node config files
         if step_num == 8:
             sim_config_dir = Path(run_dir) / "simulator" / "config"
