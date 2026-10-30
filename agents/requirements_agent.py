@@ -80,6 +80,17 @@ class RequirementsGathererNode(BaseAgent):
         skill = RequirementGatheringSkill(llm_fn=get_llm_fn(config))
 
         # ── Phase 1+2: Parse + Analyze ──
+        # Mark step 1 (DOC Parser) as complete, step 2 (DOC Analyzer) as in_progress
+        from core.events import PipelineEvent, event_bus
+        from uuid import UUID as _UUID
+        await event_bus.publish(PipelineEvent(
+            run_id=_UUID(run_id), event_type="step_completed", step_number=1,
+            payload={"status": "passed"},
+        ))
+        await event_bus.publish(PipelineEvent(
+            run_id=_UUID(run_id), event_type="step_started", step_number=2,
+        ))
+
         flow.flow("REQUIREMENTS Phase 1+2: Deterministic extraction + LLM analysis")
         output = await skill.parse_and_analyze(skill_input)
 

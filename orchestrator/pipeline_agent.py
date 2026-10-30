@@ -1,13 +1,14 @@
-"""PipelineAgent — 7-agent orchestrator with built-in milestones and retry routing.
+"""PipelineAgent — 8-agent orchestrator with built-in milestones and retry routing.
 
-Executes 7 agents sequentially:
+Executes 8 agents sequentially:
 1. RequirementsGatherer — parse docs, questionnaire, compile requirements
 2. CiqValidationJsonGen — generate validation-rules.yaml + json-output.yaml
 3. CiqValidationJsonQA — test generated YAMLs via JAR
 4. NetworkConfigGen — generate workflow YAML
-5. NetworkSimulatorSetup — generate simulator config, start MockWire, sanity check
-6. NetworkConfigQA — MOP test + execution test
-7. ReportGenerator — final HTML + Excel report
+5. NetworkConfigMopQA — MOP generation test (no simulator needed)
+6. NetworkSimulatorSetup — generate simulator config, start MockWire, sanity check
+7. NetworkConfigExecQA — execution test against simulator
+8. ReportGenerator — final HTML + Excel report
 
 After each agent (except requirements and report), the pipeline:
 - Publishes step events for the UI progress tracker
@@ -46,8 +47,9 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
     "ciq_validation_json_gen": [3, 4],
     "ciq_validation_json_qa": [5],
     "network_config_gen": [6],
+    "network_config_mop_qa": [7],
     "network_simulator_setup": [8],
-    "network_config_qa": [7, 9],
+    "network_config_exec_qa": [9],
     "report_generator": [10],
 }
 
@@ -56,8 +58,9 @@ _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
     "ciq_validation_json_qa": (5, "QA-Validation Results"),
     "network_config_gen": (6, "Execution Workflow"),
+    "network_config_mop_qa": (7, "MOP Generation QA"),
     "network_simulator_setup": (8, "Simulator Setup"),
-    "network_config_qa": (9, "Network Configuration QA"),
+    "network_config_exec_qa": (9, "Execution QA"),
 }
 
 # Maps agent name → index for retry routing
@@ -66,9 +69,10 @@ _AGENT_NAMES = [
     "ciq_validation_json_gen",     # 1
     "ciq_validation_json_qa",      # 2
     "network_config_gen",          # 3
-    "network_simulator_setup",     # 4
-    "network_config_qa",           # 5
-    "report_generator",            # 6
+    "network_config_mop_qa",       # 4
+    "network_simulator_setup",     # 5
+    "network_config_exec_qa",      # 6
+    "report_generator",            # 7
 ]
 
 # Retry target step → agent index
@@ -76,12 +80,12 @@ _RETRY_STEP_TO_INDEX: dict[int, int] = {
     3: 1,   # retry CiqValidationJsonGen
     4: 1,   # retry CiqValidationJsonGen
     6: 3,   # retry NetworkConfigGen
-    8: 4,   # retry NetworkSimulatorSetup
+    8: 5,   # retry NetworkSimulatorSetup
 }
 
 
 class PipelineAgent(BaseAgent):
-    """7-agent orchestrator with built-in milestone pauses and retry routing."""
+    """8-agent orchestrator with built-in milestone pauses and retry routing."""
 
     name: str = "netconfig_pipeline"
     description: str = "NetConfig pipeline: 7 agents with milestone review and retry loops"
@@ -129,9 +133,11 @@ class PipelineAgent(BaseAgent):
                         err.unlink()
 
             # ----- PUBLISH step_started -----
+            # For agents with multiple display steps, only mark the FIRST as in_progress
+            # The rest stay pending until the agent completes (then all are marked done)
             display_steps = _AGENT_DISPLAY_STEPS.get(agent.name, [])
-            for sn in display_steps:
-                await self._publish(run_id_str, "step_started", sn)
+            if display_steps:
+                await self._publish(run_id_str, "step_started", display_steps[0])
 
             # ----- SET LLM CONTEXT for usage tracking -----
             from shared.llm import set_llm_context
@@ -315,6 +321,7 @@ class PipelineAgent(BaseAgent):
             4: (f"{uc_name}_validation-rules.yaml", [f"{uc_name}_json-output.yaml"]),
             5: (f"{uc_name}_ciq-qa-report.html", []),
             6: (f"{uc_name}.yaml", []),
+            7: (f"{uc_name}_mop-qa-report.html", []),
             8: (f"{uc_name}_simulator-config.yaml", []),
             9: (f"{uc_name}_network-qa-report.html", []),
         }
@@ -327,7 +334,7 @@ class PipelineAgent(BaseAgent):
 
 
 def build_pipeline(config: dict | None = None) -> PipelineAgent:
-    """Build the 7-agent pipeline.
+    """Build the 8-agent pipeline.
 
     Returns a configured PipelineAgent ready for execution.
     """
@@ -342,6 +349,7 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
     from agents.ciq_validation_json_gen_agent import CiqValidationJsonGenAgent
     from agents.ciq_validation_json_qa_agent import CiqValidationJsonQAAgent
     from agents.network_config_gen_agent import NetworkConfigGenAgent
+    from agents.network_config_mop_qa_agent import NetworkConfigMopQAAgent
     from agents.network_simulator_setup_agent import NetworkSimulatorSetupAgent
     from agents.network_config_qa_agent import NetworkConfigQAAgent
     from agents.report_agent import ReportAgent
@@ -351,9 +359,10 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
         CiqValidationJsonGenAgent(),      # 1 - Steps 3+4
         CiqValidationJsonQAAgent(),       # 2 - Step 5
         NetworkConfigGenAgent(),          # 3 - Step 6
-        NetworkSimulatorSetupAgent(),     # 4 - Step 8
-        NetworkConfigQAAgent(),           # 5 - Steps 7+9
-        ReportAgent(),                    # 6 - Step 10
+        NetworkConfigMopQAAgent(),        # 4 - Step 7 (MOP QA, no simulator)
+        NetworkSimulatorSetupAgent(),     # 5 - Step 8
+        NetworkConfigQAAgent(),           # 6 - Step 9 (Execution QA)
+        ReportAgent(),                    # 7 - Step 10
     ]
 
     pipeline = PipelineAgent()

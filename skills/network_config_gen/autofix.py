@@ -119,129 +119,192 @@ def dump_yaml(data: dict) -> str:
 def fix_workflow(yaml_text: str) -> str:
     """Apply all auto-fix rules to workflow YAML.
 
-    Preserves ${...} variable placeholders throughout.
-    Re-dumps through parse→dump to ensure valid YAML on disk.
+    Normalizes LLM output to the cli-automation framework schema:
+    - nodeGroups → nodes
+    - cmd/command → send
+    - description → command_description (on steps)
+    - phases as list → phases as dict
+    - Removes explicit NIAM login / Ctrl+P+E commands (framework handles these)
+    - Fixes validation structure
     """
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
     if not parsed:
-        # Last resort: try sanitize + parse
         yaml_text = sanitize_yaml(yaml_text)
         parsed = parse_yaml(yaml_text)
         if not parsed:
             return yaml_text
 
-    # Fix nodeGroups
-    node_groups = parsed.get("nodeGroups", {})
-    if isinstance(node_groups, dict):
-        parsed["nodeGroups"] = _fix_node_groups(node_groups)
+    # --- Normalize nodeGroups → nodes ---
+    if "nodeGroups" in parsed and "nodes" not in parsed:
+        parsed["nodes"] = parsed.pop("nodeGroups")
+        logger.info("Renamed nodeGroups → nodes")
 
-    # Collect known node names for reference checking
-    known_nodes = set()
-    if isinstance(node_groups, dict):
-        for ng_name, ng_val in node_groups.items():
-            known_nodes.add(ng_name)
-            if isinstance(ng_val, dict):
-                for node_entry in ng_val.get("nodes", []):
-                    if isinstance(node_entry, dict):
-                        known_nodes.add(node_entry.get("name", ""))
+    nodes = parsed.get("nodes", {})
+    if isinstance(nodes, dict):
+        parsed["nodes"] = _fix_nodes(nodes)
 
-    # Fix phases — convert dict to list if needed
-    phases = parsed.get("phases", [])
+    known_nodes = set(nodes.keys()) if isinstance(nodes, dict) else set()
+
+    # --- Normalize phases ---
+    phases = parsed.get("phases", {})
+
+    # Convert list → dict if LLM generated a list
+    if isinstance(phases, list):
+        phases_dict = {}
+        for p in phases:
+            if isinstance(p, dict):
+                name = p.pop("name", p.get("phase", f"phase_{len(phases_dict)}"))
+                p.pop("phase", None)
+                phases_dict[name] = p
+        phases = phases_dict
+        logger.info("Converted phases list → dict (%d phases)", len(phases))
+
     if isinstance(phases, dict):
-        # LLM generated phases as {name: {steps: [...]}} — convert to [{name: ..., steps: [...]}]
-        phases_list = []
+        fixed_phases = {}
         for phase_name, phase_body in phases.items():
             if isinstance(phase_body, dict):
-                phase_body["name"] = phase_name
-                phases_list.append(phase_body)
+                fixed_phases[phase_name] = _fix_phase(phase_body, known_nodes)
             elif isinstance(phase_body, list):
-                phases_list.append({"name": phase_name, "steps": phase_body})
-        phases = phases_list
-        logger.info("Converted phases from dict to list (%d phases)", len(phases))
-    if isinstance(phases, list):
-        parsed["phases"] = [_fix_phase(p, known_nodes) for p in phases if isinstance(p, dict)]
+                fixed_phases[phase_name] = _fix_phase({"steps": phase_body}, known_nodes)
+        parsed["phases"] = fixed_phases
 
     return dump_yaml(parsed)
 
 
-def _fix_node_groups(node_groups: dict) -> dict:
-    """Fix node group definitions."""
+def _fix_nodes(nodes: dict) -> dict:
+    """Fix node definitions to match framework schema."""
     fixed = {}
-    for name, config in node_groups.items():
+    for name, config in nodes.items():
         if not isinstance(config, dict):
             fixed[name] = config
             continue
 
-        # Fix individual node entries
-        nodes = config.get("nodes", [])
-        if isinstance(nodes, list):
-            config["nodes"] = [_fix_node_entry(n) for n in nodes if isinstance(n, dict)]
+        # Ensure type and plugin
+        config.setdefault("type", "remote")
+        config.setdefault("plugin", "ssh")
+
+        # Remove old-style "nodes" array (framework doesn't use it)
+        config.pop("nodes", None)
+
+        # Move prompt_regex from top level if in old format
+        ssh = config.get("ssh", {})
+        if isinstance(ssh, dict):
+            # Ensure auth block
+            if ssh.get("password") and "auth" not in ssh:
+                ssh["auth"] = {"password": ssh.pop("password")}
+            # Move kex/host_key from top level if needed
+            for key in ("kex_algorithms", "host_key_algorithms"):
+                if key in config and key not in ssh:
+                    ssh[key] = config.pop(key)
 
         fixed[name] = config
     return fixed
 
 
-def _fix_node_entry(node: dict) -> dict:
-    """Remove unknown fields from a node entry, preserving ${...} values."""
-    # Don't strip fields aggressively — the JAR may accept more than our whitelist
-    # Just ensure critical fields exist
-    if "host" not in node and "name" in node:
-        # LLM sometimes puts host info in name
-        pass
-    return node
+# Commands that are handled by framework config, not explicit steps
+_FRAMEWORK_HANDLED = {
+    "niam login", "ssh $", "ctrl+p+e", "press ctrl+p+e",
+    "elevate_to_root", "su - root",
+}
 
 
 def _fix_phase(phase: dict, known_nodes: set) -> dict:
     """Fix a single phase's steps/commands."""
+    # Normalize commands → steps
     steps = phase.get("steps", phase.get("commands", []))
+    phase.pop("commands", None)
+
+    # Remove phase-level keys that don't belong in framework schema
+    for bad_key in ("group_by", "niam_failover", "description"):
+        if bad_key in phase and bad_key != "name":
+            # Keep "name" but move "description" to "name" if name is missing
+            if bad_key == "description" and "name" not in phase:
+                phase["name"] = phase.pop("description")
+            else:
+                phase.pop(bad_key, None)
+
     if isinstance(steps, list):
         fixed_steps = []
         for step in steps:
             if isinstance(step, dict):
-                step = _fix_command(step, known_nodes)
+                # Skip commands that framework handles automatically
+                cmd_text = (step.get("send") or step.get("cmd") or
+                            step.get("command") or step.get("name", "")).lower()
+                if any(handled in cmd_text for handled in _FRAMEWORK_HANDLED):
+                    logger.debug("Removed framework-handled command: %s", cmd_text[:60])
+                    continue
+                step = _fix_step(step, known_nodes)
                 fixed_steps.append(step)
-        # Use whichever key the original had
-        if "steps" in phase:
-            phase["steps"] = fixed_steps
-        elif "commands" in phase:
-            phase["commands"] = fixed_steps
+        phase["steps"] = fixed_steps
     return phase
 
 
-def _fix_command(cmd: dict, known_nodes: set) -> dict:
-    """Fix a single command entry."""
+def _fix_step(step: dict, known_nodes: set) -> dict:
+    """Normalize a single step to framework schema."""
+    # cmd/command → send
+    if "cmd" in step and "send" not in step:
+        step["send"] = step.pop("cmd")
+    if "command" in step and "send" not in step:
+        step["send"] = step.pop("command")
+
+    # description → command_description
+    if "description" in step and "command_description" not in step:
+        step["command_description"] = step.pop("description")
+
+    # name → command_description (if no send)
+    if "name" in step and "command_description" not in step:
+        step["command_description"] = step.get("name", "")
+
+    # Remove old-style keys
+    for old_key in ("name", "user", "escalate", "success.message", "failure.message"):
+        step.pop(old_key, None)
+
+    # Fix register: convert list of strings or dicts with just names
+    register = step.get("register", [])
+    if isinstance(register, list):
+        fixed_reg = []
+        for r in register:
+            if isinstance(r, str):
+                # Bare string → regex that captures full output
+                fixed_reg.append({"regex": "(?P<" + r + ">[\\s\\S]+)", "name": r})
+            elif isinstance(r, dict):
+                fixed_reg.append(r)
+        if fixed_reg:
+            step["register"] = fixed_reg
+
     # Fix validation block
-    validation = cmd.get("validation", {})
+    validation = step.get("validation", {})
     if isinstance(validation, dict):
-        cmd["validation"] = _fix_validation(validation, cmd)
+        step["validation"] = _fix_validation(validation, step)
 
     # Fix criteria.expr — replace unsupported Java functions
-    _fix_criteria_expr(cmd)
+    _fix_criteria_expr(step)
 
-    return cmd
+    return step
 
 
-def _fix_validation(validation: dict, cmd: dict) -> dict:
-    """Ensure validation has required fields: description, criteria, success, failure."""
+def _fix_validation(validation: dict, step: dict) -> dict:
+    """Normalize validation to framework schema: description + success/failure branches."""
     # Auto-generate description if missing
     if "description" not in validation:
-        success = validation.get("success", {})
-        if isinstance(success, dict) and success.get("message"):
-            validation["description"] = f"Validates: {success['message'][:100]}"
-        else:
-            cmd_text = cmd.get("cmd", cmd.get("command", "unknown"))
-            validation["description"] = f"Validate output of: {cmd_text}"
+        cmd_text = step.get("send", step.get("cmd", "unknown"))
+        validation["description"] = f"Validate output of: {str(cmd_text)[:80]}"
 
-    # Ensure criteria exists
-    if "criteria" not in validation:
-        validation["criteria"] = {"expr": "true"}
+    # If old-style top-level criteria, move into success branch
+    if "criteria" in validation and "success" not in validation:
+        criteria = validation.pop("criteria")
+        validation["success"] = {"criteria": criteria, "message": "Command completed successfully"}
 
-    # Ensure success/failure exist
+    # Ensure success/failure branches exist
     if "success" not in validation:
         validation["success"] = {"message": "Command completed successfully"}
     if "failure" not in validation:
         validation["failure"] = {"message": "Command validation failed"}
+
+    # Clean up old-style flat keys
+    for old_key in ("success.message", "failure.message"):
+        validation.pop(old_key, None)
 
     return validation
 

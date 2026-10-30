@@ -35,12 +35,16 @@ def clean_yaml_response(text: str) -> str:
     return "\n".join(lines[yaml_start:]).rstrip()
 
 
-def parse_yaml(text: str) -> dict | None:
-    """Parse YAML text, returning dict or None on failure."""
+def parse_yaml(text: str) -> dict | list | None:
+    """Parse YAML text, returning dict/list or None on failure."""
     try:
         from ruamel.yaml import YAML
         parsed = YAML().load(StringIO(text))
-        return dict(parsed) if parsed else None
+        if isinstance(parsed, dict):
+            return dict(parsed)
+        if isinstance(parsed, list):
+            return list(parsed)
+        return None
     except Exception:
         return None
 
@@ -59,14 +63,38 @@ def dump_yaml(data: dict) -> str:
 def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None) -> str:
     """Apply auto-fix rules to simulator config YAML.
 
+    Handles:
+    - List-at-root → extract first map element
+    - hosts/servers nested format → flatten to MockWire format
+    - Port collisions
+    - Missing nodes
+
     Args:
         yaml_text: LLM-generated YAML.
         workflow_nodes: Node names from the workflow (for completeness check).
     """
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
-    if not parsed:
+    if parsed is None:
         return yaml_text
+
+    # Fix: if root is a list, extract the first dict element
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                parsed = item
+                logger.info("Extracted dict from root list")
+                break
+        else:
+            return yaml_text
+
+    # Fix: if root has "hosts" key with nested structure, flatten
+    if "hosts" in parsed and isinstance(parsed["hosts"], list):
+        parsed = _flatten_hosts_format(parsed)
+
+    # Ensure "config" section exists
+    if "config" not in parsed:
+        parsed["config"] = {"prompt": "#", "delayMs": 100, "jitterMs": 20, "idleTimeoutSec": 300}
 
     # Fix port collisions
     _fix_port_collisions(parsed)
@@ -78,6 +106,61 @@ def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None
     return dump_yaml(parsed)
 
 
+def _flatten_hosts_format(parsed: dict) -> dict:
+    """Convert old hosts-based format to MockWire flat format.
+
+    Input:  {hosts: [{hostname, port, users: {...}, commands: {...}}]}
+    Output: {config: {...}, auth: {...}, "cmd1": {lines: [...]}, ...}
+    """
+    result = {}
+    hosts = parsed.get("hosts", [])
+    if not hosts or not isinstance(hosts, list):
+        return parsed
+
+    host = hosts[0] if isinstance(hosts[0], dict) else {}
+
+    # Config
+    prompt = "#"
+    users_data = host.get("users", {})
+    if isinstance(users_data, dict):
+        first_user = next(iter(users_data.values()), {})
+        if isinstance(first_user, dict):
+            prompt = first_user.get("prompt", "#")
+
+    result["config"] = {
+        "prompt": prompt,
+        "delayMs": 100,
+        "jitterMs": 20,
+        "idleTimeoutSec": 300,
+    }
+
+    # Auth
+    auth_users = []
+    if isinstance(users_data, dict):
+        for username, uconfig in users_data.items():
+            if isinstance(uconfig, dict):
+                auth_users.append({
+                    "username": username,
+                    "password": uconfig.get("password", "*"),
+                    "prompt": uconfig.get("prompt", prompt),
+                })
+    result["auth"] = {"enabled": True, "users": auth_users}
+
+    # Commands
+    commands = host.get("commands", {})
+    if isinstance(commands, dict):
+        for cmd_key, cmd_val in commands.items():
+            if isinstance(cmd_val, dict):
+                output = cmd_val.get("output", "")
+                if isinstance(output, str):
+                    result[cmd_key] = {"lines": output.strip().split("\n")}
+                elif isinstance(cmd_val.get("lines"), list):
+                    result[cmd_key] = {"lines": cmd_val["lines"]}
+
+    logger.info("Flattened hosts format → MockWire format (%d commands)", len(commands))
+    return result
+
+
 def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
     """Extract node names from a workflow YAML string."""
     parsed = parse_yaml(workflow_yaml)
@@ -85,7 +168,8 @@ def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
         return []
 
     nodes = set()
-    node_groups = parsed.get("nodeGroups", {})
+    # Support both "nodes" (new) and "nodeGroups" (old)
+    node_groups = parsed.get("nodes", parsed.get("nodeGroups", {}))
     if isinstance(node_groups, dict):
         for ng_name, ng_val in node_groups.items():
             nodes.add(ng_name)

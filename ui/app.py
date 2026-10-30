@@ -666,7 +666,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                     "ciq_validation_json_qa": "CIQ QA",
                     "network_config_gen": "Config Gen",
                     "network_simulator_setup": "Simulator",
-                    "network_config_qa": "Config QA",
+                    "network_config_mop_qa": "MOP QA",
+                    "network_config_exec_qa": "Exec QA",
                     "report_generator": "Report",
                 }
 

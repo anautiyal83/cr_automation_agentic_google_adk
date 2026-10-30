@@ -170,25 +170,33 @@ class ProgressSection:
                     .props("unelevated color=teal-6 size=sm no-caps")
 
     def _step_widget(self, step_num: int):
-        with ui.column().classes("items-center gap-0 flex-shrink-0 flex-1") as col:
-            # Circle icon
-            icon_container = ui.element("div").classes("cr-step-circle")
-            with icon_container:
-                step_icon = ui.icon(
-                    STEP_ICONS.get(step_num, "circle"), size="14px"
-                ).classes("cr-text-dim")
+        with ui.column().classes("items-center gap-1 flex-shrink-0 flex-1") as col:
+            with ui.element("div").style(
+                "border: 1px solid var(--cr-border); border-radius: 8px; padding: 8px 6px; "
+                "min-width: 82px; max-width: 100px; min-height: 80px; "
+                "display: flex; flex-direction: column; align-items: center; "
+                "justify-content: flex-start; "
+                "gap: 3px; transition: all 0.3s ease; background: var(--cr-surface-light);"
+            ) as box:
+                # Circle icon
+                icon_container = ui.element("div").classes("cr-step-circle")
+                with icon_container:
+                    step_icon = ui.icon(
+                        STEP_ICONS.get(step_num, "circle"), size="14px"
+                    ).classes("cr-text-dim")
 
-            # Step label
-            label = ui.label(f"{step_num}").classes("text-[9px] cr-text-dim font-semibold")
-            name = ui.label(_SHORT_NAMES.get(step_num, "")) \
-                .classes("text-[9px] cr-text-dim text-center") \
-                .style("white-space: nowrap; overflow: visible")
-            status_label = ui.label("pending") \
-                .classes("text-[9px] cr-text-dim") \
-                .style("white-space: nowrap")
+                # Step number + name
+                label = ui.label(f"Step {step_num}").classes("text-[9px] cr-text-dim font-semibold")
+                name = ui.label(_SHORT_NAMES.get(step_num, "")) \
+                    .classes("text-[8px] cr-text-dim text-center") \
+                    .style("word-wrap: break-word; overflow-wrap: break-word; "
+                           "max-width: 76px; line-height: 1.3;")
+                status_label = ui.label("pending") \
+                    .classes("text-[8px] cr-text-dim font-medium") \
+                    .style("white-space: nowrap")
 
             self.step_widgets[step_num] = {
-                "col": col, "icon_container": icon_container, "step_icon": step_icon,
+                "col": col, "box": box, "icon_container": icon_container, "step_icon": step_icon,
                 "label": label, "name": name, "status": status_label,
             }
 
@@ -570,10 +578,14 @@ class ProgressSection:
             self.completion_row.set_visibility(True)
             self.progress_bar.props("color=negative")
             self.progress_bar.props(remove="stripe animate")
+            # Mark all remaining pending steps as skipped
+            self._mark_remaining_skipped()
         elif event.event_type == "run_cancelled":
             self._reset_to_default()
             self.progress_bar.props("color=warning")
             self.progress_bar.props(remove="stripe animate")
+            # Mark all remaining pending steps as skipped
+            self._mark_remaining_skipped()
 
     def _update_step_visual(self, step_num: int, status: str):
         if not step_num or step_num not in self.step_widgets:
@@ -588,11 +600,33 @@ class ProgressSection:
         w["step_icon"].name = cfg["icon"]
         w["step_icon"].classes(replace=f"text-[{cfg['text']}]")
         w["status"].text = status
-        w["status"].classes(replace=f"text-[10px] text-[{cfg['text']}] font-semibold")
+        w["status"].classes(replace=f"text-[8px] text-[{cfg['text']}] font-medium")
+
+        # Update box border color based on status
+        _box_base = ("border-radius: 8px; padding: 8px 6px; "
+                     "min-width: 82px; max-width: 100px; min-height: 80px; "
+                     "display: flex; flex-direction: column; align-items: center; "
+                     "justify-content: flex-start; gap: 3px;")
+        if "box" in w:
+            if base == "in_progress":
+                w["box"].style(replace=f"border: 2px solid {cfg['color']}; {_box_base} "
+                    "background: rgba(108,99,255,0.06);")
+            elif base in ("passed", "failed", "retrying"):
+                w["box"].style(replace=f"border: 1px solid {cfg['color']}; {_box_base} "
+                    "background: var(--cr-surface-light);")
+            else:
+                w["box"].style(replace=f"border: 1px solid var(--cr-border); {_box_base} "
+                    "background: var(--cr-surface-light);")
 
         # Update connector line color for completed steps
         if base in ("passed", "in_progress") and "connector" in w:
             w["connector"].style(replace=f"background: {cfg['color']}")
+
+    def _mark_remaining_skipped(self):
+        """Mark all steps still showing 'pending' as 'skipped'."""
+        for sn, w in self.step_widgets.items():
+            if w["status"].text == "pending":
+                self._update_step_visual(sn, "skipped")
 
     def _show_milestone_review(self, step_num: int, milestone: str, artifact_file: str,
                                has_failures: bool = False,

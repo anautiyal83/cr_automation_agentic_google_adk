@@ -16,7 +16,8 @@ _STEP_LABELS = {
     "ciq_validation_json_qa": "CIQ QA",
     "network_config_gen": "Network Config Gen",
     "network_simulator_setup": "Simulator Setup",
-    "network_config_qa": "Network Config QA",
+    "network_config_mop_qa": "MOP QA",
+    "network_config_exec_qa": "Execution QA",
     "report_generator": "Report Generation",
 }
 

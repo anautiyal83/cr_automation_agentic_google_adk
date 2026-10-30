@@ -80,11 +80,25 @@ async def start_simulator(
     if not config_path.exists():
         raise RuntimeError(f"Simulator config directory not found: {config_dir}")
 
-    # Find all config YAML files
-    config_files = list((config_path / "config").glob("*.yaml"))
-    if not config_files:
-        # Config might be directly in config_dir
-        config_files = list(config_path.glob("*.yaml"))
+    # MockWire looks for config/<name>.yaml relative to the JAR directory.
+    # Copy our configs into the JAR's config directory.
+    jar_dir = Path(mockwire_jar).resolve().parent
+    jar_config_dir = jar_dir / "config"
+    jar_config_dir.mkdir(parents=True, exist_ok=True)
+
+    src_config_dir = config_path / "config"
+    if src_config_dir.exists():
+        import shutil
+        for cf in src_config_dir.glob("*.yaml"):
+            dest = jar_config_dir / cf.name
+            shutil.copy2(cf, dest)
+            logger.info("Copied simulator config to JAR dir: %s", dest)
+
+    # Find all config YAML files (from JAR's config dir now)
+    config_files = list(jar_config_dir.glob("*.yaml"))
+    # Exclude built-in configs that aren't ours
+    builtin = {"local_server.yaml", "repo_server.yaml", "sbc_server.yaml", "target_node.yaml"}
+    config_files = [f for f in config_files if f.name not in builtin]
 
     sim = SimulatorProcess()
     sim._config_dir = config_dir
@@ -100,10 +114,10 @@ async def start_simulator(
             name = f"server_{i}"
             cmd = [java, "-jar", str(Path(mockwire_jar).resolve()),
                    "--name", name, "--port", str(port)]
-            logger.info("Starting MockWire: %s (cwd=%s)", " ".join(cmd[-4:]), config_dir)
+            logger.info("Starting MockWire: %s (cwd=%s)", " ".join(cmd[-4:]), jar_dir)
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=env, cwd=str(config_path),
+                env=env, cwd=str(jar_dir),
             )
             sim._processes.append(proc)
     else:
@@ -114,10 +128,10 @@ async def start_simulator(
             port = ports[port_idx] if ports and port_idx < len(ports) else 2222 + port_idx
             cmd = [java, "-jar", str(Path(mockwire_jar).resolve()),
                    "--name", name, "--port", str(port)]
-            logger.info("Starting MockWire: %s (cwd=%s)", " ".join(cmd[-4:]), config_dir)
+            logger.info("Starting MockWire: %s (cwd=%s)", " ".join(cmd[-4:]), jar_dir)
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=env, cwd=str(config_path),
+                env=env, cwd=str(jar_dir),
             )
             sim._processes.append(proc)
             if port not in sim._ports:

@@ -1,11 +1,10 @@
-"""Network Configuration QA Agent.
+"""Network Configuration Execution QA Agent — Step 9.
 
-Wraps network_config_test skill. Runs MOP generation test (Step 7) and
-execution test (Step 9) in a single agent. Classifies failures as
-workflow vs simulator for retry routing.
+Runs execution test AFTER simulator setup (step 8).
+MOP test (step 7) is handled separately by NetworkConfigMopQAAgent.
 
-On failure, sets _retry_target so PipelineAgent jumps back to the
-appropriate gen agent.
+On failure, classifies as workflow vs simulator issue and sets
+_retry_target so PipelineAgent jumps back to the appropriate agent.
 """
 from __future__ import annotations
 
@@ -21,9 +20,9 @@ flow = get_flow_logger(__name__)
 
 
 class NetworkConfigQAAgent(BaseAgent):
-    """QA engine: MOP generation test + execution test + failure classification."""
-    name: str = "network_config_qa"
-    description: str = "Steps 7+9: MOP generation test + execution test against simulator"
+    """Step 9: Execution test against simulator + failure classification."""
+    name: str = "network_config_exec_qa"
+    description: str = "Step 9: Execution test against simulator"
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -71,14 +70,10 @@ class NetworkConfigQAAgent(BaseAgent):
 
         output = await skill.test(inp)
 
-        # Save QA report
+        # Save execution QA report
         if run_dir and output.report_html:
             report_path = Path(run_dir) / f"{uc_name}_network-qa-report.html"
             report_path.write_text(output.report_html, encoding="utf-8")
-
-        # Save MOP test status (Step 7)
-        mop_failed = any(s.status == "FAIL" for s in output.mop_scenarios)
-        state["step_7_status"] = "failed" if mop_failed else "passed"
 
         # Save execution test status (Step 9)
         exec_failed = any(
@@ -127,9 +122,8 @@ class NetworkConfigQAAgent(BaseAgent):
             except Exception as e:
                 logger.debug("Simulator stop error: %s", e)
 
-        flow.flow("NETWORK_CONFIG_QA DONE — %d/%d passed, mop=%s, exec=%s",
+        flow.flow("NETWORK_CONFIG_EXEC_QA DONE — %d/%d passed, exec=%s",
                    output.passed, output.total,
-                   "FAIL" if mop_failed else "PASS",
                    "FAIL" if exec_failed else "PASS")
 
         return
