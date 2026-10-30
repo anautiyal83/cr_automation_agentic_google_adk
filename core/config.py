@@ -120,6 +120,8 @@ class ConfigManager:
     * Never logs or displays raw API keys
     """
 
+    _live_instance: "ConfigManager | None" = None  # singleton for live config access
+
     def __init__(
         self,
         config_path: Path | str | None = None,
@@ -132,6 +134,7 @@ class ConfigManager:
         self._yaml = YAML()
         self._yaml.preserve_quotes = True
         self._config: PipelineConfiguration | None = None
+        ConfigManager._live_instance = self  # register as live instance
 
     # -- internal helpers ----------------------------------------------------
 

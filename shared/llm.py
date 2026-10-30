@@ -70,6 +70,19 @@ async def call_llm(
     import litellm
 
     config = config or {}
+
+    # Always read live config to pick up settings changes during pipeline run
+    try:
+        from core.config import ConfigManager
+        cm = ConfigManager._live_instance
+        if cm and cm._config:
+            live = cm._config.model_dump() if hasattr(cm._config, "model_dump") else {}
+            for k in ("default_model", "openrouter_api_key", "step_models"):
+                if k in live and live[k]:
+                    config[k] = live[k]
+    except Exception:
+        pass
+
     model = model or config.get("default_model", os.environ.get(
         "LLM_MODEL", "openrouter/google/gemini-2.5-flash"
     ))
