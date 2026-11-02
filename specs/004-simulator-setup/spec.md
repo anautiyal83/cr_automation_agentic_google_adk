@@ -57,7 +57,37 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
 | DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
 
-DEP-4 is worse than first thought: the `su - sdfrun` step is "On failure: Execution will stop", so its prompt-validation failure aborts the whole pre-health-check phase (2026-11-02 Phase 2 E2E). DEP-1 is confirmed by the MOP: `niamId: ""`, `address: ""` for every node.
+### Step 6 placeholder & regex findings (2026-11-02 JAR probes; fixed in `network_config_gen` autofix + prompt)
+
+Verified with `generate`/`execute` probe workflows against run b61b977c's CIQ JSON:
+
+| Syntax | Resolves? |
+|--------|-----------|
+| `${configSequences.0.records.0.data.<Column>}` (dot-numeric index, spaces OK) | Yes. This is the only path to CIQ record values (`[0]` index does not work) |
+| `${<NODE>.niamID-<n>}` | Yes (DEP-1 fix) |
+| `${node}` `${nodeGroup}` `${crGroup}` `${email}` `${NODE_TYPE}` `${SUB_ACTIVITY_NAME}` | Yes |
+| `${name}` for `--var name=…` and for registered `(?<name>…)` groups | Yes |
+| `${ENV.NAME}` | Yes (OS env) |
+| `${configData.…}`, `${nodeGroups.…}`, `${node_row.…}`, `${register.…}`, `${env.…}`, `${{…}}` | **No.** Empty in `execute`, left raw in the MOP |
+| Python `(?P<name>…)` / Java names with `_` | **PatternSyntaxException** (step fails) |
+| `register: {regex: 'X=(\d+)', name: v}` (unnamed group) | Registers nothing |
+| `when: "configSequences.0.records.0.data.Col != ''"` (bare operand) | Works |
+| `when: "${…} != ''"` (interpolated operand) | Wrong result in both directions (JAR quirk) |
+| `for_each: ${configSequences.0.records}` | NullPointerException in the JAR. Only `records.0` is usable (DEP-9). |
+
+| ID | Status |
+|----|--------|
+| DEP-1 | **Partly fixed**: `${node_row.X.NIAM_NAMEn}` → `${X.niamID-n}`. `NIAM_USER` is not in the CIQ JSON; the validator flags it (needs a literal user or `${SECRET.…}`). |
+| DEP-3 | **Fixed**: `${{…}}` → `${…}` |
+| DEP-4 | **Fixed**: `su`/`exit` steps get step-level `prompt_regex` (from their validation regex) and no output criterion. E2E: `su - sdfrun`/`exit` pass, and the whole health-check phase now runs (16 commands vs 4). |
+| DEP-6 | **Fixed**: `${configData.tables.<Sheet>.<Col>}` → `${configSequences.0.records.0.data.<Col>}`. E2E: NORTH sends `imsi=404530000000132` (was empty). EAST has no IMSI **in the CIQ** (it uses MSISDN), so the prompt now teaches a `when` guard for optional columns. |
+| DEP-7 | **Fixed** (new): regexes converted to Java named groups (`pre_ldap_result` → `preLdapResult`); `name:` with an unnamed group or a single named group becomes the group name; references are rewritten. |
+| DEP-8 | **Fixed** (new): `${register.x}` / `${env.x}` → `${x}` |
+| DEP-9 | **Open** (new): records beyond the first per node group are not executed (`for_each` NPE in the JAR). NORTH has 2 subscriber rows. JAR issue / UC design decision. |
+
+Step 6's validator now reports every placeholder the JAR cannot resolve, so step 6 fails with actionable feedback instead of step 9 silently sending empty values. Remaining on b61b977c (LLM content errors, fed back via regenerate): `${node_row.*.NIAM_USER}`, `${ORDERNO}`, `${pre_ldap_result}`/`${post_ldap_result}` never registered, and a whole-sheet `${configData.tables.'Profile Modification'}`.
+
+DEP-4 was worse than first thought: the `su - sdfrun` step is "On failure: Execution will stop", so its prompt-validation failure aborts the whole pre-health-check phase (2026-11-02 Phase 2 E2E). DEP-1 is confirmed by the MOP: `niamId: ""`, `address: ""` for every node.
 
 DEP-2 was **confirmed** (Step 9 had never executed a command: `node not found: PGW_RDS`, research.md F8). **Fixed 2026-11-02**: `run_execution_test` runs once per zone × CR group from the CIQ JSON, with reports in `exec_output/<crGroup>/`.
 

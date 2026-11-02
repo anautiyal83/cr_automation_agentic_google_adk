@@ -237,6 +237,7 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
                 "node": step.get("node", ""),
                 "phase": phase_name,
                 "validation": step.get("validation", {}),
+                "prompt_regex": step.get("prompt_regex", ""),
             })
     return commands
 

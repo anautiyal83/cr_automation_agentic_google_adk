@@ -37,8 +37,7 @@ PHASE DEFINITION (phases.<phaseName>):
       send: '<shell command>'
       command_description: 'What this command does'
       register:
-        - regex: '(?P<varName>pattern)'
-          name: varName
+        - regex: 'label: (?<varName>pattern)'   # Java named group; later steps use ${varName}
       validation:
         description: 'What success looks like'
         success:
@@ -56,11 +55,23 @@ CRITICAL RULES:
 - phases is a MAP (dict keyed by phase name), NOT a list
 - nodes is a MAP (dict keyed by node name), NOT nodeGroups
 - validation has success/failure branches with criteria inside, NOT top-level criteria
-- register uses {regex: '...', name: '...'}, NOT just a list of strings
+- register uses {regex: '... (?<varName>...) ...'}: regexes are JAVA — named groups are
+  (?<name>...) NOT (?P<name>...), and names are letters/digits only (preLdapResult, not
+  pre_ldap_result). Reference registered values as ${varName} (never ${register.varName})
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
-- Do NOT generate "su - sdfrun" as a separate step — use expect_reply on the next command or set user context
+- Switch to a service user with its own step `send: 'su - <user>'`, and leave it with
+  `send: 'exit'`. These steps MUST set step-level prompt_regex to the prompt they lead to
+  and MUST NOT validate output with a regex: the framework strips prompts from output.
+- Placeholders (only these resolve):
+    ${configSequences.0.records.0.data.<Column>}  CIQ value of the node group's record
+    ${<NODE>.niamID-<n>}                          NIAM ID of a CIQ node (e.g. ${RDS.niamID-1})
+    ${node} ${nodeGroup} ${crGroup} ${email} ${NODE_TYPE} ${SUB_ACTIVITY_NAME}
+    ${varName}                                    registered output or `--var` value
+    ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
+- A CIQ column that can be empty for some rows: guard the step with
+  when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
 - Quote ALL values containing colons, brackets, or special chars in YAML
 """
 
@@ -101,11 +112,13 @@ Orchestration:
 === VARIABLE PATTERNS ===
 Use these runtime variable patterns in the workflow YAML:
 
-  ${{nodeGroups.<NodeName>.<field>}}    — node fields from JSON output (e.g. niamID-1, host)
-  ${{configData.tables.<Sheet>.<Col>}}  — CIQ data values from JSON output tables
-  ${{register.<varName>}}              — values registered from previous command outputs
-  ${{env.<key>}}                        — runtime environment variables (e.g. ORDERNO)
-  $<segregateVar>                      — segregate_by variable from JSON output
+  ${{configSequences.0.records.0.data.<Column>}} — CIQ value (exact CIQ column name; spaces allowed)
+  ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE> (e.g. ${{RDS.niamID-1}})
+  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{email}}      — current node group (zone) and CR group
+  ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}}               — provided by the framework at runtime
+  ${{varName}}                                    — value registered by an earlier step's (?<varName>...) group
+  ${{SECRET.key}} / ${{ENV.NAME}}                    — globals.secrets / OS environment
+  NOT supported (resolve to empty): configData.*, nodeGroups.*, node_row.*, register.*, env.*
 
 === EXAMPLE WORKFLOW STRUCTURE ===
 
@@ -115,12 +128,12 @@ nodes:
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
     ssh:
-      host: '${{nodeGroups.RDS.niamID-1}}'
+      host: '${{RDS.niamID-1}}'
       port: '22'
       user: 'oamsys'
       auth:
         password: '${{SECRET.m2m_password}}'
-      ne_id: '${{nodeGroups.RDS.niamID-1}}'
+      ne_id: '${{RDS.niamID-1}}'
       elevate_to_root: true
       kex_algorithms: '+diffie-hellman-group14-sha1'
       host_key_algorithms: '+ssh-rsa'
@@ -131,12 +144,12 @@ nodes:
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
     ssh:
-      host: '${{nodeGroups.PGW.niamID-1}}'
+      host: '${{PGW.niamID-1}}'
       port: '22'
       user: 'oamsys'
       auth:
         password: '${{SECRET.m2m_password}}'
-      ne_id: '${{nodeGroups.PGW.niamID-1}}'
+      ne_id: '${{PGW.niamID-1}}'
       elevate_to_root: true
       kex_algorithms: '+diffie-hellman-group14-sha1'
       host_key_algorithms: '+ssh-rsa'
@@ -154,11 +167,10 @@ phases:
       - node: rds_node
         send: 'su - sdfrun'
         command_description: 'Switch to sdfrun user on RDS'
+        prompt_regex: 'sdfrun@rdsggn01:~>'   # completes when the sdfrun prompt appears
         validation:
-          description: 'User switch to sdfrun'
+          description: 'Prompt changes to the sdfrun user prompt (checked by prompt_regex)'
           success:
-            criteria:
-              regex: '\\$'
             message: 'Switched to sdfrun user'
           failure:
             message: 'Failed to switch to sdfrun'
@@ -167,8 +179,7 @@ phases:
         command_description: 'sar on RDS [Pre-health check: CPU idle percentage]'
         on_failure: continue
         register:
-          - regex: 'Average:.*(?P<idle>\\d+\\.\\d+)\\s*$'
-            name: rds_cpu_idle
+          - regex: 'Average:.*\\s(?<rdsCpuIdle>\\d+\\.\\d+)\\s*$'
         validation:
           description: 'CPU idle should be >= 90%'
           success:
@@ -206,11 +217,11 @@ phases:
     name: 'Main subscriber modification activity'
     steps:
       - node: rds_node
-        send: "ldapsearch -x -h localhost -p 16611 -b \\"imsi=${{configData.tables.'Profile Modification'.'Test IMSI'}},dc=IMSI,dc=C-NTDB\\" objectclass=*"
+        send: "ldapsearch -x -h localhost -p 16611 -b \\"imsi=${{configSequences.0.records.0.data.Test IMSI}},dc=IMSI,dc=C-NTDB\\" objectclass=*"
         command_description: 'Query subscriber profile before modification'
+        when: "configSequences.0.records.0.data.Test IMSI != ''"
         register:
-          - regex: '(?P<profile_data>[\\s\\S]+)'
-            name: pre_ldap_result
+          - regex: '(?<preLdapResult>dn: [\\s\\S]+)'
         validation:
           description: 'LDAP search should return subscriber data'
           success:
@@ -242,11 +253,13 @@ phases:
 2. Phase names MUST be exactly: preNodeHealthCheck, activity_configuration, postNodeHealthCheck
 3. For each phase, list steps using "send" and "command_description".
 4. Validation uses success/failure branches with criteria inside.
-5. Register outputs with regex + name format.
-6. Use ${{configData.tables...}} for CIQ values, ${{nodeGroups...}} for node properties.
+5. Register outputs with a Java named group: regex: '... (?<varName>...)'; use them as ${{varName}}.
+6. Use ${{configSequences.0.records.0.data.<Column>}} for CIQ values and ${{<NODE>.niamID-<n>}} for NIAM IDs.
 7. Do NOT generate NIAM login commands or Ctrl+P+E commands — framework handles these via node config.
 8. Do NOT generate "su" commands as inline wrappers (e.g. su - sdfrun -c "cmd").
    Instead: first step does "su - sdfrun" to switch user, subsequent steps run commands directly.
+   The su step (and the matching "exit") sets step-level prompt_regex to the prompt it leads to
+   and has NO output regex validation — prompts are stripped from command output.
 9. Quote all YAML values containing colons, brackets, or special characters.
 
 === PHASE BEHAVIOR RULES ===
@@ -266,11 +279,11 @@ phases:
 - Use node: LOCAL for local commands (Python scripts, file operations).
 
 === MOP HEADER VARIABLES ===
-The MOP report needs these values. Set them in the workflow or they will be null:
-  ${{env.NODE_TYPE}}          — e.g. "PGW_RDS" (from requirements)
-  ${{env.ACTIVITY}}           — e.g. "1058_IFC_CAPABILITY_MODIFICATION"
-  ${{env.CR_GROUP}}           — e.g. from ${{nodeGroups.crGroup}} or Index sheet
-  ${{env.TARGET_NODES}}       — e.g. "PGW, RDS"
+The framework provides these at runtime — reference them, do not define them:
+  ${{NODE_TYPE}}              — e.g. "PGW_RDS"
+  ${{SUB_ACTIVITY_NAME}}      — e.g. "1058_IFC_CAPABILITY_MODIFICATION"
+  ${{crGroup}}                — CR group of the node group being executed (e.g. "CR1")
+  ${{nodeGroup}} / ${{node}}    — node group (zone) being executed (e.g. "EAST")
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
@@ -295,17 +308,18 @@ Phases: {phases}
 {developer_answers}
 
 === VARIABLE PATTERNS ===
-  ${{nodeGroups.<NodeName>.<field>}}    — node fields from JSON output
-  ${{configData.tables.<Sheet>.<Col>}}  — CIQ data values
-  ${{register.<varName>}}              — registered command outputs
-  ${{env.<key>}}                        — runtime environment variables
+  ${{configSequences.0.records.0.data.<Column>}} — CIQ value
+  ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE>
+  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
+  ${{varName}}                                    — registered (?<varName>...) output
+  NOT supported: configData.*, nodeGroups.*, node_row.*, register.*, env.*
 
 === FRAMEWORK RULES (STRICT) ===
 - Use "send" for commands, "command_description" for descriptions
 - phases is a MAP (dict), NOT a list
 - nodes is a MAP (dict), NOT nodeGroups
 - validation has success/failure branches with criteria inside
-- register uses {{regex: '...', name: '...'}}
+- register uses {{regex: '... (?<varName>...) ...'}} — Java named groups, letters/digits only
 - No NIAM login commands — use ne_id on nodes
 - No Ctrl+P+E commands — use elevate_to_root: true on nodes
 

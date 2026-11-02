@@ -74,7 +74,82 @@ def validate_workflow(yaml_text: str) -> list[str]:
                     step_errors = _validate_step(step, j, phase_name, known_nodes, known_registers)
                     errors.extend(step_errors)
 
+    errors.extend(check_placeholders(parsed))
     return errors
+
+
+# Context the cli-automation JAR provides for every node group (spec 004 probes)
+_JAR_BUILTINS = {"node", "nodeGroup", "crGroup", "email", "NODE_TYPE", "SUB_ACTIVITY_NAME",
+                 "configSequences", "http_status"}
+_DOTTED_ROOTS = {"configSequences", "ENV", "SECRET", "vars"}
+_DEAD_SYNTAX = [
+    (re.compile(r"\$\{\{"), "uses '${{…}}' — write '${…}'"),
+    (re.compile(r"\$\{configData\."), "uses 'configData…' — CIQ values are "
+                                       "'${configSequences.0.records.0.data.<Column>}'"),
+    (re.compile(r"\$\{node_row\."), "uses 'node_row…' — NIAM IDs are '${<NODE>.niamID-<n>}'; "
+                                     "other node fields are not in the CIQ JSON"),
+    (re.compile(r"\$\{(register|env)\."), "uses 'register.'/'env.' — registered values and "
+                                           "--var values are plain '${name}'"),
+]
+_PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
+_NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")
+
+
+def check_placeholders(parsed: dict) -> list[str]:
+    """Report ``${…}`` placeholders the cli-automation JAR cannot resolve."""
+    nodes = parsed.get("nodes") or {}
+    node_names = set(nodes) if isinstance(nodes, dict) else set()
+    defined = set(_JAR_BUILTINS)
+    defined |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
+    phases = parsed.get("phases") or {}
+    for body in (phases.values() if isinstance(phases, dict) else []):
+        if isinstance(body, dict):
+            defined |= set((body.get("vars") or {}).keys())
+    for regex in _iter_register_regexes(phases):
+        defined |= set(_NAMED_GROUP.findall(regex))
+
+    problems: dict[str, str] = {}
+    for text in _iter_strings(parsed):
+        for pattern, why in _DEAD_SYNTAX:
+            for m in pattern.finditer(text):
+                ref = text[m.start():text.find("}", m.start()) + 1]
+                problems.setdefault(ref, why)
+        for m in _PLACEHOLDER.finditer(text):
+            expr = m.group(1).strip()
+            root = expr.split(".", 1)[0]
+            if "." in expr:
+                if root in _DOTTED_ROOTS or (root in node_names and re.match(
+                        rf"^{re.escape(root)}\.niamID-\d+$", expr)):
+                    continue
+                problems.setdefault(m.group(0), "unknown placeholder root "
+                                    f"'{root}' (not a node NIAM ID, configSequences, ENV, SECRET or vars)")
+            elif expr not in defined:
+                problems.setdefault(m.group(0), "variable is never registered by a step "
+                                    "(add a register with a (?<name>…) group on the step that produces it)")
+    return [f"Unresolvable placeholder {ref}: {why}" for ref, why in problems.items()]
+
+
+def _iter_strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _iter_strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _iter_strings(v)
+
+
+def _iter_register_regexes(value: Any):
+    if isinstance(value, dict):
+        for reg in value.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str):
+                yield reg["regex"]
+        for v in value.values():
+            yield from _iter_register_regexes(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _iter_register_regexes(v)
 
 
 def _validate_step(step: dict, index: int, phase: str, known_nodes: set, known_registers: set) -> list[str]:

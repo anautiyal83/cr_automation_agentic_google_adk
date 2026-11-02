@@ -176,7 +176,8 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
         if not _is_su(text) or text in result:
             continue
         user = text.split()[-1]
-        candidates = _regex_examples(_validation_regex(cmd))
+        # Step prompt_regex (step 6 moves su prompt checks there) wins over a validation regex
+        candidates = _regex_examples(str(cmd.get("prompt_regex") or "")) + _regex_examples(_validation_regex(cmd))
         if str(req.get("target_user_after_root", "")) == user:
             candidates.append(str(req.get("target_user_after_root_prompt") or ""))
         candidates += [a for a in alternatives if user in a]

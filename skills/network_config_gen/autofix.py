@@ -6,6 +6,8 @@ Fixes common LLM mistakes while preserving ${...} runtime placeholders:
 - Fix unsupported Java functions in criteria.expr
 - Ensure referenced nodes exist in nodeGroups
 - Repair YAML syntax (markdown fencing, trailing garbage)
+- Rewrite placeholders to the syntax the cli-automation JAR resolves
+- su/exit steps complete on the step prompt_regex, not on output validation
 """
 from __future__ import annotations
 
@@ -26,7 +28,37 @@ _VALID_COMMAND_FIELDS = {
     "cmd", "command", "node", "description", "command_description",
     "validation", "register", "on_failure", "timeout", "timeout_sec",
     "target_user", "delay", "expect", "send", "escalation", "exit_after",
+    # StepDefinition fields from schemas/cli-automation-workflow-schema_v1.2.yaml
+    "id", "prompt_regex", "when", "skip_when", "use_exit_code",
+    "retries", "retry_delay_sec", "retry_on", "expect_reply",
 }
+
+# Step fields the JAR only accepts as strings (a497018: LLM map-valued `when` broke deserialization)
+_STRING_ONLY_FIELDS = {"when", "skip_when", "prompt_regex"}
+
+# Placeholder rewrites to the context the cli-automation JAR builds from the CIQ JSON
+# (verified with `generate`/`execute` probes, spec 004 DEP-1/DEP-3/DEP-6):
+#   record values  ${configSequences.0.records.0.data.<Column>}   (dot-numeric index; spaces ok)
+#   NIAM IDs       ${<NODE>.niamID-<n>}
+#   node group     ${node} ${nodeGroup} ${crGroup} ${email} ${NODE_TYPE} ${SUB_ACTIVITY_NAME}
+_PLACEHOLDER_REWRITES = [
+    # DEP-3: ${{x}} → ${x}
+    (re.compile(r"\$\{\{\s*(.+?)\s*\}\}"), r"${\1}"),
+    # DEP-6: ${configData.tables.<Sheet>.<Col>} → first record of the node group's config sequence.
+    # Sheet/column may be bare, "quoted", 'quoted' or ''quoted'' (inside a single-quoted shell arg).
+    (re.compile(r"\$\{configData\.tables\.(?:'+[^']*'+|\"[^\"]*\"|[^.}]+)\."
+                r"(?:'+([^']*)'+|\"([^\"]*)\"|([^}]+))\}"),
+     lambda m: "${configSequences.0.records.0.data." + (m.group(1) or m.group(2) or m.group(3)).strip() + "}"),
+    # DEP-1: ${node_row.<NODE>.NIAM_NAME<n>} → ${<NODE>.niamID-<n>}
+    (re.compile(r"\$\{node_row\.([A-Za-z0-9_]+)\.NIAM_NAME(\d+)\}"), r"${\1.niamID-\2}"),
+    # DEP-7: registered outputs are plain context variables: ${register.x} → ${x}
+    (re.compile(r"\$\{register\.([A-Za-z_][A-Za-z0-9_]*)\}"), r"${\1}"),
+    # DEP-8: ${env.x} never resolves (OS env is ${ENV.X}); run-time values come from
+    # `execute --var X=…` or a registered output, both referenced as ${x}
+    (re.compile(r"\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}"), r"${\1}"),
+]
+
+_SU_OR_EXIT = re.compile(r"^(su(\s+-)?\s+\S+|exit)$")
 
 _VALID_VALIDATION_FIELDS = {
     "criteria", "success", "failure", "description", "timeout",
@@ -169,6 +201,10 @@ def fix_workflow(yaml_text: str) -> str:
                 fixed_phases[phase_name] = _fix_phase({"steps": phase_body}, known_nodes)
         parsed["phases"] = fixed_phases
 
+    # --- Regex named groups + placeholders the JAR cannot resolve ---
+    renames = fix_named_groups(parsed.get("phases", {}))
+    parsed = fix_placeholders(parsed, renames)
+
     # --- Add missing nodes referenced in steps ---
     nodes = parsed.get("nodes", {})
     if isinstance(nodes, dict):
@@ -181,7 +217,7 @@ def fix_workflow(yaml_text: str) -> str:
                     "type": "remote", "plugin": "ssh",
                     "prompt_regex": f"{node_name.lower()}:~ #",
                     "ssh": {
-                        "host": f"${{node_row.{node_name}.NIAM_NAME1}}",
+                        "host": f"${{{node_name}.niamID-1}}",
                         "port": "22", "user": "oamsys",
                         "auth": {"password": "${SECRET.password}"},
                     },
@@ -317,12 +353,149 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     # Fix criteria.expr — replace unsupported Java functions
     _fix_criteria_expr(step)
 
+    _fix_prompt_change_step(step)
+
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
         if key not in _VALID_COMMAND_FIELDS:
             step.pop(key)
+        elif key in _STRING_ONLY_FIELDS and not isinstance(step[key], str):
+            logger.info("Removed non-string %s on step %r", key, step.get("send", "")[:40])
+            step.pop(key)
 
     return step
+
+
+def _fix_prompt_change_step(step: dict) -> None:
+    """``su``/``exit`` steps finish on the new prompt; they produce no output to validate.
+
+    The JAR strips prompts from captured output, so a validation regex on the prompt
+    can never match (spec 004 DEP-4) — and with ``on_failure: stop`` it aborts the
+    phase. On a real node ``su - x; echo __CMD_DONE__:$?`` only echoes after the
+    sub-shell exits, so the step can only complete by prompt detection. Move the
+    prompt regex to the step-level ``prompt_regex`` and drop the output criterion
+    (a branch without criteria always passes; a missing prompt still fails the step
+    with a prompt timeout).
+    """
+    send = str(step.get("send", "")).strip()
+    if not _SU_OR_EXIT.match(send):
+        return
+    validation = step.get("validation")
+    if not isinstance(validation, dict):
+        return
+    success = validation.get("success")
+    criteria = success.get("criteria") if isinstance(success, dict) else None
+    regex = criteria.get("regex") if isinstance(criteria, dict) else None
+    if not regex:
+        return
+    step.setdefault("prompt_regex", regex)
+    criteria.pop("regex", None)
+    if not criteria:
+        success.pop("criteria", None)
+    validation["description"] = (f"Prompt matches {step['prompt_regex']!r} after '{send}' "
+                                 "(checked by step prompt_regex)")
+    logger.info("Step %r: prompt validation moved to step prompt_regex %r", send, step["prompt_regex"])
+
+
+def fix_placeholders(value: Any, renames: dict[str, str] | None = None) -> Any:
+    """Rewrite placeholders (recursively) to syntax the cli-automation JAR resolves.
+
+    ``renames`` maps registered variable names to their Java group names
+    (see fix_named_groups); ``${register.x}`` and ``${x}`` both become ``${javaName}``.
+    """
+    if isinstance(value, str):
+        for pattern, repl in _PLACEHOLDER_REWRITES:
+            value = pattern.sub(repl, value)
+        if renames:
+            value = _VAR_REF.sub(lambda m: "${" + renames.get(m.group(1), m.group(1)) + "}", value)
+        return value
+    if isinstance(value, dict):
+        return {k: fix_placeholders(v, renames) for k, v in value.items()}
+    if isinstance(value, list):
+        return [fix_placeholders(v, renames) for v in value]
+    return value
+
+
+_PY_NAMED_GROUP = re.compile(r"\(\?P<([A-Za-z_][A-Za-z0-9_]*)>")
+_JAVA_NAMED_GROUP = re.compile(r"\(\?<([A-Za-z_][A-Za-z0-9_]*)>")
+_VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def fix_named_groups(phases: Any) -> dict[str, str]:
+    """Make register/validation regexes valid Java and return variable renames.
+
+    The JAR compiles regexes with java.util.regex (spec 004 DEP-7):
+    - Python ``(?P<name>…)`` is a PatternSyntaxException → ``(?<name>…)``
+    - Java group names allow only letters and digits → ``pre_ldap_result`` → ``preLdapResult``
+    - ``register: {regex: 'X=(\\d+)', name: v}`` without a named group registers nothing
+      → the first capturing group becomes ``(?<v>…)``
+    Registered values are referenced as ``${groupName}``.
+    """
+    renames: dict[str, str] = {}
+
+    def java_name(name: str) -> str:
+        parts = [p for p in name.split("_") if p]
+        new = (parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])) if parts else "v"
+        if new != name:
+            renames[name] = new
+        return new
+
+    def fix_regex(regex: str) -> str:
+        regex = _PY_NAMED_GROUP.sub(lambda m: f"(?<{java_name(m.group(1))}>", regex)
+        return _JAVA_NAMED_GROUP.sub(lambda m: f"(?<{java_name(m.group(1))}>", regex)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for reg in node.get("register") or []:
+            if not isinstance(reg, dict) or not isinstance(reg.get("regex"), str):
+                continue
+            reg["regex"] = fix_regex(reg["regex"])
+            name = reg.get("name")
+            if not (isinstance(name, str) and name):
+                continue
+            groups = _JAVA_NAMED_GROUP.findall(reg["regex"])
+            target = java_name(name)
+            if not groups:
+                reg["regex"] = _name_first_group(reg["regex"], target)
+            elif len(groups) == 1 and groups[0] != target:
+                # `name:` is ignored when the regex has a named group — the LLM meant `name`
+                reg["regex"] = reg["regex"].replace(f"(?<{groups[0]}>", f"(?<{target}>", 1)
+                for old, new in list(renames.items()):
+                    if new == groups[0]:
+                        renames[old] = target
+                renames[groups[0]] = target
+        validation = node.get("validation")
+        if isinstance(validation, dict):
+            for branch in ("success", "failure", "warning"):
+                criteria = (validation.get(branch) or {}).get("criteria") if isinstance(
+                    validation.get(branch), dict) else None
+                if isinstance(criteria, dict) and isinstance(criteria.get("regex"), str):
+                    criteria["regex"] = fix_regex(criteria["regex"])
+        for value in node.values():
+            walk(value)
+
+    walk(phases)
+    if renames:
+        logger.info("Renamed registered variables for Java regex: %s", renames)
+    return renames
+
+
+def _name_first_group(regex: str, name: str) -> str:
+    """Turn the first plain capturing group into ``(?<name>…)``; wrap the regex if none."""
+    i = 0
+    while i < len(regex):
+        if regex[i] == "\\":
+            i += 2
+            continue
+        if regex[i] == "(" and not regex.startswith("(?", i):
+            return f"{regex[:i]}(?<{name}>{regex[i + 1:]}"
+        i += 1
+    return f"(?<{name}>{regex})"
 
 
 def _fix_validation(validation: dict, step: dict) -> dict:

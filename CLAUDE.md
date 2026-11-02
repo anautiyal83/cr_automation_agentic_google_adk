@@ -119,14 +119,20 @@ data/                              # Runtime (runs, uploads, DB, logs)
 lib/                               # JARs + MockWire
 ```
 
-## Workflow Variable Patterns
+## Workflow Variable Patterns (verified against cli-automation JAR, spec 004)
 ```
-${nodeGroups.<Node>.<field>}       — node properties from JSON output
-${configData.tables.<Sheet>.<Col>} — CIQ data values
-${register.<varName>}              — captured command outputs
-${env.<key>}                       — runtime environment variables
-$<segregateVar>                    — segregate_by variable from JSON output
+${configSequences.0.records.0.data.<Column>}  — CIQ value (first record of the node group; spaces OK)
+${<NODE>.niamID-<n>}                          — NIAM ID of a CIQ node, e.g. ${RDS.niamID-1}
+${node} ${nodeGroup} ${crGroup} ${email}      — current node group / CR group
+${NODE_TYPE} ${SUB_ACTIVITY_NAME}             — provided by the JAR at runtime
+${varName}                                    — registered (?<varName>…) output or --var value
+${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environment
 ```
+- NOT supported (empty at execute): `configData.*`, `nodeGroups.*`, `node_row.*`, `register.*`, `env.*`, `${{…}}`
+- Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
+- `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
+- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
+- `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders
 
 ## Running
 ```powershell

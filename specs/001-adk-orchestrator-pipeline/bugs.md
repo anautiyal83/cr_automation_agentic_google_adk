@@ -426,12 +426,15 @@
 | S8-11 | Medium | Placeholder commands left to LLM instead of resolved from CIQ JSON | Open |
 | S8-12 | Low | Unused `simulator.endpoint/port`; CWD-dependent JAR path; `LOCAL` gets stub server | Fixed (uncommitted, 004 Phase 1): config wired, JAR path from project root, LOCAL skipped |
 | S8-13 | High | `extract_workflow_commands()` read `cmd`/list phases; workflows use `send:` + phase map → LLM prompt never saw any command | Fixed (uncommitted, 004 Phase 1) |
-| DEP-1 | — | Workflow uses `${node_row.RDS.NIAM_NAME1}`; CIQ JSON exposes `RDS.niamID-1` (step 6) | Open |
+| DEP-1 | — | Workflow uses `${node_row.RDS.NIAM_NAME1}`; CIQ JSON exposes `RDS.niamID-1` (step 6) | Partly fixed: NIAM IDs → `${X.niamID-n}`; `NIAM_USER` flagged by step 6 validator |
 | DEP-2 | — | `execute --node` given `node_type` (`PGW_RDS`), not a node name (step 9) — confirmed | Fixed (uncommitted): one execute per zone × CR group (`--node EAST --cr CR1`) |
-| DEP-3 | — | Malformed `${{…}}` placeholders in generated workflow (step 6 autofix) | Open |
-| DEP-4 | — | `su`/`exit` steps validate a prompt the JAR strips from output (step 6) | Open |
+| DEP-3 | — | Malformed `${{…}}` placeholders in generated workflow (step 6 autofix) | Fixed (step 6 autofix) |
+| DEP-4 | — | `su`/`exit` steps validate a prompt the JAR strips from output (step 6) | Fixed (step 6 autofix: step `prompt_regex`, no output criterion) |
 | DEP-5 | — | `sar 1 10` regex expects 5 numeric columns; real output has 6 (step 6) | Open |
-| DEP-6 | — | `${configData…'Test IMSI'}` resolves empty in `execute` and stays unresolved in the MOP (step 6) | Open |
+| DEP-6 | — | `${configData…'Test IMSI'}` resolves empty in `execute` and stays unresolved in the MOP (step 6) | Fixed (step 6 autofix: `${configSequences.0.records.0.data.<Col>}`); EAST has no IMSI in CIQ |
+| DEP-7 | — | Python `(?P<…>)` / underscore group names → PatternSyntaxException; `${register.x}` never resolves (step 6) | Fixed (step 6 autofix) |
+| DEP-8 | — | `${env.x}` never resolves (OS env is `${ENV.X}`) (step 6) | Fixed (rewritten to `${x}`) |
+| DEP-9 | — | Only the first CIQ record per node group executes; `for_each` over records NPEs in the JAR | Open |
 
 ## Step 9: Execution QA
 
