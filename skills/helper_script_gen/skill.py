@@ -94,9 +94,11 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
     return problems
 
 
-# Exceptions that mean the script itself is broken (not a missing input file / environment)
-_CODE_ERRORS = re.compile(r"^(NameError|SyntaxError|IndentationError|TypeError|AttributeError|UnboundLocalError|"
-                          r"ImportError|ModuleNotFoundError|KeyError|IndexError|ValueError)\b", re.M)
+# A traceback means the script is broken — unless its exception only says the smoke run lacks
+# the real environment (an input file a real run downloads first, a host, permissions)
+_ENVIRONMENT_ERRORS = re.compile(r"^(FileNotFoundError|NotADirectoryError|IsADirectoryError|PermissionError|"
+                                 r"ConnectionError|ConnectionRefusedError|TimeoutError|socket\.\w+|"
+                                 r"urllib\.error\.\w+|OSError)\b")
 _WF_PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
 
 
@@ -143,7 +145,9 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 problems.append(f"`{resolved}` did not finish within {timeout}s")
                 continue
             err = proc.stderr or ""
-            if "Traceback (most recent call last)" in err and _CODE_ERRORS.search(err):
+            last = next((l.strip() for l in reversed(err.strip().splitlines()) if l.strip()), "")
+            exc = last.split(":", 1)[0].strip()
+            if "Traceback (most recent call last)" in err and not _ENVIRONMENT_ERRORS.match(exc):
                 problems.append(f"running `{resolved}` crashed:\n" + "\n".join(err.strip().splitlines()[-6:]))
     return problems
 
