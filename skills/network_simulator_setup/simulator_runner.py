@@ -206,7 +206,9 @@ async def start_simulator(
     Raises:
         SimulatorStartError: with log paths and tails when any instance fails.
     """
-    sim_dir = Path(sim_dir)
+    # Absolute: MockWire runs with cwd=sim_dir, so relative --config/--responses paths
+    # (the pipeline's run_dir is "./data/runs/<id>") would resolve twice
+    sim_dir = Path(sim_dir).resolve()
     jar = Path(mockwire_jar).resolve()
     if not jar.exists():
         raise SimulatorStartError(f"MockWire JAR not found: {jar}")

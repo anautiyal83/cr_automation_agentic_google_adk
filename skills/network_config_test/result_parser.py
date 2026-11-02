@@ -235,6 +235,10 @@ def classify_failures(command_results: list[CommandResult],
             simulator_issues.append(cr.command[:60])
         elif cr.success and cr.validation_status == "failed":
             workflow_issues.append(cr.command[:60])
+        elif simulator_events is not None:
+            # Missing simulator responses always appear as unmatched events, so any other
+            # failure (e.g. a LOCAL helper script error) belongs to the workflow side
+            workflow_issues.append(cr.command[:60])
         else:
             simulator_issues.append(cr.command[:60])
 

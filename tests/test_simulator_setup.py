@@ -246,3 +246,30 @@ def test_classify_failures_uses_simulator_events():
     c = classify_failures(failed, broken)
     assert c["classification"] == "workflow" and c["retry_target"] == 6
     assert any("empty/unresolved" in w for w in c["workflow_issues"])
+
+
+@needs_mockwire
+def test_mockwire_starts_with_relative_run_dir(tmp_path, monkeypatch):
+    # The pipeline's run_dir is relative ("./data/runs/<id>") while MockWire runs with
+    # cwd=<run_dir>/simulator — paths passed to it must not be resolved twice.
+    monkeypatch.chdir(tmp_path)
+
+    async def scenario():
+        sim_dir = prepare_simulator_dir("data/runs/rel", str(MOCKWIRE_JAR))
+        write_instance_files(sim_dir, "RDS", fixed_config(), {"sar.txt": "x\n"})
+        sim = await start_simulator(sim_dir, [SimulatorInstance("RDS", allocate_ports(1)[0])],
+                                    str(MOCKWIRE_JAR), ttl_minutes=2)
+        try:
+            assert sim.is_running
+            assert Path(sim.instances[0].events_file).is_absolute()
+        finally:
+            await sim.stop()
+
+    asyncio.run(scenario())
+
+
+def test_classify_local_failure_is_workflow_when_events_present():
+    from skills.network_config_test.result_parser import CommandResult, classify_failures
+    local = [CommandResult(command="python create_xml.py --imsi 1", node="LOCAL", success=False,
+                           output="python.exe: can't open file 'create_xml.py': [Errno 2] No such file")]
+    assert classify_failures(local, [])["classification"] == "workflow"

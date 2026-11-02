@@ -195,17 +195,22 @@ async def run_execution_test(
 
     schema_path = sanitized_rules or validation_rules_path or json_output_path
     results = []
+    # LOCAL workflow steps run "python create_xml.py ..." in the JAR's working directory:
+    # use the helper scripts folder from step 6 (all other paths are passed absolute)
+    scripts_dir = Path(output_dir) / "scripts"
+    local_cwd = str(scripts_dir.resolve()) if scripts_dir.is_dir() else None
+
     for json_input, node, cr_group in targets:
         target_dir = exec_dir / (cr_group or "default")
         target_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
-            java, "-jar", str(cli_jar),
+            java, "-jar", _abs(cli_jar),
             "execute",
-            "--json", json_input,
-            "--schema", str(schema_path),
-            "--yaml", str(workflow_path),
+            "--json", _abs(json_input),
+            "--schema", _abs(schema_path),
+            "--yaml", _abs(workflow_path),
             "--node", node,
-            "--output-dir", str(target_dir),
+            "--output-dir", _abs(target_dir),
         ]
         if cr_group:
             cmd += ["--cr", cr_group]
@@ -214,7 +219,8 @@ async def run_execution_test(
         if activity:
             cmd += ["--activity", activity]
 
-        result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})")
+        result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
+                                cwd=local_cwd)
         result.update(node=node, cr_group=cr_group)
         results.append(result)
 
@@ -412,7 +418,12 @@ def _parse_uc_name(uc_name: str) -> tuple[str, str]:
     return uc_name, uc_name
 
 
-async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: str) -> dict:
+def _abs(path) -> str:
+    return str(Path(path).resolve()) if path else ""
+
+
+async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: str,
+                   cwd: str | None = None) -> dict:
     """Run a JAR subprocess and return result dict."""
     logger.info("Running %s: %s", label, " ".join(cmd[:6]) + " ...")
 
@@ -426,6 +437,7 @@ async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: s
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
         )
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=timeout

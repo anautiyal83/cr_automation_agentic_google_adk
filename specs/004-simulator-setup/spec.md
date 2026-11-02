@@ -57,6 +57,7 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
 | DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
 | DEP-10 | With `elevate_to_root: true`, node `prompt_regex` must also match the login prompt, else "node prompt not reached after interactive login" (found 2026-11-02 with the new MockWire) | Step 6 / step 9 overlay — **Fixed**: overlay extends `prompt_regex` with the simulator prompts |
+| DEP-11 | Workflow calls helper scripts with arguments they don't accept (`--refinmocName` vs script `--refinmoc_name`, `--pdn_type` vs `--packet_data_network_type`) and `--output_file '.xml'` because `${ORDERNO}` is never registered — step 6 and helper_script_gen must agree on the CLI contract (found 2026-11-02 by `test_step.py --agents 8,9`) | Step 6 / helper_script_gen |
 
 ### Step 6 placeholder & regex findings (2026-11-02 JAR probes; fixed in `network_config_gen` autofix + prompt)
 
@@ -124,3 +125,16 @@ See [plan.md](plan.md) § Phases.
 ## Simulator Gaps
 
 Features our UCs need that MockWire lacks (MW-01 to MW-14), with evidence, workarounds and proposed changes: [mockwire-gaps.md](mockwire-gaps.md).
+
+## Agent-level test 2026-11-02 (`python test_step.py --agents 8,9 --run-id b61b977c… --refix-workflow`)
+
+The real ADK agents for steps 8 and 9 run on a copy of the run (`data/step_tests/`). Bugs found and fixed:
+- **S8-14** (High): `run_dir` is relative in the pipeline (`./data/runs/<id>`) and MockWire runs with `cwd=simulator/`, so `--config` resolved twice and no instance started. Fix: absolute simulator dir; regression test with a relative run dir.
+- **S9-01** (High): LOCAL steps (`python create_xml.py …`) ran in the pipeline's cwd, not `run_dir/scripts/`, so "can't open file". Fix: `execute` runs with `cwd=run_dir/scripts`, and all JAR arguments are absolute.
+- **S9-02** (Medium): with the event log present, a non-simulator failure (LOCAL script) fell back to "simulator". Fix: missing responses always show as `unmatched` events, so other failures go to the workflow.
+
+Final result: step 8 passed (2/2 nodes, elevation sanity); step 9 ran 20 commands for EAST and NORTH via the overlay; classification workflow → step 6. Remaining issues, all outside steps 8/9:
+- DEP-5: `sar` regex
+- DEP-11: helper script arguments
+- EAST CIQ has no IMSI
+- LLM `ndsLoadStats` response sometimes separates the two lines the regex expects adjacent (Phase 3 T036 offline check)

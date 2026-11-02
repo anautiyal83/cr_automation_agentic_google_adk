@@ -98,7 +98,7 @@ Step 8 writes `simulator/<uc>.yaml` (overlay.py: instance host/port/user, litera
 ### Phase 6: Tests and tooling
 - [ ] T060 Unit tests: topology builder, placeholder resolver, catalogue, validator, port allocator (`tests/test_simulator_setup.py`).
 - [ ] T061 Integration test: start real MockWire from a fixture, SSH sanity, stop, and assert no orphans.
-- [ ] T062 `test_step.py --skill network_simulator_setup --run-id <id>` reuses an existing run's workflow and JSON.
+- [X] T062 `test_step.py --agents 8,9 --run-id <id> [--refix-workflow]` runs the real step 8+9 ADK agents on a copy of a run (data/step_tests/).
 - [ ] T063 Update `bugs.md` (001) with S8-01…S8-12 and CLAUDE.md "Step 8" notes.
 
 ## Order and Effort

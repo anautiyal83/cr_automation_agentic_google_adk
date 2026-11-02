@@ -426,6 +426,9 @@
 | S8-11 | Medium | Placeholder commands left to LLM instead of resolved from CIQ JSON | Open |
 | S8-12 | Low | Unused `simulator.endpoint/port`; CWD-dependent JAR path; `LOCAL` gets stub server | Fixed (uncommitted, 004 Phase 1): config wired, JAR path from project root, LOCAL skipped |
 | S8-13 | High | `extract_workflow_commands()` read `cmd`/list phases; workflows use `send:` + phase map → LLM prompt never saw any command | Fixed (uncommitted, 004 Phase 1) |
+| S8-14 | High | Relative run_dir + MockWire cwd=simulator/ → --config resolved twice, no instance starts | Fixed (absolute simulator dir; found by test_step.py --agents 8,9) |
+| S9-01 | High | LOCAL helper scripts not found: execute ran in pipeline cwd instead of run_dir/scripts | Fixed (cwd=run_dir/scripts, absolute JAR args) |
+| S9-02 | Medium | Non-simulator failures (LOCAL scripts) classified as simulator despite event log | Fixed (no unmatched event ⇒ workflow) |
 | DEP-1 | — | Workflow uses `${node_row.RDS.NIAM_NAME1}`; CIQ JSON exposes `RDS.niamID-1` (step 6) | Partly fixed: NIAM IDs → `${X.niamID-n}`; `NIAM_USER` flagged by step 6 validator |
 | DEP-2 | — | `execute --node` given `node_type` (`PGW_RDS`), not a node name (step 9) — confirmed | Fixed (uncommitted): one execute per zone × CR group (`--node EAST --cr CR1`) |
 | DEP-3 | — | Malformed `${{…}}` placeholders in generated workflow (step 6 autofix) | Fixed (step 6 autofix) |
@@ -435,6 +438,7 @@
 | DEP-7 | — | Python `(?P<…>)` / underscore group names → PatternSyntaxException; `${register.x}` never resolves (step 6) | Fixed (step 6 autofix) |
 | DEP-8 | — | `${env.x}` never resolves (OS env is `${ENV.X}`) (step 6) | Fixed (rewritten to `${x}`) |
 | DEP-9 | — | Only the first CIQ record per node group executes; `for_each` over records NPEs in the JAR | Open |
+| DEP-11 | — | Workflow ↔ helper script CLI mismatch (--refinmocName vs --refinmoc_name, --pdn_type, empty ${ORDERNO}) (step 6 / helper_script_gen) | Open |
 
 ## Step 9: Execution QA
 
