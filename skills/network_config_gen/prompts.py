@@ -81,6 +81,8 @@ CRITICAL RULES:
     ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
 - A CIQ column that can be empty for some rows: guard the step with
   when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
+  Join conditions with && and || (never `and` / `or`: the step is then always skipped):
+  when: "configSequences.0.records.0.data.<ColA> == '' && configSequences.0.records.0.data.<ColB> != ''"
 - An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an
   identifier given directly or a second identifier it must be looked up from): resolve it
   ONCE into a registered variable, then use only that variable in every later command:

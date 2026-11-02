@@ -466,6 +466,9 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     _fix_prompt_change_step(step)
     _fix_transfer_step(step)
     _fix_absence_check(step)
+    for key in ("when", "skip_when"):
+        if isinstance(step.get(key), str):
+            step[key] = fix_condition_operators(step[key])
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -476,6 +479,17 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
             step.pop(key)
 
     return step
+
+
+_WORD_OPERATOR = re.compile(r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")|\s+(and|or)\s+", re.IGNORECASE)
+
+
+def fix_condition_operators(condition: str) -> str:
+    """``a == '' and b != ''`` → ``a == '' && b != ''`` (``or`` → ``||``) outside quoted values:
+    the JAR joins conditions with &&/||; with ``and`` every step for EAST (only Test MSISDN
+    given) was skipped, so the IMSI was never looked up (DEP-35)."""
+    return _WORD_OPERATOR.sub(
+        lambda m: m.group(1) if m.group(1) else (" && " if m.group(2).lower() == "and" else " || "), condition)
 
 
 def _fix_transfer_step(step: dict) -> None:

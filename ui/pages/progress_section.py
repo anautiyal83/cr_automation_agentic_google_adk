@@ -917,8 +917,6 @@ class ProgressSection:
         else:
             self.ms_continue_btn.set_visibility(True)
             self.ms_skip_btn.set_visibility(False)
-        if has_failures:
-            self._show_step_questions(step_num)
 
         from pathlib import Path
         fname = Path(artifact_file).name if artifact_file else "no artifact"
@@ -949,49 +947,6 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
-
-    def _show_step_questions(self, step_num: int) -> None:
-        """Questions a failed generation step left in its error file (OB-13): the developer
-        answers here, the answers become developer notes and the step regenerates."""
-        import json as _json
-        from pathlib import Path
-        if not self.runner or not self.active_run_id:
-            return
-        run_dir = Path(self.runner._config.get("output_directory", "./data/runs")) / str(self.active_run_id)
-        try:
-            questions = _json.loads((run_dir / f"step_{step_num}_error.json").read_text(encoding="utf-8")) \
-                .get("questions") or []
-        except (OSError, ValueError):
-            questions = []
-        if not questions:
-            return
-        self.ms_questionnaire_row.clear()
-        inputs = []
-        with self.ms_questionnaire_row:
-            with ui.column().classes("w-full gap-2 cr-card-inner p-3"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("help_outline", size="18px").classes("cr-text-warning")
-                    ui.label("The documents don't say how to get these values — your answer is added "
-                             "to the UC's developer notes and this step regenerates.") \
-                        .classes("text-body2 font-semibold")
-                for q in questions:
-                    ui.label(q.get("question", "")).classes("text-body2")
-                    inputs.append((q, ui.textarea(placeholder="Command or CIQ column, e.g. a lookup command")
-                                   .props("outlined dense autogrow").classes("w-full font-mono")))
-
-                async def submit():
-                    answers = [{"question": q.get("question", ""), "answer": box.value or ""} for q, box in inputs]
-                    if not any(a["answer"].strip() for a in answers):
-                        ui.notify("Enter at least one answer", type="warning")
-                        return
-                    self.runner.answer_milestone_questions(str(self.active_run_id), step_num, answers,
-                                                           rerun=False)
-                    ui.notify("Answers saved to the developer notes — regenerating", type="positive")
-                    await self._milestone_respond("rerun")
-
-                ui.button("Answer & regenerate", icon="send", on_click=submit) \
-                    .props("unelevated color=primary size=sm no-caps")
-        self.ms_questionnaire_row.set_visibility(True)
 
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Show milestone row with questionnaire controls and auto-open dialog."""

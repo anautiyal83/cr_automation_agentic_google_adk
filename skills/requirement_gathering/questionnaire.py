@@ -55,6 +55,72 @@ async def generate_questions(
         return []
 
 
+def _given(row: dict, col: str) -> bool:
+    value = row.get(col)
+    return value is not None and str(value).strip() != ""
+
+
+def _kind(value) -> str:
+    text = str(value).strip()
+    return "number" if text.replace("+", "").isdigit() else "text"
+
+
+def _alike(x, y) -> bool:
+    """Same kind of value and similar length: a 15-digit IMSI and a 10-digit MSISDN are
+    alternatives, a 15-digit IMSI and VNI "6" (given in the other sample row) are not."""
+    x, y = str(x).strip(), str(y).strip()
+    return _kind(x) == _kind(y) and min(len(x), len(y)) >= 0.5 * max(len(x), len(y))
+
+
+def ciq_alternative_columns(ciq_sheets: dict) -> list[dict]:
+    """CIQ column pairs where every sample row gives exactly one of the two (Test IMSI in
+    NORTH, Test MSISDN in EAST) and both hold the same kind of value: the commands need one
+    of them, so the developer must say how to get it from the other (OB-13)."""
+    pairs = []
+    for sheet, data in (ciq_sheets or {}).items():
+        if not isinstance(data, dict):
+            continue
+        rows = [r for r in data.get("sample_rows") or [] if isinstance(r, dict)]
+        cols = [str(c) for c in data.get("columns") or []]
+        if len(rows) < 2:
+            continue
+        for i, a in enumerate(cols):
+            for b in cols[i + 1:]:
+                if not all(_given(r, a) != _given(r, b) for r in rows):
+                    continue
+                with_a = [r for r in rows if _given(r, a)]
+                with_b = [r for r in rows if _given(r, b)]
+                if not with_a or not with_b or not _alike(with_a[0][a], with_b[0][b]):
+                    continue
+                label = cols[0] if cols else ""
+                pairs.append({"sheet": sheet, "a": a, "b": b,
+                              "rows_a": [str(r.get(label, "")) for r in with_a],
+                              "rows_b": [str(r.get(label, "")) for r in with_b]})
+    return pairs
+
+
+def ciq_alternative_questions(ciq_sheets: dict) -> list[dict]:
+    """One question per :func:`ciq_alternative_columns` pair, in the questionnaire format."""
+    questions = []
+    for p in ciq_alternative_columns(ciq_sheets):
+        a, b = p["a"], p["b"]
+        slug = re.sub(r"[^a-z0-9]+", "_", f"{a}_{b}".lower()).strip("_")
+        questions.append({
+            "id": f"cmd_ciq_alt_{slug}",
+            "category": "commands",
+            "question": (f"Each CIQ row gives either '{a}' or '{b}' (e.g. {', '.join(p['rows_a'][:2])}: only "
+                         f"'{a}'; {', '.join(p['rows_b'][:2])}: only '{b}'). How do the commands get the "
+                         f"value they need when only one of them is given?"),
+            "importance": "critical",
+            "input_type": "text",
+            "default_value": "",
+            "context": (f"The workflow runs for every CIQ row. Without a way to derive '{a}' from '{b}' "
+                        f"(or the other way round), rows that leave one empty send an empty value to the node."),
+            "helper_text": f"e.g. When only {b} is given, look up {a} with: <command using <{b}>>",
+        })
+    return questions
+
+
 def build_available_data_summary(
     ciq_sheets: dict[str, dict],
     raw_artifacts: dict,

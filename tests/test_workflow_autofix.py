@@ -204,3 +204,11 @@ def test_exit_leaving_su_waits_for_the_node_prompt_not_connection_closed():
     assert drop_session_exits(wf) == 0
     step = wf["phases"]["a"]["steps"][1]
     assert step["prompt_regex"] == "rdsggn01:~ #" and "regex" not in step["validation"]["success"]["criteria"]
+
+
+def test_when_word_operators_become_symbols_outside_quotes():
+    from skills.network_config_gen.autofix import fix_condition_operators
+    c = "configSequences.0.records.0.data.Test IMSI == '' and configSequences.0.records.0.data.Test MSISDN != ''"
+    assert fix_condition_operators(c) == c.replace(" and ", " && ")
+    assert fix_condition_operators("a == 'x or y' OR b != ''") == "a == 'x or y' || b != ''"
+    assert fix_condition_operators("brand != ''") == "brand != ''"

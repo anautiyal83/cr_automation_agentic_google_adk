@@ -95,54 +95,6 @@ def _rank(errors: list[str]) -> float:
     return len(errors) + 1000 * sum(any(k in e for k in _INCOMPLETE) for e in errors)
 
 
-def requirement_questions(workflow_yaml: str, ciq_sheets: dict) -> list[dict]:
-    """Questions for the developer when the workflow needs a value the documents never say how
-    to get (OB-13): a variable some CIQ rows never register (``resolvedImsi`` for rows that
-    give only a Test MSISDN) or that is registered as an always-empty placeholder.
-
-    Each: ``id``/``variable`` and ``question`` (rows, empty and filled columns named).
-    """
-    from .autofix import parse_yaml
-    from .validator import _EMPTY_GROUP, _iter_steps, row_variable_gaps
-    parsed = parse_yaml(workflow_yaml) if workflow_yaml else None
-    if not isinstance(parsed, dict):
-        return []
-    rows = [r for sheet in (ciq_sheets or {}).values() if isinstance(sheet, dict)
-            for r in sheet.get("sample_rows") or [] if isinstance(r, dict)]
-
-    def given(row, col):
-        return bool(str(row.get(col) or "").strip())
-
-    questions: dict[str, dict] = {}
-    for gap in row_variable_gaps(parsed, ciq_sheets or {}):
-        row = gap["row"]
-        empty = [c for c in gap["guard_columns"] if not given(row, c)]
-        # What this row gives instead: columns other rows leave empty when they fill ours
-        others = [r for r in rows if r is not row and any(given(r, c) for c in empty)]
-        filled = [c for c in row if given(row, c) and any(not given(r, c) for r in others)]
-        filled = filled or [c for c in gap["guard_columns"] if given(row, c)]
-        var = gap["variable"]
-        text = f"How do you get `{var}` for CIQ rows like {gap['label']}?"
-        if empty:
-            text += f" In those rows {', '.join(empty)} is empty"
-            text += f" and {', '.join(filled)} is given." if filled else "."
-        text += (f" Give the command (or the CIQ column) that provides {var}"
-                 + (f", e.g. a lookup using <{filled[0]}>." if filled else "."))
-        questions.setdefault(var, {"id": var, "variable": var, "question": text})
-    for _, step in _iter_steps(parsed.get("phases") or {}):
-        for reg in step.get("register") or []:
-            for var in _EMPTY_GROUP.findall(str(reg.get("regex") or "") if isinstance(reg, dict) else ""):
-                used = any("${" + var + "}" in str(s.get("send") or "")
-                           for _, s in _iter_steps(parsed.get("phases") or {}))
-                if used and var not in questions:
-                    when = (str(step.get("when") or "").replace("configSequences.0.records.0.data.", "")
-                            .replace(" == ''", " is empty").replace(" != ''", " is given").replace("&&", "and"))
-                    questions[var] = {"id": var, "variable": var, "question": (
-                        f"How do you get `{var}`" + (f" when {when}" if when else "")
-                        + f"? The documents do not say; give the command (or the CIQ column) that provides it.")}
-    return list(questions.values())
-
-
 def _expected_coverage(requirements: dict) -> dict:
     """What the workflow must cover, from the requirements: phases and commands per node
     (LOCAL and NIAM helper entries are not nodes the workflow must log in to)."""
@@ -426,7 +378,12 @@ class NetworkConfigGenSkill:
 
         # Developer answers
         answers = req.get("developer_answers", {})
-        answers_text = json.dumps(answers, indent=2, default=str) if answers else "None"
+        asked = req.get("developer_questions") or {}
+        if answers and asked:  # question + answer: an answer alone often makes no sense
+            answers_text = "\n".join(f"- Q: {asked[k]}\n  A: {v}" if k in asked else f"- {k}: {v}"
+                                     for k, v in answers.items())
+        else:
+            answers_text = json.dumps(answers, indent=2, default=str) if answers else "None"
 
         return {
             "nodes": "\n".join(nodes_lines) or "No node definitions",

@@ -191,17 +191,28 @@ class RequirementGatheringSkill:
         has_previous_reqs = bool(self._previous_requirements.get("category_1_node_activity"))
         has_substantial_answers = len(self._all_answers) >= 10
 
+        # Deterministic CIQ questions (either-or columns) are asked even when the LLM finds no
+        # gaps: the documents cannot say how one column's value is derived from the other
+        ciq_questions = [q for q in questionnaire.ciq_alternative_questions(self._ciq_sheets)
+                         if q["id"] not in self._all_answers]
+        self._store_question_texts(ciq_questions)
+        # Only the CIQ questions are asked on the paths below: their answers need no new round
+        self._ciq_only_round = bool(ciq_questions)
+        if ciq_questions:
+            self._round_num = 1
+
         if has_previous_reqs and has_substantial_answers:
             logger.info(
-                "Skipping questionnaire — %d previous answers + compiled requirements exist",
-                len(self._all_answers),
+                "Skipping questionnaire — %d previous answers + compiled requirements exist "
+                "(%d CIQ question(s) still open)", len(self._all_answers), len(ciq_questions),
             )
             return SkillOutput(
                 analysis=self._analysis,
                 readiness="COMPLETE",
                 doc_extracted=self._doc_extracted,
                 all_answers=self._all_answers,
-                questions=[],
+                questions=ciq_questions,
+                round_num=1,
             )
 
         if self._all_answers and readiness == "COMPLETE":
@@ -210,7 +221,8 @@ class RequirementGatheringSkill:
                 readiness=readiness,
                 doc_extracted=self._doc_extracted,
                 all_answers=self._all_answers,
-                questions=[],
+                questions=ciq_questions,
+                round_num=1,
             )
 
         # Generate questions for gaps (first run or insufficient previous data)
@@ -233,6 +245,9 @@ class RequirementGatheringSkill:
         if questions and self._vendor_profile:
             questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)
             logger.info("Vendor profile filter: %d questions remain after filtering", len(questions))
+
+        questions = ciq_questions + [q for q in questions if q.get("id") not in {c["id"] for c in ciq_questions}]
+        self._ciq_only_round = False
 
         # Store question texts for the summary report
         self._store_question_texts(questions)
@@ -259,6 +274,17 @@ class RequirementGatheringSkill:
         """
         self._all_answers.update(answers)
         _save_answers(self._uc_name, self._all_answers)
+        if getattr(self, "_ciq_only_round", False):
+            # The requirements were complete; only the CIQ either-or question was open
+            self._ciq_only_round = False
+            return SkillOutput(
+                analysis=self._analysis,
+                readiness="COMPLETE",
+                doc_extracted=self._doc_extracted,
+                all_answers=self._all_answers,
+                questions=[],
+                round_num=self._round_num,
+            )
 
         # Re-analyze with new answers
         combined_notes = self._developer_notes
@@ -410,6 +436,9 @@ class RequirementGatheringSkill:
             question_texts=self._question_texts,
         )
 
+        # Step 6 reads the answers with their questions ({id: answer} alone loses the meaning)
+        requirements["developer_questions"] = {
+            k: v for k, v in self._question_texts.items() if k in (requirements.get("developer_answers") or {})}
         req_json = json.dumps(requirements, indent=2, default=str)
 
         return SkillOutput(

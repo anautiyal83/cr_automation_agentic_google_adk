@@ -132,6 +132,7 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
 - `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
 - Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
+- `when` joins conditions with `&&`/`||` — with `and`/`or` the step is always skipped (autofix rewrites)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty); no `${…}` inside regexes (not interpolated)
 - Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
   step 9 passes their test values as `--var`
