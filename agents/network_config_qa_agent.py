@@ -117,14 +117,13 @@ class NetworkConfigQAAgent(BaseAgent):
                     "retry_target": retry_target,
                 }, indent=2))
 
-        # Stop simulator after testing
-        sim_process = state.get("_simulator_process")
-        if sim_process:
-            try:
-                await sim_process.stop()
-                flow.flow("NETWORK_CONFIG_QA: Simulator stopped")
-            except Exception as e:
-                logger.debug("Simulator stop error: %s", e)
+        # Stop simulator after testing (a step 8 retry starts a fresh one)
+        try:
+            from shared.state import stop_simulator
+            await stop_simulator(run_id)
+            flow.flow("NETWORK_CONFIG_QA: Simulator stopped")
+        except Exception as e:
+            logger.warning("Simulator stop error: %s", e)
 
         flow.flow("NETWORK_CONFIG_EXEC_QA DONE — %d/%d passed, exec=%s",
                    output.passed, output.total,

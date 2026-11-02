@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -25,14 +26,21 @@ from .autofix import (
     fix_simulator_config,
     extract_workflow_nodes,
     extract_workflow_commands,
-    parse_yaml,
 )
 from .simulator_runner import (
+    BASE_PORT,
+    DEFAULT_TTL_MINUTES,
+    STARTUP_TIMEOUT,
+    SimulatorInstance,
     SimulatorProcess,
+    SimulatorStartError,
+    allocate_ports,
+    prepare_simulator_dir,
     start_simulator,
-    write_config_files,
+    write_instance_files,
 )
 from .sanity_check import SanityResult, run_sanity_checks
+from .validator import validate_mockwire_config
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +59,10 @@ class SkillInput:
     java_home: str | None = None
     schema_dir: str | None = None
     auto_start: bool = True  # if False, skip phase 3 (just generate configs)
+    host: str = "localhost"
+    base_port: int = BASE_PORT
+    ttl_minutes: int = DEFAULT_TTL_MINUTES
+    startup_timeout: int = STARTUP_TIMEOUT
 
 
 @dataclass
@@ -66,7 +78,8 @@ class SkillOutput:
     """Output from network simulator setup."""
     simulator_config_yaml: str = ""
     response_configs: dict[str, str] = field(default_factory=dict)  # filename → yaml content
-    config_dir: str = ""
+    config_dir: str = ""  # <run_dir>/simulator
+    manifest_path: str = ""
     simulator: SimulatorProcess | None = None  # call .stop() when done
     ports: list[int] = field(default_factory=list)
     sanity: SanityResult | None = None  # phase 4 results
@@ -135,36 +148,52 @@ class NetworkSimulatorSetupSkill:
         self._last_config_yaml = config_yaml
         self._last_response_configs = response_configs
 
-        # Extract ports for health checking
-        ports = self._extract_ports(config_yaml)
-
-        # Validate
-        errors = self._validate(config_yaml)
-        yaml_valid = not any("Invalid YAML" in e for e in errors)
+        errors = validate_mockwire_config(config_yaml)
 
         # --- Phase 3: Write files and start simulator ---
         config_dir = ""
+        manifest_path = ""
+        ports: list[int] = []
         simulator = None
         sanity = None
 
         if inp.run_dir:
-            config_dir = write_config_files(
-                inp.run_dir, inp.uc_name, config_yaml, response_configs
-            )
+            # Until per-node topology lands (spec 004 Phase 2), one instance serves all nodes
+            instance_name = _instance_name(inp.uc_name)
+            try:
+                sim_dir = prepare_simulator_dir(inp.run_dir, inp.mockwire_jar)
+            except SimulatorStartError as e:
+                return SkillOutput(simulator_config_yaml=config_yaml, status="failed", error=str(e))
+            config_dir = str(sim_dir)
+            write_instance_files(sim_dir, instance_name, config_yaml, response_configs)
+            errors = validate_mockwire_config(
+                config_yaml, sim_dir / "outputs" / instance_name / "responses")
 
-            if inp.auto_start and not yaml_valid:
-                logger.error("Skipping simulator start — YAML is invalid")
-                errors.append("Simulator not started: generated config has invalid YAML syntax")
+            if inp.auto_start and errors:
+                logger.error("Skipping simulator start — config invalid: %s", errors)
+                errors.append("Simulator not started: config validation failed")
 
             elif inp.auto_start:
                 try:
+                    instances = [SimulatorInstance(
+                        name=instance_name,
+                        port=allocate_ports(1, inp.base_port)[0],
+                        nodes=list(self._workflow_nodes),
+                    )]
                     simulator = await start_simulator(
-                        mockwire_jar=inp.mockwire_jar,
-                        config_dir=config_dir,
+                        sim_dir, instances,
                         java_home=inp.java_home,
-                        ports=ports,
+                        timeout=inp.startup_timeout,
+                        ttl_minutes=inp.ttl_minutes,
+                        host=inp.host,
                     )
-                    logger.info("Simulator started: %d nodes on ports %s", len(ports), ports)
+                    ports = simulator.ports
+                    manifest_path = str(sim_dir / "manifest.json")
+                    logger.info("Simulator started: %s", ", ".join(
+                        f"{i.name}:{i.port}" for i in simulator.instances))
+                except SimulatorStartError as e:
+                    logger.error("Phase 3 (simulator start) failed: %s", e)
+                    errors.append(f"Simulator start failed: {e}")
                 except Exception as e:
                     logger.error("Phase 3 (simulator start) failed: %s", e, exc_info=True)
                     errors.append(f"Simulator start failed: {e}")
@@ -193,6 +222,7 @@ class NetworkSimulatorSetupSkill:
             simulator_config_yaml=config_yaml,
             response_configs=response_configs,
             config_dir=config_dir,
+            manifest_path=manifest_path,
             simulator=simulator,
             ports=ports,
             sanity=sanity,
@@ -219,19 +249,17 @@ class NetworkSimulatorSetupSkill:
         try:
             raw = await self._llm_fn(prompts.SIMULATOR_GEN_SYSTEM, user_prompt)
             config_yaml = clean_yaml_response(raw)
-            config_yaml = fix_simulator_config(config_yaml, self._workflow_nodes)
+            config_yaml = fix_simulator_config(config_yaml)
             self._last_config_yaml = config_yaml
         except Exception as e:
             logger.error("Simulator config regeneration failed: %s", e, exc_info=True)
             return SkillOutput(status="failed", error=f"Regeneration failed: {e}")
 
-        errors = self._validate(config_yaml)
-        ports = self._extract_ports(config_yaml)
+        errors = validate_mockwire_config(config_yaml)
 
         return SkillOutput(
             simulator_config_yaml=config_yaml,
             response_configs=self._last_response_configs,
-            ports=ports,
             validation_errors=errors,
             status="failed" if errors else "passed",
         )
@@ -253,7 +281,7 @@ class NetworkSimulatorSetupSkill:
         logger.info("Phase 1: Generating simulator config (%d char prompt)", len(user_prompt))
         raw = await self._llm_fn(prompts.SIMULATOR_GEN_SYSTEM, user_prompt)
         yaml_text = clean_yaml_response(raw)
-        yaml_text = fix_simulator_config(yaml_text, self._workflow_nodes)
+        yaml_text = fix_simulator_config(yaml_text)
         return yaml_text
 
     # ------------------------------------------------------------------
@@ -327,37 +355,6 @@ class NetworkSimulatorSetupSkill:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _validate(self, yaml_text: str) -> list[str]:
-        """Basic structural validation."""
-        errors = []
-        parsed = parse_yaml(yaml_text)
-        if parsed is None:
-            return ["Invalid YAML syntax"]
-
-        has_servers = any(k in parsed for k in ("servers", "nodes", "simulator", "ssh_servers"))
-        if not has_servers:
-            errors.append("No server definitions found")
-        return errors
-
-    @staticmethod
-    def _extract_ports(yaml_text: str) -> list[int]:
-        """Extract configured ports from simulator config YAML."""
-        parsed = parse_yaml(yaml_text)
-        if not parsed:
-            return []
-
-        ports = []
-        for key in ("servers", "nodes", "simulator", "ssh_servers"):
-            val = parsed.get(key)
-            if isinstance(val, list):
-                for item in val:
-                    if isinstance(item, dict) and "port" in item:
-                        try:
-                            ports.append(int(item["port"]))
-                        except (ValueError, TypeError):
-                            pass
-        return sorted(set(ports))
-
     @staticmethod
     def _discover_simulator_schema(schema_dir: str | None = None) -> str:
         """Read simulator config schema if available."""
@@ -372,3 +369,8 @@ class NetworkSimulatorSetupSkill:
             except Exception:
                 pass
         return ""
+
+
+def _instance_name(uc_name: str) -> str:
+    """MockWire instance name — used as config/<name>.yaml and outputs/<name>/."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", uc_name) or "simulator"

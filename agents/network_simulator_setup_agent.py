@@ -10,10 +10,20 @@ from pathlib import Path
 
 from google.adk.agents import BaseAgent
 
+from core.config import PROJECT_ROOT
 from core.logging_config import get_flow_logger
+from shared.state import simulator_processes, stop_simulator
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
+
+_DEFAULT_MOCKWIRE_JAR = "lib/mockwire/mockwire-simulator/mockwire.jar"
+
+
+def _resolve_path(path: str) -> str:
+    """Resolve a config path relative to the project root, not the CWD."""
+    p = Path(path)
+    return str(p if p.is_absolute() else (PROJECT_ROOT / p).resolve())
 
 
 class NetworkSimulatorSetupAgent(BaseAgent):
@@ -40,6 +50,9 @@ class NetworkSimulatorSetupAgent(BaseAgent):
 
         flow.flow("SIMULATOR_SETUP START — uc=%s", uc_name)
 
+        # A re-run must not collide with this run's previous simulator ports
+        await stop_simulator(run_id)
+
         skill = NetworkSimulatorSetupSkill(llm_fn=get_llm_fn(config))
 
         # Check for retry
@@ -64,10 +77,13 @@ class NetworkSimulatorSetupAgent(BaseAgent):
                 requirements=requirements,
                 generation_hints=requirements.get("generation_hints", {}),
                 run_dir=run_dir,
-                mockwire_jar=config.get("mockwire_jar",
-                    "lib/mockwire/mockwire-simulator/mockwire.jar"),
+                mockwire_jar=_resolve_path(config.get("mockwire_jar") or _DEFAULT_MOCKWIRE_JAR),
                 java_home=config.get("java_home"),
                 auto_start=True,
+                host=config.get("simulator_endpoint") or "localhost",
+                base_port=int(config.get("simulator_base_port") or 22200),
+                ttl_minutes=int(config.get("simulator_ttl_minutes") or 60),
+                startup_timeout=int(config.get("simulator_startup_timeout") or 30),
             )
             output = await skill.setup(inp)
             state["_simulator_setup_skill"] = skill
@@ -81,9 +97,9 @@ class NetworkSimulatorSetupAgent(BaseAgent):
                 p.write_text(output.simulator_config_yaml, encoding="utf-8")
         state["artifacts"] = artifacts
 
-        # Store simulator process handle and ports for execution test agent
+        # Register the running simulator so every exit path can stop it
         if output.simulator:
-            state["_simulator_process"] = output.simulator
+            simulator_processes[run_id] = output.simulator
             state["_simulator_ports"] = output.ports
 
         state["step_8_status"] = output.status
@@ -93,7 +109,11 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             if run_dir:
                 import json
                 err_file = Path(run_dir) / "step_8_error.json"
-                err_file.write_text(json.dumps({"error": state["step_8_error"]}, indent=2))
+                err_file.write_text(json.dumps({
+                    "error": state["step_8_error"],
+                    "validation_errors": output.validation_errors,
+                    "simulator_dir": output.config_dir,
+                }, indent=2), encoding="utf-8")
 
         # Log sanity results
         if output.sanity:

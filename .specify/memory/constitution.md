@@ -195,3 +195,14 @@ principles defined here.
   the living governance reference for development decisions.
 
 **Version**: 1.0.0 | **Ratified**: 2026-10-05 | **Last Amended**: 2026-10-05
+
+---
+
+## Pending amendment proposals (not ratified)
+
+*Recorded 2026-11-02 during the spec-kit reconciliation. Per Governance, these need a written proposal, project-lead approval, a version bump and a migration note before they take effect. Version stays at 1.0.0 until then.*
+
+1. **Project rename**: references to "cr_automation-agentic" should become **NetConfig** (the product was renamed in ad9c198/bd35015; ADK `app_name` is `"netconfig"`). Expected PATCH.
+2. **ADK session state finding**: Add a rule under Development Workflow & Quality Gates that inter-agent control flow and status MUST NOT depend on ADK `ctx.session.state`. Use shared module-level state and on-disk status files instead (001 research R6; commits bc567e9, 5455064). Expected MINOR.
+3. **Principle II deviation, for awareness**: json-output.yaml is now built deterministically rather than LLM-generated (001 research R8). Decide whether to record this as a permitted exception in Principle II.
+

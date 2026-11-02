@@ -23,8 +23,11 @@ external_modules:
   subprocess_timeout: 300
 
 simulator:
-  endpoint: "localhost"
-  port: 8080
+  endpoint: "localhost"          # host step 8 health-checks and step 9 connects to
+  mockwire_jar: "./lib/mockwire/mockwire-simulator/mockwire.jar"  # copied into each run_dir/simulator/
+  base_port: 22200               # first port probed; one free port per simulator instance
+  ttl_minutes: 60                # MockWire exits on its own after this, if never stopped
+  startup_timeout_sec: 30
 
 storage:
   database_path: "./data/pipeline.db"

@@ -1,21 +1,23 @@
 """Auto-fix utilities for MockWire simulator configuration YAML.
 
 Fixes common LLM mistakes:
-- Ensure unique ports per node (no collisions)
-- Ensure prompt patterns match workflow expectations
-- Ensure every workflow command has a simulator response
-- Repair YAML syntax
+- Repair YAML syntax (truncation, list root, old hosts format)
+- Add the runtime entries the cli-automation JAR depends on
 """
 from __future__ import annotations
 
 import logging
 import re
 from io import StringIO
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_BASE_PORT = 2222
+# cli-automation sends "stty -echo" once, then "<cmd>; echo __CMD_DONE__:$?" for
+# every command, and parses __CMD_DONE__:<code>. MockWire must answer both.
+RUNTIME_COMMANDS: dict[str, dict] = {
+    "stty -echo": {"lines": []},
+    "echo __CMD_DONE__:$?": {"lines": ["__CMD_DONE__:0"]},
+}
 
 
 def clean_yaml_response(text: str) -> str:
@@ -107,19 +109,14 @@ def _repair_truncated_yaml(yaml_text: str) -> str:
     return "\n".join(lines)
 
 
-def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None) -> str:
+def fix_simulator_config(yaml_text: str) -> str:
     """Apply auto-fix rules to simulator config YAML.
 
     Handles:
     - Truncated YAML repair (unclosed quotes, incomplete lines)
     - List-at-root → extract first map element
     - hosts/servers nested format → flatten to MockWire format
-    - Port collisions
-    - Missing nodes
-
-    Args:
-        yaml_text: LLM-generated YAML.
-        workflow_nodes: Node names from the workflow (for completeness check).
+    - Runtime entries required by the cli-automation JAR (see ensure_runtime_entries)
     """
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
@@ -149,14 +146,28 @@ def fix_simulator_config(yaml_text: str, workflow_nodes: list[str] | None = None
     if "config" not in parsed:
         parsed["config"] = {"prompt": "#", "delayMs": 100, "jitterMs": 20, "idleTimeoutSec": 300}
 
-    # Fix port collisions
-    _fix_port_collisions(parsed)
-
-    # Ensure all workflow nodes have a server entry
-    if workflow_nodes:
-        _ensure_all_nodes(parsed, workflow_nodes)
-
+    ensure_runtime_entries(parsed)
     return dump_yaml(parsed)
+
+
+def ensure_runtime_entries(parsed: dict) -> None:
+    """Add what the cli-automation JAR needs from every MockWire instance.
+
+    - ``config.terminalMode: PLAIN`` — echoed input breaks the JAR's output capture
+    - ``stty -echo`` and the ``__CMD_DONE__`` sentinel echo
+    - ``exit`` → ``popPrompt`` when the config escalates with ``su``, so leaving
+      the escalated shell returns to the login prompt instead of closing the session
+    """
+    config = parsed.setdefault("config", {})
+    if isinstance(config, dict):
+        config["terminalMode"] = "PLAIN"
+
+    for key, value in RUNTIME_COMMANDS.items():
+        parsed.setdefault(key, dict(value))
+
+    has_su = any(str(k).startswith(("su ", "regex:su")) for k in parsed)
+    if has_su and "exit" not in parsed:
+        parsed["exit"] = {"lines": [], "popPrompt": True}
 
 
 def _flatten_hosts_format(parsed: dict) -> dict:
@@ -215,16 +226,24 @@ def _flatten_hosts_format(parsed: dict) -> dict:
 
 
 def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
-    """Extract node names from a workflow YAML string."""
+    """Extract the remote node names a workflow connects to.
+
+    Local nodes (``type: local`` / ``plugin: local``) run commands natively and
+    are not simulated.
+    """
     parsed = parse_yaml(workflow_yaml)
     if not parsed:
         return []
 
     nodes = set()
+    local_nodes = set()
     # Support both "nodes" (new) and "nodeGroups" (old)
     node_groups = parsed.get("nodes", parsed.get("nodeGroups", {}))
     if isinstance(node_groups, dict):
         for ng_name, ng_val in node_groups.items():
+            if isinstance(ng_val, dict) and "local" in (ng_val.get("type"), ng_val.get("plugin")):
+                local_nodes.add(ng_name)
+                continue
             nodes.add(ng_name)
             if isinstance(ng_val, dict):
                 for node in ng_val.get("nodes", []):
@@ -232,16 +251,11 @@ def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
                         nodes.add(node.get("name", ""))
 
     # Also check commands for node references
-    phases = parsed.get("phases", [])
-    if isinstance(phases, list):
-        for phase in phases:
-            if not isinstance(phase, dict):
-                continue
-            for step in phase.get("steps", phase.get("commands", [])):
-                if isinstance(step, dict):
-                    node = step.get("node", "")
-                    if node and not re.search(r"\$\{", node):
-                        nodes.add(node)
+    for _phase_name, steps in _iter_phase_steps(parsed):
+        for step in steps:
+            node = step.get("node", "")
+            if node and not re.search(r"\$\{", node) and node not in local_nodes:
+                nodes.add(node)
 
     nodes.discard("")
     return sorted(nodes)
@@ -254,20 +268,14 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
         return []
 
     commands = []
-    phases = parsed.get("phases", [])
-    if isinstance(phases, list):
-        for phase in phases:
-            if not isinstance(phase, dict):
-                continue
-            phase_name = phase.get("name", phase.get("phase", ""))
-            for step in phase.get("steps", phase.get("commands", [])):
-                if isinstance(step, dict):
-                    commands.append({
-                        "cmd": step.get("cmd", step.get("command", "")),
-                        "node": step.get("node", ""),
-                        "phase": phase_name,
-                        "validation": step.get("validation", {}),
-                    })
+    for phase_name, steps in _iter_phase_steps(parsed):
+        for step in steps:
+            commands.append({
+                "cmd": step.get("send", step.get("cmd", step.get("command", ""))),
+                "node": step.get("node", ""),
+                "phase": phase_name,
+                "validation": step.get("validation", {}),
+            })
     return commands
 
 
@@ -275,65 +283,17 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _fix_port_collisions(parsed: dict) -> None:
-    """Ensure each simulated node has a unique port."""
-    servers = _get_server_list(parsed)
-    if not servers:
-        return
-
-    used_ports: set[int] = set()
-    next_port = _BASE_PORT
-
-    for server in servers:
-        if not isinstance(server, dict):
+def _iter_phase_steps(parsed: dict):
+    """Yield (phase_name, [step dicts]) for phases given as a map or a list."""
+    phases = parsed.get("phases", [])
+    if isinstance(phases, dict):
+        items = list(phases.items())
+    elif isinstance(phases, list):
+        items = [(p.get("name", p.get("phase", "")), p) for p in phases if isinstance(p, dict)]
+    else:
+        items = []
+    for key, phase in items:
+        if not isinstance(phase, dict):
             continue
-        port = server.get("port", 0)
-        if not port or port in used_ports:
-            while next_port in used_ports:
-                next_port += 1
-            server["port"] = next_port
-            used_ports.add(next_port)
-            next_port += 1
-        else:
-            used_ports.add(port)
-
-
-def _ensure_all_nodes(parsed: dict, workflow_nodes: list[str]) -> None:
-    """Add stub server entries for workflow nodes missing from the simulator config."""
-    servers = _get_server_list(parsed)
-    existing_names = set()
-    for s in servers:
-        if isinstance(s, dict):
-            existing_names.add(s.get("name", "").lower())
-            existing_names.add(s.get("host", "").lower())
-
-    used_ports = {s.get("port", 0) for s in servers if isinstance(s, dict)}
-    next_port = max(used_ports, default=_BASE_PORT) + 1
-
-    for node in workflow_nodes:
-        if node.lower() not in existing_names:
-            stub = {
-                "name": node,
-                "host": "localhost",
-                "port": next_port,
-                "users": [{"username": "oamsys", "password": "test"}],
-                "prompt": f"{node.lower()}:~ #",
-            }
-            servers.append(stub)
-            next_port += 1
-            logger.debug("Added stub simulator entry for node '%s' on port %d", node, stub["port"])
-
-
-def _get_server_list(parsed: dict) -> list:
-    """Get the server list from various possible config structures."""
-    # Try common keys
-    for key in ("servers", "nodes", "simulator", "ssh_servers"):
-        val = parsed.get(key)
-        if isinstance(val, list):
-            return val
-        if isinstance(val, dict) and "servers" in val:
-            return val["servers"]
-
-    # If top-level has node-named keys with port/host, it's a flat structure
-    # Return as-is (fix functions handle dicts too)
-    return []
+        steps = phase.get("steps", phase.get("commands", []))
+        yield key, [s for s in steps or [] if isinstance(s, dict)]

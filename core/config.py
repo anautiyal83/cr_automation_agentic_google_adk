@@ -70,7 +70,10 @@ class PipelineConfiguration(BaseModel):
     infra_retry_limit: int = Field(default=3, ge=1, le=10)
     infra_retry_backoff: float = Field(default=2.0)
     simulator_endpoint: str = "localhost"
-    simulator_port: int = 8080
+    mockwire_jar: str = "./lib/mockwire/mockwire-simulator/mockwire.jar"
+    simulator_base_port: int = 22200
+    simulator_ttl_minutes: int = 60
+    simulator_startup_timeout: int = 30
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
     execution_report_jar: str = "./lib/execution-report-generator.jar"
@@ -169,8 +172,14 @@ class ConfigManager:
         sim = raw.get("simulator", {})
         if "endpoint" in sim:
             flat["simulator_endpoint"] = sim["endpoint"]
-        if "port" in sim:
-            flat["simulator_port"] = sim["port"]
+        if "mockwire_jar" in sim:
+            flat["mockwire_jar"] = sim["mockwire_jar"]
+        if "base_port" in sim:
+            flat["simulator_base_port"] = sim["base_port"]
+        if "ttl_minutes" in sim:
+            flat["simulator_ttl_minutes"] = sim["ttl_minutes"]
+        if "startup_timeout_sec" in sim:
+            flat["simulator_startup_timeout"] = sim["startup_timeout_sec"]
 
         ext = raw.get("external_modules", {})
         if "ciq_processor_jar" in ext:

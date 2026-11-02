@@ -942,6 +942,10 @@ def _stat_card(title: str, value: str, icon: str, color: str) -> ui.label:
 
 def run() -> None:
     create_app()
+
+    from shared.state import stop_simulator
+    app.on_shutdown(stop_simulator)
+
     ui.run(
         host="0.0.0.0",
         port=8000,

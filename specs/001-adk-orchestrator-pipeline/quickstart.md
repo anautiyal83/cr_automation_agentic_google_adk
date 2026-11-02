@@ -1,5 +1,7 @@
 # Quickstart Validation Guide
 
+*Revised 2026-11-02. V1 and V4 cannot pass yet: there are no tests (T046) and no resume (OB-6). V5 is blocked by 004 DEP-2.*
+
 ## Prerequisites
 
 - Python 3.11+
@@ -25,7 +27,7 @@ Verify the custom PipelineAgent supports conditional routing:
 python -m pytest tests/test_pipeline_agent.py -v
 ```
 
-**Expected**: Tests pass for sequential execution, Step 5→3 retry, Step 9→6/8 retry, cancellation, and retry limit exhaustion.
+**Expected**: Tests pass for sequential execution, Step 5→3 retry, Step 9→6/8 retry, cancellation, and retry limit exhaustion. *(Not available: `tests/` is empty — T046.)*
 
 ### V2: End-to-End Pipeline (Integration)
 
@@ -36,9 +38,9 @@ python test_run.py
 ```
 
 **Expected**:
-- Steps 1-10 execute in sequence
+- Steps 1-10 execute in sequence (9 agents; `PIPELINE START — 9 agents` in `logs/flow.log`)
 - Milestones pause and auto-continue
-- If failures occur, reviewers analyze and retry automatically
+- If failures occur, QA skills set `_retry_target` and the pipeline retries automatically (≤3 per target)
 - Final report generated in `data/runs/<run_id>/`
 
 ### V3: UI Launch and Interaction
@@ -46,7 +48,7 @@ python test_run.py
 Start the NiceGUI server:
 
 ```bash
-python -m src.ui.app
+python ui/app.py
 # or
 ./start.ps1
 ```
@@ -62,17 +64,17 @@ python -m src.ui.app
 ### V4: Server Restart Resume
 
 1. Start a pipeline run
-2. Wait for Step 3 milestone
+2. Wait for Step 4 milestone
 3. Kill the server (Ctrl+C)
 4. Restart the server
 5. Navigate to Progress section
 
-**Expected**: Pipeline shows paused at Step 3 milestone, user can Continue.
+**Expected**: Pipeline shows paused at Step 4 milestone, user can Continue. *(Not implemented — OB-6.)*
 
-### V5: Reviewer Agent Analysis
+### V5: Execution QA Failure Classification
 
 Trigger a Step 9 failure:
 1. Manually modify the workflow YAML to have an invalid validation expression
 2. Re-run from Step 9
 
-**Expected**: QA Execution Reviewer runs, classifies as "workflow" issue, generates fix instructions JSON, pipeline retries from Step 6 with instructions.
+**Expected**: The Exec QA skill (`network_config_test`) classifies the failure as "workflow", sets `_retry_target=6`, and `network_config_gen.regenerate(feedback)` runs. *(Blocked: Step 9 has never executed a command — 004 DEP-2.)*

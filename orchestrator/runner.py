@@ -16,7 +16,9 @@ from google.genai import types
 
 from core.events import PipelineEvent, event_bus
 from core.logging_config import get_flow_logger
-from shared.state import milestone_events, milestone_decisions, milestone_waiting, pipeline_actions
+from shared.state import (
+    milestone_events, milestone_decisions, milestone_waiting, pipeline_actions, stop_simulator,
+)
 from orchestrator.pipeline_agent import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -250,6 +252,12 @@ class PipelineRunner:
                 run_id=UUID(run_id), event_type="run_failed",
                 payload={"run_id": run_id, "error": str(e)},
             ))
+        finally:
+            # Completed, failed, cancelled or superseded — never leave MockWire running
+            try:
+                await stop_simulator(run_id)
+            except Exception as e:
+                logger.warning("Simulator stop failed for run %s: %s", run_id[:8], e)
 
     async def _monitor_milestones(self, run_id: str):
         """Monitor session state for milestone pauses and update runner status."""
@@ -494,7 +502,7 @@ class PipelineRunner:
             2: ["requirements.json"],
             5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
             7: [f"{uc_name}.yaml"],
-            8: ["simulator/simulator_manifest.yaml"],
+            8: ["simulator/manifest.json"],
             9: [f"{uc_name}.yaml", f"{uc_name}_simulator-config.yaml"],
         }
         for ef in extra_map.get(step_num, []):

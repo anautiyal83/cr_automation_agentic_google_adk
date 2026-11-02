@@ -35,3 +35,11 @@
 - Spec references Google ADK and NiceGUI as technology choices (acceptable since the user explicitly specified these)
 - Constitution principles I, II, III, V, VI are addressed in the spec
 - Ready for `/speckit-plan` or `/speckit-clarify`
+
+## Re-check 2026-11-02 (after as-built revision)
+
+- [x] Spec reflects implemented architecture (9 agents, built-in milestones, skill packages)
+- [ ] All FRs met by implementation. Not met: FR-007 (OB-4), FR-009 / SC-007 (OB-6), FR-030 (OB-1), FR-031 (004 S8-01..S8-12)
+- [x] Every fixed bug since the baseline is traced to an FR/US in [bugs.md](../bugs.md)
+- [ ] Automated tests exist for the PipelineAgent retry/milestone logic (T046/T047)
+- [ ] Constitution amendments proposed for the rename and the session-state finding have been approved (see constitution "Pending amendment proposals")
