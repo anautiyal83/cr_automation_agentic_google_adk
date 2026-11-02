@@ -55,8 +55,12 @@ def _simulator_feedback(run_dir: str) -> str:
         for c in parse_execution_results(run_dir)
         if not c.success or c.validation_status == "failed"
     ]
-    return json.dumps({"classification": err.get("classification"), "failed_commands": failed[:40]},
-                      indent=2)[:6000]
+    return json.dumps({
+        "classification": err.get("classification"),
+        # Exact command text the simulator had no response for — add a response for each
+        "commands_without_simulator_response": err.get("unmatched_commands", [])[:40],
+        "failed_commands": failed[:40],
+    }, indent=2)[:6000]
 
 
 class NetworkSimulatorSetupAgent(BaseAgent):

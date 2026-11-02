@@ -20,13 +20,8 @@ from shared.state import simulator_processes, stop_simulator
 from skills.network_config_test.jar_executor import _execution_targets, _find_json_data
 from skills.network_config_test.result_parser import parse_execution_results
 from skills.network_simulator_setup.autofix import (
-    RUNTIME_COMMANDS,
-    dump_yaml,
-    ensure_runtime_entries,
     extract_workflow_commands,
     extract_workflow_nodes,
-    parse_llm_yaml,
-    parse_yaml,
 )
 from skills.network_simulator_setup.simulator_runner import (
     SimulatorInstance,
@@ -105,30 +100,21 @@ def test_extract_workflow_commands_reads_send_and_phase_map():
 # ---------------------------------------------------------------------------
 
 def fixed_config(text: str = LLM_CONFIG) -> str:
-    parsed = parse_yaml(text)
-    ensure_runtime_entries(parsed)
-    return dump_yaml(parsed)
+    return text
 
 
-def test_ensure_runtime_entries_and_exit_pop():
-    parsed = parse_yaml(fixed_config())
-    assert parsed["config"]["terminalMode"] == "PLAIN"
-    for key in RUNTIME_COMMANDS:
-        assert key in parsed
-    assert parsed["exit"] == {"lines": [], "popPrompt": True}
-
-
-def test_validator_accepts_fixed_flat_config(tmp_path):
-    fixed = fixed_config()
+def test_validator_accepts_flat_config(tmp_path):
     (tmp_path / "sar.txt").write_text("Average: all 99.25\n")
-    assert validate_mockwire_config(fixed, tmp_path) == []
+    assert validate_mockwire_config(LLM_CONFIG, tmp_path) == []
 
 
 def test_validator_reports_problems(tmp_path):
     errors = validate_mockwire_config(LLM_CONFIG, tmp_path)
-    assert any("terminalMode" in e for e in errors)
-    assert any("stty -echo" in e for e in errors)
     assert any("missing file 'sar.txt'" in e for e in errors)
+    bad_elevation = LLM_CONFIG + "'ctrl+p+e': {lines: []}\n"
+    assert any("ctrl+p+e" in e for e in validate_mockwire_config(bad_elevation))
+    only_elevation = "config: {prompt: 'x # '}\n'ctrl+p+e': {pushPrompt: 'y # '}\n"
+    assert validate_mockwire_config(only_elevation) == ["No UC command responses defined"]
     assert validate_mockwire_config("a: [unclosed") == ["Invalid YAML syntax"]
     assert validate_mockwire_config("- a\n- b\n") == ["Config root must be a map (got a list)"]
 
@@ -193,7 +179,7 @@ def test_mockwire_start_manifest_stop(tmp_path):
         write_instance_files(sim_dir, "RDS", fixed_config(),
                              {"sar.txt": "Average: all 99.25\n"})
         inst = SimulatorInstance(name="RDS", port=allocate_ports(1)[0], nodes=["RDS"])
-        sim = await start_simulator(sim_dir, [inst], ttl_minutes=5)
+        sim = await start_simulator(sim_dir, [inst], str(MOCKWIRE_JAR), ttl_minutes=5)
         try:
             assert sim.is_running
             assert sim.port_for("rds") == inst.port
@@ -222,9 +208,41 @@ def test_mockwire_port_conflict_reports_log_tail(tmp_path):
             s.listen()
             busy = s.getsockname()[1]
             with pytest.raises(SimulatorStartError) as exc:
-                await start_simulator(sim_dir, [SimulatorInstance(name="RDS", port=busy)], timeout=20)
+                await start_simulator(sim_dir, [SimulatorInstance(name="RDS", port=busy)], str(MOCKWIRE_JAR),
+                                      timeout=20)
         msg = str(exc.value)
         assert "RDS.log" in msg and "MockWire" in msg  # log path + tail included
         assert read_manifest(str(tmp_path))["instances"][0]["status"] == "failed"
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# Step 9 overlay prompt_regex + event-log classification
+# ---------------------------------------------------------------------------
+
+def test_extend_prompt_regex_adds_only_uncovered_prompts():
+    import re
+    from skills.network_simulator_setup.overlay import extend_prompt_regex
+    regex = extend_prompt_regex(r"rdsggn01:~ #|rdsggn01:~ \$",
+                                ["[oamsys@rdsggn01 ~]$ ", "rdsggn01:~ # ", "rdsggn01:~ $ "])
+    assert regex.count("|") == 2  # only the login prompt was added
+    for prompt in ("[oamsys@rdsggn01 ~]$", "rdsggn01:~ #", "rdsggn01:~ $"):
+        assert re.search(regex, prompt)
+
+
+def test_classify_failures_uses_simulator_events():
+    from skills.network_config_test.result_parser import CommandResult, classify_failures
+    failed = [CommandResult(command="sar 1 10", node="RDS", success=True, validation_status="failed")]
+    gap = [{"source": "unmatched", "instance": "RDS_22200", "input": "ndsLoadStats -v"}]
+    broken = [{"source": "unmatched", "instance": "RDS_22200",
+               "input": 'ldapsearch -b "imsi=,dc=IMSI,dc=C-NTDB" x'}]
+
+    # a missing simulator response is fixed first, in step 8
+    c = classify_failures(failed, gap)
+    assert c["classification"] == "simulator" and c["retry_target"] == 8
+    assert c["unmatched_commands"] == ["ndsLoadStats -v"]
+    # a command sent with an empty value is a workflow problem, like the validation failure
+    c = classify_failures(failed, broken)
+    assert c["classification"] == "workflow" and c["retry_target"] == 6
+    assert any("empty/unresolved" in w for w in c["workflow_issues"])

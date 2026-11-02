@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .autofix import RUNTIME_COMMANDS, parse_yaml
+from .autofix import parse_yaml
 
-RESERVED_KEYS = {"config", "auth", "niam", "transfer", "netconf", "curl", "rest", "recording"}
-_COMMAND_FIELDS = {"lines", "file", "responses", "interactive", "pushPrompt", "popPrompt"}
+RESERVED_KEYS = {"config", "auth", "niam", "transfer", "netconf", "curl", "rest", "recording", "vfs"}
+_COMMAND_FIELDS = {"lines", "file", "responses", "interactive", "pushPrompt", "popPrompt",
+                   "exitCode", "setState", "clearState"}
 
 
 def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = None) -> list[str]:
@@ -32,8 +33,6 @@ def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = 
     config = parsed.get("config")
     if not isinstance(config, dict) or not config.get("prompt"):
         errors.append("Missing config.prompt")
-    elif str(config.get("terminalMode", "")).upper() != "PLAIN":
-        errors.append("config.terminalMode must be PLAIN (echo breaks cli-automation output capture)")
 
     auth = parsed.get("auth")
     if isinstance(auth, dict) and auth.get("enabled"):
@@ -47,12 +46,12 @@ def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = 
             errors.append("niam.enabled is true but no niam user has neIds")
 
     commands = {k: v for k, v in parsed.items() if k not in RESERVED_KEYS}
-    if not any(str(k) not in RUNTIME_COMMANDS for k in commands):
+    if not any(not str(k).lower().startswith("ctrl+p") for k in commands):
         errors.append("No UC command responses defined")
 
-    for key in RUNTIME_COMMANDS:
-        if key not in commands:
-            errors.append(f"Missing runtime command {key!r} (required by cli-automation JAR)")
+    elevation = commands.get("ctrl+p+e")
+    if elevation is not None and not (isinstance(elevation, dict) and elevation.get("pushPrompt")):
+        errors.append("'ctrl+p+e' must push the root prompt (pushPrompt)")
 
     resp_dir = Path(responses_dir) if responses_dir else None
     for key, val in commands.items():

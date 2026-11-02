@@ -32,7 +32,7 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 
 | ID | Sev | Issue | Evidence |
 |----|-----|-------|----------|
-| S8-01 | Critical | Step 9 never targets the simulator. `simulator_host`/`simulator_port` are accepted by `run_execution_test()` but never passed to the JAR. The workflow's `nodes.<N>.ssh.host` is `${node_row.<N>.NIAM_NAME1}` port 22, so execution resolves to **real NIAM hosts** from the CIQ. | `skills/network_config_test/jar_executor.py:122-200`; workflow `nodes.RDS.ssh` |
+| S8-01 | Critical | **Fixed 2026-11-02 (overlay workflow, T050/T051).** Step 9 never targets the simulator. `simulator_host`/`simulator_port` are accepted by `run_execution_test()` but never passed to the JAR. The workflow's `nodes.<N>.ssh.host` is `${node_row.<N>.NIAM_NAME1}` port 22, so execution resolves to **real NIAM hosts** from the CIQ. | `skills/network_config_test/jar_executor.py:122-200`; workflow `nodes.RDS.ssh` |
 | S8-02 | Critical | All nodes collapse into one config. The prompt asks for one config per node separated by `---`; `clean_yaml_response()` keeps only the first document (a497018); `write_config_files()` writes a single `<uc>.yaml`. Run b61b977c config has only `oamsys@niamserver`: no PGW commands, no `sdfrun`/`provgw` users. | `autofix.py:26-30`, `simulator_runner.py:229-231` |
 | S8-03 | Critical | Step 8 always fails validation. `_validate()` requires a `servers`/`nodes`/`simulator`/`ssh_servers` key, but the MockWire format the prompt asks for has none → `"No server definitions found"`. Same root cause makes `_extract_ports()` always `[]`, and `_fix_port_collisions()` / `_ensure_all_nodes()` are no-ops. | `skill.py:330-359`; step_8_error.json of b61b977c |
 | S8-04 | High | Sanity check is not SSH. It opens a raw TCP socket, matches the prompt regex against the `SSH-2.0-…` version banner, and writes shell text into the SSH protocol stream. Results are meaningless. | `sanity_check.py:110-200` |
@@ -56,7 +56,7 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-4 | `su`/`exit` steps validate the prompt, but the JAR strips prompts from output, so they can never pass (found in spike) | Step 6 |
 | DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
 | DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
-| DEP-10 | With `elevate_to_root: true`, node `prompt_regex` must also match the login prompt, else "node prompt not reached after interactive login" (found 2026-11-02 with the new MockWire) | Step 6 / step 9 overlay |
+| DEP-10 | With `elevate_to_root: true`, node `prompt_regex` must also match the login prompt, else "node prompt not reached after interactive login" (found 2026-11-02 with the new MockWire) | Step 6 / step 9 overlay — **Fixed**: overlay extends `prompt_regex` with the simulator prompts |
 
 ### Step 6 placeholder & regex findings (2026-11-02 JAR probes; fixed in `network_config_gen` autofix + prompt)
 

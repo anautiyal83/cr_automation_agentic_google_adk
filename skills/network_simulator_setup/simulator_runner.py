@@ -1,19 +1,18 @@
 """MockWire simulator process management — per-run layout, start, health check, stop.
 
-MockWire CLI: java -jar mockwire.jar --name <name> --port <port> --ttl-minutes <n>
-MockWire derives its paths from the JAR location:
-    config/<name>.yaml           — server config
-    outputs/<name>/responses/    — file-based responses
-so every run gets its own copy of the JAR under ``<run_dir>/simulator/``. Runs stay
-isolated from each other and ``lib/mockwire`` is never modified.
+MockWire CLI (lib/mockwire, feature/netconfig-testing-gaps):
+    java -jar mockwire.jar --config <yaml> --responses <dir> --port <port>
+         --events-file <jsonl> --vfs-root <dir> --ttl-minutes <n>
+Everything lives under the run directory; ``lib/mockwire`` is never modified.
 
 Per-run layout::
 
     <run_dir>/simulator/
-        mockwire.jar
         config/<instance>.yaml
         outputs/<instance>/responses/<file>
         logs/<instance>.log
+        logs/<instance>.events.jsonl     — one JSON line per routed command (unmatched included)
+        vfs/<instance>/                  — sandbox file system (sftp drops, triggers)
         manifest.json
 """
 from __future__ import annotations
@@ -35,7 +34,6 @@ HEALTH_CHECK_INTERVAL = 1
 DEFAULT_TTL_MINUTES = 60
 BASE_PORT = 22200
 LOG_TAIL_LINES = 50
-JAR_NAME = "mockwire.jar"
 MANIFEST_NAME = "manifest.json"
 
 
@@ -50,6 +48,7 @@ class SimulatorInstance:
     port: int
     nodes: list[str] = field(default_factory=list)  # workflow nodes served by this instance
     log_file: str = ""
+    events_file: str = ""
     pid: int | None = None
     status: str = "pending"  # pending | running | stopped | failed
 
@@ -119,24 +118,22 @@ class SimulatorProcess:
 # ---------------------------------------------------------------------------
 
 def prepare_simulator_dir(run_dir: str, mockwire_jar: str) -> Path:
-    """Create a clean ``<run_dir>/simulator/`` with its own copy of the MockWire JAR.
+    """Create a clean ``<run_dir>/simulator/`` (configs, responses, logs, events, VFS).
 
-    Previous configs and responses are removed so stale instances never start.
+    Previous configs, responses, event logs and sandboxes are removed so stale instances
+    and stale events never leak into a new setup.
     """
     jar = Path(mockwire_jar).resolve()
     if not jar.exists():
         raise SimulatorStartError(f"MockWire JAR not found: {jar}")
 
     sim_dir = Path(run_dir) / "simulator"
-    for sub in ("config", "outputs"):
+    for sub in ("config", "outputs", "vfs"):
         shutil.rmtree(sim_dir / sub, ignore_errors=True)
-    for sub in ("config", "outputs", "logs"):
+    for old_events in (sim_dir / "logs").glob("*.events.jsonl") if (sim_dir / "logs").exists() else []:
+        old_events.unlink()
+    for sub in ("config", "outputs", "logs", "vfs"):
         (sim_dir / sub).mkdir(parents=True, exist_ok=True)
-
-    local_jar = sim_dir / JAR_NAME
-    if not local_jar.exists() or local_jar.stat().st_size != jar.stat().st_size:
-        shutil.copy2(jar, local_jar)
-        logger.info("Copied MockWire JAR to %s", local_jar)
     return sim_dir
 
 
@@ -194,23 +191,25 @@ def _port_is_free(port: int) -> bool:
 async def start_simulator(
     sim_dir: str | Path,
     instances: list[SimulatorInstance],
+    mockwire_jar: str,
     java_home: str | None = None,
     timeout: int = STARTUP_TIMEOUT,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
     host: str = "localhost",
 ) -> SimulatorProcess:
-    """Start one MockWire process per instance from the run's own JAR copy.
+    """Start one MockWire process per instance with explicit per-run paths.
 
-    Output goes to ``logs/<instance>.log``. ``--ttl-minutes`` makes MockWire exit on
-    its own if the pipeline never stops it.
+    Output goes to ``logs/<instance>.log``, routed commands to
+    ``logs/<instance>.events.jsonl``. ``--ttl-minutes`` makes MockWire exit on its own if
+    the pipeline never stops it.
 
     Raises:
         SimulatorStartError: with log paths and tails when any instance fails.
     """
     sim_dir = Path(sim_dir)
-    jar = sim_dir / JAR_NAME
+    jar = Path(mockwire_jar).resolve()
     if not jar.exists():
-        raise SimulatorStartError(f"MockWire JAR missing in {sim_dir} — call prepare_simulator_dir first")
+        raise SimulatorStartError(f"MockWire JAR not found: {jar}")
     if not instances:
         raise SimulatorStartError("No simulator instances to start")
 
@@ -227,8 +226,14 @@ async def start_simulator(
             raise SimulatorStartError(f"Config for instance {inst.name} not found: {config_file}")
 
         inst.log_file = str(sim_dir / "logs" / f"{inst.name}.log")
+        inst.events_file = str(sim_dir / "logs" / f"{inst.name}.events.jsonl")
         log_fh = open(inst.log_file, "w", encoding="utf-8")
-        cmd = [java, "-jar", str(jar), "--name", inst.name, "--port", str(inst.port),
+        cmd = [java, "-jar", str(jar),
+               "--config", str(config_file),
+               "--responses", str(sim_dir / "outputs" / inst.name / "responses"),
+               "--port", str(inst.port),
+               "--events-file", inst.events_file,
+               "--vfs-root", str(sim_dir / "vfs" / inst.name),
                "--ttl-minutes", str(ttl_minutes)]
         logger.info("Starting MockWire %s on port %d (cwd=%s)", inst.name, inst.port, sim_dir)
         proc = await asyncio.create_subprocess_exec(
@@ -306,6 +311,20 @@ def read_manifest(run_dir: str) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def read_events(run_dir: str) -> list[dict]:
+    """All MockWire command events of a run (``source``: exact | regex | prefix |
+    builtin:<name> | ctrl | unmatched), each with ``instance`` and ``exitCode``."""
+    events: list[dict] = []
+    logs = Path(run_dir) / "simulator" / "logs"
+    for f in sorted(logs.glob("*.events.jsonl")) if logs.exists() else []:
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+    return events
 
 
 def read_log_tail(log_file: str, lines: int = LOG_TAIL_LINES) -> str:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -24,7 +25,7 @@ from .jar_executor import run_mop_test, run_execution_test, write_yaml_to_file
 from .result_parser import (
     TestCaseResult, MopScenario, CommandResult,
     parse_mop_results, parse_execution_results,
-    evaluate_test_cases, classify_failures,
+    evaluate_test_cases, classify_failures, read_simulator_events,
 )
 from .report import generate_qa_report
 
@@ -49,8 +50,9 @@ class SkillInput:
     mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
     html_template_path: str = ""
     java_home: str | None = None
-    simulator_host: str = "localhost"
-    simulator_port: int = 2222
+    # Step 8's copy of the workflow pointed at the simulator; execution never uses the
+    # production workflow (its hosts are real network elements)
+    execution_workflow_path: str = ""
 
 
 @dataclass
@@ -132,13 +134,16 @@ class NetworkConfigTestSkill:
             logger.info("Phase 2: MOP test — %d scenarios, jar_success=%s",
                          len(mop_scenarios), mop_result["success"])
 
-        # Phase 3: Execution test
+        # Phase 3: Execution test — only against the simulator overlay, never production hosts
         command_results: list[CommandResult] = []
-        if wf_path and json_path and inp.ciq_file_path:
+        no_simulator = not (inp.execution_workflow_path and Path(inp.execution_workflow_path).exists())
+        if no_simulator:
+            logger.error("Phase 3: no simulator overlay workflow (%r) — execution test skipped",
+                         inp.execution_workflow_path)
+        elif json_path and inp.ciq_file_path:
             exec_result = await run_execution_test(
-                cli_jar, wf_path, json_path, inp.ciq_file_path,
-                inp.run_dir, inp.simulator_host, inp.simulator_port,
-                inp.java_home,
+                cli_jar, inp.execution_workflow_path, json_path, inp.ciq_file_path,
+                inp.run_dir, inp.java_home,
                 ciq_processor_jar=inp.ciq_processor_jar,
                 validation_rules_path=rules_path,
             )
@@ -153,9 +158,17 @@ class NetworkConfigTestSkill:
             # No generated TCs — create summary results from JAR output
             results = self._build_default_results(mop_scenarios, command_results)
 
-        # Phase 5: Classify failures
+        # Phase 5: Classify failures (MockWire's event log tells simulator gaps apart)
         failed_cmds = [c for c in command_results if not c.success or c.validation_status == "failed"]
-        classification = classify_failures(command_results) if failed_cmds else {}
+        events = read_simulator_events(inp.run_dir)
+        if no_simulator:
+            classification = {"classification": "simulator", "retry_target": 8, "workflow_issues": [],
+                              "simulator_issues": ["simulator not running (no overlay workflow from step 8)"],
+                              "unmatched_commands": []}
+        elif failed_cmds or any(e.get("source") == "unmatched" for e in events):
+            classification = classify_failures(command_results, events)
+        else:
+            classification = {}
 
         total = len(results)
         passed = sum(1 for r in results if r.status == "PASS")
@@ -174,7 +187,7 @@ class NetworkConfigTestSkill:
             duration_sec=duration,
         )
 
-        status = "passed" if failed_count == 0 else "failed"
+        status = "passed" if failed_count == 0 and not no_simulator else "failed"
         logger.info("QA complete: %d/%d passed, classification=%s (%.1fs)",
                      passed, total, classification.get("classification", "n/a"), duration)
 

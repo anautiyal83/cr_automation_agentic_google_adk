@@ -86,9 +86,11 @@ paramiko session per node (in parallel): login → NIAM neId → login prompt vs
 - [X] T040 Rewrite `sanity_check.py` with a real SSH client (D3): password auth → neId → prompt → `su` pushPrompt → first UC command, per instance.
 - [X] T041 `<uc>_simulator-report.html`: instances/ports table, per-command response source (builtin/log/LLM), offline validation results, and sanity results. Make it the Step 8 milestone artifact, with `simulator-config` files as extras.
 
-### Phase 5: Step 9 integration and retry loop (fixes S8-01, S8-08)
-- [ ] T050 Emit the overlay workflow `<uc>_sim.yaml` (`ssh.host=localhost`, `port=<instance port>`, simulator credentials, `strict_host_key_checking: "no"`, literal `ne_id`) (F2, F3).
-- [ ] T051 `jar_executor.run_execution_test`: use the overlay, remove the dead `simulator_host/port` parameters, fix `--node` to loop every zone × CR from the JSON (`--node EAST --cr CR1`, …) and merge the reports (DEP-2, F8). Pick up ports from `manifest.json`, not session state.
+### Phase 5: Step 9 integration and retry loop (fixes S8-01, S8-08): T050, T051 done 2026-11-02 with the MockWire adoption
+
+Step 8 writes `simulator/<uc>.yaml` (overlay.py: instance host/port/user, literal ne_id, quoted `strict_host_key_checking: 'no'`, `prompt_regex` extended with login/root/su prompts for DEP-10, `elevate_to_root` kept). Step 9 executes only the overlay; without it, execution is skipped and classified simulator → step 8 (never production hosts). Classification reads MockWire's event log: unmatched with a clean command → step 8, with an empty/unresolved value → step 6. `step_9_error.json` carries `unmatched_commands`, and a step 8 retry feeds them to the LLM.
+- [X] T050 Emit the overlay workflow `<uc>_sim.yaml` (`ssh.host=localhost`, `port=<instance port>`, simulator credentials, `strict_host_key_checking: "no"`, literal `ne_id`) (F2, F3).
+- [X] T051 `jar_executor.run_execution_test`: use the overlay, remove the dead `simulator_host/port` parameters, fix `--node` to loop every zone × CR from the JSON (`--node EAST --cr CR1`, …) and merge the reports (DEP-2, F8). Pick up ports from `manifest.json`, not session state.
 - [ ] T054 Raise DEP-4 (su/exit prompt validation) and DEP-5 (sar column regex) against Step 6 prompts/autofix, so Step 9 → 6 retries can fix them.
 - [ ] T052 `regenerate(feedback)`: rebuild only the failing commands' responses, rewrite files, restart the affected instances, and re-run sanity. Load context from `run_dir`, not ADK state.
 - [ ] T053 Final smoke test: the cli-automation `execute` on a generated 1-command-per-node workflow.

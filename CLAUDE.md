@@ -156,6 +156,16 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 
 ## External Dependencies
 - **JARs**: lib/ciq-processor-1.0.3-cli.jar, lib/cli-automation-standalone.jar, lib/execution-report-generator-1.0.2-cli.jar
-- **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar
+- **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar (embedded clone of the MockWire repo,
+  branch `feature/netconfig-testing-gaps`; source at D:\Nokia\workspace\mockwire)
 - **Templates**: lib/templates/*.html
 - **Schemas**: schemas/*.yaml
+
+## Simulator (steps 8 + 9) — spec 004
+- How a UC simulator must behave for cli-automation: `lib/mockwire/AGENTS.md` (read before changing step 8)
+- Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
+  login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
+- Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
+  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
+- Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
+- Running simulators are registered in `shared.state.simulator_processes` and stopped on every exit path

@@ -43,9 +43,9 @@ class NetworkConfigQAAgent(BaseAgent):
 
         flow.flow("NETWORK_CONFIG_QA START — uc=%s", uc_name)
 
-        # Determine simulator connection
-        simulator_ports = state.get("_simulator_ports", [])
-        simulator_port = simulator_ports[0] if simulator_ports else 2222
+        # Step 8 writes the workflow copy pointed at the running simulator (read from disk:
+        # ADK session state is unreliable across agents)
+        overlay = Path(run_dir) / "simulator" / f"{uc_name}.yaml" if run_dir else None
 
         skill = NetworkConfigTestSkill(
             llm_fn=get_llm_fn(config),
@@ -68,8 +68,7 @@ class NetworkConfigQAAgent(BaseAgent):
                 "lib/ciq-processor-1.0.3-cli.jar"),
             html_template_path=config.get("mop_template", ""),
             java_home=config.get("java_home"),
-            simulator_host="localhost",
-            simulator_port=simulator_port,
+            execution_workflow_path=str(overlay) if overlay and overlay.exists() else "",
         )
 
         output = await skill.test(inp)
@@ -83,7 +82,7 @@ class NetworkConfigQAAgent(BaseAgent):
         exec_failed = any(
             not c.success or c.validation_status == "failed"
             for c in output.command_results
-        )
+        ) or not inp.execution_workflow_path  # nothing executed without the simulator
         state["step_9_status"] = "failed" if exec_failed else "passed"
 
         # On failure, set retry target based on failure classification
@@ -115,7 +114,11 @@ class NetworkConfigQAAgent(BaseAgent):
                     "error": f"{output.failed}/{output.total} tests failed",
                     "classification": classification,
                     "retry_target": retry_target,
-                }, indent=2))
+                    "simulator_issues": output.failure_classification.get("simulator_issues", []),
+                    "workflow_issues": output.failure_classification.get("workflow_issues", []),
+                    # exact commands MockWire had no response for (from its event log)
+                    "unmatched_commands": output.failure_classification.get("unmatched_commands", []),
+                }, indent=2), encoding="utf-8")
 
         # Stop simulator after testing (a step 8 retry starts a fresh one)
         try:

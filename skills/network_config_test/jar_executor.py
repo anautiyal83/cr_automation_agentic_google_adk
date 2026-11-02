@@ -127,8 +127,6 @@ async def run_execution_test(
     json_output_path: str,
     ciq_file_path: str,
     output_dir: str,
-    simulator_host: str = "localhost",
-    simulator_port: int = 2222,
     java_home: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar",

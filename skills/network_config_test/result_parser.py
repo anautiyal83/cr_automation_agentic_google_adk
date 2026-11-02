@@ -164,10 +164,33 @@ def evaluate_test_cases(
     return results
 
 
-def classify_failures(command_results: list[CommandResult]) -> dict:
+_BROKEN_COMMAND = re.compile(r"\$\{|=,|=\"\"|=''|=\s*$|=\s+-")
+
+
+def read_simulator_events(run_dir: str) -> list[dict]:
+    """MockWire event log lines of the run (``simulator/logs/*.events.jsonl``)."""
+    events: list[dict] = []
+    logs = Path(run_dir) / "simulator" / "logs"
+    for f in sorted(logs.glob("*.events.jsonl")) if logs.exists() else []:
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+    return events
+
+
+def classify_failures(command_results: list[CommandResult],
+                      simulator_events: list[dict] | None = None) -> dict:
     """Classify execution failures into workflow vs simulator categories.
 
-    Returns dict with classification, retry_target, and issue lists.
+    With MockWire's event log the split is exact: an ``unmatched`` command the
+    simulator has no response for is a simulator gap (retry step 8) — unless the
+    command itself is broken (unresolved ``${…}`` or an empty value like ``imsi=,``),
+    which is a workflow problem (retry step 6). Simulator gaps are fixed first.
+    Without events the text heuristics below are used.
+
+    Returns dict with classification, retry_target, issue lists and unmatched commands.
     """
     WORKFLOW_PATTERNS = [
         "cannot create property", "mapping values are not allowed",
@@ -180,11 +203,29 @@ def classify_failures(command_results: list[CommandResult]) -> dict:
     ]
 
     workflow_issues, simulator_issues = [], []
+    unmatched = [e for e in (simulator_events or []) if e.get("source") == "unmatched"]
+    for e in unmatched:
+        cmd = str(e.get("input", ""))
+        if _BROKEN_COMMAND.search(cmd):
+            workflow_issues.append(f"{cmd[:80]} (sent with an empty/unresolved value)")
+        else:
+            simulator_issues.append(f"{cmd[:80]} (no simulator response on {e.get('instance', '?')})")
+    if simulator_events is not None and simulator_issues:
+        return {
+            "classification": "simulator",
+            "workflow_issues": workflow_issues,
+            "simulator_issues": simulator_issues,
+            "unmatched_commands": [str(e.get("input", "")) for e in unmatched],
+            "retry_target": 8,
+        }
 
     for cr in command_results:
         if cr.success and cr.validation_status != "failed":
             continue
         text = f"{cr.output} {cr.failure_reason} {cr.validation_conclusion}".lower()
+        if simulator_events is not None and "command not found" in text:
+            continue  # already classified from the event log
+
         is_wf = any(p in text for p in WORKFLOW_PATTERNS)
         is_sim = any(p in text for p in SIMULATOR_PATTERNS)
 
@@ -202,6 +243,7 @@ def classify_failures(command_results: list[CommandResult]) -> dict:
         "classification": classification,
         "workflow_issues": workflow_issues,
         "simulator_issues": simulator_issues,
+        "unmatched_commands": [str(e.get("input", "")) for e in unmatched],
         "retry_target": 8 if classification == "simulator" else 6,
     }
 

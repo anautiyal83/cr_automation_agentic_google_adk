@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import time
+from pathlib import Path
 
 import pytest
+import yaml
 
 from core.config import PROJECT_ROOT
 from shared.state import simulator_processes, stop_simulator
@@ -79,6 +82,9 @@ def test_topology_one_spec_per_remote_node(ciq_json):
     rds, pgw = specs["RDS"], specs["PGW"]
     # Elevated nodes land on the root prompt, which must satisfy prompt_regex
     assert rds.prompt == "rdsggn01:~ # " and pgw.prompt == "pgwggn01:~ # "
+    # Login prompts before Ctrl+P,Ctrl+E: requirements prompt_pattern, else [user@host ~]$
+    assert rds.login_prompt == "[oamsys@rdsggn01 ~]$ " and rds.root_prompt == "rdsggn01:~ # "
+    assert pgw.login_prompt == "[oamsys@pgwggn01 ~]$ " and pgw.hostname == "pgwggn01"
     # su pushes the prompt the workflow validates / requirements describe
     assert rds.escalations == {"su - sdfrun": "rdsggn01:~ $ "}
     assert pgw.escalations == {"su - provgw": "[provgw@pgwggn01 ~]$ "}
@@ -100,9 +106,12 @@ def test_instance_config_deterministic_parts_win(ciq_json):
            "su - sdfrun": {"lines": ["hijack"]}, "exit": {"lines": ["bye"]},
            "config": {"prompt": "wrong"}}
     cfg = parse_yaml(build_instance_config(rds, llm))
-    assert cfg["config"]["prompt"] == "rdsggn01:~ # "
-    assert cfg["su - sdfrun"] == {"lines": [], "pushPrompt": "rdsggn01:~ $ "}
-    assert cfg["exit"] == {"lines": [], "popPrompt": True}
+    assert cfg["config"]["prompt"] == "[oamsys@rdsggn01 ~]$ "          # login prompt
+    assert cfg["ctrl+p+e"] == {"pushPrompt": "rdsggn01:~ # "}            # NIAM root elevation
+    # su is MockWire's builtin over auth.users; su/exit entries from the LLM are dropped
+    assert {"username": "sdfrun", "password": "netconf-sim", "prompt": "rdsggn01:~ $ "} in cfg["auth"]["users"]
+    assert "su - sdfrun" not in cfg and "exit" not in cfg
+    assert "terminalMode" not in cfg["config"] and cfg["config"]["loginDelayMs"] == 0
     assert cfg["ndsLoadStats"] == {"lines": ["Updates Rejected: 0"]}
     assert cfg["niam"]["users"][0]["neIds"][0] == "EAST-RD1-CLI"
     assert validate_mockwire_config(build_instance_config(rds, llm)) == []
@@ -162,7 +171,16 @@ def test_setup_starts_one_instance_per_node_and_ssh_flow_works(tmp_path, ciq_jso
         assert out.status == "passed", out.validation_errors
         assert out.sanity.nodes_passed == 2
         rds = next(nr for nr in out.sanity.node_results if nr.node == "RDS")
-        assert (rds.niam, rds.prompt_match, rds.basic_command, rds.escalation, rds.uc_command) ==             ("PASS", "PASS", "PASS", "PASS", "PASS")
+        assert (rds.niam, rds.prompt_match, rds.elevation, rds.basic_command, rds.escalation,
+                rds.uc_command) == ("PASS", "PASS", "PASS", "PASS", "PASS", "PASS")
+        # Overlay workflow for step 9 points at the instance and covers every simulator prompt
+        overlay = yaml.safe_load(Path(out.overlay_workflow_path).read_text(encoding="utf-8"))
+        rds_node = overlay["nodes"]["RDS"]
+        assert rds_node["ssh"]["port"] == str(sim.port_for("RDS"))
+        assert rds_node["ssh"]["host"] == "localhost" and rds_node["ssh"]["strict_host_key_checking"] == "no"
+        assert rds_node["ssh"]["ne_id"] == "EAST-RD1-CLI" and rds_node["ssh"]["elevate_to_root"] is True
+        assert re.search(rds_node["prompt_regex"], "[oamsys@rdsggn01 ~]$")
+        assert "LOCAL" in overlay["nodes"] and overlay["phases"]
         assert "Sanity Checks" in out.report_html and ">PASS<" in out.report_html
         simulator_processes["topology-test"] = sim
         try:
@@ -173,7 +191,9 @@ def test_setup_starts_one_instance_per_node_and_ssh_flow_works(tmp_path, ciq_jso
             ch = client.invoke_shell()
             assert "neId" in read_until(ch, "neId")        # NIAM banner after ~2 s login delay
             ch.send("NORTH-RD2-CLI\n")
-            assert "rdsggn01:~ #" in read_until(ch, "rdsggn01:~ #")  # root prompt after NIAM login
+            assert "[oamsys@rdsggn01 ~]$" in read_until(ch, "]$")   # login prompt after NIAM
+            ch.send("")                                         # Ctrl+P, Ctrl+E
+            assert "rdsggn01:~ #" in read_until(ch, "rdsggn01:~ #")  # root prompt
             ch.send("su - sdfrun; echo __CMD_DONE__:$?\n")
             assert "rdsggn01:~ $" in read_until(ch, "rdsggn01:~ $")  # escalated prompt pushed
             ch.send("ndsLoadStats; echo __CMD_DONE__:$?\n")

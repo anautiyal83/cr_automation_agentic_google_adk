@@ -413,14 +413,14 @@
 
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
-| S8-01 | Critical | Step 9 never targets the simulator; execution resolves to real NIAM hosts from CIQ | Open |
+| S8-01 | Critical | Step 9 never targets the simulator; execution resolves to real NIAM hosts from CIQ | Fixed (004 Phase 5: step 9 executes step 8's overlay workflow) |
 | S8-02 | Critical | All nodes collapse into one config (first-document strip from a497018) | Fixed (004 Phase 2): one MockWire instance per remote node |
 | S8-03 | Critical | Step 8 always fails validation; `_extract_ports()` always `[]` | Fixed (uncommitted, 004 Phase 1): MockWire-format validator |
 | S8-04 | High | Sanity check is raw TCP, not SSH; results meaningless | Fixed (004 Phase 4): real SSH sanity via paramiko + HTML report |
 | S8-05 | High | Cross-run pollution in shared `lib/mockwire` config dir; `file:` responses never found | Fixed (uncommitted, 004 Phase 1): per-run JAR copy; nothing written to lib/ |
 | S8-06 | High | Simulator process leaks on failure/cancel/re-run; undrained PIPEs; no TTL | Fixed (uncommitted, 004 Phase 1): registry + stop on every exit path, log files, --ttl-minutes |
 | S8-07 | High | Phase 2 (command → response) is a stub returning `{}` | Open |
-| S8-08 | Medium | `regenerate()` doesn't write, restart, or re-sanity; skill kept in session state | Partly fixed (004 Phase 2): retry re-runs setup with step 9 feedback from disk; targeted regeneration in Phase 5 |
+| S8-08 | Medium | `regenerate()` doesn't write, restart, or re-sanity; skill kept in session state | Partly fixed: retry re-runs setup with step 9 feedback incl. MockWire unmatched commands; targeted regeneration open |
 | S8-09 | Medium | MockWire error truncated to 500 chars; root cause hidden | Fixed (uncommitted, 004 Phase 1): error carries log path + last 50 lines |
 | S8-10 | Medium | Prompts, `su` escalation, and NIAM not modelled | Fixed (004 Phase 2): prompts/`su`/NIAM built deterministically; Ctrl+P,E elevation is a MockWire gap (MW-01) |
 | S8-11 | Medium | Placeholder commands left to LLM instead of resolved from CIQ JSON | Open |

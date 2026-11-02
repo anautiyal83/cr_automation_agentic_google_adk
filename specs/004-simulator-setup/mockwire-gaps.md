@@ -149,7 +149,7 @@ fidelity or diagnostics; **P3** = convenience or production parity.
 ## Implementation status (2026-11-02)
 
 Implemented in the MockWire source (`D:/Nokia/workspace/mockwire`, branch
-`feature/netconfig-testing-gaps`, **not yet committed**, not yet copied into `lib/mockwire`).
+`feature/netconfig-testing-gaps`, commits 797b77e + 2b3cd85; `lib/mockwire` checked out at 2b3cd85).
 Covered by 12 JUnit tests (`mvn -o test`) plus SSH and cli-automation end-to-end runs.
 Docs: MockWire `USER_MANUAL.md` §2, §3.6–3.14, §8–9 and the new agent guide `AGENTS.md`
 (its worked example was executed against the new JAR).
@@ -182,9 +182,14 @@ interactive login". Tracked as DEP-10 in spec.md.
 
 ### Pipeline adoption (spec 004 follow-up)
 
-- [ ] Commit the MockWire branch; copy the new JAR into `lib/mockwire/mockwire-simulator/`
-- [ ] Step 8 runner: start with `--config/--responses/--events-file/--vfs-root` (stop copying the JAR per run), `loginDelayMs: 0`
-- [ ] Topology: login prompt = requirements `prompt_pattern`, `ctrl+p+e` → root prompt, `su` via `auth.users`; drop `terminalMode: PLAIN` and the `stty` entry
-- [ ] Step 9 overlay: keep `elevate_to_root: true`; `prompt_regex` = login|root|su prompts (DEP-10)
-- [ ] Step 9 classification: read `events_*.jsonl`; `unmatched` → retry step 8, otherwise → step 6
+- [X] Commit the MockWire branch; copy the new JAR into `lib/mockwire/mockwire-simulator/`
+- [X] Step 8 runner: start with `--config/--responses/--events-file/--vfs-root` (stop copying the JAR per run), `loginDelayMs: 0`
+- [X] Topology: login prompt = requirements `prompt_pattern`, `ctrl+p+e` → root prompt, `su` via `auth.users`; drop `terminalMode: PLAIN` and the `stty` entry
+- [X] Step 9 overlay: keep `elevate_to_root: true`; `prompt_regex` = login|root|su prompts (DEP-10)
+- [X] Step 9 classification: read `events_*.jsonl`; `unmatched` → retry step 8, otherwise → step 6
 - [ ] Phase 3 responses: regex keys with captures, `setState`/`whenState` for pre/post checks, `vfs.triggers` for file-drop flows (PGW `sftp put` → `.xml.res`)
+
+Adoption verified 2026-11-02 on run b61b977c (real LLM): step 8 passed in 23 s (RDS/PGW 7/7
+sanity checks incl. Ctrl+P,E elevation and builtin `su`), overlay `simulator/<uc>.yaml`
+written; step 9 executed it with `elevate_to_root: true` in 17 s (16 commands); event log:
+1 `unmatched` (EAST `ldapsearch` with empty IMSI → classified workflow, step 6).

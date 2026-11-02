@@ -1,7 +1,6 @@
 """YAML helpers and auto-fixes for MockWire simulator configuration.
 
 - Parse LLM output robustly (code fences, `---` documents, truncation)
-- Add the runtime entries the cli-automation JAR depends on
 - Read nodes and commands from workflow YAML
 """
 from __future__ import annotations
@@ -11,13 +10,6 @@ import re
 from io import StringIO
 
 logger = logging.getLogger(__name__)
-
-# cli-automation sends "stty -echo" once per session, then "<cmd>; echo __CMD_DONE__:$?"
-# for every command. MockWire answers the __CMD_DONE__ marker natively (do not map
-# it: an explicit entry would mask real exit codes); "stty -echo" needs a silent entry.
-RUNTIME_COMMANDS: dict[str, dict] = {
-    "stty -echo": {"lines": []},
-}
 
 
 def clean_yaml_response(text: str) -> str:
@@ -130,26 +122,6 @@ def dump_yaml(data: dict) -> str:
     yaml.width = 200
     yaml.dump(data, stream)
     return stream.getvalue()
-
-
-def ensure_runtime_entries(parsed: dict) -> None:
-    """Add what the cli-automation JAR needs from every MockWire instance.
-
-    - ``config.terminalMode: PLAIN`` — echoed input breaks the JAR's output capture
-    - ``stty -echo`` answered silently
-    - ``exit`` → ``popPrompt`` when the config escalates with ``su``, so leaving
-      the escalated shell returns to the login prompt instead of closing the session
-    """
-    config = parsed.setdefault("config", {})
-    if isinstance(config, dict):
-        config["terminalMode"] = "PLAIN"
-
-    for key, value in RUNTIME_COMMANDS.items():
-        parsed.setdefault(key, dict(value))
-
-    has_su = any(str(k).startswith(("su ", "regex:su")) for k in parsed)
-    if has_su and "exit" not in parsed:
-        parsed["exit"] = {"lines": [], "popPrompt": True}
 
 
 def _repair_truncated_yaml(yaml_text: str) -> str:

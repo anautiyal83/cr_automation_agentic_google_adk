@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Awaitable, Callable
 
 from . import prompts
@@ -37,6 +38,7 @@ from .simulator_runner import (
     write_instance_files,
 )
 from .sanity_check import SanityResult, run_sanity_checks
+from .overlay import build_overlay
 from .topology import NodeSpec, build_instance_config, build_topology
 from .report import generate_simulator_report
 from .validator import validate_mockwire_config
@@ -84,6 +86,7 @@ class SkillOutput:
     topology: list[dict] = field(default_factory=list)  # NodeSpec summaries
     config_dir: str = ""  # <run_dir>/simulator
     manifest_path: str = ""
+    overlay_workflow_path: str = ""  # <run_dir>/simulator/<uc>.yaml — workflow pointed at the instances
     simulator: SimulatorProcess | None = None  # call .stop() when done
     ports: list[int] = field(default_factory=list)
     sanity: SanityResult | None = None  # phase 4 results
@@ -136,6 +139,7 @@ class NetworkSimulatorSetupSkill:
         # --- Phase 3: Write files and start one MockWire per node ---
         config_dir = ""
         manifest_path = ""
+        overlay_path = ""
         ports: list[int] = []
         simulator = None
         sanity = None
@@ -165,6 +169,7 @@ class NetworkSimulatorSetupSkill:
                                  for n, p in zip(nodes, node_ports)]
                     simulator = await start_simulator(
                         sim_dir, instances,
+                        mockwire_jar=inp.mockwire_jar,
                         java_home=inp.java_home,
                         timeout=inp.startup_timeout,
                         ttl_minutes=inp.ttl_minutes,
@@ -172,6 +177,11 @@ class NetworkSimulatorSetupSkill:
                     )
                     ports = simulator.ports
                     manifest_path = str(sim_dir / "manifest.json")
+                    # Step 9 executes this copy of the workflow against the instances
+                    overlay_path = str(sim_dir / f"{inp.uc_name}.yaml")
+                    Path(overlay_path).write_text(build_overlay(
+                        inp.workflow_yaml, nodes, {n.name: simulator.port_for(n.name) for n in nodes},
+                        host=inp.host), encoding="utf-8")
                     logger.info("Simulator started: %s", ", ".join(
                         f"{i.name}:{i.port}" for i in simulator.instances))
                 except SimulatorStartError as e:
@@ -200,6 +210,7 @@ class NetworkSimulatorSetupSkill:
             topology=topology,
             config_dir=config_dir,
             manifest_path=manifest_path,
+            overlay_workflow_path=overlay_path,
             simulator=simulator,
             ports=ports,
             sanity=sanity,

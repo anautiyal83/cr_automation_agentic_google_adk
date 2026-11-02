@@ -6,12 +6,12 @@ Sources (no LLM):
 - requirements Cat 1 nodes: login / root / service-user prompts
 - CIQ JSON data (``data.nodeGroups[].nodes[].<NODE>.niamID-*``): NIAM neIds
 
-Every chosen prompt must satisfy the node's ``prompt_regex``: the cli-automation JAR
-uses it to detect that a command finished.
-
-Elevation: MockWire cannot simulate NIAM Ctrl+P,E root elevation (gap MW-01), so a
-node with ``elevate_to_root`` lands directly on its root prompt; the step 9 overlay
-turns elevation off.
+Prompts mirror the real node (MockWire AGENTS.md §2):
+- login prompt — after SSH/NIAM login (requirements ``prompt_pattern``)
+- root prompt  — after NIAM Ctrl+P,Ctrl+E when ``elevate_to_root`` (``ctrl+p+e`` command)
+- service-user prompts — after ``su - <user>`` (MockWire builtin su over ``auth.users``)
+Prompts the workflow's ``prompt_regex`` doesn't cover are added to it in the step 9
+overlay (see overlay.py, DEP-10).
 """
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .autofix import dump_yaml, ensure_runtime_entries, extract_workflow_commands, parse_yaml
+from .autofix import dump_yaml, extract_workflow_commands, parse_yaml
 
 logger = logging.getLogger(__name__)
 
 SIM_USER = "oamsys"
 SIM_PASSWORD = "netconf-sim"
-RESERVED_KEYS = {"config", "auth", "niam", "transfer", "netconf", "curl", "rest", "recording"}
+RESERVED_KEYS = {"config", "auth", "niam", "transfer", "netconf", "curl", "rest", "recording", "vfs"}
 
 
 @dataclass
@@ -35,8 +35,11 @@ class NodeSpec:
     """Everything needed to simulate one remote workflow node."""
     name: str                    # workflow node key, e.g. RDS
     instance: str                # MockWire instance name (config/<instance>.yaml)
-    prompt: str                  # prompt shown after login (post-elevation)
+    prompt: str                  # working prompt: root prompt when elevated, else login prompt
     prompt_regex: str = ""       # workflow nodes.<N>.prompt_regex
+    login_prompt: str = ""       # prompt right after login
+    root_prompt: str = ""        # prompt after Ctrl+P,Ctrl+E (elevate_to_root only)
+    hostname: str = ""
     user: str = SIM_USER
     password: str = SIM_PASSWORD
     ne_ids: list[str] = field(default_factory=list)       # empty → NIAM disabled
@@ -46,9 +49,19 @@ class NodeSpec:
     elevate_to_root: bool = False
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def service_users(self) -> dict[str, str]:
+        """su target user → prompt (rendered as auth.users for MockWire's builtin su)."""
+        return {cmd.split()[-1]: p for cmd, p in self.escalations.items() if cmd.split()[-1] != self.user}
+
+    def all_prompts(self) -> list[str]:
+        prompts = [self.login_prompt, self.root_prompt, *self.escalations.values()]
+        return [p for i, p in enumerate(prompts) if p and p not in prompts[:i]]
+
     def summary(self) -> dict:
         return {
-            "node": self.name, "instance": self.instance, "prompt": self.prompt,
+            "node": self.name, "instance": self.instance, "login_prompt": self.login_prompt,
+            "root_prompt": self.root_prompt, "prompt": self.prompt,
             "user": self.user, "ne_ids": len(self.ne_ids), "escalations": self.escalations,
             "commands": len(self.commands), "transfer": self.transfer, "warnings": self.warnings,
         }
@@ -96,7 +109,7 @@ def build_topology(
             transfer=any(str(c.get("cmd", "")).lstrip().startswith(("sftp", "scp")) for c in node_cmds),
             elevate_to_root=elevate,
         )
-        spec.prompt = _login_prompt(spec, req_ssh)
+        _set_prompts(spec, req_ssh)
         spec.escalations = _escalations(spec, req)
 
         if ssh.get("ne_id") or req.get("ne_id") or req_ssh.get("niam_login_id"):
@@ -116,15 +129,19 @@ def build_topology(
 def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -> str:
     """Render the MockWire config for one node.
 
-    The deterministic parts (prompt, auth, NIAM, transfer, escalation, runtime entries)
-    always win over ``command_entries`` (UC command → response, e.g. from the LLM).
+    The deterministic parts (prompts, users, NIAM, elevation, transfer) always win over
+    ``command_entries`` (UC command → response, e.g. from the LLM). ``su``/``exit``/``stty``
+    and the ``__CMD_DONE__`` marker are MockWire builtins and are never mapped.
     """
+    users = [{"username": spec.user, "password": spec.password, "prompt": spec.login_prompt}]
+    users += [{"username": u, "password": spec.password, "prompt": p} for u, p in spec.service_users.items()]
     cfg: dict = {
-        "config": {"prompt": spec.prompt, "delayMs": 50, "jitterMs": 10,
-                   "idleTimeoutSec": 300, "terminalMode": "PLAIN"},
-        "auth": {"enabled": True, "users": [
-            {"username": spec.user, "password": spec.password, "prompt": spec.prompt}]},
+        "config": {"prompt": spec.login_prompt, "hostname": spec.hostname, "loginDelayMs": 0,
+                   "delayMs": 20, "jitterMs": 0, "idleTimeoutSec": 600},
+        "auth": {"enabled": True, "users": users},
     }
+    if spec.root_prompt:
+        cfg["ctrl+p+e"] = {"pushPrompt": spec.root_prompt}
     if spec.ne_ids:
         cfg["niam"] = {
             "enabled": True,
@@ -135,36 +152,55 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         }
     if spec.transfer:
         cfg["transfer"] = {"sftpPrompt": "sftp> ", "scpPrompt": "scp> "}
-    for su_cmd, pushed in spec.escalations.items():
-        cfg[su_cmd] = {"lines": [], "pushPrompt": pushed}
 
     for key, val in (command_entries or {}).items():
         key = str(key)
-        if key in RESERVED_KEYS or key in cfg or key == "exit" or _is_su(key):
+        if key in RESERVED_KEYS or key in cfg or _is_builtin_key(key):
             continue
         cfg[key] = val
 
-    ensure_runtime_entries(cfg)
     return dump_yaml(cfg)
+
+
+def _is_builtin_key(key: str) -> bool:
+    """Keys MockWire answers itself; mapping them would override builtin behaviour."""
+    k = key.strip().lower()
+    return (_is_su(k) or k in ("exit", "logout", "quit") or k.startswith(("stty", "ctrl+p"))
+            or "__cmd_done__" in k)
 
 
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
-def _login_prompt(spec: NodeSpec, req_ssh: dict) -> str:
+def _set_prompts(spec: NodeSpec, req_ssh: dict) -> None:
+    """Login prompt, root prompt (elevated nodes) and the working prompt."""
     alternatives = _regex_examples(spec.prompt_regex)
-    candidates: list[str] = []
     if spec.elevate_to_root:
-        candidates.append(str(req_ssh.get("root_prompt") or ""))
-        candidates += [a for a in alternatives if a.rstrip().endswith("#")]
-    candidates.append(str(req_ssh.get("prompt_pattern") or ""))
-    candidates += alternatives
-    chosen = _first_matching(candidates, spec.prompt_regex)
-    if not chosen:
-        chosen = f"{spec.name.lower()}:~ #"
-        spec.warnings.append(f"no prompt satisfies prompt_regex {spec.prompt_regex!r}; using {chosen!r}")
-    return _with_space(chosen)
+        root = _first_matching([str(req_ssh.get("root_prompt") or "")]
+                               + [a for a in alternatives if a.rstrip().endswith("#")], spec.prompt_regex)
+        if not root:
+            root = f"{spec.name.lower()}:~ #"
+            spec.warnings.append(f"no root prompt satisfies prompt_regex {spec.prompt_regex!r}; using {root!r}")
+        host = _hostname(root) or spec.name.lower()
+        # Login prompt as the node shows it before elevation; the overlay adds it to prompt_regex
+        login = str(req_ssh.get("prompt_pattern") or "") or f"[{spec.user}@{host} ~]$"
+        spec.root_prompt = _with_space(root)
+        spec.login_prompt = _with_space(login)
+        spec.prompt = spec.root_prompt
+    else:
+        login = _first_matching([str(req_ssh.get("prompt_pattern") or "")] + alternatives, spec.prompt_regex)
+        if not login:
+            login = f"{spec.name.lower()}:~ #"
+            spec.warnings.append(f"no prompt satisfies prompt_regex {spec.prompt_regex!r}; using {login!r}")
+        spec.login_prompt = spec.prompt = _with_space(login)
+    spec.hostname = _hostname(spec.login_prompt) or _hostname(spec.root_prompt) or spec.name.lower()
+
+
+def _hostname(prompt: str) -> str:
+    """Host from prompts like "[user@host ~]$", "user@host:~>" or "host:~ #"."""
+    m = re.search(r"@([A-Za-z0-9._-]+)|^\[?([A-Za-z0-9._-]+):", (prompt or "").strip())
+    return (m.group(1) or m.group(2)) if m else ""
 
 
 def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:

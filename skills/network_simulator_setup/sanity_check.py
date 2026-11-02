@@ -3,10 +3,11 @@
 Drives each node's instance the way the cli-automation JAR will, before step 9:
 1. SSH login with the simulator credentials
 2. NIAM neId prompt answered (when the node is NIAM-fronted)
-3. Prompt after login matches the workflow's ``prompt_regex``
-4. Command round trip: ``stty -echo`` and the ``__CMD_DONE__`` marker
-5. Every ``su`` escalation pushes its prompt and ``exit`` returns to the login prompt
-6. First UC command (without placeholders) gets a response, not "command not found"
+3. Login prompt shown
+4. Root elevation: Ctrl+P, Ctrl+E shows the root prompt (``elevate_to_root`` nodes)
+5. Command round trip: ``stty -echo`` and the ``__CMD_DONE__`` marker
+6. Every ``su`` escalation pushes its prompt and ``exit`` returns to the working prompt
+7. First UC command (without placeholders) gets a response, not "command not found"
 
 Uses paramiko (blocking) in worker threads; nodes are checked concurrently.
 """
@@ -34,6 +35,7 @@ class NodeSanityResult:
     ssh_connect: str = "SKIP"       # PASS | FAIL | SKIP
     niam: str = "SKIP"
     prompt_match: str = "SKIP"
+    elevation: str = "SKIP"         # Ctrl+P,Ctrl+E → root prompt
     basic_command: str = "SKIP"
     escalation: str = "SKIP"
     uc_command: str = "SKIP"
@@ -42,7 +44,7 @@ class NodeSanityResult:
 
     @property
     def passed(self) -> bool:
-        checks = [self.ssh_connect, self.niam, self.prompt_match, self.basic_command,
+        checks = [self.ssh_connect, self.niam, self.prompt_match, self.elevation, self.basic_command,
                   self.escalation, self.uc_command]
         return all(c in ("PASS", "SKIP") for c in checks)
 
@@ -108,7 +110,8 @@ def _check_node(spec, host: str, port: int) -> NodeSanityResult:
             nr.errors.append(f"SSH login failed on port {port}: {e}")
             return nr
 
-        login_prompt = spec.prompt.rstrip()
+        login_prompt = (spec.login_prompt or spec.prompt).rstrip()
+        work_prompt = spec.prompt.rstrip()  # root prompt when elevated
 
         # 2. NIAM neId
         if spec.ne_ids:
@@ -121,17 +124,26 @@ def _check_node(spec, host: str, port: int) -> NodeSanityResult:
 
         # 3. Prompt after login
         out = session.read_until(login_prompt, LOGIN_TIMEOUT)
-        if login_prompt in out and _matches(spec.prompt_regex, login_prompt):
+        if login_prompt in out:
             nr.prompt_match = "PASS"
         else:
             nr.prompt_match = "FAIL"
-            nr.errors.append(f"login prompt {login_prompt!r} not shown or does not match "
-                             f"prompt_regex {spec.prompt_regex!r}")
+            nr.errors.append(f"login prompt {login_prompt!r} not shown")
             return nr
 
-        # 4. Command round trip as the JAR does it
+        # 4. Root elevation (NIAM Ctrl+P, Ctrl+E) as cli-automation does for elevate_to_root
         session.send("stty -echo")
         session.read_until(login_prompt, COMMAND_TIMEOUT)
+        if spec.root_prompt:
+            session.send_raw("\x10\x05")
+            if work_prompt in session.read_until(work_prompt, COMMAND_TIMEOUT):
+                nr.elevation = "PASS"
+            else:
+                nr.elevation = "FAIL"
+                nr.errors.append(f"Ctrl+P,Ctrl+E did not show root prompt {work_prompt!r}")
+                return nr
+
+        # 5. Command round trip as the JAR does it
         out = session.run(":", COMMAND_TIMEOUT)
         if DONE_MARKER in out:
             nr.basic_command = "PASS"
@@ -139,19 +151,19 @@ def _check_node(spec, host: str, port: int) -> NodeSanityResult:
             nr.basic_command = "FAIL"
             nr.errors.append("no __CMD_DONE__ marker after command")
 
-        # 5. Escalations
+        # 6. Escalations (su pushes the service user's prompt, exit returns)
         if spec.escalations:
             nr.escalation = "PASS"
             for su_cmd, pushed in spec.escalations.items():
                 out = session.run(su_cmd, COMMAND_TIMEOUT, until=pushed.rstrip())
-                if pushed.rstrip() not in out or not _matches(spec.prompt_regex, pushed.rstrip()):
+                if pushed.rstrip() not in out:
                     nr.escalation = "FAIL"
                     nr.errors.append(f"{su_cmd!r} did not push prompt {pushed.rstrip()!r}")
                     continue
-                out = session.run("exit", COMMAND_TIMEOUT, until=login_prompt)
-                if not out.rstrip().endswith(login_prompt):
+                out = session.run("exit", COMMAND_TIMEOUT, until=work_prompt)
+                if not out.rstrip().endswith(work_prompt):
                     nr.escalation = "FAIL"
-                    nr.errors.append(f"'exit' after {su_cmd!r} did not return to {login_prompt!r}")
+                    nr.errors.append(f"'exit' after {su_cmd!r} did not return to {work_prompt!r}")
 
         # 6. First UC command without placeholders
         uc_cmd = next((c["cmd"] for c in spec.commands if _plain_uc_command(str(c.get("cmd", "")))), "")
@@ -176,9 +188,9 @@ def _check_node(spec, host: str, port: int) -> NodeSanityResult:
             client.close()
         except Exception:
             pass
-        logger.info("Sanity [%s] %s (port %d): ssh=%s niam=%s prompt=%s cmd=%s esc=%s uc=%s",
+        logger.info("Sanity [%s] %s (port %d): ssh=%s niam=%s prompt=%s elev=%s cmd=%s esc=%s uc=%s",
                     "PASS" if nr.passed else "FAIL", spec.name, port, nr.ssh_connect, nr.niam,
-                    nr.prompt_match, nr.basic_command, nr.escalation, nr.uc_command)
+                    nr.prompt_match, nr.elevation, nr.basic_command, nr.escalation, nr.uc_command)
     return nr
 
 
@@ -192,6 +204,11 @@ class _Session:
     def send(self, line: str) -> None:
         self.channel.send(line + "\n")
         self.transcript += f"\n>>> {line}\n"
+
+    def send_raw(self, data: str) -> None:
+        """Send control bytes without Enter (e.g. Ctrl+P, Ctrl+E)."""
+        self.channel.send(data)
+        self.transcript += "\n>>> " + "".join(f"^{chr(ord(c) + 64)}" if ord(c) < 32 else c for c in data) + "\n"
 
     def read_until(self, expected: str, timeout: float) -> str:
         end, out = time.time() + timeout, ""
@@ -217,12 +234,3 @@ class _Session:
 def _plain_uc_command(cmd: str) -> bool:
     cmd = cmd.strip()
     return bool(cmd) and "${" not in cmd and not re.match(r"^(su\b|exit$|stty\b)", cmd)
-
-
-def _matches(regex: str, text: str) -> bool:
-    if not regex:
-        return True
-    try:
-        return bool(re.search(regex, text) or re.search(regex, text + " "))
-    except re.error:
-        return True

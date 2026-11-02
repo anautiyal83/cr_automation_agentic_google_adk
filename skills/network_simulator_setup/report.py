@@ -8,12 +8,11 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
-# MockWire gaps that every run inherits (specs/004-simulator-setup/mockwire-gaps.md)
+# What step 8 does not model yet (specs/004-simulator-setup plan Phase 3)
 _KNOWN_LIMITATIONS = [
-    ("MW-01", "NIAM root elevation (Ctrl+P, Ctrl+E) is not simulated: nodes log in on their root "
-              "prompt and step 9 runs with elevate_to_root disabled."),
-    ("MW-02", "Every simulated command exits with code 0; failure paths are not exercised."),
-    ("MW-04", "Responses do not change after modifications (no pre/post state)."),
+    ("Responses", "Command outputs are LLM-generated per node; pre/post state (setState/whenState), "
+                  "file-drop triggers and failure exit codes are not generated yet."),
+    ("Records", "cli-automation executes only the first CIQ record per node group (DEP-9)."),
 ]
 
 
@@ -48,9 +47,12 @@ def generate_simulator_report(
         inst = next((i for i in simulator.instances if i.name == n.instance), None) if simulator else None
         esc = "<br>".join(f"<code>{_e(k)}</code> &rarr; <code>{_e(v.rstrip())}</code>"
                           for k, v in n.escalations.items()) or "&mdash;"
+        prompts = f"<code>{_e(n.login_prompt.rstrip())}</code>"
+        if n.root_prompt:
+            prompts += f"<br>Ctrl+P,E &rarr; <code>{_e(n.root_prompt.rstrip())}</code>"
         instance_rows.append(
             f"<tr><td><b>{_e(n.name)}</b></td><td>{_e(port or '—')}</td>"
-            f"<td><code>{_e(n.prompt.rstrip())}</code></td><td>{_e(n.user)}</td>"
+            f"<td>{prompts}</td><td>{_e(n.user)}</td>"
             f"<td>{len(n.ne_ids) or '—'}</td><td>{esc}</td><td>{len(n.commands)}</td>"
             f"<td>{'yes' if n.transfer else '—'}</td>"
             f"<td><small>{_e(inst.log_file if inst else '')}</small></td></tr>")
@@ -60,12 +62,12 @@ def generate_simulator_report(
     for n in nodes:
         nr = sanity_by_node.get(n.name)
         if not nr:
-            sanity_rows.append(f"<tr><td><b>{_e(n.name)}</b></td>" + "<td>—</td>" * 6
+            sanity_rows.append(f"<tr><td><b>{_e(n.name)}</b></td>" + "<td>—</td>" * 7
                                + "<td>not run</td></tr>")
             continue
         sanity_rows.append(
             f"<tr><td><b>{_e(nr.node)}</b></td><td>{_badge(nr.ssh_connect)}</td><td>{_badge(nr.niam)}</td>"
-            f"<td>{_badge(nr.prompt_match)}</td><td>{_badge(nr.basic_command)}</td>"
+            f"<td>{_badge(nr.prompt_match)}</td><td>{_badge(nr.elevation)}</td><td>{_badge(nr.basic_command)}</td>"
             f"<td>{_badge(nr.escalation)}</td><td>{_badge(nr.uc_command)}</td>"
             f"<td>{'<br>'.join(_e(x) for x in nr.errors) or 'OK'}</td></tr>")
         if nr.transcript:
@@ -139,7 +141,7 @@ def generate_simulator_report(
 <div class="card">
   <h2>2. Instances</h2>
   <table>
-    <tr><th>Node</th><th>Port</th><th>Login prompt</th><th>User</th><th>NIAM neIds</th><th>Escalation</th><th>Workflow cmds</th><th>Transfer</th><th>Log</th></tr>
+    <tr><th>Node</th><th>Port</th><th>Prompts</th><th>User</th><th>NIAM neIds</th><th>Escalation</th><th>Workflow cmds</th><th>Transfer</th><th>Log</th></tr>
     {''.join(instance_rows)}
   </table>
 </div>
@@ -147,7 +149,7 @@ def generate_simulator_report(
 <div class="card">
   <h2>3. Sanity Checks (real SSH session per node)</h2>
   <table>
-    <tr><th>Node</th><th>SSH</th><th>NIAM</th><th>Prompt</th><th>Command</th><th>Escalation</th><th>UC cmd</th><th>Details</th></tr>
+    <tr><th>Node</th><th>SSH</th><th>NIAM</th><th>Login</th><th>Elevation</th><th>Command</th><th>su/exit</th><th>UC cmd</th><th>Details</th></tr>
     {''.join(sanity_rows)}
   </table>
   {''.join(transcripts)}
@@ -156,7 +158,7 @@ def generate_simulator_report(
 <div class="card">
   <h2>4. Issues &amp; Known Limitations</h2>
   {issues}
-  <p style="margin:12px 0 6px;font-weight:600;font-size:0.85rem">Simulator limitations (MockWire gaps)</p>
+  <p style="margin:12px 0 6px;font-weight:600;font-size:0.85rem">Not modelled yet</p>
   <ul>{limitations}</ul>
 </div>
 
