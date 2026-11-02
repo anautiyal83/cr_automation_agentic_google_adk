@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import parse_llm_yaml
+from .autofix import parse_llm_yaml, salvage_yaml_entries
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -38,11 +38,14 @@ from .simulator_runner import (
 )
 from .sanity_check import SanityResult, run_sanity_checks
 from .topology import NodeSpec, build_instance_config, build_topology
+from .report import generate_simulator_report
 from .validator import validate_mockwire_config
 
 logger = logging.getLogger(__name__)
 
 LlmFn = Callable[[str, str], Awaitable[str]]
+
+LLM_ATTEMPTS = 2  # per node, when the response is not valid YAML
 
 
 @dataclass
@@ -85,6 +88,7 @@ class SkillOutput:
     ports: list[int] = field(default_factory=list)
     sanity: SanityResult | None = None  # phase 4 results
     validation_errors: list[str] = field(default_factory=list)
+    report_html: str = ""  # step 8 milestone report
     status: str = "pending"  # "passed" | "failed" | "pending"
     error: str = ""
 
@@ -98,6 +102,7 @@ class NetworkSimulatorSetupSkill:
     def __init__(self, llm_fn: LlmFn):
         self._llm_fn = llm_fn
         self._last_input: SkillInput | None = None
+        self._raw_llm_outputs: dict[str, str] = {}  # node → last raw LLM answer
 
     async def setup(self, inp: SkillInput) -> SkillOutput:
         """Run all phases: topology → responses → write + start → sanity."""
@@ -126,11 +131,7 @@ class NetworkSimulatorSetupSkill:
                 result = {}
             instance_configs[node.instance] = build_instance_config(node, result)
         review_yaml = _review_yaml(nodes, instance_configs)
-
-        if errors:
-            return SkillOutput(simulator_config_yaml=review_yaml, instance_configs=instance_configs,
-                               topology=topology, validation_errors=errors, status="failed",
-                               error="; ".join(errors))
+        # A node without responses fails validation below; the report still gets written
 
         # --- Phase 3: Write files and start one MockWire per node ---
         config_dir = ""
@@ -146,6 +147,8 @@ class NetworkSimulatorSetupSkill:
                 return SkillOutput(simulator_config_yaml=review_yaml, instance_configs=instance_configs,
                                    topology=topology, status="failed", error=str(e))
             config_dir = str(sim_dir)
+            for node_name, raw in self._raw_llm_outputs.items():
+                (sim_dir / "logs" / f"llm_{node_name}_raw.txt").write_text(raw, encoding="utf-8")
             for node in nodes:
                 write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
                 errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
@@ -181,12 +184,7 @@ class NetworkSimulatorSetupSkill:
                 # --- Phase 4: Sanity testing ---
                 if simulator and simulator.is_running:
                     try:
-                        sanity = await run_sanity_checks(
-                            ports=ports,
-                            node_configs=[{"name": n.name, "prompt_regex": n.prompt_regex}
-                                          for n in nodes],
-                            workflow_commands=[c for n in nodes for c in n.commands],
-                        )
+                        sanity = await run_sanity_checks(nodes, simulator, host=inp.host)
                         if not sanity.all_passed:
                             errors.append(f"Sanity failed: {sanity.summary}")
                             logger.warning("Phase 4 sanity failed: %s", sanity.summary)
@@ -206,6 +204,8 @@ class NetworkSimulatorSetupSkill:
             ports=ports,
             sanity=sanity,
             validation_errors=errors,
+            report_html=generate_simulator_report(
+                inp.uc_name, nodes, simulator, sanity, errors, config_dir),
             status="failed" if errors else "passed",
         )
 
@@ -247,10 +247,22 @@ class NetworkSimulatorSetupSkill:
             feedback=prompts.FEEDBACK_SECTION.format(feedback=feedback) if feedback else "",
         )
         logger.info("Phase 2: Generating responses for %s (%d commands)", node.name, len(commands))
-        raw = await self._llm_fn(prompts.NODE_RESPONSES_SYSTEM, user_prompt)
-        parsed = parse_llm_yaml(raw)
+        parsed = None
+        for attempt in range(1, LLM_ATTEMPTS + 1):
+            raw = await self._llm_fn(prompts.NODE_RESPONSES_SYSTEM, user_prompt)
+            self._raw_llm_outputs[node.name] = raw
+            parsed = parse_llm_yaml(raw)
+            if isinstance(parsed, dict):
+                break
+            logger.warning("Phase 2: %s — invalid YAML from LLM (attempt %d/%d)",
+                           node.name, attempt, LLM_ATTEMPTS)
+            parsed = salvage_yaml_entries(raw) or None
+            if parsed:
+                break
+            user_prompt += prompts.INVALID_YAML_RETRY
         if not isinstance(parsed, dict):
-            raise ValueError("LLM did not return a YAML map of command responses")
+            raise ValueError("LLM did not return a YAML map of command responses "
+                             f"(raw output in simulator/logs/llm_{node.name}_raw.txt)")
 
         entries = {}
         for key, val in parsed.items():

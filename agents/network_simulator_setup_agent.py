@@ -119,6 +119,9 @@ class NetworkSimulatorSetupAgent(BaseAgent):
                 p = Path(run_dir) / f"{uc_name}_simulator-config.yaml"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(output.simulator_config_yaml, encoding="utf-8")
+        if output.report_html and run_dir:
+            (Path(run_dir) / f"{uc_name}_simulator-report.html").write_text(
+                output.report_html, encoding="utf-8")
         state["artifacts"] = artifacts
 
         # Register the running simulator so every exit path can stop it

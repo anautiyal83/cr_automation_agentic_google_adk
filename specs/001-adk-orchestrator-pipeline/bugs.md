@@ -416,7 +416,7 @@
 | S8-01 | Critical | Step 9 never targets the simulator; execution resolves to real NIAM hosts from CIQ | Open |
 | S8-02 | Critical | All nodes collapse into one config (first-document strip from a497018) | Fixed (004 Phase 2): one MockWire instance per remote node |
 | S8-03 | Critical | Step 8 always fails validation; `_extract_ports()` always `[]` | Fixed (uncommitted, 004 Phase 1): MockWire-format validator |
-| S8-04 | High | Sanity check is raw TCP, not SSH; results meaningless | Open |
+| S8-04 | High | Sanity check is raw TCP, not SSH; results meaningless | Fixed (004 Phase 4): real SSH sanity via paramiko + HTML report |
 | S8-05 | High | Cross-run pollution in shared `lib/mockwire` config dir; `file:` responses never found | Fixed (uncommitted, 004 Phase 1): per-run JAR copy; nothing written to lib/ |
 | S8-06 | High | Simulator process leaks on failure/cancel/re-run; undrained PIPEs; no TTL | Fixed (uncommitted, 004 Phase 1): registry + stop on every exit path, log files, --ttl-minutes |
 | S8-07 | High | Phase 2 (command → response) is a stub returning `{}` | Open |

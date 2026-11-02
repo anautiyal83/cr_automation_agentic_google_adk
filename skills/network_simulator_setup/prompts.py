@@ -56,3 +56,7 @@ FEEDBACK_SECTION = """
 === PREVIOUS EXECUTION TEST FAILURES (fix these responses) ===
 {feedback}
 """
+
+INVALID_YAML_RETRY = """
+Your previous answer was not valid YAML. Answer again with ONLY the YAML map, single-quoted keys and lines, no prose.
+"""

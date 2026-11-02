@@ -60,6 +60,28 @@ def parse_llm_yaml(text: str) -> dict | list | None:
     return parsed
 
 
+def salvage_yaml_entries(text: str) -> dict:
+    """Parse a top-level YAML map entry by entry, keeping every entry that parses.
+
+    Used when the whole document is invalid because of one bad entry.
+    """
+    cleaned = _requote_backslash_scalars(clean_yaml_response(text))
+    blocks: list[list[str]] = []
+    for line in cleaned.split("\n"):
+        if line and not line[0].isspace() and not line.startswith(("-", "#")):
+            blocks.append([line])
+        elif blocks:
+            blocks[-1].append(line)
+    result: dict = {}
+    for block in blocks:
+        parsed = parse_yaml("\n".join(block))
+        if isinstance(parsed, dict):
+            result.update(parsed)
+    if result:
+        logger.info("Salvaged %d/%d YAML entries from invalid LLM output", len(result), len(blocks))
+    return result
+
+
 _DQ_SCALAR = re.compile(r'^(\s*(?:-\s+)?)"((?:[^"\\]|\\.)*)"(\s*:.*|\s*)$')
 
 

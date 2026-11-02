@@ -435,7 +435,7 @@ class PipelineAgent(BaseAgent):
             5: (f"{uc_name}_ciq-qa-report.html", []),
             6: (f"{uc_name}.yaml", []),
             7: (f"{uc_name}_mop-qa-report.html", []),
-            8: (f"{uc_name}_simulator-config.yaml", []),
+            8: (f"{uc_name}_simulator-report.html", [f"{uc_name}_simulator-config.yaml"]),
             9: (f"{uc_name}_network-qa-report.html", []),
         }
 

@@ -466,7 +466,7 @@ class PipelineRunner:
             5: f"{uc_name}_ciq-qa-report.html",
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-qa-report.html",
-            8: f"{uc_name}_simulator-config.yaml",
+            8: f"{uc_name}_simulator-report.html",
             9: f"exec_report/{uc_name}_execution-report.html",
         }
 
@@ -476,7 +476,6 @@ class PipelineRunner:
             3: "validation_rules_yaml",
             4: "json_template_yaml",
             6: "workflow_yaml",
-            8: "simulator_config_yaml",
         }
 
         primary = ""
@@ -502,7 +501,7 @@ class PipelineRunner:
             2: ["requirements.json"],
             5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
             7: [f"{uc_name}.yaml"],
-            8: ["simulator/manifest.json"],
+            8: [f"{uc_name}_simulator-config.yaml", "simulator/manifest.json"],
             9: [f"{uc_name}.yaml", f"{uc_name}_simulator-config.yaml"],
         }
         for ef in extra_map.get(step_num, []):

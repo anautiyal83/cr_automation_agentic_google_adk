@@ -158,6 +158,12 @@ def test_setup_starts_one_instance_per_node_and_ssh_flow_works(tmp_path, ciq_jso
             ttl_minutes=3))
         sim = out.simulator
         assert sim and sim.is_running and len(sim.instances) == 2
+        # Phase 4: real SSH sanity passes for both nodes and the report says so
+        assert out.status == "passed", out.validation_errors
+        assert out.sanity.nodes_passed == 2
+        rds = next(nr for nr in out.sanity.node_results if nr.node == "RDS")
+        assert (rds.niam, rds.prompt_match, rds.basic_command, rds.escalation, rds.uc_command) ==             ("PASS", "PASS", "PASS", "PASS", "PASS")
+        assert "Sanity Checks" in out.report_html and ">PASS<" in out.report_html
         simulator_processes["topology-test"] = sim
         try:
             client = paramiko.SSHClient()
@@ -186,10 +192,29 @@ def test_setup_starts_one_instance_per_node_and_ssh_flow_works(tmp_path, ciq_jso
 def test_parse_llm_yaml_repairs_double_quoted_regex_keys_and_truncation():
     # Real failure from gemini-2.5-flash: "\S" is an invalid double-quoted YAML escape,
     # and the answer was cut off inside a padded line.
-    raw = ('"sar 1 10":\n  lines:\n  - \'Average: all 99.95\'\n'
-           '"regex:ls -l /srv/outbox/\S+\.xml\.res":\n  lines:\n  - \'ok\'\n'
-           '"regex:sftp put \S+\.xml /srv/inbox":\n  lines:\n  - \'sftp> put X.xml\'\n'
-           "  - 'X.xml" + " " * 40)
+    raw = ("\"sar 1 10\":\n  lines:\n  - 'Average: all 99.95'\n"
+           + r'"regex:ls -l /srv/outbox/\S+\.xml\.res":' + "\n  lines:\n  - 'ok'\n"
+           + r'"regex:sftp put \S+\.xml /srv/inbox":' + "\n  lines:\n  - 'sftp> put X.xml'\n"
+           + "  - 'X.xml" + " " * 40)
     parsed = parse_llm_yaml(raw)
-    assert parsed["regex:ls -l /srv/outbox/\S+\.xml\.res"] == {"lines": ["ok"]}
-    assert "regex:sftp put \S+\.xml /srv/inbox" in parsed
+    assert parsed[r"regex:ls -l /srv/outbox/\S+\.xml\.res"] == {"lines": ["ok"]}
+    assert r"regex:sftp put \S+\.xml /srv/inbox" in parsed
+
+
+def test_salvage_keeps_valid_entries_when_one_is_broken():
+    from skills.network_simulator_setup.autofix import salvage_yaml_entries
+    raw = "'ss':\n  lines: ['Link UP']\n'bad': [unclosed\n'sar 1 10':\n  lines: ['x']\n"
+    assert parse_llm_yaml(raw) is None
+    assert set(salvage_yaml_entries(raw)) == {"ss", "sar 1 10"}
+
+
+def test_node_responses_retry_after_unparseable_answer(ciq_json):
+    answers = iter(["this is not yaml at all", "'ndsLoadStats':\n  lines: ['ok']\n"])
+
+    async def llm(system: str, user: str) -> str:
+        return next(answers)
+
+    rds = next(s for s in build_topology(WORKFLOW, REQUIREMENTS, ciq_json) if s.name == "RDS")
+    skill = NetworkSimulatorSetupSkill(llm_fn=llm)
+    entries = asyncio.run(skill._generate_node_responses("UC", rds, "", ""))
+    assert entries == {"ndsLoadStats": {"lines": ["ok"]}}

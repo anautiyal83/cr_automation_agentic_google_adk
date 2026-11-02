@@ -80,9 +80,11 @@ Real-LLM E2E on run b61b977c: step 8 builds RDS (9 entries) and PGW (7 entries) 
 - [ ] T035 Write `responses/<NODE>/<CMD_SLUG>_<PHASE>.txt` and reference them via `file:` (supports pre/post-check variants via `responseStrategy: SEQUENTIAL`).
 - [ ] T036 Offline validator: run each step's validation (regex/expr) against its response and report mismatches per command.
 
-### Phase 4: SSH sanity and report (fixes S8-04)
-- [ ] T040 Rewrite `sanity_check.py` with a real SSH client (D3): password auth → neId → prompt → `su` pushPrompt → first UC command, per instance.
-- [ ] T041 `<uc>_simulator-report.html`: instances/ports table, per-command response source (builtin/log/LLM), offline validation results, and sanity results. Make it the Step 8 milestone artifact, with `simulator-config` files as extras.
+### Phase 4: SSH sanity and report (fixes S8-04): done 2026-11-02
+
+paramiko session per node (in parallel): login → NIAM neId → login prompt vs `prompt_regex` → `stty -echo` + `__CMD_DONE__` round trip → each `su` pushes its prompt and `exit` pops back → first placeholder-free UC command answered (not "command not found"). `<uc>_simulator-report.html` (instances, sanity per node with session transcripts, issues, MockWire limitations) is now the step 8 milestone artifact, with the configs as extras. LLM responses are hardened: one retry with an "invalid YAML" note, per-entry salvage, raw answers kept in `simulator/logs/llm_<node>_raw.txt`. A node without responses no longer aborts before the report. **Real-LLM run on b61b977c: step 8 PASSED (18 s); RDS and PGW 6/6 checks each.**
+- [X] T040 Rewrite `sanity_check.py` with a real SSH client (D3): password auth → neId → prompt → `su` pushPrompt → first UC command, per instance.
+- [X] T041 `<uc>_simulator-report.html`: instances/ports table, per-command response source (builtin/log/LLM), offline validation results, and sanity results. Make it the Step 8 milestone artifact, with `simulator-config` files as extras.
 
 ### Phase 5: Step 9 integration and retry loop (fixes S8-01, S8-08)
 - [ ] T050 Emit the overlay workflow `<uc>_sim.yaml` (`ssh.host=localhost`, `port=<instance port>`, simulator credentials, `strict_host_key_checking: "no"`, literal `ne_id`) (F2, F3).
