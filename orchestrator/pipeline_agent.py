@@ -141,8 +141,13 @@ class PipelineAgent(BaseAgent):
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
                 cache = ArtifactCache()
-                if agent.name in CACHEABLE_AGENTS and cache.has_cache(uc_name, agent.name):
-                    cached = cache.load_cache(uc_name, agent.name)
+                if agent.name in CACHEABLE_AGENTS:
+                    has = cache.has_cache(uc_name, agent.name)
+                    flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
+                    if has:
+                        cached = cache.load_cache(uc_name, agent.name)
+                    else:
+                        cached = None
                     if cached:
                         # Inject cached artifacts into session state
                         artifacts = ctx.session.state.get("artifacts", {})
@@ -186,7 +191,7 @@ class PipelineAgent(BaseAgent):
                                    index + 1, total, agent.name)
                         cache_hit = True
             except Exception as e:
-                logger.debug("Cache check failed for %s: %s", agent.name, e)
+                logger.error("Cache check failed for %s: %s", agent.name, e, exc_info=True)
 
             if cache_hit:
                 index += 1
