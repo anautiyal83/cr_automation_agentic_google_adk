@@ -49,9 +49,9 @@ The LLM is used **only** in 8.3 for commands with no builtin/log output, and on 
 - [X] T002 Confirm running MockWire from a per-run JAR copy resolves `config/` and `outputs/` from that dir (D1). **Confirmed (F1).**
 - [X] T003 Record findings in `research.md` (F1–F10). **Gate passed:** the overlay design holds. Required extras: `strict_host_key_checking: "no"`, `terminalMode: PLAIN`, `stty`/sentinel entries, `exit` popPrompt.
 
-### Phase 1: Plumbing and lifecycle (fixes S8-03, S8-05, S8-06, S8-09, S8-12, S8-13): done 2026-11-02 except T017
+### Phase 1: Plumbing and lifecycle (fixes S8-03, S8-05, S8-06, S8-09, S8-12, S8-13): done 2026-11-02
 
-Done ahead of plan: T032 runtime entries (`terminalMode: PLAIN`, `stty -echo`, sentinel, `exit` popPrompt) in `autofix.ensure_runtime_entries`. T051 part: `--node <zone> --cr <crGroup>` loop (DEP-2). Tests: `tests/test_simulator_setup.py` (10 pass, including real MockWire start, stop and port conflict).
+Done ahead of plan: T032 runtime entries (`terminalMode: PLAIN`, `stty -echo`, `exit` popPrompt) in `autofix.ensure_runtime_entries`. T051 part: `--node <zone> --cr <crGroup>` loop (DEP-2). Tests: `tests/test_simulator_setup.py` (10 pass, including real MockWire start, stop and port conflict).
 
 - [X] T010 `simulator_runner.py`: per-run layout `run_dir/simulator/`; copy the JAR there; never write into `lib/`; start only this run's instances.
 - [X] T011 Free-port allocator (bind probe, base 22200) and `manifest.json` (instance, node, port, users, neIds, pid, log path).
@@ -60,7 +60,7 @@ Done ahead of plan: T032 runtime entries (`terminalMode: PLAIN`, `stty -echo`, s
 - [X] T014 Replace `_validate()`/`_extract_ports()` with a MockWire-format validator: reserved keys; every command has `lines|file|responses`; `file:` targets exist; users have prompts.
 - [X] T015 Errors include the log path and last 50 log lines (no `[:500]`).
 - [X] T016 Remove the dead `simulator.endpoint/port` config, or wire it as the bind host. Resolve the JAR path from the project root.
-- [ ] T017 Investigate the 18 s first-command delay and the `estty -echo` stray char (F9). Try answering `stty -echo` with the sentinel, or check the JAR's `sttyOffset` handling.
+- [X] T017 Investigate the 18 s first-command delay and the `estty -echo` stray char (F9). **Root cause: unsupported Ctrl+P,E elevation (MockWire gap MW-01). Workaround: root prompt at login + overlay `elevate_to_root: false` (T050).**
 
 ### Phase 2: Topology and server configs (fixes S8-02, S8-10, S8-12)
 - [ ] T020 `topology.py`: build instances from workflow `nodes` (skip `type: local`), CIQ JSON niamIDs, requirements Cat 1, and vendor profile. Add a repo-server instance when backup/transfer commands are detected.
@@ -70,7 +70,7 @@ Done ahead of plan: T032 runtime entries (`terminalMode: PLAIN`, `stty -echo`, s
 ### Phase 3: Commands and responses (fixes S8-07, S8-11)
 - [ ] T030 `command_catalog.py`: extract every remote step (`send`/`cmd`), keyed per node, with phase and validation.
 - [ ] T031 Placeholder resolver: substitute `${configData…}` / `${nodeGroups…}` from the CIQ JSON (first CR group). Convert `${register…}` / `${env…}` / leftovers into escaped `regex:` keys. Tolerate `${{…}}` (DEP-3).
-- [ ] T032 Builtin catalogue: mandatory per instance: `terminalMode: PLAIN`, `stty -echo`, `echo __CMD_DONE__:$?` (F5, F6). Escalation: `su - X` → `pushPrompt`, `exit` → `popPrompt` (F7). Common commands: `sar`, `ss`, `ndsLoadStats`, `ls -l`, `sftp put`.
+- [ ] T032 Builtin catalogue: mandatory per instance: `terminalMode: PLAIN`, `stty -echo` (F5, F6; the `__CMD_DONE__` marker is native to MockWire). Escalation: `su - X` → `pushPrompt`, `exit` → `popPrompt` (F7). Common commands: `sar`, `ss`, `ndsLoadStats`, `ls -l`, `sftp put`.
 - [ ] T033 SSH-log harvester: map uploaded session-log command → output pairs (reuse the requirement_gathering SSH-log parser) into responses.
 - [ ] T034 LLM fill only for remaining commands. Batch per node; the prompt includes the validation criteria; output is response text only, not YAML.
 - [ ] T035 Write `responses/<NODE>/<CMD_SLUG>_<PHASE>.txt` and reference them via `file:` (supports pre/post-check variants via `responseStrategy: SEQUENTIAL`).

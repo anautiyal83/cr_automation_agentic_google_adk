@@ -86,3 +86,7 @@ DEP-2 was **confirmed** (Step 9 had never executed a command: `node not found: P
 ## Tasks
 
 See [plan.md](plan.md) § Phases.
+
+## Simulator Gaps
+
+Features our UCs need that MockWire lacks (MW-01 to MW-14), with evidence, workarounds and proposed changes: [mockwire-gaps.md](mockwire-gaps.md).

@@ -12,11 +12,11 @@ from io import StringIO
 
 logger = logging.getLogger(__name__)
 
-# cli-automation sends "stty -echo" once, then "<cmd>; echo __CMD_DONE__:$?" for
-# every command, and parses __CMD_DONE__:<code>. MockWire must answer both.
+# cli-automation sends "stty -echo" once per session, then "<cmd>; echo __CMD_DONE__:$?"
+# for every command. MockWire answers the __CMD_DONE__ marker natively (do not map
+# it: an explicit entry would mask real exit codes); "stty -echo" needs a silent entry.
 RUNTIME_COMMANDS: dict[str, dict] = {
     "stty -echo": {"lines": []},
-    "echo __CMD_DONE__:$?": {"lines": ["__CMD_DONE__:0"]},
 }
 
 
