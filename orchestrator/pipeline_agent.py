@@ -134,16 +134,70 @@ class PipelineAgent(BaseAgent):
                     if err.exists():
                         err.unlink()
 
-            # ----- PUBLISH step_started -----
-            # For agents with multiple display steps, only mark the FIRST as in_progress
-            # The rest stay pending until the agent completes (then all are marked done)
+            # ----- CHECK ARTIFACT CACHE -----
             display_steps = _AGENT_DISPLAY_STEPS.get(agent.name, [])
+            uc_name = ctx.session.state.get("uc_name", "")
+            cache_hit = False
+            try:
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
+                cache = ArtifactCache()
+                if agent.name in CACHEABLE_AGENTS and cache.has_cache(uc_name, agent.name):
+                    cached = cache.load_cache(uc_name, agent.name)
+                    if cached:
+                        # Inject cached artifacts into session state
+                        artifacts = ctx.session.state.get("artifacts", {})
+                        for key, value in cached.items():
+                            if key == "requirements_json":
+                                # Special: load into requirements_store
+                                import json as _json
+                                from agents.requirements_agent import requirements_store
+                                requirements_store[run_id_str] = _json.loads(value) if isinstance(value, str) else value
+                                # Also write to disk
+                                if run_dir:
+                                    (Path(run_dir) / "requirements.json").write_text(
+                                        value if isinstance(value, str) else _json.dumps(value, indent=2),
+                                        encoding="utf-8")
+                            elif key == "helper_scripts" and isinstance(value, dict):
+                                # Write scripts to run dir
+                                if run_dir:
+                                    scripts_dir = Path(run_dir) / "scripts"
+                                    scripts_dir.mkdir(parents=True, exist_ok=True)
+                                    for fname, content in value.items():
+                                        (scripts_dir / fname).write_text(content, encoding="utf-8")
+                                artifacts[key] = {fname: str(scripts_dir / fname) for fname in value}
+                            else:
+                                artifacts[key] = value
+                                # Also write YAML artifacts to disk
+                                if run_dir and isinstance(value, str) and key.endswith("_yaml"):
+                                    fname_map = {
+                                        "validation_rules_yaml": f"{uc_name}_validation-rules.yaml",
+                                        "json_template_yaml": f"{uc_name}_json-output.yaml",
+                                        "workflow_yaml": f"{uc_name}.yaml",
+                                    }
+                                    if key in fname_map:
+                                        (Path(run_dir) / fname_map[key]).write_text(value, encoding="utf-8")
+                        ctx.session.state["artifacts"] = artifacts
+                        # Mark steps as passed
+                        for sn in display_steps:
+                            ctx.session.state[f"step_{sn}_status"] = "passed"
+                            await self._publish(run_id_str, "step_started", sn)
+                            await self._publish(run_id_str, "step_completed", sn, {"status": "passed"})
+                        flow.flow("CACHE HIT [%d/%d] %s — skipped (artifacts loaded from cache)",
+                                   index + 1, total, agent.name)
+                        cache_hit = True
+            except Exception as e:
+                logger.debug("Cache check failed for %s: %s", agent.name, e)
+
+            if cache_hit:
+                index += 1
+                continue
+
+            # ----- PUBLISH step_started -----
             if display_steps:
                 await self._publish(run_id_str, "step_started", display_steps[0])
 
             # ----- SET LLM CONTEXT for usage tracking -----
             from shared.llm import set_llm_context
-            uc_name = ctx.session.state.get("uc_name", "")
             set_llm_context(run_id=run_id_str, uc_name=uc_name, step=agent.name)
 
             # ----- EXECUTE AGENT -----
@@ -165,6 +219,29 @@ class PipelineAgent(BaseAgent):
 
             elapsed = time.monotonic() - agent_t0
             flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
+
+            # ----- SAVE TO CACHE (on success) -----
+            try:
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
+                if agent.name in CACHEABLE_AGENTS:
+                    all_passed = all(
+                        ctx.session.state.get(f"step_{sn}_status", "passed") != "failed"
+                        for sn in display_steps
+                    )
+                    if all_passed:
+                        cache = ArtifactCache()
+                        artifacts = ctx.session.state.get("artifacts", {})
+                        cache_data = dict(artifacts)
+                        # Special: save requirements_json from store
+                        if agent.name == "requirements_gatherer":
+                            from agents.requirements_agent import requirements_store
+                            import json as _json
+                            req = requirements_store.get(run_id_str)
+                            if req:
+                                cache_data["requirements_json"] = _json.dumps(req, indent=2)
+                        cache.save_cache(uc_name, agent.name, cache_data)
+            except Exception as e:
+                logger.debug("Cache save failed for %s: %s", agent.name, e)
 
             # ----- PUBLISH step_completed -----
             for sn in display_steps:
@@ -199,6 +276,14 @@ class PipelineAgent(BaseAgent):
                         target_index = _RETRY_STEP_TO_INDEX[retry_target]
                     else:
                         target_index = index  # re-run same agent
+                    # Clear cache from rerun target onward
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        rerun_agent = self._agents_list[target_index].name
+                        ArtifactCache().clear_from_step(uc_name, rerun_agent)
+                        flow.flow("RERUN — cleared cache from %s onward", rerun_agent)
+                    except Exception:
+                        pass
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
                     index = target_index
