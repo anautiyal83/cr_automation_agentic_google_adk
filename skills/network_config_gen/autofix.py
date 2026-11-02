@@ -242,6 +242,7 @@ def fix_workflow(yaml_text: str) -> str:
     rename_expr_vars(parsed.get("phases", {}), renames)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
+    fix_expression_placeholders(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -564,6 +565,8 @@ def fix_placeholders(value: Any, renames: dict[str, str] | None = None) -> Any:
 
 _PY_NAMED_GROUP = re.compile(r"\(\?P<([A-Za-z_][A-Za-z0-9_]*)>")
 _JAVA_NAMED_GROUP = re.compile(r"\(\?<([A-Za-z_][A-Za-z0-9_]*)>")
+# "(" that opens a capturing group: not escaped, not "(?…", not inside a [...] class
+_UNNAMED_GROUP = re.compile(r"(?<!\\)\((?!\?)(?![^\[]*\])")
 _VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -601,6 +604,10 @@ def fix_named_groups(phases: Any) -> dict[str, str]:
             if not isinstance(reg, dict) or not isinstance(reg.get("regex"), str):
                 continue
             reg["regex"] = fix_regex(reg["regex"])
+            if _JAVA_NAMED_GROUP.search(reg["regex"]):
+                # The JAR stores the FIRST group's value under the name (probed 2026-11-02):
+                # every other group must not capture
+                reg["regex"] = _UNNAMED_GROUP.sub("(?:", reg["regex"])
             name = reg.get("name")
             if not (isinstance(name, str) and name):
                 continue
@@ -711,6 +718,81 @@ def _fix_criteria_expr(cmd: dict) -> None:
         used = {m.group(1) for m in EXPR_IDENT.finditer(expr)} - EXPR_KEYWORDS
         if used & groups - registered:
             cmd.setdefault("register", []).append({"regex": regex})
+
+
+_EXPRESSION_PLACEHOLDER = re.compile(r"\$\{([^{}]*(?:\?|!=|==|\|\||&&)[^{}]*)\}")
+
+
+def fix_expression_placeholders(parsed: dict) -> int:
+    """``${a != null ? a : b}`` → ``${a}`` (DEP-28): the JAR interpolates names only, an
+    expression resolves to empty (`imsi=,`). The first identifier the workflow registers
+    wins; placeholders without one are left for the validator."""
+    registered: set[str] = set()
+
+    def collect(steps):
+        for step in steps or []:
+            if isinstance(step, dict):
+                for reg in step.get("register") or []:
+                    if isinstance(reg, dict):
+                        registered.update(_JAVA_NAMED_GROUP.findall(str(reg.get("regex", ""))))
+                collect(step.get("steps"))
+
+    phases = parsed.get("phases") or {}
+    bodies = list(phases.values()) if isinstance(phases, dict) else list(phases or [])
+    for body in bodies:
+        collect(body.get("steps") if isinstance(body, dict) else body)
+    changed = 0
+    fallbacks: dict[str, str] = {}  # variable → CIQ column it falls back to
+
+    def rewrite(m: re.Match) -> str:
+        nonlocal changed
+        expr = m.group(1)
+        for ident in re.findall(r"[A-Za-z_][\w.]*", expr):
+            if ident in registered:
+                changed += 1
+                column = re.search(r"configSequences\.\d+\.records\.\d+\.data\.([^?:|&!=]+?)\s*$", expr)
+                if column:
+                    fallbacks.setdefault(ident, column.group(1).strip().strip("'\""))
+                return "${" + ident + "}"
+        return m.group(0)
+
+    def walk(value):
+        if isinstance(value, str):
+            return _EXPRESSION_PLACEHOLDER.sub(rewrite, value)
+        if isinstance(value, dict):
+            return {k: walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        return value
+
+    parsed["phases"] = walk(phases)
+    for var, column in fallbacks.items():
+        _insert_fallback_register(parsed, var, column)
+    if changed:
+        logger.info("Rewrote %d expression placeholders to registered variables", changed)
+    return changed
+
+
+def _insert_fallback_register(parsed: dict, var: str, column: str) -> None:
+    """Before the first use of ``${var}``: when the CIQ column is filled, register var from
+    it (the expression's "else" branch, as when-guarded steps the JAR supports)."""
+    path = f"configSequences.0.records.0.data.{column}"
+    nodes = parsed.get("nodes") or {}
+    local = next((n for n in nodes if str(n).upper() == "LOCAL"), None)
+    for body in (parsed.get("phases") or {}).values():
+        steps = body.get("steps") if isinstance(body, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for i, step in enumerate(steps):
+            if isinstance(step, dict) and "${" + var + "}" in str(step.get("send") or ""):
+                steps.insert(i, {
+                    "node": local or step.get("node"),
+                    "send": "echo ${" + path + "}",
+                    "command_description": f"Use {column} as {var} when the CIQ row gives it",
+                    "when": f"{path} != ''",
+                    "register": [{"regex": f"(?<{var}>\\S+)"}],
+                })
+                return
 
 
 def rename_expr_vars(phases: Any, renames: dict[str, str]) -> None:

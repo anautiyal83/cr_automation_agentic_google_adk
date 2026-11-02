@@ -369,14 +369,15 @@ def check_expr_vars(parsed: dict, runtime_params: list[str] | None = None) -> li
     return problems
 
 
-def _expr_fails_on_real_output(step: dict, outputs: list[str]) -> str:
-    """'var=value' when a simple `var OP number` expr fails for every real output."""
+def _expr_on_real_output(step: dict, outputs: list[str]) -> tuple[str, str]:
+    """Evaluate a simple `var OP number` success expr on the values the step's register
+    regex captures from real output: ("pass" | "fail" | "n/a", "var=value, …")."""
     validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
     success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
     criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
     m = _EXPR_CMP.match(str(criteria.get("expr") or ""))
     if not m:
-        return ""
+        return "n/a", ""
     var, op, limit = m.group(1), m.group(2), float(m.group(3))
     seen = []
     for reg in step.get("register") or []:
@@ -386,21 +387,29 @@ def _expr_fails_on_real_output(step: dict, outputs: list[str]) -> str:
         try:
             compiled = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), re.MULTILINE)
         except re.error:
-            return ""
+            return "n/a", ""
         for out in outputs:
             hit = compiled.search(out.replace("\r\n", "\n"))
-            if not hit or hit.groupdict().get(var) is None:
+            # Like the JAR: the FIRST group's value is stored under the name
+            raw = hit.group(1) if hit and hit.re.groups else None
+            if raw is None:
                 continue
             try:
-                value = float(hit.group(var))
+                value = float(raw.strip())
             except ValueError:
-                return ""
+                return "n/a", ""
             ok = {">=": value >= limit, "<=": value <= limit, ">": value > limit, "<": value < limit,
                   "==": value == limit, "!=": value != limit}[op]
             if ok:
-                return ""
-            seen.append(f"{var}={hit.group(var)}")
-    return ", ".join(seen)
+                return "pass", f"{var}={raw.strip()}"
+            seen.append(f"{var}={raw.strip()}")
+    return ("fail", ", ".join(seen)) if seen else ("n/a", "")
+
+
+def _expr_fails_on_real_output(step: dict, outputs: list[str]) -> str:
+    """'var=value' when a simple `var OP number` expr fails for every real output."""
+    status, detail = _expr_on_real_output(step, outputs)
+    return detail if status == "fail" else ""
 
 
 _LINE_JOIN = re.compile(r"(?:\\s[*+])?\\n(?:\\s[*+])?")
@@ -431,6 +440,38 @@ def relax_line_joins(parsed: dict, command_samples: list[dict]) -> int:
         if relaxed and relaxed != regex:
             criteria["regex"] = relaxed
             changed += 1
+    return changed
+
+
+def repair_capture_columns(parsed: dict, command_samples: list[dict]) -> int:
+    """Shift a register capture right until its `var OP n` expr holds on real output (DEP-26).
+
+    LLMs miscount table columns (sar: 5 numbers before %idle, they write 4), so the
+    captured value is another column and the check fails on a healthy node. Variants skip
+    1-4 more fields before the group; the first whose captured value satisfies the expr on
+    the recorded real output wins. Returns how many register regexes changed.
+    """
+    samples = [s for s in command_samples or [] if isinstance(s, dict) and s.get("command")]
+    changed = 0
+    for _, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "").strip()
+        outputs = [s["output"] for s in samples if send and _command_matches(send, s["command"])]
+        if not outputs or not _expr_fails_on_real_output(step, outputs):
+            continue
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        criteria = (validation.get("success") or {}).get("criteria") if isinstance(validation.get("success"), dict) else {}
+        var = _EXPR_CMP.match(str((criteria or {}).get("expr") or "")).group(1)
+        for reg in step.get("register") or []:
+            rx = reg.get("regex") if isinstance(reg, dict) else None
+            if not isinstance(rx, str) or f"(?<{var}>" not in rx:
+                continue
+            for k in range(1, 5):
+                candidate = rx.replace(f"(?<{var}>", "(?:\\S+\\s+){%d}(?<%s>" % (k, var), 1)
+                trial = dict(step, register=[dict(reg, regex=candidate)])
+                if _expr_on_real_output(trial, outputs)[0] == "pass":  # must capture and hold
+                    reg["regex"] = candidate
+                    changed += 1
+                    break
     return changed
 
 

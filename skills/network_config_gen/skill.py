@@ -27,6 +27,35 @@ logger = logging.getLogger(__name__)
 LlmFn = Callable[[str, str], Awaitable[str]]
 
 SELF_CORRECTION_ROUNDS = 2  # regenerate with validator errors as feedback
+EXTRA_ROUND_IF_IMPROVING = 1  # one more round while the error count still drops
+
+# Validator error kinds, so a correction round sees what to work on (most specific first)
+_ERROR_KINDS = [
+    ("Regexes / expr vs the REAL output of the command", ("real output",)),
+    ("su/exit prompt_regex vs the real prompt", ("prompt_regex",)),
+    ("Variables a CIQ row never gets / unknown expr variables",
+     ("registers it", "no step registers", "never registered")),
+    ("Placeholders the JAR cannot resolve", ("Unresolvable placeholder",)),
+    ("CIQ columns some rows leave empty", ("sample rows",)),
+    ("File transfers", ("LOCAL step", "sftp")),
+]
+
+
+def format_validation_errors(errors: list[str], limit: int = 24000) -> str:
+    """Validator errors as a numbered plain-text list grouped by kind (not escaped JSON)."""
+    groups: dict[str, list[str]] = {}
+    for e in errors:
+        kind = next((k for k, keys in _ERROR_KINDS if any(x in e for x in keys)), "Other")
+        groups.setdefault(kind, []).append(e)
+    lines, n = [], 0
+    for kind, _ in _ERROR_KINDS + [("Other", ())]:
+        if kind in groups:
+            lines.append(f"## {kind} ({len(groups[kind])})")
+            for e in groups[kind]:
+                n += 1
+                lines.append(f"{n}. {e}")
+            lines.append("")
+    return "\n".join(lines)[:limit]
 
 
 @dataclass
@@ -136,7 +165,6 @@ class NetworkConfigGenSkill:
             return SkillOutput(status="failed", error=f"Workflow generation failed: {e}")
 
         yaml_text, errors = await self._self_correct(yaml_text, errors)
-        yaml_text, errors = self._relax_against_samples(yaml_text, errors)
         status = "failed" if errors else "passed"
         logger.info("Workflow generated: %d chars, %d errors", len(yaml_text), len(errors))
 
@@ -152,7 +180,11 @@ class NetworkConfigGenSkill:
             return SkillOutput(status="failed", error="No workflow context — call generate() first")
 
         ctx = self._build_prompt_context()
-        test_failures_text = json.dumps(feedback.test_results, indent=2, default=str)[:15000]
+        if feedback.test_results and all(set(r) == {"validation_error"} for r in feedback.test_results
+                                         if isinstance(r, dict)):
+            test_failures_text = format_validation_errors([r["validation_error"] for r in feedback.test_results])
+        else:
+            test_failures_text = json.dumps(feedback.test_results, indent=2, default=str)[:15000]
 
         # The LLM must return the COMPLETE workflow, so it must see all of it
         # (workflows are often > 10 KB; a cut-off input produced a cut-off output)
@@ -187,44 +219,59 @@ class NetworkConfigGenSkill:
             status=status,
         )
 
-    def _relax_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
-        """Deterministic last resort for multi-line regexes the LLM could not fix (DEP-22)."""
-        if not self._samples or not any("does not match the real output" in e for e in errors):
+    def _repair_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
+        """Deterministic repairs against recorded real output (no LLM): widen line joins
+        (DEP-22) and shift miscounted capture columns (DEP-26). Kept only if errors drop."""
+        if not self._samples or not any("real output" in e for e in errors):
             return yaml_text, errors
         from .autofix import dump_yaml, parse_yaml
-        from .validator import relax_line_joins
+        from .validator import relax_line_joins, repair_capture_columns
         parsed = parse_yaml(yaml_text)
-        if not parsed or not relax_line_joins(parsed, self._samples):
+        if not parsed:
             return yaml_text, errors
-        relaxed = dump_yaml(parsed)
-        new_errors = validate_workflow(relaxed, self._samples, self._ciq_sheets)
-        if len(new_errors) < len(errors):
-            logger.info("Relaxed multi-line regexes against real output: %d -> %d errors",
-                        len(errors), len(new_errors))
-            self._last_yaml = relaxed
-            return relaxed, new_errors
+        changed = relax_line_joins(parsed, self._samples) + repair_capture_columns(parsed, self._samples)
+        if not changed:
+            return yaml_text, errors
+        repaired = dump_yaml(parsed)
+        new_errors = validate_workflow(repaired, self._samples, self._ciq_sheets)
+        if _rank(new_errors) < _rank(errors):
+            logger.info("Repaired %d regexes against real output: %d -> %d errors",
+                        changed, len(errors), len(new_errors))
+            self._last_yaml = repaired
+            return repaired, new_errors
         return yaml_text, errors
 
     async def _self_correct(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
-        """Feed deterministic validation errors back to the LLM; keep the best version."""
-        best_yaml, best_errors = yaml_text, errors
-        for attempt in range(1, SELF_CORRECTION_ROUNDS + 1):
-            if not best_errors:
-                break
-            logger.info("Self-correction %d/%d: %d validation errors", attempt, SELF_CORRECTION_ROUNDS,
-                        len(best_errors))
+        """Feed deterministic validation errors back to the LLM; keep the best version.
+
+        Deterministic repairs run first and on every candidate, so the LLM only sees what
+        they cannot fix. Rounds: SELF_CORRECTION_ROUNDS, plus EXTRA_ROUND_IF_IMPROVING while
+        the last round still reduced the errors.
+        """
+        best_yaml, best_errors = self._repair_against_samples(yaml_text, errors)
+        rounds = SELF_CORRECTION_ROUNDS
+        attempt = 0
+        while attempt < rounds and best_errors:
+            attempt += 1
+            logger.info("Self-correction %d/%d: %d validation errors", attempt, rounds, len(best_errors))
             self._last_yaml = best_yaml
             out = await self.regenerate(RegenerateFeedback(
                 test_results=[{"validation_error": e} for e in best_errors],
                 reviewer_analysis=(
-                    "The workflow failed deterministic validation. Fix every listed problem; "
-                    "where a real output is shown, write validation and register regexes that "
-                    "match that output — test only the line that shows the condition, not the "
-                    "whole output layout. Keep everything else unchanged."),
+                    "The workflow failed deterministic validation (list below, grouped by kind). Fix "
+                    "EVERY listed problem; where a real output is shown, write the regex against it — "
+                    "test only the line that shows the condition and count its columns. Keep everything "
+                    "else unchanged."),
                 attempt_number=attempt,
             ))
-            if out.workflow_yaml and _rank(out.validation_errors) < _rank(best_errors):
-                best_yaml, best_errors = out.workflow_yaml, out.validation_errors
+            if not out.workflow_yaml:
+                continue
+            cand_yaml, cand_errors = self._repair_against_samples(out.workflow_yaml, out.validation_errors)
+            improved = _rank(cand_errors) < _rank(best_errors)
+            if improved:
+                best_yaml, best_errors = cand_yaml, cand_errors
+            if attempt == rounds and improved and rounds < SELF_CORRECTION_ROUNDS + EXTRA_ROUND_IF_IMPROVING:
+                rounds += 1
         self._last_yaml = best_yaml
         return best_yaml, best_errors
 

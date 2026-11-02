@@ -333,6 +333,90 @@ phases:
     assert check_against_samples({"phases": {"a": {"steps": [right]}}}, SAR_REAL) == []
 
 
+def test_miscounted_capture_column_is_shifted_until_the_expr_holds():
+    from skills.network_config_gen.validator import repair_capture_columns
+    step = {"node": "APP", "send": "sar 1 10",
+            "register": [{"regex": r"Average:\s+all(?:\s+\S+){4}\s+(?<idle>\d+\.\d+)"}],
+            "validation": {"success": {"criteria": {"regex": "Average:", "expr": "idle >= 90"}}}}
+    assert repair_capture_columns({"phases": {"a": {"steps": [step]}}}, SAR_REAL) == 1
+    assert step["register"][0]["regex"] == r"Average:\s+all(?:\s+\S+){4}\s+(?:\S+\s+){1}(?<idle>\d+\.\d+)"
+    unhealthy = [{"command": "sar 1 10", "output": "Average: all 50.0 0.00 40.0 0.00 0.00 10.00"}]
+    stuck = {"node": "APP", "send": "sar 1 10",
+             "register": [{"regex": r"Average:\s+all(?:\s+\S+){5}\s+(?<idle>\d+\.\d+)"}],
+             "validation": {"success": {"criteria": {"regex": "Average:", "expr": "idle >= 90"}}}}
+    assert repair_capture_columns({"phases": {"a": {"steps": [stuck]}}}, unhealthy) == 0   # no column passes
+
+
+def test_self_correction_gets_a_third_round_only_while_improving():
+    import skills.network_config_gen.skill as gen
+    calls = []
+    errors_by_round = [["e1", "e2", "e3"], ["e1", "e2"], ["e1"], []]
+
+    class Fake(gen.NetworkConfigGenSkill):
+        async def regenerate(self, feedback):
+            calls.append(len(feedback.test_results))
+            return gen.SkillOutput(workflow_yaml=f"v{len(calls)}", validation_errors=errors_by_round[len(calls)])
+
+    async def llm(*_):
+        return ""
+    best, errs = asyncio.run(Fake(llm)._self_correct("v0", errors_by_round[0]))
+    assert calls == [3, 2, 1] and best == "v3" and errs == []          # round 3 because round 2 improved
+    calls.clear()
+    errors_by_round[:] = [["e1", "e2"], ["e1", "e2"], ["e1", "e2"], []]
+    asyncio.run(Fake(llm)._self_correct("v0", errors_by_round[0]))
+    assert len(calls) == 2                                              # no improvement → no 3rd round
+
+
+def test_register_regexes_keep_only_the_named_group_capturing():
+    from skills.network_config_gen.autofix import fix_workflow
+    wf = r"""
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}
+phases:
+  a:
+    steps:
+    - node: APP
+      send: sar 1 10
+      register: [{regex: 'Average: +all( +[0-9.]+){5} +(?<cpuIdle>[0-9.]+)'}]
+      validation: {success: {criteria: {expr: 'cpuIdle >= 90'}}}
+"""
+    reg = yaml.safe_load(fix_workflow(wf))["phases"]["a"]["steps"][0]["register"][0]["regex"]
+    assert reg == "Average: +all(?: +[0-9.]+){5} +(?<cpuIdle>[0-9.]+)"
+
+
+def test_recorded_output_becomes_a_template_for_placeholder_commands():
+    from skills.network_simulator_setup.skill import templated_responses
+    cmds = [{"cmd": "ldapsearch -b \"imsi=${resolvedImsi},dc=IMSI\" -s sub"}]
+    samples = [{"command": "ldapsearch  -b \"imsi=404530000000132,dc=IMSI\" -s sub",
+                "output": "dn: uid=404530000000132,ds=SUBSCRIBER\nprofileName: gold"}]
+    key, entry = templated_responses(cmds, samples)[cmds[0]["cmd"]]
+    assert key == r'regex:^ldapsearch\s+\-b\s+"imsi=(?<resolvedImsi>.+?),dc=IMSI"\s+\-s\s+sub$'
+    assert entry["lines"] == ["dn: uid=${resolvedImsi},ds=SUBSCRIBER", "profileName: gold"]
+
+
+def test_expression_placeholder_becomes_variable_with_column_fallback():
+    from skills.network_config_gen.autofix import fix_workflow
+    from skills.network_config_gen.validator import check_row_variables
+    col = "configSequences.0.records.0.data.Test IMSI"
+    wf = f"""
+nodes:
+  DB: {{type: remote, plugin: ssh, prompt_regex: 'db:~ #', ssh: {{host: h, user: u}}}}
+  LOCAL: {{type: local}}
+phases:
+  a:
+    steps:
+    - node: DB
+      when: "{col} == ''"
+      send: "lookup msisdn ${{configSequences.0.records.0.data.Test MSISDN}}"
+      register: [{{regex: 'provisionedIMSI: (?<imsiR>\\\\d+)'}}]
+    - {{node: DB, send: "ldapsearch imsi=${{imsiR != null ? imsiR : {col}}}"}}
+"""
+    steps = yaml.safe_load(fix_workflow(wf))["phases"]["a"]["steps"]
+    assert steps[2]["send"] == "ldapsearch imsi=${imsiR}"
+    assert steps[1]["send"] == "echo ${" + col + "}" and steps[1]["when"] == f"{col} != ''"
+    assert not check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
+
+
 def test_sftp_steps_carry_no_output_regex():
     from skills.network_config_gen.autofix import fix_workflow
     wf = """

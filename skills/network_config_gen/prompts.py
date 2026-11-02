@@ -104,7 +104,9 @@ CRITICAL RULES:
   regex 'No such file'.
 - criteria.expr compares REGISTERED variables only, as plain `name >= 90` (no Float()/Int(),
   never a literal True): register the value on the same step and use exactly that name —
-    register: [{regex: 'Average: +all( +[0-9.]+){5} +(?<cpuIdle>[0-9.]+)'}]
+    register: [{regex: 'Average: +all(?: +[0-9.]+){5} +(?<cpuIdle>[0-9.]+)'}]
+  A register regex has ONE capturing group, the named one: write every other group as (?:…)
+  (the JAR stores the FIRST group's value under the name).
     validation: {success: {criteria: {regex: 'Average:', expr: 'cpuIdle >= 90'}}}
   Named groups of the validation regex itself are not visible to expr.
 - sftp steps print nothing: give them no output regex (the transfer status decides).

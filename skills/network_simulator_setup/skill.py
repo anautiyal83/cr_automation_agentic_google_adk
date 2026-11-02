@@ -141,10 +141,17 @@ class NetworkSimulatorSetupSkill:
         from tools.command_samples import with_library
         samples = with_library(list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or []))
         recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
+        # Commands answered from real output, incl. placeholder commands as templates (S8-21)
+        covered: dict[str, set[str]] = {}
+        for n in nodes:
+            covered[n.name] = set(recorded[n.name])
+            for cmd, (key, entry) in templated_responses(n.commands, samples).items():
+                recorded[n.name][key] = entry
+                covered[n.name].add(cmd)
         hints = str(inp.generation_hints.get("step_8", "") or "")
         results = await asyncio.gather(
             *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
-                                            skip=set(recorded[n.name])) for n in nodes),
+                                            skip=covered[n.name]) for n in nodes),
             return_exceptions=True,
         )
         errors: list[str] = []
@@ -166,7 +173,7 @@ class NetworkSimulatorSetupSkill:
                 logger.info("Phase 2: %s — %d file commands left to the VFS builtins", node.name, len(dropped))
             # Invented responses stand for a healthy node: they must pass the step's own
             # success check (recorded real output is the ground truth and is never changed)
-            result = await self._conform_synthetic(inp.uc_name, node, result, set(recorded[node.name]), row)
+            result = await self._conform_synthetic(inp.uc_name, node, result, covered[node.name], row)
             if recorded[node.name]:
                 logger.info("Phase 2: %s — %d responses from recorded real output",
                             node.name, len(recorded[node.name]))
@@ -467,6 +474,55 @@ def _first_row_values(requirements: dict) -> dict:
                     if str(v or "").strip() and k not in values:
                         values[k] = v
     return values
+
+
+_PH = re.compile(r"\$\{([^{}]+)\}")
+
+
+def templated_responses(commands: list[dict], samples: list[dict]) -> dict[str, tuple[str, dict]]:
+    """Recorded real output as a template for commands with ``${…}`` (S8-21).
+
+    The workflow's ``ldapsearch … imsi=${x} …`` matches the recorded
+    ``ldapsearch … imsi=404530000000132 …``; the MockWire key becomes a ``regex:`` with a named
+    capture per placeholder, and the recorded values in the output become ``${name}`` — so any
+    queried value is answered with real formatting. Returns {command: (key, entry)}.
+    """
+    out: dict[str, tuple[str, dict]] = {}
+    for c in commands:
+        cmd = str(c.get("cmd", "")).strip()
+        if "${" not in cmd or cmd in out:
+            continue
+        parts = _PH.split(cmd)
+        names: list[str] = []
+        py, java = "", "^"
+        for k, part in enumerate(parts):
+            if k % 2:
+                base = re.sub(r"[^A-Za-z0-9]", "", part.split(".")[-1]) or "v"
+                name = base if base[0].isalpha() and base not in names else f"v{len(names)}"
+                names.append(name)
+                py += f"(?P<{name}>.+?)"
+                java += f"(?<{name}>.+?)"
+            else:
+                lit = "".join(r"\s+" if t.isspace() else re.escape(t) for t in re.split(r"(\s+)", part) if t)
+                py += lit
+                java += lit
+        try:
+            matcher = re.compile(py + r"\s*$")
+        except re.error:
+            continue
+        for sample in samples:
+            m = matcher.match(" ".join(str(sample.get("command", "")).split()))
+            output = str(sample.get("output") or "")
+            if not m or not output.strip():
+                continue
+            text = output
+            for name in sorted(names, key=lambda n: -len(m.group(n) or "")):
+                value = (m.group(name) or "").strip("'\"")
+                if len(value) >= 4:
+                    text = text.replace(value, "${" + name + "}")
+            out[cmd] = ("regex:" + java + "$", {"lines": text.splitlines()})
+            break
+    return out
 
 
 def recorded_responses(commands: list[dict], samples: list[dict]) -> dict[str, dict]:
