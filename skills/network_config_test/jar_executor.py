@@ -8,8 +8,10 @@ Two JARs:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -135,10 +137,12 @@ async def run_execution_test(
     """Run cli-automation JAR in execution mode against the simulator.
 
     Uses the JSON data produced during MOP test (or re-runs ciq-processor).
+    The JAR executes one node group per invocation (``--node <zone> --cr <crGroup>``),
+    so it is invoked once per node group found in the CIQ JSON data. Each run
+    writes its report to ``exec_output/<crGroup>/``.
     """
     java = _java_cmd(java_home)
     exec_dir = Path(output_dir) / "exec_output"
-    exec_dir.mkdir(parents=True, exist_ok=True)
     json_data_dir = Path(output_dir) / "json_data"
 
     uc_name = Path(workflow_path).stem
@@ -147,15 +151,11 @@ async def run_execution_test(
     # Sanitize rules for JAR compatibility
     sanitized_rules = _sanitize_rules_for_jar(validation_rules_path) if validation_rules_path else ""
 
-    # Find JSON data from earlier ciq-processor run
-    json_input = ""
-    if json_data_dir.exists():
-        json_files = list(json_data_dir.glob("*.json"))
-        if json_files:
-            json_input = str(json_files[0])
+    # Find JSON data from earlier ciq-processor run (one file per CR group)
+    json_inputs = _find_json_data(json_data_dir)
 
     # If no JSON data, run ciq-processor first
-    if not json_input and ciq_file_path and Path(ciq_processor_jar).exists():
+    if not json_inputs and ciq_file_path and Path(ciq_processor_jar).exists():
         json_data_dir.mkdir(parents=True, exist_ok=True)
         ciq_cmd = [
             java, "-jar", str(ciq_processor_jar),
@@ -171,11 +171,9 @@ async def run_execution_test(
             ciq_cmd += ["--json-output-dir", str(json_data_dir)]
 
         await _run_jar(ciq_cmd, java_home, timeout, "ciq-processor (exec prep)")
-        json_files = list(json_data_dir.glob("*.json"))
-        if json_files:
-            json_input = str(json_files[0])
+        json_inputs = _find_json_data(json_data_dir)
 
-    if not json_input:
+    if not json_inputs:
         return {
             "success": False,
             "exit_code": -1,
@@ -183,22 +181,55 @@ async def run_execution_test(
             "stderr": "No JSON data file for execution test.",
         }
 
-    schema_path = sanitized_rules or validation_rules_path or json_output_path
-    cmd = [
-        java, "-jar", str(cli_jar),
-        "execute",
-        "--json", json_input,
-        "--schema", str(schema_path),
-        "--yaml", str(workflow_path),
-        "--node", node_type,
-        "--output-dir", str(exec_dir),
-    ]
-    if node_type:
-        cmd += ["--node-type", node_type]
-    if activity:
-        cmd += ["--activity", activity]
+    targets = _execution_targets(json_inputs)
+    if not targets:
+        return {
+            "success": False,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "No node groups found in CIQ JSON data (expected data.nodeGroups[].nodes[].node).",
+        }
 
-    return await _run_jar(cmd, java_home, timeout, "execution test")
+    # Drop reports from previous attempts so results reflect this run only
+    if exec_dir.exists():
+        shutil.rmtree(exec_dir, ignore_errors=True)
+    exec_dir.mkdir(parents=True, exist_ok=True)
+
+    schema_path = sanitized_rules or validation_rules_path or json_output_path
+    results = []
+    for json_input, node, cr_group in targets:
+        target_dir = exec_dir / (cr_group or "default")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            java, "-jar", str(cli_jar),
+            "execute",
+            "--json", json_input,
+            "--schema", str(schema_path),
+            "--yaml", str(workflow_path),
+            "--node", node,
+            "--output-dir", str(target_dir),
+        ]
+        if cr_group:
+            cmd += ["--cr", cr_group]
+        if node_type:
+            cmd += ["--node-type", node_type]
+        if activity:
+            cmd += ["--activity", activity]
+
+        result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})")
+        result.update(node=node, cr_group=cr_group)
+        results.append(result)
+
+    failed = [r for r in results if not r["success"]]
+    return {
+        "success": not failed,
+        "exit_code": failed[0]["exit_code"] if failed else 0,
+        "stdout": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stdout']}" for r in results),
+        "stderr": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stderr']}"
+                            for r in results if r["stderr"]),
+        "targets": [{"node": r["node"], "cr_group": r["cr_group"], "success": r["success"]}
+                    for r in results],
+    }
 
 
 def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:
@@ -212,6 +243,43 @@ def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:
 # ---------------------------------------------------------------------------
 # Private
 # ---------------------------------------------------------------------------
+
+def _find_json_data(json_data_dir: Path) -> list[str]:
+    """Return CIQ JSON data files (one per CR group), excluding validation reports."""
+    if not json_data_dir.exists():
+        return []
+    return [str(f) for f in sorted(json_data_dir.glob("*.json"))
+            if "VALIDATION_REPORT" not in f.name.upper()]
+
+
+def _execution_targets(json_files: list[str]) -> list[tuple[str, str, str]]:
+    """List (json_file, node, cr_group) for every node group in the CIQ JSON data.
+
+    The execute subcommand's ``--node`` is the node-group key from
+    ``data.nodeGroups[].nodes[].node`` (e.g. a zone like ``EAST``), not the node type.
+    """
+    targets: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for jf in json_files:
+        try:
+            doc = json.loads(Path(jf).read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Could not read CIQ JSON data %s: %s", jf, e)
+            continue
+        data = doc.get("data", doc) if isinstance(doc, dict) else {}
+        for group in data.get("nodeGroups", []) or []:
+            if not isinstance(group, dict):
+                continue
+            cr_group = str(group.get("crGroup", "") or "")
+            names = [n.get("node") for n in group.get("nodes", []) or [] if isinstance(n, dict)]
+            names = [str(n) for n in names if n] or [str(group.get("nodeGroup", "") or "")]
+            for name in names:
+                key = (jf, name, cr_group)
+                if name and key not in seen:
+                    seen.add(key)
+                    targets.append(key)
+    return targets
+
 
 def _java_cmd(java_home: str | None) -> str:
     if java_home:

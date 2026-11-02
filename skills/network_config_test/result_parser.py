@@ -100,14 +100,15 @@ def parse_execution_results(run_dir: str) -> list[CommandResult]:
     if not exec_dir.exists():
         return commands
 
-    for jf in sorted(exec_dir.glob("*.json")):
+    # One report per node group, under exec_output/<crGroup>/
+    for jf in sorted(exec_dir.rglob("*.json")):
         try:
             data = json.loads(jf.read_text(encoding="utf-8"))
             for cmd_key, cmd_info in data.get("data", {}).items():
                 commands.append(CommandResult(
                     command=cmd_key,
                     phase=cmd_info.get("phase", ""),
-                    node=cmd_info.get("node", ""),
+                    node=cmd_info.get("target", cmd_info.get("node", "")),
                     success=cmd_info.get("success", False),
                     output=cmd_info.get("output", "")[:500],
                     validation_status=cmd_info.get("validation_status", "skipped"),
