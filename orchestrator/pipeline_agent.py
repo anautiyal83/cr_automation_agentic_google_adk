@@ -47,6 +47,7 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
     "ciq_validation_json_gen": [3, 4],
     "ciq_validation_json_qa": [5],
     "network_config_gen": [6],
+    "helper_script_gen": [6],       # shares step 6 with config gen
     "network_config_mop_qa": [7],
     "network_simulator_setup": [8],
     "network_config_exec_qa": [9],
@@ -57,7 +58,7 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
 _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
     "ciq_validation_json_qa": (5, "QA-Validation Results"),
-    "network_config_gen": (6, "Execution Workflow"),
+    "helper_script_gen": (6, "Execution Workflow & Scripts"),
     "network_config_mop_qa": (7, "MOP Generation QA"),
     "network_simulator_setup": (8, "Simulator Setup"),
     "network_config_exec_qa": (9, "Execution QA"),
@@ -69,18 +70,19 @@ _AGENT_NAMES = [
     "ciq_validation_json_gen",     # 1
     "ciq_validation_json_qa",      # 2
     "network_config_gen",          # 3
-    "network_config_mop_qa",       # 4
-    "network_simulator_setup",     # 5
-    "network_config_exec_qa",      # 6
-    "report_generator",            # 7
+    "helper_script_gen",           # 4
+    "network_config_mop_qa",       # 5
+    "network_simulator_setup",     # 6
+    "network_config_exec_qa",      # 7
+    "report_generator",            # 8
 ]
 
 # Retry target step → agent index
 _RETRY_STEP_TO_INDEX: dict[int, int] = {
     3: 1,   # retry CiqValidationJsonGen
     4: 1,   # retry CiqValidationJsonGen
-    6: 3,   # retry NetworkConfigGen
-    8: 5,   # retry NetworkSimulatorSetup
+    6: 3,   # retry NetworkConfigGen (also re-runs helper_script_gen)
+    8: 6,   # retry NetworkSimulatorSetup
 }
 
 
@@ -352,6 +354,13 @@ class PipelineAgent(BaseAgent):
         primary_path = str(rd / primary) if primary and (rd / primary).exists() else ""
         extra_paths = [str(rd / e) for e in extras if (rd / e).exists()]
 
+        # For step 6: include generated helper scripts
+        if step_num == 6:
+            scripts_dir = rd / "scripts"
+            if scripts_dir.exists():
+                for f in scripts_dir.glob("*.py"):
+                    extra_paths.append(str(f))
+
         # For step 7: also include MOP output HTML from mop_output/ subdir
         if step_num == 7:
             mop_dir = rd / "mop_output"
@@ -369,7 +378,7 @@ class PipelineAgent(BaseAgent):
 
 
 def build_pipeline(config: dict | None = None) -> PipelineAgent:
-    """Build the 8-agent pipeline.
+    """Build the 9-agent pipeline.
 
     Returns a configured PipelineAgent ready for execution.
     """
@@ -384,6 +393,7 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
     from agents.ciq_validation_json_gen_agent import CiqValidationJsonGenAgent
     from agents.ciq_validation_json_qa_agent import CiqValidationJsonQAAgent
     from agents.network_config_gen_agent import NetworkConfigGenAgent
+    from agents.helper_script_gen_agent import HelperScriptGenAgent
     from agents.network_config_mop_qa_agent import NetworkConfigMopQAAgent
     from agents.network_simulator_setup_agent import NetworkSimulatorSetupAgent
     from agents.network_config_qa_agent import NetworkConfigQAAgent
@@ -393,11 +403,12 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
         RequirementsGathererNode(),       # 0 - Steps 1+2
         CiqValidationJsonGenAgent(),      # 1 - Steps 3+4
         CiqValidationJsonQAAgent(),       # 2 - Step 5
-        NetworkConfigGenAgent(),          # 3 - Step 6
-        NetworkConfigMopQAAgent(),        # 4 - Step 7 (MOP QA, no simulator)
-        NetworkSimulatorSetupAgent(),     # 5 - Step 8
-        NetworkConfigQAAgent(),           # 6 - Step 9 (Execution QA)
-        ReportAgent(),                    # 7 - Step 10
+        NetworkConfigGenAgent(),          # 3 - Step 6 (workflow YAML)
+        HelperScriptGenAgent(),           # 4 - Step 6 (helper scripts)
+        NetworkConfigMopQAAgent(),        # 5 - Step 7 (MOP QA)
+        NetworkSimulatorSetupAgent(),     # 6 - Step 8
+        NetworkConfigQAAgent(),           # 7 - Step 9 (Execution QA)
+        ReportAgent(),                    # 8 - Step 10
     ]
 
     pipeline = PipelineAgent()
