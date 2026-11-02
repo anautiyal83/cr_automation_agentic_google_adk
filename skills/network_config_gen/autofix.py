@@ -244,6 +244,7 @@ def fix_workflow(yaml_text: str) -> str:
     fix_regex_placeholders(parsed.get("phases", {}))
     fix_expression_placeholders(parsed)
     fix_missing_downloads(parsed)
+    drop_session_exits(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -836,10 +837,13 @@ def remote_file_reads(parsed: dict) -> list[dict]:
                 tokens = {t.strip("'\"") for t in re.split(r"[\s=]+", send)}
                 for token in sorted(tokens):
                     name = token.rsplit("/", 1)[-1]
-                    if (token in remote and token not in downloaded and name not in downloaded
+                    # The node's path, its bare name, or the name under a made-up local
+                    # directory ('/tmp/${ORDERNO}.xml.res' — never downloaded there either)
+                    key = token if token in remote else name if "/" in token and "." in name else ""
+                    if (key in remote and token not in downloaded and name not in downloaded
                             and name not in local and ("/" in token or "." in token)):
                         hits.append({"steps": steps, "index": i, "phase": phase, "send": send,
-                                     "node": remote[token][0], "remote_path": remote[token][1],
+                                     "node": remote[key][0], "remote_path": remote[key][1],
                                      "local_name": name, "token": token})
                         downloaded.add(name)
             walk(phase, step.get("steps"))
@@ -847,6 +851,56 @@ def remote_file_reads(parsed: dict) -> list[dict]:
     for phase, body in items:
         walk(phase, body.get("steps") if isinstance(body, dict) else body)
     return hits
+
+
+_SU = re.compile(r"^\s*(?:sudo\s+)?su\b|^\s*sudo\s+-[is]\b")
+_SESSION_CLOSED = re.compile(r"(?i)connection\b.*\bclosed|logout|closed\.")
+
+
+def drop_session_exits(parsed: dict) -> int:
+    """Drop ``exit`` steps that leave no ``su`` on their node: they close the login session
+    the JAR opened and manages. An ``exit`` that leaves an ``su`` but waits for
+    "Connection to .* closed." (printed by a local ssh client, never by the node) waits for
+    the node's prompt instead (DEP-33)."""
+    phases = parsed.get("phases") or {}
+    bodies = list(phases.values()) if isinstance(phases, dict) else list(phases)
+    nodes = parsed.get("nodes") or {}
+    depth: dict[str, int] = {}
+    dropped = 0
+
+    def walk(steps):
+        nonlocal dropped
+        for step in list(steps or []):
+            if not isinstance(step, dict):
+                continue
+            node = str(step.get("node") or "")
+            send = str(step.get("send") or "").strip()
+            if node and node.upper() != "LOCAL":
+                if _SU.match(send):
+                    depth[node] = depth.get(node, 0) + 1
+                elif send in ("exit", "logout"):
+                    if depth.get(node, 0) > 0:
+                        depth[node] -= 1
+                        # Leaving su returns to the node's own prompt, not "Connection … closed"
+                        if _SESSION_CLOSED.search(str(step.get("prompt_regex") or "")):
+                            node_regex = (nodes.get(node) or {}).get("prompt_regex") if isinstance(nodes, dict) else None
+                            if node_regex:
+                                step["prompt_regex"] = node_regex
+                            else:
+                                step.pop("prompt_regex", None)
+                            for criteria in _criteria_blocks(step):
+                                if _SESSION_CLOSED.search(str(criteria.get("regex") or "")):
+                                    criteria.pop("regex", None)
+                    else:
+                        steps.remove(step)
+                        dropped += 1
+                        logger.info("Dropped '%s' on %s: no su to leave, it would close the session", send, node)
+                        continue
+            walk(step.get("steps"))
+
+    for body in bodies:
+        walk(body.get("steps") if isinstance(body, dict) else body)
+    return dropped
 
 
 def fix_missing_downloads(parsed: dict) -> int:

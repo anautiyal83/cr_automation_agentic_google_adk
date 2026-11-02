@@ -301,7 +301,7 @@ _EXPECTED = {"phases": ["preNodeHealthCheck", "activity", "postNodeHealthCheck"]
 
 def test_cut_short_workflow_is_incomplete():
     from skills.network_config_gen.validator import check_completeness
-    errors = check_completeness(_workflow({"preNodeHealthCheck": ["RDS"] * 5}), _EXPECTED)
+    errors = check_completeness(_workflow({"preNodeHealthCheck": ["RDS"] * 3}), _EXPECTED)
     assert any("activity" in e for e in errors)
     assert any("post-check" in e for e in errors)
     assert any("node PGW" in e for e in errors)
@@ -357,3 +357,35 @@ def test_inputs_fingerprint_hashes_file_content_not_path(tmp_path):
     a.write_bytes(b"same"); b.write_bytes(b"same")
     assert inputs_fingerprint({"ciq_file_path": str(a), "id": 1}) == inputs_fingerprint({"ciq_file_path": str(b), "id": 2})
     assert inputs_fingerprint({"developer_notes": "x"}) != inputs_fingerprint({"developer_notes": "y"})
+
+
+def test_helper_script_retry_repairs_the_previous_script():
+    from skills.helper_script_gen.skill import SkillInput as HelperInput
+    broken = "import argparse\np = argparse.ArgumentParser()\np.add_argument('--out')\na = p.parse_args()\nraise TypeError('boom')\n"
+    fixed = "import argparse\np = argparse.ArgumentParser()\np.add_argument('--out')\na = p.parse_args()\nprint('ok')\n"
+    prompts_seen = []
+
+    async def llm(system, user):
+        prompts_seen.append(user)
+        return broken if len(prompts_seen) == 1 else fixed
+
+    wf = ("nodes: {LOCAL: {type: local, plugin: local}}\nphases:\n  a:\n    steps:\n"
+          "    - {node: LOCAL, send: \"python mk_thing.py --out 'x.txt'\"}\n")
+    out = asyncio.run(HelperScriptGenSkill(llm_fn=llm).generate(HelperInput(uc_name="UC", workflow_yaml=wf)))
+    assert out.status == "passed" and len(prompts_seen) == 2
+    assert "raise TypeError('boom')" in prompts_seen[1] and "TypeError" in prompts_seen[1]
+
+
+def test_milestone_rerun_starts_at_the_earliest_failed_agent(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from orchestrator.pipeline_agent import PipelineAgent
+    agents = [SimpleNamespace(name=n) for n in ("network_config_gen", "helper_script_gen", "network_config_mop_qa")]
+    self = SimpleNamespace(_agents_list=agents)
+    ctx = SimpleNamespace(session=SimpleNamespace(state={"run_dir": str(tmp_path)}))
+    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1  # no error file: same agent
+    (tmp_path / "step_6_error.json").write_text(json.dumps({"failed_agents": ["helper_script_gen"]}))
+    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1
+    (tmp_path / "step_6_error.json").write_text(
+        json.dumps({"failed_agents": ["network_config_gen", "helper_script_gen"]}))
+    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 0

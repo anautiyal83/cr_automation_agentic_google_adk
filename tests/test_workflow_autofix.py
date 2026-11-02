@@ -167,3 +167,40 @@ def test_overlay_shortens_polls_for_the_simulator():
     _shorten_polls(phases)
     assert phases["a"]["steps"][0]["retries"] == 3 and phases["a"]["steps"][0]["retry_delay_sec"] == 2
     assert phases["a"]["steps"][1]["retries"] == 2
+
+
+def test_node_file_read_from_a_made_up_local_dir_is_downloaded():
+    from skills.network_config_gen.autofix import fix_missing_downloads
+    wf = {"phases": {"a": {"steps": [
+        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '/tmp/${ORDERNO}.xml.res'"},
+    ]}}}
+    assert fix_missing_downloads(wf) == 1
+    steps = wf["phases"]["a"]["steps"]
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
+    assert steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+
+
+def test_exit_without_su_is_dropped():
+    from skills.network_config_gen.autofix import drop_session_exits
+    wf = {"phases": {"pre": {"steps": [
+        {"node": "RDS", "send": "su - sdfrun"}, {"node": "RDS", "send": "ndsLoadStats"},
+        {"node": "RDS", "send": "exit"},                                  # leaves su: kept
+        {"node": "RDS", "send": "exit", "prompt_regex": "Connection to .* closed."},  # closes the session
+        {"node": "PGW", "send": "su - provgw"},
+    ]}, "post": {"steps": [{"node": "PGW", "send": "exit"}, {"node": "PGW", "send": "exit"}]}}}
+    assert drop_session_exits(wf) == 2
+    assert [s["send"] for s in wf["phases"]["pre"]["steps"]] == ["su - sdfrun", "ndsLoadStats", "exit", "su - provgw"]
+    assert [s["send"] for s in wf["phases"]["post"]["steps"]] == ["exit"]
+
+
+def test_exit_leaving_su_waits_for_the_node_prompt_not_connection_closed():
+    from skills.network_config_gen.autofix import drop_session_exits
+    wf = {"nodes": {"RDS": {"prompt_regex": "rdsggn01:~ #"}}, "phases": {"a": {"steps": [
+        {"node": "RDS", "send": "su - sdfrun", "prompt_regex": r"rdshyd201\$"},
+        {"node": "RDS", "send": "exit", "prompt_regex": "Connection to .* closed.",
+         "validation": {"success": {"criteria": {"regex": "Connection to .* closed."}}}},
+    ]}}}
+    assert drop_session_exits(wf) == 0
+    step = wf["phases"]["a"]["steps"][1]
+    assert step["prompt_regex"] == "rdsggn01:~ #" and "regex" not in step["validation"]["success"]["criteria"]

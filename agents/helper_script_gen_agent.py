@@ -85,7 +85,8 @@ class HelperScriptGenAgent(BaseAgent):
                         previous = {}
                 message = f"Helper scripts: {output.error}"
                 combined = "; ".join(e for e in (previous.get("error", ""), message) if e)
-                err_file.write_text(json.dumps({**previous, "error": combined,
+                failed = list(previous.get("failed_agents") or []) + ["helper_script_gen"]
+                err_file.write_text(json.dumps({**previous, "error": combined, "failed_agents": failed,
                                                 "helper_script_errors": output.error}, indent=2),
                                     encoding="utf-8")
 

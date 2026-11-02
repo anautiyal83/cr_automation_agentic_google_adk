@@ -405,7 +405,9 @@ def check_completeness(parsed: dict, expected: dict | None) -> list[str]:
             problems.append(f"The requirements list {count} commands on node {node} but no workflow step "
                             f"runs on {node} — include its steps.")
     wanted = sum(node_cmds.values())
-    if wanted >= 8 and total < wanted * 0.25:
+    # MOP command lists repeat commands per phase/node: a complete workflow had 27 steps for
+    # 116 listed commands, the cut-short one 5 of 106
+    if wanted >= 8 and total < wanted * 0.12:
         problems.append(f"The workflow has {total} steps for {wanted} MOP commands in the requirements — it "
                         "looks cut short; output the complete workflow.")
     return problems

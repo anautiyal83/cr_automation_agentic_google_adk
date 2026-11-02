@@ -19,6 +19,7 @@ After each agent (except requirements and report), the pipeline:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -289,7 +290,9 @@ class PipelineAgent(BaseAgent):
                     if retry_target and retry_target in _RETRY_STEP_TO_INDEX:
                         target_index = _RETRY_STEP_TO_INDEX[retry_target]
                     else:
-                        target_index = index  # re-run same agent
+                        # From the earliest agent of this step that failed: a step 6 rerun after a
+                        # workflow error must regenerate the workflow, not only the scripts (OB-12)
+                        target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
                     # Clear cache from rerun target onward
                     try:
                         from storage.artifact_cache import ArtifactCache
@@ -339,6 +342,19 @@ class PipelineAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Built-in milestone pause
     # ------------------------------------------------------------------
+
+    def _rerun_index(self, run_id_str: str, ctx, step_num: int, index: int) -> int:
+        """Agent index a milestone rerun starts from: the earliest agent the step's error file
+        names in ``failed_agents``, else the agent that just ran."""
+        run_dir = ctx.session.state.get("run_dir", "")
+        err = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
+        try:
+            failed = json.loads(err.read_text(encoding="utf-8")).get("failed_agents") or [] if err and err.exists() else []
+        except (OSError, ValueError):
+            failed = []
+        names = [a.name for a in self._agents_list]
+        indices = [names.index(a) for a in failed if a in names]
+        return min(indices) if indices else index
 
     async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
         """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""

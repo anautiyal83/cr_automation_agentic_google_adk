@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 LlmFn = Callable[[str, str], Awaitable[str]]
 
-CONTRACT_ATTEMPTS = 2  # generate, then one retry with the contract problems listed
+CONTRACT_ATTEMPTS = 3  # generate, then repair the previous script with its problems (G-7)
 _PY_SCRIPT = re.compile(r"^\s*python3?\s+(\S+\.py)\b")
 _FLAG = re.compile(r"^(--[A-Za-z][\w-]*)")
 _ADD_ARGUMENT = re.compile(r"add_argument\s*\((.*?)\)\s*$", re.S | re.M)
@@ -283,8 +283,11 @@ class HelperScriptGenSkill:
             try:
                 code, problems = "", []
                 for attempt in range(1, CONTRACT_ATTEMPTS + 1):
+                    # A retry repairs the rejected script: regenerating from scratch traded one
+                    # crash for another in every attempt (G-7)
                     retry = prompts.CLI_CONTRACT_RETRY.format(
-                        problems="\n".join(f"- {p}" for p in problems)) if problems else ""
+                        problems="\n".join(f"- {p}" for p in problems),
+                        previous_code=code[:30000]) if problems else ""
                     code = await self._generate_script(
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,

@@ -11,7 +11,11 @@ SPML XML modification files from command-line arguments (CIQ data values).
 
 RULES:
 - Use argparse with EXACTLY the flags listed in the CLI CONTRACT section
-- Use xml.etree.ElementTree to build XML
+- Build the XML as TEXT from the sample request XMLs: copy the sample's wrapper and blocks
+  verbatim into string templates and substitute only the values (escape them with
+  xml.sax.saxutils.escape). Do NOT build or re-parse it with ElementTree/minidom: namespace
+  re-prefixing, duplicate xmlns attributes ("ExpatError: duplicate attribute") and
+  tostring() encoding arguments broke every such script (G-8)
 - The script must produce ONE XML file per invocation
 - The XML structure must match the sample request XMLs provided
 - Use the EXACT XML namespaces, element names, and structure from the samples
@@ -168,7 +172,13 @@ CLI_CONTRACT_RETRY = """
 
 === YOUR PREVIOUS SCRIPT WAS REJECTED ===
 {problems}
-Return the complete corrected script.
+
+=== YOUR PREVIOUS SCRIPT ===
+```python
+{previous_code}
+```
+Fix exactly these problems in this script (read the traceback: the failing line and the
+exception say what is wrong) and keep everything that works. Return the complete corrected script.
 """
 
 GENERIC_SCRIPT_USER = """\
