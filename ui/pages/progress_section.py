@@ -103,8 +103,8 @@ class ProgressSection:
                 .props("color=deep-purple-6 stripe animate rounded size=8px")
             self.progress_bar.set_visibility(False)
 
-            # Step tracker — single-row compact timeline
-            with ui.row().classes("w-full gap-0 justify-between py-1 px-2"):
+            # Step tracker — single row of equal-size boxes (CSS .cr-steps / .cr-step-box)
+            with ui.element("div").classes("cr-steps"):
                 for i in range(1, 11):
                     self._step_widget(i)
                     if i < 10:
@@ -170,14 +170,8 @@ class ProgressSection:
                     .props("unelevated color=teal-6 size=sm no-caps")
 
     def _step_widget(self, step_num: int):
-        with ui.column().classes("items-center gap-1 flex-shrink-0 flex-1") as col:
-            with ui.element("div").style(
-                "border: 1px solid var(--cr-border); border-radius: 8px; padding: 8px 6px; "
-                "min-width: 82px; max-width: 100px; min-height: 80px; "
-                "display: flex; flex-direction: column; align-items: center; "
-                "justify-content: flex-start; "
-                "gap: 3px; transition: all 0.3s ease; background: var(--cr-surface-light);"
-            ) as box:
+        with ui.element("div").classes("cr-step") as col:
+            with ui.element("div").classes("cr-step-box") as box:
                 # Circle icon
                 icon_container = ui.element("div").classes("cr-step-circle")
                 with icon_container:
@@ -185,15 +179,11 @@ class ProgressSection:
                         STEP_ICONS.get(step_num, "circle"), size="14px"
                     ).classes("cr-text-dim")
 
-                # Step number + name
-                label = ui.label(f"Step {step_num}").classes("text-[9px] cr-text-dim font-semibold")
-                name = ui.label(_SHORT_NAMES.get(step_num, "")) \
-                    .classes("text-[8px] cr-text-dim text-center") \
-                    .style("word-wrap: break-word; overflow-wrap: break-word; "
-                           "max-width: 76px; line-height: 1.3;")
-                status_label = ui.label("pending") \
-                    .classes("text-[8px] cr-text-dim font-medium") \
-                    .style("white-space: nowrap")
+                # Step number + name (two lines max, full name in the tooltip)
+                label = ui.label(f"Step {step_num}").classes("cr-step-num")
+                name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-name")
+                name.tooltip(_SHORT_NAMES.get(step_num, ""))
+                status_label = ui.label("pending").classes("cr-step-status")
 
             self.step_widgets[step_num] = {
                 "col": col, "box": box, "icon_container": icon_container, "step_icon": step_icon,
@@ -613,27 +603,17 @@ class ProgressSection:
         w["step_icon"].name = cfg["icon"]
         w["step_icon"].classes(replace=f"text-[{cfg['text']}]")
         w["status"].text = status
-        w["status"].classes(replace=f"text-[8px] text-[{cfg['text']}] font-medium")
+        w["status"].style(replace=f"color: {cfg['text']}")
 
-        # Update box border color based on status
-        _box_base = ("border-radius: 8px; padding: 8px 6px; "
-                     "min-width: 82px; max-width: 100px; min-height: 80px; "
-                     "display: flex; flex-direction: column; align-items: center; "
-                     "justify-content: flex-start; gap: 3px;")
+        # Box state: same size in every state; only colours change (CSS .cr-step-box.is-*)
         if "box" in w:
-            if base == "in_progress":
-                w["box"].style(replace=f"border: 2px solid {cfg['color']}; {_box_base} "
-                    "background: rgba(108,99,255,0.06);")
-            elif base in ("passed", "failed", "retrying"):
-                w["box"].style(replace=f"border: 1px solid {cfg['color']}; {_box_base} "
-                    "background: var(--cr-surface-light);")
-            else:
-                w["box"].style(replace=f"border: 1px solid var(--cr-border); {_box_base} "
-                    "background: var(--cr-surface-light);")
+            state = base if base in ("in_progress", "passed", "failed", "retrying") else ""
+            w["box"].classes(replace=f"cr-step-box {('is-' + state.replace('_', '-')) if state else ''}")
 
-        # Update connector line color for completed steps
-        if base in ("passed", "in_progress") and "connector" in w:
-            w["connector"].style(replace=f"background: {cfg['color']}")
+        # Connector after a passed / running step takes its colour
+        if "connector" in w:
+            color = cfg["color"] if base in ("passed", "in_progress") else "var(--cr-border)"
+            w["connector"].style(replace=f"--cr-conn: {color}")
 
     def _mark_remaining_skipped(self):
         """Mark all steps still showing 'pending' as 'skipped'."""

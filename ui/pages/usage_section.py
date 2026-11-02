@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
+from ui.components import card_title, stat_card
+
 logger = logging.getLogger(__name__)
 
 # Friendly step names for display
@@ -28,8 +30,7 @@ class UsageSection:
 
     def _build_ui(self):
         with ui.column().classes("w-full gap-4"):
-            with ui.row().classes("w-full items-center justify-between"):
-                ui.label("").classes("text-subtitle1 font-bold cr-stat-value")
+            with ui.row().classes("w-full items-center justify-end"):
                 with ui.row().classes("gap-2"):
                     ui.button("Refresh", icon="refresh", on_click=self._refresh) \
                         .props("flat color=deep-purple-6 size=sm no-caps")
@@ -37,7 +38,7 @@ class UsageSection:
                         .props("flat color=red-4 size=sm no-caps")
 
             # Summary cards
-            self.summary_row = ui.row().classes("w-full gap-3 flex-wrap")
+            self.summary_row = ui.element("div").classes("cr-stat-grid")
 
             # Per-UC breakdown
             self.uc_container = ui.column().classes("w-full")
@@ -124,21 +125,15 @@ class UsageSection:
         self.summary_row.clear()
         with self.summary_row:
             cards = [
-                ("LLM Calls", str(stats["total_calls"]), "call_made", "deep-purple-4"),
-                ("Total Tokens", f"{stats['total_tokens']:,}", "token", "light-blue-4"),
-                ("Est. Cost", f"${stats['total_cost']:.4f}", "attach_money", "green-4"),
-                ("Prompt Tokens", f"{stats['total_prompt']:,}", "upload", "purple-3"),
-                ("Completion Tokens", f"{stats['total_completion']:,}", "download", "teal-4"),
-                ("Total Time", f"{stats['total_time']:.1f}s", "timer", "amber-4"),
+                ("LLM Calls", str(stats["total_calls"]), "call_made", "#6C63FF"),
+                ("Total Tokens", f"{stats['total_tokens']:,}", "token", "#0891B2"),
+                ("Est. Cost", f"${stats['total_cost']:.4f}", "attach_money", "#16A34A"),
+                ("Prompt Tokens", f"{stats['total_prompt']:,}", "upload", "#8B5CF6"),
+                ("Completion Tokens", f"{stats['total_completion']:,}", "download", "#0D9488"),
+                ("Total Time", f"{stats['total_time']:.1f}s", "timer", "#D97706"),
             ]
             for title, value, icon, color in cards:
-                with ui.card().classes("cr-card-inner flex-1 min-w-32").style(
-                    "border: 1px solid var(--cr-border)"
-                ):
-                    with ui.column().classes("items-center gap-1 py-2"):
-                        ui.icon(icon, size="24px").classes(f"text-{color}")
-                        ui.label(value).classes(f"text-h6 font-bold text-{color}")
-                        ui.label(title).classes("text-caption cr-text-dim")
+                stat_card(title, value, icon, color)
 
     def _render_uc_breakdown(self, stats: dict):
         self.uc_container.clear()
@@ -147,7 +142,7 @@ class UsageSection:
             return
 
         with self.uc_container:
-            ui.label("Per Use Case").classes("text-subtitle2 font-bold cr-stat-value mt-2")
+            card_title("Per Use Case", "inventory_2")
             rows = []
             for uc, data in sorted(by_uc.items(), key=lambda x: x[1]["cost"], reverse=True):
                 if uc == "Unknown":
@@ -185,7 +180,7 @@ class UsageSection:
             return
 
         with self.step_container:
-            ui.label("Per Pipeline Step").classes("text-subtitle2 font-bold cr-stat-value mt-2")
+            card_title("Per Pipeline Step", "account_tree")
             rows = []
             for step, data in sorted(by_step.items(), key=lambda x: x[1]["cost"], reverse=True):
                 label = _STEP_LABELS.get(step, step.replace("_", " ").title())
@@ -221,7 +216,7 @@ class UsageSection:
             return
 
         with self.model_container:
-            ui.label("Per Model").classes("text-subtitle2 font-bold cr-stat-value mt-2")
+            card_title("Per Model", "smart_toy")
             rows = []
             for model, data in sorted(by_model.items(), key=lambda x: x[1]["cost"], reverse=True):
                 short = model.split("/")[-1] if "/" in model else model
@@ -258,7 +253,7 @@ class UsageSection:
 
         with self.log_container:
             with ui.expansion(f"Call Log ({len(calls)} calls)").classes("w-full") \
-                    .props("dense header-class='text-subtitle2 font-bold cr-stat-value'"):
+                    .props("dense header-class='text-caption font-semibold'"):
                 rows = []
                 for c in reversed(calls[-100:]):  # Show last 100
                     ts = datetime.fromtimestamp(c["timestamp"], tz=timezone.utc).strftime("%H:%M:%S")

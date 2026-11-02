@@ -7,6 +7,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.components import status_cells
+
 
 STATUS_COLORS = {
     "completed": "#16A34A", "failed": "#DC2626",
@@ -35,7 +37,7 @@ class CleanupSection:
     def _build_ui(self):
         with ui.column().classes("w-full gap-4"):
             # Filter bar
-            with ui.row().classes("w-full items-end gap-3"):
+            with ui.row().classes("cr-toolbar"):
                 self.node_filter = ui.select(
                     {"": "All Nodes"}, value="", label="Node Type",
                     on_change=lambda _: self._go_page(1),
@@ -49,7 +51,7 @@ class CleanupSection:
                           on_click=self._confirm_bulk_cleanup) \
                     .props("flat dense no-caps color=red-6 size=sm")
                 ui.button("Refresh", icon="refresh", on_click=self._refresh) \
-                    .props("flat color=grey-5 size=sm no-caps")
+                    .props("flat color=deep-purple-6 size=sm no-caps")
 
             self.table = ui.table(
                 columns=[
@@ -71,6 +73,7 @@ class CleanupSection:
                 'no-data-label="No runs to clean up" '
                 'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
             )
+            status_cells(self.table)
             self.table.add_slot('body-cell-actions', '''
                 <q-td :props="props">
                     <q-btn flat dense icon="delete_outline" color="red-4" size="sm"

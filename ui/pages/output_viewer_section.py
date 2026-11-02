@@ -6,6 +6,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.components import card_title
+
 from storage.artifact_store import ArtifactStore
 
 SYNTAX_MAP = {
@@ -44,7 +46,7 @@ class OutputViewerSection:
 
         with ui.column().classes("w-full gap-4"):
             # Filter row
-            with ui.row().classes("w-full items-end gap-3"):
+            with ui.row().classes("cr-toolbar"):
                 self.node_filter = ui.select(
                     {"": "All Nodes"}, value="", label="Node Type",
                     on_change=self._apply_filters,
@@ -58,7 +60,7 @@ class OutputViewerSection:
                     on_change=self._on_run_selected,
                 ).classes("flex-1").props("outlined dense")
                 ui.button("Refresh", icon="refresh", on_click=self._load_runs) \
-                    .props("flat color=deep-purple-6 size=sm")
+                    .props("flat color=deep-purple-6 size=sm no-caps")
 
             # File list area (hidden until a run is selected)
             with ui.column().classes("w-full gap-2") as self.viewer_row:
@@ -75,9 +77,7 @@ class OutputViewerSection:
 
             # Artifact Cache Management
             with ui.card().classes("w-full p-4 cr-card-inner"):
-                with ui.row().classes("items-center gap-2 mb-2"):
-                    ui.icon("cached", size="20px").classes("cr-text-accent")
-                    ui.label("Artifact Cache").classes("text-subtitle2 font-semibold")
+                card_title("Artifact Cache", "cached")
                 ui.label("Cached artifacts skip LLM generation for previously completed steps. "
                          "Clear cache to force regeneration.") \
                     .classes("text-caption cr-text-dim mb-2")
@@ -105,7 +105,7 @@ class OutputViewerSection:
                 self.cache_table.on('clear_cache', self._on_clear_cache)
                 with ui.row().classes("w-full justify-end mt-2 gap-2"):
                     ui.button("Refresh", icon="refresh", on_click=self._refresh_cache) \
-                        .props("flat size=sm no-caps color=grey-6")
+                        .props("flat size=sm no-caps color=deep-purple-6")
                     ui.button("Clear All Cache", icon="delete_sweep",
                               on_click=self._clear_all_cache) \
                         .props("flat size=sm no-caps color=red-6")

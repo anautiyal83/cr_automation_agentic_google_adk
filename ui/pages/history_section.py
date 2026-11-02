@@ -7,6 +7,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.components import status_cells
+
 PAGE_SIZE = 10
 
 
@@ -32,8 +34,8 @@ class HistorySection:
     def _build_ui(self):
         with ui.column().classes("w-full gap-4"):
             # Filter bar
-            with ui.card().classes("w-full p-3 cr-card-inner"):
-                with ui.row().classes("w-full items-end gap-3"):
+            with ui.element("div").classes("w-full"):
+                with ui.row().classes("cr-toolbar"):
                     self.node_filter = ui.select(
                         {"": "All Nodes"}, value="", label="Node Type",
                         on_change=lambda _: self._go_page(1),
@@ -77,6 +79,7 @@ class HistorySection:
                 'no-data-label="No pipeline runs found" '
                 'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
             )
+            status_cells(self.table)
             # Custom body slot for error column — show clickable "Details" link
             self.table.add_slot('body-cell-error', '''
                 <q-td :props="props">

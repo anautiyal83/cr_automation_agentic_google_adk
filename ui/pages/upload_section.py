@@ -76,7 +76,7 @@ class UploadSection:
             with ui.card().classes("w-full p-3 cr-card-inner").style(
                 "background: rgba(108,99,255,0.06)"
             ):
-                with ui.row().classes("w-full gap-2 items-end"):
+                with ui.row().classes("w-full gap-2 items-center no-wrap"):
                     ui.icon("business", size="20px").classes("cr-text-accent")
                     self.vendor_select = ui.select(
                         {}, label="Vendor",
@@ -114,17 +114,13 @@ class UploadSection:
             # Load vendor data
             ui.timer(0.5, self._load_vendors, once=True)
 
-            # Document upload grid — all 5 + additional in 2 rows
-            with ui.row().classes("w-full gap-2 flex-wrap"):
-                for doc in DOC_TYPES[:3]:
-                    self._upload_card(doc)
-
-            with ui.row().classes("w-full gap-2 flex-wrap"):
-                for doc in DOC_TYPES[3:]:
+            # Document upload grid — equal columns, wraps on narrow screens
+            with ui.element("div").classes("cr-grid-3"):
+                for doc in DOC_TYPES:
                     self._upload_card(doc)
 
                 # Additional documents — compact inline
-                with ui.card().classes("cr-upload-card flex-1 min-w-48"):
+                with ui.card().classes("cr-upload-card"):
                     with ui.column().classes("w-full gap-1 items-center"):
                         with ui.row().classes("w-full items-center justify-between"):
                             with ui.row().classes("items-center gap-1"):
@@ -136,7 +132,7 @@ class UploadSection:
                             multiple=True,
                             auto_upload=True,
                             on_upload=self._handle_additional_upload,
-                        ).props('flat bordered color=deep-purple-6').classes("w-full")
+                        ).props('flat bordered color=grey-1 text-color=deep-purple-7').classes("w-full")
                         self.additional_docs_list = ui.column().classes("w-full gap-0")
 
             # Developer Notes — domain knowledge input
@@ -179,7 +175,7 @@ class UploadSection:
         if is_multi:
             self.paths[key] = []
 
-        with ui.card().classes("cr-upload-card flex-1 min-w-48") as card:
+        with ui.card().classes("cr-upload-card") as card:
             self.cards[key] = card
             with ui.column().classes("w-full gap-1 items-center"):
                 with ui.row().classes("w-full items-center justify-between"):
@@ -187,14 +183,14 @@ class UploadSection:
                         ui.icon(doc["icon"], size="18px").classes("cr-text-accent")
                         ui.label(doc["label"]).classes("text-caption font-semibold")
                     badge_cls = "cr-badge cr-badge-required" if doc["required"] else "cr-badge cr-badge-optional"
-                    ui.html(f'<span class="{badge_cls}">{"Req" if doc["required"] else "Opt"}</span>')
+                    ui.html(f'<span class="{badge_cls}">{"Required" if doc["required"] else "Optional"}</span>')
 
                 ui.upload(
                     label="Drop or click",
                     multiple=True,
                     auto_upload=True,
                     on_upload=lambda e, k=key, m=is_multi: self._handle_upload(e, k, multi=m),
-                ).props(f'accept="{doc["accept"]}" flat bordered color=deep-purple-6').classes("w-full")
+                ).props(f'accept="{doc["accept"]}" flat bordered color=grey-1 text-color=deep-purple-7').classes("w-full")
 
                 if is_multi:
                     file_list = ui.column().classes("w-full gap-0")
