@@ -92,12 +92,17 @@ def build_topology(
     for name, node in wf_nodes.items():
         if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")):
             continue
+        node_cmds = [c for c in commands if c.get("node") == name]
+        if not node_cmds:
+            # Declared but used by no step (e.g. an invented gateway node): the JAR never
+            # connects to it, so it needs no simulator instance (S8-17)
+            logger.info("Topology: node %s is used by no step — no simulator instance", name)
+            continue
         ssh = node.get("ssh") or {}
         req = req_nodes.get(str(name).lower(), {})
         req_ssh = req.get("ssh") or {}
         prompt_regex = str(node.get("prompt_regex") or "")
         elevate = bool(ssh.get("elevate_to_root") or req_ssh.get("elevate_to_root"))
-        node_cmds = [c for c in commands if c.get("node") == name]
 
         spec = NodeSpec(
             name=str(name),

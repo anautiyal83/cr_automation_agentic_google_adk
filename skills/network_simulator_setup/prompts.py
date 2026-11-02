@@ -60,3 +60,17 @@ FEEDBACK_SECTION = """
 INVALID_YAML_RETRY = """
 Your previous answer was not valid YAML. Answer again with ONLY the YAML map, single-quoted keys and lines, no prose.
 """
+
+CONFORM_USER = """\
+UC: {uc_name}
+Node: {node}
+
+These simulator responses are for a HEALTHY node on a normal day, but the workflow's own
+success check rejects them. For each key below, return the output a healthy node prints that
+the regex matches (realistic text, same command; for an existence pre-check this usually means
+the "not found" output).
+
+{listing}
+
+Answer with ONLY the YAML map: the same keys, each with a 'lines' list.
+"""

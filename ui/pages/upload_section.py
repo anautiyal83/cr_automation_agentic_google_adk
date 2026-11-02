@@ -342,10 +342,26 @@ class UploadSection:
         self._update_uc_name()
         await self._validate()
 
+    async def _prefill_notes(self) -> None:
+        """Developer notes are per use case: reuse the last run's notes until edited (UI-3)."""
+        if not (self._db and self.uc_name) or (self.developer_notes.value or "").strip():
+            return
+        try:
+            rows = await self._db.execute(
+                "SELECT developer_notes FROM uc_document_sets WHERE uc_name = ? "
+                "AND developer_notes IS NOT NULL AND TRIM(developer_notes) != '' "
+                "ORDER BY uploaded_at DESC LIMIT 1", (self.uc_name,))
+        except Exception:
+            return
+        if rows and not (self.developer_notes.value or "").strip():
+            self.developer_notes.value = rows[0]["developer_notes"]
+            ui.notify(f"Developer notes pre-filled from the last {self.uc_name} run", type="info")
+
     def _update_uc_name(self) -> None:
         if self.node_type and self.activity_name:
             self.uc_name = f"{self.node_type}_{self.activity_name}"
             self.uc_name_label.text = self.uc_name
+            ui.timer(0.1, self._prefill_notes, once=True)
         else:
             self.uc_name = ""
             self.uc_name_label.text = "—"

@@ -447,11 +447,17 @@
 | DEP-16 | — | EAST CIQ rows have no IMSI → `--imsi ''`, `imsi=,` | Not a data error: the subscriber is given by IMSI *or* MSISDN → DEP-17 |
 | DEP-17 | — | IMSI must be resolved via MSISDN when only the MSISDN is given (`ldapsearch … msisdn=… \| grep -i provisionedIMSI`); production syntax `${rec_row.data.<Col>}` unknown to the JAR | Fixed (generic): step 6 prompt pattern "identifier from one of several columns" (`when`-guarded steps registering one variable, JAR-verified), autofix `rec_row.data` → `configSequences.0.records.0.data` |
 | DEP-18 | — | Quoted CIQ column in a bare `when` path (`data.'Test MSISDN' != ''`) is always false → the guarded lookup never runs | Fixed (autofix unquotes; prompt rule) |
+| DEP-19 | — | A CIQ column only some rows fill (EAST has no `Test IMSI`) was used unguarded → `imsi=,` | Fixed: step 6 validator reports it with the columns those rows do fill (`Test MSISDN` ranked first) → self-correction |
+| DEP-20 | — | `sar` regex unverifiable when a run uploads no health-check transcript (c43f64ef) | Fixed: real outputs are kept in `data/knowledge/command_samples.json` (seeded from uploads: 32) and reused by steps 6/8 for commands a run did not record; c43f64ef re-run: `sar` checked and correct |
+| DEP-21 | — | Without the lookup guidance step 6 faked the MSISDN branch (`echo "No IMSI provided"`) so `${resolvedImsi}` stayed empty for EAST | Fixed (detection): validator evaluates simple `when` guards per CIQ sample row and reports variables a row never registers; the lookup itself must come from developer notes |
 | G-3 | — | Developer notes never reached step 6 (only requirement gathering saw them) | Fixed: kept verbatim in `requirements.developer_notes`; authoritative section in the step 6 generate/regenerate prompts |
 | S9-03 | — | Step 9 never executed a failure scenario: LLM test-case descriptions graded against one all-success run | Fixed by [005](../005-scenario-testing/spec.md): test cases from workflow + CIQ JSON, run per case on the simulator, test-case report (sunny day now, negatives later) |
 | G-1 | — | Step 6 `regenerate()` sent only the first 10 000 chars of the workflow → truncated output | Fixed (60 000) |
 | G-2 | — | Self-correction ranked unparseable YAML as 1 error and kept it over a valid workflow | Fixed (`_rank`: invalid YAML is worst; error now names line + text) |
-| S8-16 | — | Simulator has no response file after the XML upload (`outbox/<ORDERNO>.xml.res`), so `ls`/`parse_response.py` fail | Open (Phase 3: VFS triggers) |
+| S8-16 | — | Simulator has no response file after the XML upload (`outbox/<ORDERNO>.xml.res`), so `ls`/`parse_response.py` fail. Run c43f64ef: the same `ls …xml.res` is checked absent (pre-upload) and present (post-upload) — no static response can pass both | Open (Phase 3: MockWire VFS + triggers, T055); step 8 now names such stateful commands in its report |
+| S8-17 | — | Step 6 invented an unused `NIAM_SERVER` node (NIAM is `ssh.ne_id`); step 8 found no commands for it and refused to start the simulator | Fixed: autofix drops nodes no step uses (kept when a step picks its node via `${…}`); step 8 builds instances only for nodes steps use |
+| S8-18 | — | Invented simulator responses contradicted the step's own success check (NORTH `ls …xml.res` listed a file the pre-check expects absent) and were routed to step 6 | Fixed: step 8 checks invented responses against the step's success regex (placeholders resolved to test values), regenerates once with the regex as feedback; recorded real output is never changed; stateful commands are skipped (S8-16) |
+| S9-04 | — | LOCAL steps failed on the server: `Cannot run program "bash"` (server started from PowerShell has no bash on PATH; System32 bash is WSL) | Fixed: JAR environment gets Git Bash and this Python first on PATH on Windows |
 
 ## Step 9: Execution QA
 
@@ -617,6 +623,9 @@
 - New Run: 3-step wizard (Activity → Documents → Notes & review with live summary), same widgets and handlers.
 - Found while building: `progress_section.py` used `Path` without a module import (NameError swallowed by NiceGUI) — fixed; flow log lives in `logs/`, not `data/logs/`.
 - Known limit: the Logs tab filters the global flow log by step, not by run.
+
+### UI-3 — Developer notes retyped every run (Medium, Fixed 2026-11-02)
+- Notes are per use case; run c43f64ef was started without them, so the IMSI/MSISDN lookup was unknown. The New Run wizard now pre-fills empty notes from the last run of the same UC.
 
 ### OB-6 — Resume after server restart not implemented (Medium, Open)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.

@@ -461,12 +461,51 @@ def _abs(path) -> str:
     return str(Path(path).resolve()) if path else ""
 
 
+def _local_step_env(env: dict[str, str]) -> dict[str, str]:
+    """Environment in which the cli-automation JAR can run LOCAL steps (S9-04).
+
+    The JAR runs LOCAL commands with ``bash``. On Windows a server started from PowerShell
+    may not have it on PATH ("Cannot run program "bash""), and ``System32\\bash.exe`` is WSL,
+    not a shell for this machine's files. Put Git Bash first, and this Python's folder, so
+    ``python <script>.py`` resolves inside bash.
+    """
+    if os.name != "nt":
+        return env
+    import sys
+    path = env.get("PATH", "")
+    extra: list[str] = []
+    bash = shutil.which("bash", path=path)
+    if not bash or "system32" in bash.lower():
+        candidates = []
+        git = shutil.which("git", path=path)
+        if git:
+            root = Path(git).resolve().parent.parent  # <Git>/cmd/git.exe → <Git>
+            candidates += [root / "bin", root / "usr" / "bin"]
+        upper = {k.upper(): v for k, v in env.items()}  # Windows env names are case-insensitive
+        local = upper.get("LOCALAPPDATA", "")
+        for base in (upper.get("PROGRAMFILES"), upper.get("PROGRAMFILES(X86)"),
+                     str(Path(local) / "Programs") if local else "", r"C:\Program Files"):
+            if base:
+                candidates += [Path(base) / "Git" / "bin", Path(base) / "Git" / "usr" / "bin"]
+        found = next((c for c in candidates if (c / "bash.exe").exists()), None)
+        if found:
+            extra.append(str(found))
+        else:
+            logger.warning("No bash found for LOCAL workflow steps (install Git for Windows)")
+    py_dir = str(Path(sys.executable).parent)
+    if not shutil.which("python", path=path):
+        extra.append(py_dir)
+    if extra:
+        env["PATH"] = os.pathsep.join(extra + [path])
+    return env
+
+
 async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: str,
                    cwd: str | None = None) -> dict:
     """Run a JAR subprocess and return result dict."""
     logger.info("Running %s: %s", label, " ".join(cmd[:6]) + " ...")
 
-    env = dict(os.environ)
+    env = _local_step_env(dict(os.environ))
     if java_home:
         env["JAVA_HOME"] = java_home
 

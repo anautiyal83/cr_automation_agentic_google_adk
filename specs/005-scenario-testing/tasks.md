@@ -12,7 +12,9 @@
 - [X] T006 Skill + agent wiring: scenario mode when the simulator overlay exists; step 9 status from case results; `step_9_error.json` lists failing cases
 - [X] T007 Unit tests `tests/test_scenarios.py`
 - [X] T008 E2E: `python test_step.py --agents 6,8,9 --run-id b61b977c… --transcripts … --developer-notes "…"` (2026-11-02): suite ran TC-P01 CR1/EAST and TC-P02 CR1/NORTH on a restarted simulator, report + JSON written; both FAIL for step 6 reasons — `ndsLoadStats` and `provgw status` regexes (already flagged by the step 6 validator, routed to step 6) and the MSISDN lookup never running because its `when` quoted the column (DEP-18, fixed)
-- [ ] T009 Re-run E2E after DEP-18 and the step 9 → 6 retry; target: both sunny-day cases PASS
+- [ ] T009 Re-run E2E after DEP-18 and the step 9 → 6 retry; target: both sunny-day cases PASS (c43f64ef with notes: 1 failing step per case — step 6 `${ifcTriggerName}` and S8-16)
+- [X] T013 Sunny-day robustness from run c43f64ef: S9-04, DEP-19/20/21, S8-17, S8-18, UI-3
+- [ ] T014 S8-16 via MockWire VFS + triggers (stateful file checks around uploads) — with 004 T055
 
 ## Phase 2: Negative cases (later — built, switched off)
 

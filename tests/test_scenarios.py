@@ -144,6 +144,96 @@ def test_quoted_columns_in_when_paths_are_unquoted():
         "configSequences.0.records.0.data.IFC != 'UNCHANGED'"
 
 
+CIQ = {"Profile": {"columns": ["Zone", "Test IMSI", "Test MSISDN", "Optional"],
+                   "sample_rows": [{"Zone": "EAST", "Test MSISDN": "981"},
+                                   {"Zone": "NORTH", "Test IMSI": "4045", "Test MSISDN": "982"}]}}
+
+
+def test_ciq_column_empty_for_some_node_groups_is_reported_with_the_filled_alternative():
+    from skills.network_config_gen.validator import check_ciq_coverage
+    step = {"node": "DB", "send": "ldapsearch -b imsi=${configSequences.0.records.0.data.Test IMSI}"}
+    problems = check_ciq_coverage({"phases": {"a": {"steps": [step]}}}, CIQ)
+    assert len(problems) == 1 and "'Test MSISDN'" in problems[0] and "EAST" in problems[0]
+    guarded = dict(step, when="configSequences.0.records.0.data.Test IMSI != ''")
+    assert not check_ciq_coverage({"phases": {"a": {"steps": [guarded]}}}, CIQ)
+    optional = {"node": "LOCAL", "send": "python x.py --o '${configSequences.0.records.0.data.Optional}'"}
+    assert not check_ciq_coverage({"phases": {"a": {"steps": [optional]}}}, CIQ)  # empty everywhere
+
+
+def test_variable_never_registered_for_some_rows_is_reported():
+    from skills.network_config_gen.validator import check_row_variables
+    col = "configSequences.0.records.0.data.Test IMSI"
+    steps = [
+        {"node": "DB", "when": f"{col} != ''", "send": "ldapsearch imsi=${" + col + "}",
+         "register": [{"regex": r"imsi: (?<subId>\d+)"}]},
+        {"node": "DB", "when": f"{col} == ''", "send": "echo none"},           # registers nothing
+        {"node": "DB", "send": "ldapsearch imsi=${subId}"},
+    ]
+    problems = check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
+    assert len(problems) == 1 and "EAST" in problems[0] and "${subId}" in problems[0]
+    steps[1] = {"node": "DB", "when": f"{col} == ''", "send": "lookup msisdn ${configSequences.0.records.0.data.Test MSISDN}",
+                "register": [{"regex": r"provisionedIMSI: (?<subId>\d+)"}]}
+    assert not check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
+
+
+def test_unused_nodes_are_dropped_and_get_no_simulator():
+    from skills.network_config_gen.autofix import fix_workflow
+    from skills.network_simulator_setup.topology import build_topology
+    wf = ("nodes:\n  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}\n"
+          "  GATEWAY: {type: remote, plugin: ssh, prompt_regex: 'gw\\\\$', ssh: {host: g, user: u}}\n"
+          "phases:\n  a:\n    steps:\n    - {node: APP, send: uptime}\n")
+    assert [n.name for n in build_topology(wf)] == ["APP"]
+    assert "GATEWAY" not in yaml.safe_load(fix_workflow(wf))["nodes"]
+    dynamic = wf.replace("{node: APP, send: uptime}", "{node: '${target}', send: uptime}")
+    assert "GATEWAY" in yaml.safe_load(fix_workflow(dynamic))["nodes"]   # could be the target
+
+
+def test_invented_responses_must_pass_their_steps_success_check():
+    from skills.network_simulator_setup.skill import synthetic_mismatches
+    from skills.network_simulator_setup.topology import build_topology
+    wf = r"""
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}
+phases:
+  a:
+    steps:
+    - {node: APP, send: "ls /out/${ORDERNO}.res", validation: {success: {criteria: {regex: 'No such file'}}}}
+    - {node: APP, send: systemctl is-active app, validation: {success: {criteria: {regex: '^active$'}}}}
+    - {node: APP, send: "cat /out/${ORDERNO}.log", validation: {success: {criteria: {regex: 'started'}}}}
+    - {node: APP, send: "cat /out/${ORDERNO}.log", validation: {success: {criteria: {regex: 'finished'}}}}
+"""
+    node = build_topology(wf)[0]
+    entries = {"regex:^ls /out/.+?\\.res$": {"lines": ["-rw-r--r-- 1 u u 12 TEST_ORDERNO.res"]},
+               "systemctl is-active app": {"lines": ["active"]},
+               "regex:^cat /out/.+?\\.log$": {"lines": ["started"]}}
+    bad = synthetic_mismatches(node, entries, recorded=set(), row={})
+    assert [b["cmd"] for b in bad] == ["ls /out/${ORDERNO}.res"]      # active OK; cat is stateful → skipped
+    assert synthetic_mismatches(node, entries, recorded={"ls /out/${ORDERNO}.res"}, row={}) == []
+
+
+def test_command_sample_library_fills_commands_a_run_did_not_record():
+    from tools import command_samples as lib
+    assert lib.add([{"command": "sar 1 10", "output": "Average: all 1 2 3 4 5 95.0"}], source="t") == 1
+    assert lib.add([{"command": "sar  1 10", "output": "Average: all 1 2 3 4 5 95.0"}]) == 0  # duplicate
+    run = [{"command": "uptime", "output": "up 3 days"}]
+    merged = lib.with_library(run)
+    assert merged[0] == run[0] and any(s["command"] == "sar 1 10" for s in merged)
+    assert len(lib.with_library([{"command": "sar 1 10", "output": "mine"}])) == len(lib.load())
+
+
+def test_local_steps_get_a_bash_on_windows(monkeypatch):
+    import os
+    import shutil
+    from skills.network_config_test import jar_executor
+    if os.name != "nt" or not shutil.which("git"):
+        return
+    env = dict(os.environ)
+    env["PATH"] = r"C:\Windows\System32;C:\Windows"
+    path = jar_executor._local_step_env(env)["PATH"]
+    bash = shutil.which("bash", path=path)
+    assert bash and "system32" not in bash.lower()
+
+
 def test_developer_notes_reach_the_step6_prompt():
     from skills.network_config_gen.skill import NetworkConfigGenSkill, SkillInput
     seen: list[str] = []

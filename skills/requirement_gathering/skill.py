@@ -133,6 +133,9 @@ class RequirementGatheringSkill:
         xml_parsed = parse_xml_samples(self._raw_artifacts.get("xml_samples", ""))
         command_samples = parse_command_outputs(
             "\n\n".join([self._raw_artifacts.get("ssh_logs", "")] + _read_texts(inp.transcript_paths)))
+        # Keep them for later runs too: steps 6/8 reuse real outputs nobody re-uploads (DEP-20)
+        from tools.command_samples import add as _remember_samples
+        _remember_samples(command_samples, source=inp.uc_name)
         self._ciq_sheets = parse_ciq(
             ciq_file_path=inp.ciq_file_path,
             ciq_data=inp.ciq_data,

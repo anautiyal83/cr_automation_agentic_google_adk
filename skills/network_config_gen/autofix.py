@@ -234,9 +234,15 @@ def fix_workflow(yaml_text: str) -> str:
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
 
-    # --- Add missing nodes referenced in steps ---
+    # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
+    # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
     nodes = parsed.get("nodes", {})
     if isinstance(nodes, dict):
+        used, dynamic = _step_nodes(parsed.get("phases", {}))
+        if not dynamic:  # a ${…} node could be any of them: keep all
+            for unused in [n for n in nodes if n not in used]:
+                del nodes[unused]
+                logger.info("Removed node '%s': no step uses it", unused)
         referenced = _collect_referenced_nodes(parsed.get("phases", {}))
         for node_name in referenced - set(nodes.keys()):
             if node_name.upper() == "LOCAL":
@@ -295,6 +301,29 @@ def fix_regex_placeholders(phases: Any) -> int:
     if changed:
         logger.info("Replaced placeholders in %d regexes (the JAR does not interpolate regexes)", changed)
     return changed
+
+
+def _step_nodes(phases: Any) -> tuple[set[str], bool]:
+    """Nodes used by any step (nested steps included) and whether a step picks it via ${…}."""
+    used: set[str] = set()
+    dynamic = False
+
+    def walk(steps):
+        nonlocal dynamic
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            node = str(step.get("node") or "")
+            if "${" in node:
+                dynamic = True
+            elif node:
+                used.add(node)
+            walk(step.get("steps"))
+
+    bodies = phases.values() if isinstance(phases, dict) else (phases or [])
+    for body in bodies:
+        walk(body.get("steps") if isinstance(body, dict) else body)
+    return used, dynamic
 
 
 def _collect_referenced_nodes(phases: dict) -> set[str]:

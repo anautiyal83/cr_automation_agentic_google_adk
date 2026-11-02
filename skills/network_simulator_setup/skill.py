@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -122,7 +123,8 @@ class NetworkSimulatorSetupSkill:
         # --- Phase 2: Command responses per node ---
         # Real outputs recorded on the nodes are served verbatim; the LLM only invents
         # responses for commands nobody recorded
-        samples = list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or [])
+        from tools.command_samples import with_library
+        samples = with_library(list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or []))
         recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
         hints = str(inp.generation_hints.get("step_8", "") or "")
         results = await asyncio.gather(
@@ -132,11 +134,15 @@ class NetworkSimulatorSetupSkill:
         )
         errors: list[str] = []
         instance_configs: dict[str, str] = {}
+        row = _first_row_values(inp.requirements)
         for node, result in zip(nodes, results):
             if isinstance(result, Exception):
                 logger.error("Response generation failed for %s: %s", node.name, result)
                 errors.append(f"{node.name}: response generation failed: {result}")
                 result = {}
+            # Invented responses stand for a healthy node: they must pass the step's own
+            # success check (recorded real output is the ground truth and is never changed)
+            result = await self._conform_synthetic(inp.uc_name, node, result, set(recorded[node.name]), row)
             if recorded[node.name]:
                 logger.info("Phase 2: %s — %d responses from recorded real output",
                             node.name, len(recorded[node.name]))
@@ -237,6 +243,41 @@ class NetworkSimulatorSetupSkill:
             text += "\n\nReviewer analysis:\n" + feedback.reviewer_analysis[:3000]
         return await self.setup(replace(self._last_input, feedback=text))
 
+    async def _conform_synthetic(self, uc_name: str, node: NodeSpec, entries: dict,
+                                 recorded: set[str], row: dict) -> dict:
+        """Regenerate invented responses the step's success regex rejects (one round)."""
+        from .topology import _validation_regex
+        seen: dict[str, set[str]] = {}
+        for c in node.commands:
+            seen.setdefault(str(c.get("cmd", "")).strip(), set()).add(_validation_regex(c))
+        for cmd, regexes in seen.items():
+            if len(regexes) > 1 and cmd not in recorded:
+                node.warnings.append(f"{cmd!r} is checked with {len(regexes)} different expectations "
+                                     "(state changes during the run) — a static response cannot pass all (S8-16)")
+        bad = synthetic_mismatches(node, entries, recorded, row)
+        if not bad:
+            return entries
+        logger.info("Phase 2: %s — %d invented responses fail their step's success check; regenerating",
+                    node.name, len(bad))
+        listing = "\n".join(f"- key {b['key']!r} (command: {b['cmd']})\n  must match: /{b['regex']}/\n"
+                            f"  your output was: {b['output'][:300]!r}" for b in bad)
+        user = prompts.CONFORM_USER.format(node=node.name, uc_name=uc_name, listing=listing)
+        try:
+            fixed = parse_llm_yaml(await self._llm_fn(prompts.NODE_RESPONSES_SYSTEM, user))
+        except Exception as e:
+            logger.warning("Phase 2: %s — conformance regeneration failed: %s", node.name, e)
+            fixed = None
+        entries = dict(entries)
+        for b in bad:
+            new = fixed.get(b["key"]) if isinstance(fixed, dict) else None
+            if isinstance(new, dict) and isinstance(new.get("lines"), str):
+                new = {**new, "lines": new["lines"].splitlines()}
+            if isinstance(new, dict) and isinstance(new.get("lines"), list):
+                entries[b["key"]] = new
+        for b in synthetic_mismatches(node, entries, recorded, row):
+            node.warnings.append(f"invented response for {b['cmd']!r} still fails /{b['regex']}/")
+        return entries
+
     # ------------------------------------------------------------------
     # Phase 2: Command responses
     # ------------------------------------------------------------------
@@ -292,6 +333,74 @@ class NetworkSimulatorSetupSkill:
                 entries[str(key)] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
+
+
+def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> list[dict]:
+    """Invented responses that the workflow step's own success regex rejects (S8-18)."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    from .topology import _validation_regex
+    out = []
+    expectations: dict[str, set[str]] = {}
+    for c in node.commands:
+        expectations.setdefault(str(c.get("cmd", "")).strip(), set()).add(_validation_regex(c))
+    for c in node.commands:
+        cmd = str(c.get("cmd", "")).strip()
+        regex = _validation_regex(c)
+        if not cmd or not regex or cmd in recorded or re.match(r"^(su(\s+-)?\s+\S+|exit|logout)$", cmd):
+            continue
+        if len(expectations.get(cmd, ())) > 1:
+            # Checked again later with another expectation (file absent → present): one
+            # static answer cannot be right; needs MockWire state/VFS (S8-16)
+            continue
+        key, entry = _find_entry(entries, cmd, resolve_command(cmd, row))
+        if not isinstance(entry, dict) or not isinstance(entry.get("lines"), list):
+            continue
+        text = "\n".join(str(x) for x in entry["lines"])
+        if not java_regex_matches(regex, text):
+            out.append({"key": key, "cmd": cmd, "regex": regex, "output": text})
+    return out
+
+
+def resolve_command(cmd: str, row: dict) -> str:
+    """The command as the JAR would send it: runtime params → test values, CIQ columns →
+    first sample row, anything else → a token."""
+    from core.config import runtime_params
+    params = runtime_params()
+
+    def value(m: re.Match) -> str:
+        expr = m.group(1).strip()
+        if expr in params:
+            return params[expr]
+        if expr.startswith("configSequences.") and ".data." in expr:
+            return str(row.get(expr.split(".data.", 1)[1].strip(), "") or "1")
+        return "1"
+    return re.sub(r"\$\{([^{}]+)\}", value, cmd)
+
+
+def _find_entry(entries: dict, cmd: str, resolved: str):
+    for key in (cmd, resolved):
+        if key in entries:
+            return key, entries[key]
+    for key, entry in entries.items():
+        if str(key).startswith("regex:"):
+            try:
+                if re.search(str(key)[6:], resolved):
+                    return key, entry
+            except re.error:
+                continue
+    return None, None
+
+
+def _first_row_values(requirements: dict) -> dict:
+    """First non-empty value per CIQ column across the sample rows (test values)."""
+    values: dict = {}
+    for sheet in ((requirements.get("doc_extracted") or {}).get("ciq_sheets") or {}).values():
+        for r in (sheet or {}).get("sample_rows") or []:
+            if isinstance(r, dict):
+                for k, v in r.items():
+                    if str(v or "").strip() and k not in values:
+                        values[k] = v
+    return values
 
 
 def recorded_responses(commands: list[dict], samples: list[dict]) -> dict[str, dict]:

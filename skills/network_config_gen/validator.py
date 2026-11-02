@@ -14,7 +14,8 @@ from .autofix import parse_yaml, is_placeholder
 logger = logging.getLogger(__name__)
 
 
-def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None) -> list[str]:
+def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
+                      ciq_sheets: dict | None = None) -> list[str]:
     """Validate workflow YAML structure. Returns list of error strings.
 
     With ``command_samples`` (real ``{command, output}`` pairs from uploaded transcripts,
@@ -82,11 +83,131 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None)
     errors.extend(check_placeholders(parsed))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
+    if ciq_sheets:
+        errors.extend(check_ciq_coverage(parsed, ciq_sheets))
+        errors.extend(check_row_variables(parsed, ciq_sheets))
     return errors
 
 
 _PROMPT_STEP = re.compile(r"^(su(\s+-)?\s+\S+|exit|logout)$")
 _SAMPLE_EXCERPT_LINES = 8
+
+
+_CIQ_COLUMN = re.compile(r"\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}")
+
+
+def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
+    """Steps that use a CIQ column which is empty for some rows, without a ``when`` guard.
+
+    The JAR sends such a command with an empty value (``imsi=,dc=…``) for those node groups.
+    The message names the columns those rows do fill, so the generator can resolve the value
+    from them (DEP-19) — e.g. rows give either an IMSI or an MSISDN.
+    """
+    columns: dict[str, list[dict]] = {}
+    for sheet in (ciq_sheets or {}).values():
+        if not isinstance(sheet, dict):
+            continue
+        rows = [r for r in sheet.get("sample_rows") or [] if isinstance(r, dict)]
+        for col in sheet.get("columns") or sheet.get("headers") or []:
+            columns.setdefault(str(col).strip(), rows)
+    if not columns:
+        return []
+
+    def empty(row: dict, col: str) -> bool:
+        return str(row.get(col, "") if row.get(col) is not None else "").strip() == ""
+
+    problems: dict[str, str] = {}
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        guard = str(step.get("when") or "")
+        for col in {c.strip() for c in _CIQ_COLUMN.findall(send)}:
+            rows = columns.get(col)
+            if not rows or col in guard or col in problems:
+                continue
+            missing = [r for r in rows if empty(r, col)]
+            # Empty everywhere = an optional value passed through (scripts skip it); only a
+            # column some rows fill and others leave empty breaks those node groups
+            if not missing or len(missing) == len(rows):
+                continue
+            sheet_cols = [c for c in columns if columns[c] is rows]
+            words = set(re.findall(r"[a-z]+", col.lower()))
+            # Candidates filled wherever this column is empty (not the sheet's key column),
+            # most similar names first ('Test MSISDN' for 'Test IMSI')
+            alternatives = sorted(
+                (c for c in sheet_cols[1:] if c != col and all(not empty(r, c) for r in missing)),
+                key=lambda c: (-len(words & set(re.findall(r"[a-z]+", c.lower()))), sheet_cols.index(c)))[:3]
+            where = ", ".join(str(next((v for k, v in r.items() if not empty(r, k)), "?")) for r in missing[:3])
+            problems[col] = (
+                f"Step '{send[:80]}' ({phase_name}) uses CIQ column '{col}', which is empty in "
+                f"{len(missing)} of {len(rows)} sample rows (e.g. {where}): those node groups would send "
+                "an empty value. "
+                + (f"Those rows fill {', '.join(repr(a) for a in alternatives)}: resolve '{col}' from it "
+                   "into a registered variable with when-guarded steps (one-of-several-columns rule) and "
+                   "use that variable." if alternatives else
+                   f"Guard the step with when: \"configSequences.0.records.0.data.{col} != ''\"."))
+    return list(problems.values())
+
+
+_WHEN_TERM = re.compile(r"^\s*configSequences\.\d+\.records\.\d+\.data\.(.+?)\s*(==|!=)\s*'([^']*)'\s*$")
+
+
+def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str] | None = None) -> list[str]:
+    """Per CIQ sample row: ``${var}`` used by a step that runs while no step that ran before
+    registered ``var`` (its registering steps were skipped by their ``when``) — DEP-21.
+
+    Only simple guards (``<Col> == '…'`` / ``!= '…'`` joined by ``&&``) are evaluated; any
+    other guard counts as true, so the check never reports a guess.
+    """
+    if runtime_params is None:
+        from core.config import runtime_params as configured
+        runtime_params = list(configured())
+    rows_by_col: dict[str, list[dict]] = {}
+    for sheet in (ciq_sheets or {}).values():
+        if isinstance(sheet, dict):
+            rows = [r for r in sheet.get("sample_rows") or [] if isinstance(r, dict)]
+            for col in sheet.get("columns") or sheet.get("headers") or []:
+                rows_by_col.setdefault(str(col).strip(), rows)
+    steps = [s for _, s in _iter_steps(parsed.get("phases") or {})]
+    guards = [str(s.get("when") or "") for s in steps]
+    guard_cols = {m.group(1).strip() for g in guards for t in g.split("&&") if (m := _WHEN_TERM.match(t))}
+    sheets = {id(rows_by_col[c]): rows_by_col[c] for c in guard_cols if c in rows_by_col}
+    if not sheets:
+        return []
+    defined_always = set(_JAR_BUILTINS) | set(runtime_params)
+    defined_always |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
+
+    def runs(guard: str, row: dict) -> bool:
+        for term in guard.split("&&"):
+            m = _WHEN_TERM.match(term)
+            if not m:
+                continue
+            value = str(row.get(m.group(1).strip()) or "").strip()
+            if (value == m.group(3)) != (m.group(2) == "=="):
+                return False
+        return True
+
+    problems: dict[str, str] = {}
+    for rows in sheets.values():
+        for row in rows:
+            label = str(next((v for v in row.values() if str(v or "").strip()), "row"))
+            registered: set[str] = set()
+            for step, guard in zip(steps, guards):
+                if not runs(guard, row):
+                    continue
+                for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(str(step.get("send") or ""))}:
+                    if "." in name or name in defined_always or name in registered or name in problems:
+                        continue
+                    problems[name] = (
+                        f"For CIQ rows like {label}, step '{str(step.get('send'))[:80]}' uses ${{{name}}} but no "
+                        f"step that runs for that row registers it (the steps registering it are skipped by "
+                        f"their when conditions, or register it without a (?<{name}>…) group). Register it for "
+                        "every row — e.g. look the value up from a column that row fills, as the developer "
+                        "notes / MOP describe.")
+                for reg in step.get("register") or []:
+                    rx = reg.get("regex") if isinstance(reg, dict) else None
+                    if isinstance(rx, str):
+                        registered |= set(_NAMED_GROUP.findall(rx))
+    return list(problems.values())
 
 
 def _yaml_error(yaml_text: str) -> str:

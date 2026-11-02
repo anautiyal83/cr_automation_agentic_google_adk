@@ -82,6 +82,7 @@ class NetworkConfigGenSkill:
         self._schema_summary = ""
         self._last_yaml = ""
         self._samples: list[dict] = []
+        self._ciq_sheets: dict = {}
 
     async def generate(self, inp: SkillInput) -> SkillOutput:
         """Generate workflow YAML from requirements.
@@ -93,7 +94,11 @@ class NetworkConfigGenSkill:
         """
         self._uc_name = inp.uc_name
         self._requirements = inp.requirements
-        self._samples = list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or [])
+        doc = inp.requirements.get("doc_extracted") or {}
+        # Real outputs of this run plus those learned from earlier runs (DEP-20)
+        from tools.command_samples import with_library
+        self._samples = with_library(list(doc.get("command_samples") or []))
+        self._ciq_sheets = dict(doc.get("ciq_sheets") or {})
 
         self._schema_summary = inp.generation_hints.get("step_6", "")
         if not self._schema_summary:
@@ -124,7 +129,7 @@ class NetworkConfigGenSkill:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text, self._samples)
+            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow generation failed: %s", e, exc_info=True)
@@ -166,7 +171,7 @@ class NetworkConfigGenSkill:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text, self._samples)
+            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow regeneration failed: %s", e, exc_info=True)

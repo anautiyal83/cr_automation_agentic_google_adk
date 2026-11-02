@@ -82,3 +82,15 @@ Artifacts: `<uc>_network-qa-report.html` (test-case report) and `<uc>_test-cases
 | TC-P02 CR1/NORTH | FAIL | same regexes; `imsi=` empty (DEP-18) |
 
 Step 8 passed (2/2 nodes); the simulator served recorded real output, so the regex failures are genuine workflow defects, routed to step 6 as designed.
+
+## Run c43f64ef (2026-11-02, UI run without transcripts or developer notes)
+
+| Failure | Cause | Fix |
+|---|---|---|
+| NORTH `create_xml.py`: `Cannot run program "bash"` | server env had no bash | S9-04 |
+| `sar 1 10` both nodes | regex 5 vs 6 columns; no transcript to check against | DEP-20 sample library |
+| EAST `imsi=,` | no notes → no MSISDN lookup | DEP-19/21 detect, UI-3 keeps notes per UC |
+
+Re-runs with `test_step.py --agents 6,8,9 --run-id c43f64ef…`:
+1. Same inputs: `sar` now verified; step 8 blocked by an unused `NIAM_SERVER` node (S8-17, fixed).
+2. With the developer notes: step 8 passed; **EAST resolved its IMSI via the MSISDN lookup**; TC-P01 EAST 15 steps, 1 failed (`create_xml.py` uses `${ifcTriggerName}` never registered for EAST — flagged by the step 6 validator, retry goes to step 6); TC-P02 NORTH 17 steps, 1 failed (`ls …xml.res` pre-check vs an invented listing — S8-18 fixed for single expectations; this command is checked absent and present, S8-16).

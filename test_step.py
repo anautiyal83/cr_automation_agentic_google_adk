@@ -258,7 +258,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
     work = Path("data/step_tests") / f"{run_id[:8]}_{time.strftime('%Y%m%d_%H%M%S')}"
     shutil.copytree(src, work, ignore=shutil.ignore_patterns(
         "simulator", "exec_output", *(f"step_{s}_error.json" for s in steps),
-        *(["scripts"] if "6" in steps else [])))
+        *(["scripts"] if "6" in steps else []),
+        *(["*_test-cases.json", "*_network-qa-report.html"] if "9" in steps else [])))
 
     def read(name: str) -> str:
         p = work / name
