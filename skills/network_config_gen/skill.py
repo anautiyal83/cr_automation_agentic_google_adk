@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from core.config import runtime_params
+
 from . import prompts
 from .autofix import clean_yaml_response, fix_workflow
 from .validator import validate_workflow
@@ -23,6 +25,8 @@ from .validator import validate_workflow
 logger = logging.getLogger(__name__)
 
 LlmFn = Callable[[str, str], Awaitable[str]]
+
+SELF_CORRECTION_ROUNDS = 2  # regenerate with validator errors as feedback
 
 
 @dataclass
@@ -52,6 +56,13 @@ class SkillOutput:
     error: str = ""
 
 
+def _rank(errors: list[str]) -> float:
+    """Fewer errors is better, but YAML that does not parse is worse than any workflow."""
+    if any(e.startswith("Invalid YAML syntax") for e in errors):
+        return float("inf")
+    return len(errors)
+
+
 class NetworkConfigGenSkill:
     """Generates execution workflow YAML from requirements.
 
@@ -70,11 +81,19 @@ class NetworkConfigGenSkill:
         self._requirements: dict = {}
         self._schema_summary = ""
         self._last_yaml = ""
+        self._samples: list[dict] = []
 
     async def generate(self, inp: SkillInput) -> SkillOutput:
-        """Generate workflow YAML from requirements."""
+        """Generate workflow YAML from requirements.
+
+        Deterministic validation errors (unresolvable placeholders, regexes that don't
+        match the real outputs in ``doc_extracted.command_samples``, …) are fed back to
+        the LLM for up to SELF_CORRECTION_ROUNDS rounds; the version with the fewest
+        errors is kept.
+        """
         self._uc_name = inp.uc_name
         self._requirements = inp.requirements
+        self._samples = list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or [])
 
         self._schema_summary = inp.generation_hints.get("step_6", "")
         if not self._schema_summary:
@@ -95,19 +114,22 @@ class NetworkConfigGenSkill:
             developer_answers=ctx["answers"],
             schema_summary=self._schema_summary,
             phases=ctx["phases_str"],
+            runtime_params=ctx["runtime_params"],
         )
 
-        logger.info("Generating workflow YAML via LLM (%d char prompt)", len(user_prompt))
+        logger.info("Generating workflow YAML via LLM (%d char prompt, %d real output samples)",
+                    len(user_prompt), len(self._samples))
         try:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text)
+            errors = validate_workflow(yaml_text, self._samples)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow generation failed: %s", e, exc_info=True)
             return SkillOutput(status="failed", error=f"Workflow generation failed: {e}")
 
+        yaml_text, errors = await self._self_correct(yaml_text, errors)
         status = "failed" if errors else "passed"
         logger.info("Workflow generated: %d chars, %d errors", len(yaml_text), len(errors))
 
@@ -123,15 +145,18 @@ class NetworkConfigGenSkill:
             return SkillOutput(status="failed", error="No workflow context — call generate() first")
 
         ctx = self._build_prompt_context()
-        test_failures_text = json.dumps(feedback.test_results, indent=2, default=str)[:5000]
+        test_failures_text = json.dumps(feedback.test_results, indent=2, default=str)[:15000]
 
+        # The LLM must return the COMPLETE workflow, so it must see all of it
+        # (workflows are often > 10 KB; a cut-off input produced a cut-off output)
         user_prompt = prompts.WORKFLOW_REGENERATE.format(
-            current_yaml=self._last_yaml[:10000],
+            current_yaml=self._last_yaml[:60000],
             test_failures=test_failures_text,
             reviewer_analysis=feedback.reviewer_analysis[:3000],
             nodes_summary=ctx["nodes"],
             phases=ctx["phases_str"],
             developer_answers=ctx["answers"],
+            runtime_params=ctx["runtime_params"],
         )
 
         logger.info("Regenerating workflow YAML with feedback (%d char prompt)", len(user_prompt))
@@ -139,7 +164,7 @@ class NetworkConfigGenSkill:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text)
+            errors = validate_workflow(yaml_text, self._samples)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow regeneration failed: %s", e, exc_info=True)
@@ -153,6 +178,29 @@ class NetworkConfigGenSkill:
             validation_errors=errors,
             status=status,
         )
+
+    async def _self_correct(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
+        """Feed deterministic validation errors back to the LLM; keep the best version."""
+        best_yaml, best_errors = yaml_text, errors
+        for attempt in range(1, SELF_CORRECTION_ROUNDS + 1):
+            if not best_errors:
+                break
+            logger.info("Self-correction %d/%d: %d validation errors", attempt, SELF_CORRECTION_ROUNDS,
+                        len(best_errors))
+            self._last_yaml = best_yaml
+            out = await self.regenerate(RegenerateFeedback(
+                test_results=[{"validation_error": e} for e in best_errors],
+                reviewer_analysis=(
+                    "The workflow failed deterministic validation. Fix every listed problem; "
+                    "where a real output is shown, write validation and register regexes that "
+                    "match that output — test only the line that shows the condition, not the "
+                    "whole output layout. Keep everything else unchanged."),
+                attempt_number=attempt,
+            ))
+            if out.workflow_yaml and _rank(out.validation_errors) < _rank(best_errors):
+                best_yaml, best_errors = out.workflow_yaml, out.validation_errors
+        self._last_yaml = best_yaml
+        return best_yaml, best_errors
 
     # ------------------------------------------------------------------
     # Prompt context builders
@@ -250,6 +298,7 @@ class NetworkConfigGenSkill:
             "xml": str(xml_summary)[:5000] or "No XML samples",
             "answers": answers_text,
             "phases_str": ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck",
+            "runtime_params": ", ".join(f"${{{p}}}" for p in runtime_params()) or "none",
         }
 
     @staticmethod

@@ -69,6 +69,7 @@ class RequirementsGathererNode(BaseAgent):
             mop_file_path=doc_set.get("mop_file_path", ""),
             ssh_log_path=doc_set.get("command_outputs_path", ""),
             xml_sample_paths=doc_set.get("sample_io_xml_paths", []) or [],
+            transcript_paths=_text_document_paths(doc_set.get("additional_documents")),
             developer_notes=developer_notes,
             vendor_profile=vendor_profile,
         )
@@ -291,3 +292,20 @@ class RequirementsGathererNode(BaseAgent):
         if "answer more" in str(decision).lower() or "clarify" in str(decision).lower():
             return "clarify"
         return "continue"
+
+
+def _text_document_paths(additional_documents) -> list[str]:
+    """Paths of uploaded plain-text documents (.txt/.log), e.g. node session logs."""
+    import json as _json
+    docs = additional_documents
+    if isinstance(docs, str):
+        try:
+            docs = _json.loads(docs)
+        except ValueError:
+            return []
+    paths = []
+    for d in docs or []:
+        path = d.get("path", "") if isinstance(d, dict) else str(d)
+        if path.lower().endswith((".txt", ".log")):
+            paths.append(path)
+    return paths

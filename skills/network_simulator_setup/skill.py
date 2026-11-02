@@ -119,10 +119,15 @@ class NetworkSimulatorSetupSkill:
             return SkillOutput(status="failed", error="Workflow has no remote nodes to simulate")
         topology = [n.summary() for n in nodes]
 
-        # --- Phase 2: Command responses per node (LLM) ---
+        # --- Phase 2: Command responses per node ---
+        # Real outputs recorded on the nodes are served verbatim; the LLM only invents
+        # responses for commands nobody recorded
+        samples = list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or [])
+        recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
         hints = str(inp.generation_hints.get("step_8", "") or "")
         results = await asyncio.gather(
-            *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback) for n in nodes),
+            *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
+                                            skip=set(recorded[n.name])) for n in nodes),
             return_exceptions=True,
         )
         errors: list[str] = []
@@ -132,7 +137,10 @@ class NetworkSimulatorSetupSkill:
                 logger.error("Response generation failed for %s: %s", node.name, result)
                 errors.append(f"{node.name}: response generation failed: {result}")
                 result = {}
-            instance_configs[node.instance] = build_instance_config(node, result)
+            if recorded[node.name]:
+                logger.info("Phase 2: %s — %d responses from recorded real output",
+                            node.name, len(recorded[node.name]))
+            instance_configs[node.instance] = build_instance_config(node, {**result, **recorded[node.name]})
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
 
@@ -234,10 +242,11 @@ class NetworkSimulatorSetupSkill:
     # ------------------------------------------------------------------
 
     async def _generate_node_responses(
-        self, uc_name: str, node: NodeSpec, hints: str, feedback: str,
+        self, uc_name: str, node: NodeSpec, hints: str, feedback: str, skip: set[str] = frozenset(),
     ) -> dict:
-        """Ask the LLM for command → response entries for one node."""
-        commands = [c for c in node.commands if str(c.get("cmd", "")).strip()]
+        """Ask the LLM for command → response entries for one node (``skip``: already answered)."""
+        commands = [c for c in node.commands
+                    if str(c.get("cmd", "")).strip() and str(c["cmd"]).strip() not in skip]
         if not commands:
             return {}
         lines = []
@@ -283,6 +292,26 @@ class NetworkSimulatorSetupSkill:
                 entries[str(key)] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
+
+
+def recorded_responses(commands: list[dict], samples: list[dict]) -> dict[str, dict]:
+    """MockWire entries for node commands whose real output was recorded (spec 004 S8-07).
+
+    Only commands without ``${…}`` placeholders: their text is exactly what the JAR sends.
+    Output is served verbatim, so the workflow's regexes meet the same text as on a real node.
+    """
+    by_command: dict[str, str] = {}
+    for sample in samples:
+        cmd = " ".join(str(sample.get("command", "")).split())
+        if cmd and sample.get("output") and cmd not in by_command:
+            by_command[cmd] = str(sample["output"])
+    entries: dict[str, dict] = {}
+    for c in commands:
+        cmd = str(c.get("cmd", "")).strip()
+        output = by_command.get(" ".join(cmd.split())) if cmd and "${" not in cmd else None
+        if output is not None:
+            entries[cmd] = {"lines": output.splitlines()}
+    return entries
 
 
 def _review_yaml(nodes: list[NodeSpec], instance_configs: dict[str, str]) -> str:

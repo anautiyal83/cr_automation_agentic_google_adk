@@ -29,6 +29,13 @@ simulator:
   ttl_minutes: 60                # MockWire exits on its own after this, if never stopped
   startup_timeout_sec: 30
 
+execution:
+  # Passed by the production framework to every execution as `--var NAME=value`.
+  # Step 6 may use them as ${NAME} without registering them; step 9 passes these
+  # dummy values when executing against the simulator.
+  runtime_params:
+    ORDERNO: "TEST_ORDERNO"
+
 storage:
   database_path: "./data/pipeline.db"
   artifacts_directory: "./data/runs"

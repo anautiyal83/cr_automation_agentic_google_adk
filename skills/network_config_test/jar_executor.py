@@ -14,6 +14,8 @@ import os
 import shutil
 from pathlib import Path
 
+from core.config import runtime_params
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300
@@ -131,8 +133,12 @@ async def run_execution_test(
     timeout: int = DEFAULT_TIMEOUT,
     ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar",
     validation_rules_path: str = "",
+    runtime_vars: dict[str, str] | None = None,
 ) -> dict:
     """Run cli-automation JAR in execution mode against the simulator.
+
+    ``runtime_vars`` (default: config ``execution.runtime_params``) are the parameters the
+    production framework passes to every execution; test values go in as ``--var``.
 
     Uses the JSON data produced during MOP test (or re-runs ciq-processor).
     The JAR executes one node group per invocation (``--node <zone> --cr <crGroup>``),
@@ -218,6 +224,8 @@ async def run_execution_test(
             cmd += ["--node-type", node_type]
         if activity:
             cmd += ["--activity", activity]
+        for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
+            cmd += ["--var", f"{key}={value}"]
 
         result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
                                 cwd=local_cwd)

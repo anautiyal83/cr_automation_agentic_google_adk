@@ -41,6 +41,15 @@ _STRING_ONLY_FIELDS = {"when", "skip_when", "prompt_regex"}
 #   record values  ${configSequences.0.records.0.data.<Column>}   (dot-numeric index; spaces ok)
 #   NIAM IDs       ${<NODE>.niamID-<n>}
 #   node group     ${node} ${nodeGroup} ${crGroup} ${email} ${NODE_TYPE} ${SUB_ACTIVITY_NAME}
+# DEP-12: ${configSequences.0.records.0.data.'Test IMSI'} → ${configSequences.0.records.0.data.Test IMSI}.
+# Also applied to the raw text: inside a single-quoted YAML scalar the quotes break parsing.
+_QUOTED_COLUMN = re.compile(r"\$\{(configSequences\.\d+\.records\.\d+\.data\.)(?:'+([^'}]*)'+|\"([^\"}]*)\")\}")
+
+
+def _unquote_column(m: re.Match) -> str:
+    return "${" + m.group(1) + (m.group(2) if m.group(2) is not None else m.group(3)).strip() + "}"
+
+
 _PLACEHOLDER_REWRITES = [
     # DEP-3: ${{x}} → ${x}
     (re.compile(r"\$\{\{\s*(.+?)\s*\}\}"), r"${\1}"),
@@ -49,6 +58,8 @@ _PLACEHOLDER_REWRITES = [
     (re.compile(r"\$\{configData\.tables\.(?:'+[^']*'+|\"[^\"]*\"|[^.}]+)\."
                 r"(?:'+([^']*)'+|\"([^\"]*)\"|([^}]+))\}"),
      lambda m: "${configSequences.0.records.0.data." + (m.group(1) or m.group(2) or m.group(3)).strip() + "}"),
+    # DEP-12: a quoted column resolves to empty; the JAR wants it bare (spaces ok)
+    (_QUOTED_COLUMN, _unquote_column),
     # DEP-1: ${node_row.<NODE>.NIAM_NAME<n>} → ${<NODE>.niamID-<n>}
     (re.compile(r"\$\{node_row\.([A-Za-z0-9_]+)\.NIAM_NAME(\d+)\}"), r"${\1.niamID-\2}"),
     # DEP-7: registered outputs are plain context variables: ${register.x} → ${x}
@@ -90,8 +101,10 @@ def sanitize_yaml(text: str) -> str:
     E.g., ``description: sar on RDS [Pre-health check: CPU idle]``
     becomes ``description: 'sar on RDS [Pre-health check: CPU idle]'``
 
-    Also handles list items: ``- description: value: with colon``
+    Also handles list items: ``- description: value: with colon``, and unquotes CIQ
+    column names in placeholders (DEP-12), which break single-quoted scalars.
     """
+    text = _QUOTED_COLUMN.sub(_unquote_column, text)
     fixed_lines = []
     for line in text.split("\n"):
         stripped = line.lstrip()
@@ -204,6 +217,7 @@ def fix_workflow(yaml_text: str) -> str:
     # --- Regex named groups + placeholders the JAR cannot resolve ---
     renames = fix_named_groups(parsed.get("phases", {}))
     parsed = fix_placeholders(parsed, renames)
+    fix_regex_placeholders(parsed.get("phases", {}))
 
     # --- Add missing nodes referenced in steps ---
     nodes = parsed.get("nodes", {})
@@ -226,6 +240,46 @@ def fix_workflow(yaml_text: str) -> str:
         parsed["nodes"] = nodes
 
     return dump_yaml(parsed)
+
+
+_REGEX_PLACEHOLDER = re.compile(r"\$\{[^{}]*\}")
+
+
+def fix_regex_placeholders(phases: Any) -> int:
+    """Replace ``${…}`` in validation/register regexes with ``.+?`` (spec 004 DEP-13).
+
+    The JAR interpolates ``send`` but not regexes: ``uid=${configSequences…}`` reaches
+    java.util.regex literally and fails with PatternSyntaxException (probed 2026-11-02).
+    Returns the number of regexes changed.
+    """
+    changed = 0
+
+    def fix(holder: Any, key: str = "regex") -> None:
+        nonlocal changed
+        if isinstance(holder, dict) and isinstance(holder.get(key), str) and "${" in holder[key]:
+            holder[key] = _REGEX_PLACEHOLDER.sub(lambda _: ".+?", holder[key])
+            changed += 1
+
+    def walk(steps: Any) -> None:
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            validation = step.get("validation")
+            if isinstance(validation, dict):
+                fix(validation.get("criteria"))
+                for branch in ("success", "failure"):
+                    b = validation.get(branch)
+                    fix(b.get("criteria") if isinstance(b, dict) else None)
+            for reg in step.get("register") or []:
+                fix(reg)
+            walk(step.get("steps"))
+
+    bodies = phases.values() if isinstance(phases, dict) else (phases or [])
+    for body in bodies:
+        walk(body.get("steps") if isinstance(body, dict) else body)
+    if changed:
+        logger.info("Replaced placeholders in %d regexes (the JAR does not interpolate regexes)", changed)
+    return changed
 
 
 def _collect_referenced_nodes(phases: dict) -> set[str]:

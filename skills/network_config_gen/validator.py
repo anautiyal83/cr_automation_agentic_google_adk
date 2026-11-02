@@ -14,12 +14,17 @@ from .autofix import parse_yaml, is_placeholder
 logger = logging.getLogger(__name__)
 
 
-def validate_workflow(yaml_text: str) -> list[str]:
-    """Validate workflow YAML structure. Returns list of error strings."""
+def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None) -> list[str]:
+    """Validate workflow YAML structure. Returns list of error strings.
+
+    With ``command_samples`` (real ``{command, output}`` pairs from uploaded transcripts,
+    requirements ``doc_extracted.command_samples``) every validation/register regex is
+    also checked against the real output of the same command.
+    """
     errors = []
     parsed = parse_yaml(yaml_text)
     if parsed is None:
-        return ["Invalid YAML syntax"]
+        return [f"Invalid YAML syntax{_yaml_error(yaml_text)}"]
 
     # Must have nodes (or nodeGroups for backwards compat)
     nodes = parsed.get("nodes", parsed.get("nodeGroups", {}))
@@ -75,7 +80,166 @@ def validate_workflow(yaml_text: str) -> list[str]:
                     errors.extend(step_errors)
 
     errors.extend(check_placeholders(parsed))
+    if command_samples:
+        errors.extend(check_against_samples(parsed, command_samples))
     return errors
+
+
+_PROMPT_STEP = re.compile(r"^(su(\s+-)?\s+\S+|exit|logout)$")
+_SAMPLE_EXCERPT_LINES = 8
+
+
+def _yaml_error(yaml_text: str) -> str:
+    """': <problem> at line N: <line>' for the first YAML error, so a regenerate can fix it."""
+    from io import StringIO
+    from ruamel.yaml import YAML
+    try:
+        YAML(typ="safe").load(StringIO(yaml_text))
+        return ""
+    except Exception as e:
+        mark = getattr(e, "problem_mark", None)
+        problem = getattr(e, "problem", None) or str(e).splitlines()[0]
+        if mark is None:
+            return f": {problem}"
+        lines = yaml_text.splitlines()
+        line = lines[mark.line].strip() if mark.line < len(lines) else ""
+        return f": {problem} at line {mark.line + 1}: {line[:200]}"
+
+
+def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str]:
+    """Report regexes that do not match the real output recorded for the same command.
+
+    A step matches a sample when its ``send`` equals the recorded command (whitespace
+    normalised) or, with ``${…}`` placeholders treated as wildcards, matches it. The
+    success-criteria regex must match at least one matching sample's output and every
+    register regex must capture from one — otherwise the step can never pass on the real
+    node (spec 004 DEP-5). Prompt-only steps (su/exit) are skipped: prompts are not part of
+    captured output.
+    """
+    samples = [s for s in command_samples
+               if isinstance(s, dict) and s.get("command") and s.get("output", "").strip()]
+    if not samples:
+        return []
+    problems: list[str] = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "").strip()
+        if send and _PROMPT_STEP.match(send):
+            problem = _check_prompt_change(step, send, phase_name, command_samples)
+            if problem:
+                problems.append(problem)
+            continue
+        if not send:
+            continue
+        matching = [s for s in samples if _command_matches(send, s["command"])]
+        if not matching:
+            continue
+        outputs = [s["output"] for s in matching]
+
+        regex = _success_regex(step)
+        if regex:
+            verdict = _regex_matches_any(regex, outputs)
+            if verdict is not True:
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): validation regex /{regex}/ "
+                    f"{verdict or 'does not match'} the real output recorded for this command. "
+                    f"Real output (relevant lines):\n{_excerpt(matching[0]['output'], regex)}\n"
+                    "Write the regex against this real output.")
+        for reg in step.get("register") or []:
+            rx = reg.get("regex") if isinstance(reg, dict) else None
+            if not isinstance(rx, str):
+                continue
+            verdict = _regex_matches_any(rx, outputs)
+            if verdict is not True:
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): register regex /{rx}/ "
+                    f"{verdict or 'captures nothing from'} the real output recorded for this command. "
+                    f"Real output (relevant lines):\n{_excerpt(matching[0]['output'], rx)}")
+    return problems
+
+
+def _check_prompt_change(step: dict, send: str, phase_name: str, samples: list[dict]) -> str:
+    """A su/exit step's prompt_regex must match the prompt the real node showed next.
+
+    In a transcript the prompt after ``su - x`` is the prompt of the following command.
+    """
+    regex = str(step.get("prompt_regex") or "")
+    if not regex:
+        return ""
+    seen = [str(samples[i + 1].get("prompt") or "") for i in range(len(samples) - 1)
+            if isinstance(samples[i], dict) and _command_matches(send, str(samples[i].get("command", "")))]
+    seen = [p for p in seen if p]
+    if not seen:
+        return ""
+    if _regex_matches_any(regex, seen + [p + " " for p in seen]) is True:
+        return ""
+    return (f"Step '{send}' ({phase_name}): prompt_regex /{regex}/ does not match the prompt the "
+            f"real node shows after this command: {', '.join(repr(p) for p in dict.fromkeys(seen))}. "
+            "Write the prompt_regex for that prompt.")
+
+
+def _iter_steps(phases: Any):
+    items = phases.items() if isinstance(phases, dict) else [
+        (p.get("name", f"phase_{i}"), p) for i, p in enumerate(phases) if isinstance(p, dict)]
+    for name, body in items:
+        steps = body.get("steps", []) if isinstance(body, dict) else body
+        for step in steps or []:
+            if isinstance(step, dict):
+                yield name, step
+                for nested in step.get("steps") or []:
+                    if isinstance(nested, dict):
+                        yield name, nested
+
+
+def _normalise(cmd: str) -> str:
+    return re.sub(r"\s+", " ", cmd.strip())
+
+
+def _command_matches(send: str, recorded: str) -> bool:
+    send, recorded = _normalise(send), _normalise(recorded)
+    if "${" not in send:
+        return send == recorded
+    parts = re.split(r"\$\{[^}]*\}", send)
+    pattern = ".+?".join(re.escape(p) for p in parts)
+    return re.fullmatch(pattern, recorded) is not None
+
+
+def _success_regex(step: dict) -> str:
+    validation = step.get("validation")
+    if not isinstance(validation, dict):
+        return ""
+    success = validation.get("success")
+    criteria = success.get("criteria") if isinstance(success, dict) else None
+    regex = criteria.get("regex") if isinstance(criteria, dict) else None
+    return regex if isinstance(regex, str) else ""
+
+
+def _regex_matches_any(java_regex: str, outputs: list[str]):
+    """True if the (Java) regex finds a match in any output, else a short reason string.
+
+    Mirrors the cli-automation JAR (probed 2026-11-02): find(), MULTILINE (``^``/``$`` per
+    line), no DOTALL. ``${…}`` inside a regex is NOT interpolated (DEP-13).
+    """
+    if "${" in java_regex:
+        return "contains ${…}, which the JAR does not interpolate in regexes (PatternSyntaxException), so it cannot match"
+    py_regex = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", java_regex)
+    try:
+        compiled = re.compile(py_regex, re.MULTILINE)
+    except re.error as e:
+        return f"is not a valid regex ({e}) for"
+    return True if any(compiled.search(o.replace("\r\n", "\n")) for o in outputs) else ""
+
+
+def _excerpt(output: str, regex: str = "") -> str:
+    """The whole output when short; else lines sharing words with the regex (what it was
+    aiming at) plus the line after each (a table header's values), else the last lines."""
+    lines = [l for l in output.splitlines() if l.strip()]
+    if len(lines) <= _SAMPLE_EXCERPT_LINES:
+        return "\n".join(f"    {l[:160]}" for l in lines)
+    words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z_%]{3,}", re.sub(r"\\[A-Za-z]", " ", regex))}
+    hits = [i for i, l in enumerate(lines) if words and any(w in l.lower() for w in words)]
+    picked = sorted({j for i in hits for j in (i, i + 1) if j < len(lines)})
+    chosen = [lines[j] for j in picked][:_SAMPLE_EXCERPT_LINES] if picked else lines[-_SAMPLE_EXCERPT_LINES:]
+    return "\n".join(f"    {l[:160]}" for l in chosen)
 
 
 # Context the cli-automation JAR provides for every node group (spec 004 probes)
@@ -90,16 +254,25 @@ _DEAD_SYNTAX = [
                                      "other node fields are not in the CIQ JSON"),
     (re.compile(r"\$\{(register|env)\."), "uses 'register.'/'env.' — registered values and "
                                            "--var values are plain '${name}'"),
+    (re.compile(r"\$\{configSequences\.[^}]*\.data\.['\"]"), "quotes the column name, which resolves "
+                                                            "to empty — write it bare (spaces are fine)"),
 ]
 _PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
 _NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")
 
 
-def check_placeholders(parsed: dict) -> list[str]:
-    """Report ``${…}`` placeholders the cli-automation JAR cannot resolve."""
+def check_placeholders(parsed: dict, runtime_params: list[str] | None = None) -> list[str]:
+    """Report ``${…}`` placeholders the cli-automation JAR cannot resolve.
+
+    ``runtime_params`` (default: config ``execution.runtime_params``) are passed by the
+    framework with ``--var`` at execution, so they count as defined.
+    """
+    if runtime_params is None:
+        from core.config import runtime_params as configured
+        runtime_params = list(configured())
     nodes = parsed.get("nodes") or {}
     node_names = set(nodes) if isinstance(nodes, dict) else set()
-    defined = set(_JAR_BUILTINS)
+    defined = set(_JAR_BUILTINS) | set(runtime_params)
     defined |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
     phases = parsed.get("phases") or {}
     for body in (phases.values() if isinstance(phases, dict) else []):

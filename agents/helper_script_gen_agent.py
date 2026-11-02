@@ -70,6 +70,25 @@ class HelperScriptGenAgent(BaseAgent):
             }
             state["artifacts"] = artifacts
 
+        if output.status == "failed":
+            # Step 6 is shared with network_config_gen: keep its error and add ours, so the
+            # step 6 milestone shows failed (spec 003 H-1)
+            state["step_6_status"] = "failed"
+            if run_dir:
+                import json
+                err_file = Path(run_dir) / "step_6_error.json"
+                previous = {}
+                if err_file.exists():
+                    try:
+                        previous = json.loads(err_file.read_text(encoding="utf-8"))
+                    except ValueError:
+                        previous = {}
+                message = f"Helper scripts: {output.error}"
+                combined = "; ".join(e for e in (previous.get("error", ""), message) if e)
+                err_file.write_text(json.dumps({**previous, "error": combined,
+                                                "helper_script_errors": output.error}, indent=2),
+                                    encoding="utf-8")
+
         if output.error:
             flow.flow("HELPER_SCRIPT_GEN DONE — status=%s, error=%s", output.status, output.error[:200])
         else:

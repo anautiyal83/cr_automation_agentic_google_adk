@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-02 (retroactive, from commits 0e4cef7, 1cbef81, cff5d3c)
 
-**Status**: Implemented — open issues H-1..H-3
+**Status**: Implemented — H-1, H-2, H-5 fixed; open H-3, H-4
 
 **Parent**: [001-adk-orchestrator-pipeline](../001-adk-orchestrator-pipeline/spec.md) FR-029
 
@@ -44,8 +44,9 @@ When step 7 or 9 routes a retry to step 6, scripts are regenerated together with
 - **FR-002**: Script discovery MUST parse `send: python <name>.py <args>` from the workflow
 - **FR-003**: Inputs MUST come from `requirements.doc_extracted` (`xml_files`, `ciq_sheets`) and `developer_answers`; request vs response samples are split by `batchResponse`
 - **FR-004**: Generated code MUST be stripped of markdown fences and written to `run_dir/scripts/<name>`
-- **FR-005**: Status is `passed` only if every needed script was generated; on failure the agent MUST set `step_6_status=failed` and write `step_6_error.json` *(not implemented — H-1)*
-- **FR-006**: Generated scripts SHOULD be syntax-checked (`py_compile`) before the step passes *(not implemented — H-2)*
+- **FR-005**: Status is `passed` only if every needed script was generated; on failure the agent MUST set `step_6_status=failed` and merge its error into `step_6_error.json` (keeping `network_config_gen`'s) *(done — H-1)*
+- **FR-006**: Generated scripts MUST compile before the step passes *(done — H-2)*
+- **FR-009**: The workflow is the source of truth for each script's CLI: every flag of every `python <script>` invocation MUST be defined by the script's argparse, spelled exactly; one regeneration with the violations listed, then step 6 fails *(done — H-5 / 004 DEP-11)*
 - **FR-007**: Scripts MUST be cacheable per UC by content (see [002](../002-artifact-cache/spec.md) C-2)
 - **FR-008**: LLM auth MUST work from CLI (DB settings fallback, cff5d3c)
 
@@ -53,10 +54,11 @@ When step 7 or 9 routes a retry to step 6, scripts are regenerated together with
 
 | ID | Severity | Issue | Evidence |
 |----|----------|-------|----------|
-| H-1 | High | Agent ignores `output.status`: never sets `step_6_status` nor writes `step_6_error.json`, so a failed or partial generation shows **passed** at the step 6 milestone and can be cached | `agents/helper_script_gen_agent.py:51-75` |
-| H-2 | Medium | No syntax/compile check of generated scripts; errors surface only at step 9 execution | `skills/helper_script_gen/skill.py` |
+| H-1 | High | **Fixed 2026-11-02.** Agent ignores `output.status`: never sets `step_6_status` nor writes `step_6_error.json`, so a failed or partial generation shows **passed** at the step 6 milestone and can be cached | `agents/helper_script_gen_agent.py:51-75` |
+| H-2 | Medium | **Fixed 2026-11-02** (compile check + retry, `check_script_contract`). No syntax/compile check of generated scripts; errors surface only at step 9 execution | `skills/helper_script_gen/skill.py` |
 | H-3 | High | `artifacts["helper_scripts"]` holds paths; artifact cache writes paths as file content (= 002 C-2) | `agents/helper_script_gen_agent.py:66-68` |
 | H-4 | Medium | Step 9 has never executed a command (004 DEP-2), so the scripts are untested end to end | 004 research F8 |
+| H-5 | High | **Fixed 2026-11-02.** Scripts invented their own flag names (`--refinmoc_name`, `--packet_data_network_type`) while the workflow passed `--refinmocName`, `--pdn_type`; prompts hard-coded UC-specific flag names. Fix: flags parsed from every workflow invocation (`contract_flags`), given to the LLM as a CLI contract, checked in the generated argparse (`check_script_contract`), one retry; UC-specific flag lists removed from the prompts. Same for output: the step's success regex is given as an output contract and checked against the script's messages (`check_output_contract`). The old prompts hard-coded `XML created: …` while workflows expected other text | 004 DEP-11; `tests/test_generation_contracts.py` |
 
 ## Success Criteria *(mandatory)*
 

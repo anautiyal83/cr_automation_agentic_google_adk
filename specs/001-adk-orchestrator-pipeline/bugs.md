@@ -83,7 +83,7 @@
 | BUG-069 | Logging/Tooling | Stale cr_import module cache in test_step.py | Low | Fixed (obsolete) | f1b4d7d | — |
 | BUG-070 | Logging/Tooling | Cache check failures invisible (`logger.debug`) | Medium | Fixed (partially, see OB-1) | 36eb46a | FR-030 |
 
-**Totals**: 70 fixed/superseded entries from 61 commits · Critical 8 · High 32 · Medium 23 · Low 7 · Fixed 68 · Superseded 2. Open: 8 pipeline-level (OB-1–OB-8) + 17 step 8 (S8-01–S8-12, DEP-1–DEP-5).
+**Totals**: 70 fixed/superseded entries from 61 commits · Critical 8 · High 32 · Medium 23 · Low 7 · Fixed 68 · Superseded 2. Open: 7 pipeline-level (OB-1–OB-7; OB-8 fixed 2026-11-02) + step 8/9 rows in the table below (S8-*, S9-*, DEP-*, G-*).
 
 ---
 
@@ -419,7 +419,7 @@
 | S8-04 | High | Sanity check is raw TCP, not SSH; results meaningless | Fixed (004 Phase 4): real SSH sanity via paramiko + HTML report |
 | S8-05 | High | Cross-run pollution in shared `lib/mockwire` config dir; `file:` responses never found | Fixed (uncommitted, 004 Phase 1): per-run JAR copy; nothing written to lib/ |
 | S8-06 | High | Simulator process leaks on failure/cancel/re-run; undrained PIPEs; no TTL | Fixed (uncommitted, 004 Phase 1): registry + stop on every exit path, log files, --ttl-minutes |
-| S8-07 | High | Phase 2 (command → response) is a stub returning `{}` | Open |
+| S8-07 | High | Phase 2 (command → response) is a stub returning `{}` | Partly fixed: commands with recorded real output are served verbatim (`recorded_responses`); the LLM answers only the rest |
 | S8-08 | Medium | `regenerate()` doesn't write, restart, or re-sanity; skill kept in session state | Partly fixed: retry re-runs setup with step 9 feedback incl. MockWire unmatched commands; targeted regeneration open |
 | S8-09 | Medium | MockWire error truncated to 500 chars; root cause hidden | Fixed (uncommitted, 004 Phase 1): error carries log path + last 50 lines |
 | S8-10 | Medium | Prompts, `su` escalation, and NIAM not modelled | Fixed (004 Phase 2): prompts/`su`/NIAM built deterministically; Ctrl+P,E elevation is a MockWire gap (MW-01) |
@@ -427,18 +427,27 @@
 | S8-12 | Low | Unused `simulator.endpoint/port`; CWD-dependent JAR path; `LOCAL` gets stub server | Fixed (uncommitted, 004 Phase 1): config wired, JAR path from project root, LOCAL skipped |
 | S8-13 | High | `extract_workflow_commands()` read `cmd`/list phases; workflows use `send:` + phase map → LLM prompt never saw any command | Fixed (uncommitted, 004 Phase 1) |
 | S8-14 | High | Relative run_dir + MockWire cwd=simulator/ → --config resolved twice, no instance starts | Fixed (absolute simulator dir; found by test_step.py --agents 8,9) |
+| S8-15 | High | `su` step's own `prompt_regex` ignored when the node regex didn't cover it → simulator pushed the wrong prompt, JAR timed out | Fixed (step prompt_regex wins in `_escalations`) |
 | S9-01 | High | LOCAL helper scripts not found: execute ran in pipeline cwd instead of run_dir/scripts | Fixed (cwd=run_dir/scripts, absolute JAR args) |
 | S9-02 | Medium | Non-simulator failures (LOCAL scripts) classified as simulator despite event log | Fixed (no unmatched event ⇒ workflow) |
 | DEP-1 | — | Workflow uses `${node_row.RDS.NIAM_NAME1}`; CIQ JSON exposes `RDS.niamID-1` (step 6) | Partly fixed: NIAM IDs → `${X.niamID-n}`; `NIAM_USER` flagged by step 6 validator |
 | DEP-2 | — | `execute --node` given `node_type` (`PGW_RDS`), not a node name (step 9) — confirmed | Fixed (uncommitted): one execute per zone × CR group (`--node EAST --cr CR1`) |
 | DEP-3 | — | Malformed `${{…}}` placeholders in generated workflow (step 6 autofix) | Fixed (step 6 autofix) |
 | DEP-4 | — | `su`/`exit` steps validate a prompt the JAR strips from output (step 6) | Fixed (step 6 autofix: step `prompt_regex`, no output criterion) |
-| DEP-5 | — | `sar 1 10` regex expects 5 numeric columns; real output has 6 (step 6) | Open |
+| DEP-5 | — | `sar 1 10` regex expects 5 numeric columns; real output has 6 (step 6) | Fixed (generic): real command outputs from uploaded transcripts → `command_samples`; step 6 validator checks every regex against them (JAR semantics: find, MULTILINE, no DOTALL) and self-corrects ≤2 rounds |
 | DEP-6 | — | `${configData…'Test IMSI'}` resolves empty in `execute` and stays unresolved in the MOP (step 6) | Fixed (step 6 autofix: `${configSequences.0.records.0.data.<Col>}`); EAST has no IMSI in CIQ |
 | DEP-7 | — | Python `(?P<…>)` / underscore group names → PatternSyntaxException; `${register.x}` never resolves (step 6) | Fixed (step 6 autofix) |
 | DEP-8 | — | `${env.x}` never resolves (OS env is `${ENV.X}`) (step 6) | Fixed (rewritten to `${x}`) |
 | DEP-9 | — | Only the first CIQ record per node group executes; `for_each` over records NPEs in the JAR | Open |
-| DEP-11 | — | Workflow ↔ helper script CLI mismatch (--refinmocName vs --refinmoc_name, --pdn_type, empty ${ORDERNO}) (step 6 / helper_script_gen) | Open |
+| DEP-11 | — | Workflow ↔ helper script CLI mismatch (--refinmocName vs --refinmoc_name, --pdn_type, empty ${ORDERNO}) (step 6 / helper_script_gen) | Fixed (generic): flags and success messages come from the workflow (CLI + output contract, checked, 1 retry); `${ORDERNO}` see DEP-14 |
+| DEP-12 | — | Quoted CIQ column `${configSequences.0.records.0.data.'Test IMSI'}` resolves empty; inside a single-quoted YAML scalar it breaks parsing | Fixed (autofix unquotes, also on raw text; validator rule) |
+| DEP-13 | — | `${…}` inside validation/register regexes is not interpolated → PatternSyntaxException | Fixed (autofix → `.+?`; validator; prompt) |
+| DEP-14 | — | `${ORDERNO}` is a framework runtime parameter, flagged as never registered and empty in step 9 | Fixed: `execution.runtime_params` in config; step 6 treats them as defined, step 9 passes `--var NAME=<test value>` |
+| DEP-15 | — | `su` step `prompt_regex` (`sdfrun@rdsggn01:~>`) differs from the real prompt after su (`rdsggn01$`) | Fixed: validator checks it against the next prompt in the transcript |
+| DEP-16 | — | EAST CIQ rows have no IMSI → `--imsi ''`, `imsi=,` (data / `when` guard) | Open |
+| G-1 | — | Step 6 `regenerate()` sent only the first 10 000 chars of the workflow → truncated output | Fixed (60 000) |
+| G-2 | — | Self-correction ranked unparseable YAML as 1 error and kept it over a valid workflow | Fixed (`_rank`: invalid YAML is worst; error now names line + text) |
+| S8-16 | — | Simulator has no response file after the XML upload (`outbox/<ORDERNO>.xml.res`), so `ls`/`parse_response.py` fail | Open (Phase 3: VFS triggers) |
 
 ## Step 9: Execution QA
 
@@ -587,8 +596,9 @@
 ### OB-7 — Cached helper scripts contain file paths, not code (High, Open)
 - `artifacts["helper_scripts"]` is `{name: path}`; `save_cache()` writes `str(value)`, so a cache hit writes path strings into `run_dir/scripts/*.py`. Tracked as [002](../002-artifact-cache/spec.md) C-2 / [003](../003-helper-script-gen/spec.md) H-3.
 
-### OB-8 — helper_script_gen failure shows as passed (High, Open)
+### OB-8 — helper_script_gen failure shows as passed (High, Fixed 2026-11-02)
 - The agent never sets `step_6_status` or writes `step_6_error.json`, so a failed or partial script generation passes the step 6 milestone and can be cached. Tracked as [003](../003-helper-script-gen/spec.md) H-1.
+- **Fix**: the agent sets `step_6_status=failed` and merges its error into `step_6_error.json`. A second bug turned up while fixing it (**OB-9**): `PipelineAgent` deleted the step's error file before *every* agent, so `helper_script_gen` wiped `network_config_gen`'s step 6 error. Now only the first agent of a shared display step clears it (`_first_agent_of_step`). Test: `tests/test_generation_contracts.py`.
 
 ### OB-6 — Resume after server restart not implemented (Medium, Open)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.

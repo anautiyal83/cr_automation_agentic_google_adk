@@ -1,0 +1,289 @@
+"""Generic generation contracts (spec 004 DEP-5 / DEP-11) — deliberately not tied to one UC.
+
+- requirement gathering extracts real command → output samples from any shell transcript
+- step 6 rejects validation/register regexes that don't match the recorded real output,
+  and self-corrects with that feedback
+- helper scripts must accept exactly the flags the workflow passes them
+
+    python -m pytest tests/test_generation_contracts.py -v
+"""
+from __future__ import annotations
+
+import asyncio
+
+from orchestrator.pipeline_agent import _first_agent_of_step
+from skills.helper_script_gen.skill import (
+    HelperScriptGenSkill,
+    check_script_contract,
+    contract_flags,
+)
+from skills.network_config_gen.skill import NetworkConfigGenSkill, SkillInput
+from skills.network_config_gen.validator import check_against_samples, validate_workflow
+from skills.requirement_gathering.parsers.command_output_parser import parse_command_outputs
+
+TRANSCRIPT = """\
+=== core_router.log ===
+router1# show interfaces summary
+Interface   Status   Protocol
+Gi0/0       up       up
+Gi0/1       down     down
+router1# show version | include uptime
+router1 uptime is 12 weeks, 3 days
+router1#
+=== app_server.log ===
+[admin@app01 ~]$ systemctl is-active billing
+active
+[admin@app01 ~]$ df -h /data
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdb1       500G  210G  290G  42% /data
+admin@app01:~> cat /etc/build_id
+BUILD-2026.10.3
+"""
+
+
+def test_parser_handles_different_prompt_styles():
+    samples = parse_command_outputs(TRANSCRIPT)
+    by_cmd = {s["command"]: s["output"] for s in samples}
+    assert list(by_cmd) == ["show interfaces summary", "show version | include uptime",
+                            "systemctl is-active billing", "df -h /data", "cat /etc/build_id"]
+    assert by_cmd["show interfaces summary"].splitlines()[-1].startswith("Gi0/1")
+    assert by_cmd["systemctl is-active billing"] == "active"
+    assert "42% /data" in by_cmd["df -h /data"]
+    assert by_cmd["cat /etc/build_id"] == "BUILD-2026.10.3"
+
+
+WORKFLOW = r"""
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: '\[admin@app01 ~\]\$'}
+phases:
+  precheck:
+    steps:
+    - node: APP
+      send: df -h ${configSequences.0.records.0.data.Mount}
+      validation:
+        success: {criteria: {regex: 'Use%\s+\d+%\s+(?<pct>[0-7]\d)%'}}
+    - node: APP
+      send: systemctl is-active billing
+      validation:
+        success: {criteria: {regex: '^active$'}}
+      register:
+      - {regex: 'state=(?<svcState>\w+)'}
+    - node: APP
+      send: su - appuser
+      validation:
+        success: {criteria: {regex: 'appuser@app01'}}
+"""
+
+
+def test_regexes_are_checked_against_real_output():
+    import yaml
+    problems = check_against_samples(yaml.safe_load(WORKFLOW), parse_command_outputs(TRANSCRIPT))
+    # df regex expects the percentage in the wrong column; register regex captures nothing
+    assert len(problems) == 2, problems
+    assert "validation regex" in problems[0] and "df -h" in problems[0]
+    assert "42% /data" in problems[0]                    # relevant real output is shown
+    assert "register regex" in problems[1] and "systemctl" in problems[1]
+    # the su step is prompt-only and never checked; the ^active$ regex matches
+    assert not any("su - appuser" in p for p in problems)
+
+
+def test_no_samples_means_no_sample_errors():
+    assert not any("real output" in e for e in validate_workflow(WORKFLOW, []))
+
+
+def test_step6_self_corrects_with_sample_feedback():
+    good = WORKFLOW.replace(r"Use%\s+\d+%\s+(?<pct>[0-7]\d)%", r"(?<pct>\d+)%\s+/data") \
+                   .replace(r"state=(?<svcState>\w+)", r"^(?<svcState>\w+)$")
+    prompts_seen: list[str] = []
+
+    async def llm(system: str, user: str) -> str:
+        prompts_seen.append(user)
+        return WORKFLOW if len(prompts_seen) == 1 else good
+
+    requirements = {"doc_extracted": {"command_samples": parse_command_outputs(TRANSCRIPT)}}
+    out = asyncio.run(NetworkConfigGenSkill(llm).generate(SkillInput(uc_name="UC", requirements=requirements)))
+    assert len(prompts_seen) == 2                        # one self-correction round
+    assert "42% /data" in prompts_seen[1]                # feedback carried the real output
+    assert not any("real output" in e for e in out.validation_errors)
+
+
+def test_script_contract_comes_from_the_workflow():
+    workflow = """
+phases:
+  activity:
+    steps:
+    - {node: LOCAL, send: "python tools/build_payload.py --orderId '${orderId}' --dryRun --target_host h1"}
+    - {node: LOCAL, send: "python tools/build_payload.py --orderId '${orderId}' --out=/tmp/p.json"}
+    - {node: LOCAL, send: "python3 summarize.py --in a.txt"}
+"""
+    needed = HelperScriptGenSkill._find_needed_scripts(workflow)
+    assert list(needed) == ["build_payload.py", "summarize.py"]
+    assert len(needed["build_payload.py"]) == 2
+    assert contract_flags(needed["build_payload.py"]) == ["--orderId", "--dryRun", "--target_host", "--out"]
+
+    script = (
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('--orderId')\n"
+        "p.add_argument(\n    '--dry-run', '--dryRun', action='store_true')\n"
+        "p.add_argument('--target-host')\n"
+    )
+    problems = check_script_contract(script, contract_flags(needed["build_payload.py"]))
+    assert problems and "--target_host, --out" in problems[0]
+    assert check_script_contract("def broken(:\n", ["--x"])[0].startswith("script does not compile")
+
+
+def test_framework_runtime_params_count_as_defined():
+    from skills.network_config_gen.validator import check_placeholders
+    wf = {"phases": {"activity": {"steps": [
+        {"node": "LOCAL", "send": "python mk.py --out '${ORDERNO}.xml' --id '${batchId}'"}]}}}
+    problems = check_placeholders(wf, runtime_params=["ORDERNO"])
+    assert len(problems) == 1 and "${batchId}" in problems[0]     # unregistered vars still flagged
+    assert any("${ORDERNO}" in p for p in check_placeholders(wf, runtime_params=[]))
+    assert not any("${ORDERNO}" in p for p in check_placeholders(wf))  # configured default
+
+
+def test_step6_prompt_lists_runtime_params():
+    seen: list[str] = []
+
+    async def llm(system: str, user: str) -> str:
+        seen.append(user)
+        return "nodes: {}\nphases: {}\n"
+
+    asyncio.run(NetworkConfigGenSkill(llm).generate(SkillInput(uc_name="UC")))
+    assert "${ORDERNO}" in seen[0] and "never register" in seen[0]
+
+
+def test_step9_passes_runtime_params_as_vars(tmp_path, monkeypatch):
+    from skills.network_config_test import jar_executor
+    calls: list[list[str]] = []
+
+    async def fake_run_jar(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return {"success": True, "stdout": "", "stderr": "", "returncode": 0}
+
+    monkeypatch.setattr(jar_executor, "_run_jar", fake_run_jar)
+    json_dir = tmp_path / "json_data"
+    json_dir.mkdir()
+    (json_dir / "data.json").write_text('{"data": {"nodeGroups": [{"crGroup": "CR1", "nodes": [{"node": "EAST"}]}]}}')
+    wf = tmp_path / "PGW_RDS_UC.yaml"
+    wf.write_text("nodes: {}\nphases: {}\n")
+    asyncio.run(jar_executor.run_execution_test(
+        "cli.jar", str(wf), str(tmp_path / "schema.yaml"), "", str(tmp_path),
+        runtime_vars={"ORDERNO": "T1", "BATCH": "B1"}))
+    execute = [c for c in calls if "execute" in c]
+    assert execute, calls
+    assert "ORDERNO=T1" in execute[0] and "BATCH=B1" in execute[0]
+
+
+def test_sample_check_mirrors_jar_regex_semantics():
+    from skills.network_config_gen.validator import _regex_matches_any
+    out = ["line1\r\nline2\r\n"]
+    assert _regex_matches_any("^line2$", out) is True                 # MULTILINE, CRLF
+    assert _regex_matches_any("line1.line2", out) is not True         # no DOTALL
+    # ${…} is not interpolated in regexes (DEP-13)
+    assert _regex_matches_any("uid=${configSequences.0.records.0.data.IMSI},ds", ["dn: uid=123,ds=X"]) is not True
+
+
+def test_quoted_ciq_columns_are_unquoted():
+    from skills.network_config_gen.autofix import fix_placeholders
+    from skills.network_config_gen.validator import check_placeholders
+    quoted = "-b \"imsi=${configSequences.0.records.0.data.'Test IMSI'}\" --x '${configSequences.0.records.0.data.\"Cap\"}'"
+    fixed = fix_placeholders(quoted)
+    assert fixed == "-b \"imsi=${configSequences.0.records.0.data.Test IMSI}\" --x '${configSequences.0.records.0.data.Cap}'"
+    assert any("quotes the column" in p for p in check_placeholders({"phases": {"a": {"steps": [{"send": quoted}]}}}))
+    assert not check_placeholders({"phases": {"a": {"steps": [{"send": fixed}]}}})
+
+
+def test_quoted_column_inside_single_quoted_scalar_still_parses():
+    from skills.network_config_gen.autofix import clean_yaml_response, fix_workflow
+    raw = ("nodes:\n  RDS: {type: remote}\nphases:\n  a:\n    steps:\n    - node: RDS\n"
+           "      send: ls\n      validation:\n        success:\n          criteria:\n"
+           "            regex: 'dn: imsi=${configSequences.0.records.0.data.'Test IMSI'},dc=IMSI'\n")
+    assert validate_workflow("a: 'x'y'\n") == [
+        "Invalid YAML syntax: expected <block end>, but found '<scalar>' at line 1: a: 'x'y'"]
+    fixed = fix_workflow(clean_yaml_response(raw))
+    assert "dn: imsi=.+?,dc=IMSI" in fixed           # unquoted, then made a wildcard (DEP-13)
+    assert not any(e.startswith("Invalid YAML") for e in validate_workflow(fixed))
+
+
+def test_self_correction_never_prefers_unparseable_yaml():
+    from skills.network_config_gen.skill import _rank
+    assert _rank(["Invalid YAML syntax: x"]) > _rank(["a", "b", "c", "d", "e", "f"])
+
+
+def test_placeholders_in_regexes_are_replaced():
+    from skills.network_config_gen.autofix import fix_workflow
+    wf = ("nodes:\n  APP: {type: remote}\nphases:\n  a:\n    steps:\n    - node: APP\n"
+          "      send: id ${configSequences.0.records.0.data.User}\n"
+          "      register:\n      - {regex: 'uid=(?<uid>\\d+)\\(${configSequences.0.records.0.data.User}\\)'}\n"
+          "      validation:\n        success: {criteria: {regex: 'uid=${configSequences.0.records.0.data.Uid}'}}\n")
+    fixed = fix_workflow(wf)
+    import yaml
+    step = yaml.safe_load(fixed)["phases"]["a"]["steps"][0]
+    assert step["send"] == "id ${configSequences.0.records.0.data.User}"         # send keeps it
+    assert step["validation"]["success"]["criteria"]["regex"] == "uid=.+?"
+    assert step["register"][0]["regex"] == r"uid=(?<uid>\d+)\(.+?\)"
+    from skills.network_config_gen.validator import _regex_matches_any
+    assert "does not interpolate" in _regex_matches_any("uid=${x}", ["uid=1"])
+
+
+SU_TRANSCRIPT = "app01:~ # su - appuser\nLast login: today\napp01$ whoami\nappuser\n"
+
+
+def test_su_prompt_regex_is_checked_against_the_next_real_prompt():
+    from skills.network_config_gen.validator import check_against_samples
+    samples = parse_command_outputs(SU_TRANSCRIPT)
+
+    def wf(rx):
+        return {"phases": {"a": {"steps": [{"node": "APP", "send": "su - appuser", "prompt_regex": rx}]}}}
+    problems = check_against_samples(wf(r"appuser@app01:~>\s*$"), samples)
+    assert len(problems) == 1 and "'app01$'" in problems[0]
+    assert check_against_samples(wf(r"app01\$\s*$"), samples) == []
+
+
+def test_step8_pushes_the_su_steps_own_prompt():
+    from skills.network_simulator_setup.topology import build_topology
+    wf = """
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app01:~ #', ssh: {host: h, user: oamsys}}
+phases:
+  a:
+    steps:
+    - {node: APP, send: su - appuser, prompt_regex: 'appuser@app01:~>\\s*$'}
+    - {node: APP, send: whoami}
+"""
+    node = build_topology(wf)[0]
+    assert node.escalations == {"su - appuser": "appuser@app01:~> "}
+
+
+def test_step8_serves_recorded_output_verbatim():
+    from skills.network_simulator_setup.skill import recorded_responses
+    samples = parse_command_outputs(TRANSCRIPT)
+    commands = [{"cmd": "systemctl  is-active billing"}, {"cmd": "df -h ${configSequences.0.records.0.data.Mount}"},
+                {"cmd": "uptime"}]
+    entries = recorded_responses(commands, samples)
+    assert entries == {"systemctl  is-active billing": {"lines": ["active"]}}   # placeholders/unrecorded → LLM
+
+
+def test_script_output_must_match_the_workflow_success_regex():
+    from skills.helper_script_gen.skill import check_output_contract
+    workflow = """
+phases:
+  a:
+    steps:
+    - node: LOCAL
+      send: python build.py --x 1
+      validation: {success: {criteria: {regex: 'Payload (?<name>\\S+) written'}}}
+"""
+    regexes = HelperScriptGenSkill._script_output_regexes(workflow)
+    assert regexes == {"build.py": [r"Payload (?<name>\S+) written"]}
+    assert check_output_contract("print(f'Payload {path} written')\n", regexes["build.py"]) == []
+    assert check_output_contract("print(f'File created: {path}')\n", regexes["build.py"])
+    # an f-string field can satisfy any wildcard part: fixed text is enough
+    assert check_output_contract("print(f'XML file generated: {out}')\n", ["XML file generated: .+?.xml"]) == []
+
+
+def test_shared_display_step_is_cleared_only_by_its_first_agent():
+    assert _first_agent_of_step(6) == "network_config_gen"   # not helper_script_gen
+    assert _first_agent_of_step(8) == "network_simulator_setup"

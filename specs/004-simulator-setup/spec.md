@@ -38,7 +38,7 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | S8-04 | High | Sanity check is not SSH. It opens a raw TCP socket, matches the prompt regex against the `SSH-2.0-…` version banner, and writes shell text into the SSH protocol stream. Results are meaningless. | `sanity_check.py:110-200` |
 | S8-05 | High | Cross-run pollution. Configs are copied into the shared `lib/mockwire/mockwire-simulator/config/`, and every non-builtin YAML there is started (stale UCs included). Response files are written to `run_dir/simulator/outputs/` but MockWire reads `outputs/<name>/responses/` relative to the **JAR dir**, so `file:` responses are never found. `lib/mockwire` is left dirty. | `simulator_runner.py:83-101`; `git status` shows `m lib/mockwire` |
 | S8-06 | High | Process lifecycle leaks. The simulator is only stopped by Step 9. Step 8 failure, cancel, crash, or Step 8 re-run leave the process running; a re-run binds the same port and exits with code 1 (likely cause of b61b977c's `exited immediately (code=1)` — unconfirmed because of S8-09). stdout/stderr are `PIPE` and never drained, so a long run can block when the buffer fills. No `--ttl-minutes` backstop. | `simulator_runner.py:118-136`; `network_config_qa_agent.py:121` |
-| S8-07 | High | Phase 2 (command → response) is a stub returning `{}`. All outputs are LLM-invented inline in Phase 1, without per-node response folders. | `skill.py:263-279` |
+| S8-07 | High | **Partly fixed 2026-11-02** (recorded real outputs served verbatim). Phase 2 (command → response) is a stub returning `{}`. All outputs are LLM-invented inline in Phase 1, without per-node response folders. | `skill.py:263-279` |
 | S8-08 | Medium | Retry path is broken. `regenerate()` only re-generates YAML: it doesn't write files, restart the simulator, or re-run sanity. The skill instance is stashed in ADK session state (unreliable, research R6). Step 9 then runs against the old or no process. | `skill.py:203-237`; agent `:46-73` |
 | S8-09 | Medium | Root cause hidden. MockWire output is truncated to 500 chars in the error (`stderr[:500]`), and the step error message is cut off before the real exception. | `simulator_runner.py:151,164` |
 | S8-10 | Medium | Prompts, escalation, and NIAM aren't modelled. The workflow expects `rdsggn01:~ #`, but the simulator prompt is `[oamsys@niamserver ~]$`. `su - sdfrun` / `su - provgw` have no `pushPrompt`. There's no `niam:` section, although the workflow sets `ssh.ne_id` and the vendor profile has `access_gateway`. | b61b977c workflow vs simulator-config |
@@ -54,10 +54,10 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-2 | `execute --node` is passed `node_type` (`PGW_RDS`) instead of a node / node-group name | Step 9 (`jar_executor.run_execution_test`) |
 | DEP-3 | Malformed `${{…}}` placeholders in generated workflow (`${{env.ORDERNO}}`, `${{configData…}}`) | Step 6 autofix |
 | DEP-4 | `su`/`exit` steps validate the prompt, but the JAR strips prompts from output, so they can never pass (found in spike) | Step 6 |
-| DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
+| DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 — **Fixed** (regexes checked against recorded real output) |
 | DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
 | DEP-10 | With `elevate_to_root: true`, node `prompt_regex` must also match the login prompt, else "node prompt not reached after interactive login" (found 2026-11-02 with the new MockWire) | Step 6 / step 9 overlay — **Fixed**: overlay extends `prompt_regex` with the simulator prompts |
-| DEP-11 | Workflow calls helper scripts with arguments they don't accept (`--refinmocName` vs script `--refinmoc_name`, `--pdn_type` vs `--packet_data_network_type`) and `--output_file '.xml'` because `${ORDERNO}` is never registered — step 6 and helper_script_gen must agree on the CLI contract (found 2026-11-02 by `test_step.py --agents 8,9`) | Step 6 / helper_script_gen |
+| DEP-11 | Workflow calls helper scripts with arguments they don't accept (`--refinmocName` vs script `--refinmoc_name`, `--pdn_type` vs `--packet_data_network_type`) and `--output_file '.xml'` because `${ORDERNO}` is never registered — step 6 and helper_script_gen must agree on the CLI contract (found 2026-11-02 by `test_step.py --agents 8,9`) | Step 6 / helper_script_gen — **Fixed** (CLI + output contract; DEP-14) |
 
 ### Step 6 placeholder & regex findings (2026-11-02 JAR probes; fixed in `network_config_gen` autofix + prompt)
 
@@ -121,6 +121,33 @@ DEP-2 was **confirmed** (Step 9 had never executed a command: `node not found: P
 ## Tasks
 
 See [plan.md](plan.md) § Phases.
+
+## Generation contracts (DEP-5 / DEP-11), 2026-11-02
+
+Fixed in the generators, not in run artifacts, and nothing is UC-specific:
+
+| Fix | Where |
+|-----|-------|
+| Uploaded `.txt`/`.log` transcripts → `doc_extracted.command_samples` (command, output, prompt); any prompt style | `requirement_gathering/parsers/command_output_parser.py` |
+| Step 6 validator: success and register regexes must match the recorded output for the same command (`${…}` in `send` is a wildcard); su `prompt_regex` must match the next recorded prompt (DEP-15); JAR semantics mirrored (find, MULTILINE, no DOTALL, CRLF) | `network_config_gen/validator.py` |
+| Step 6 self-correction: up to 2 regenerate rounds with the validator errors and real-output excerpts; best version kept (invalid YAML ranks worst, G-2) | `network_config_gen/skill.py` |
+| Helper scripts: argparse flags = all flags the workflow passes (CLI contract); success message must match the step's regex (output contract); 1 retry, else step 6 fails | `helper_script_gen/skill.py` |
+| Framework runtime parameters (`${ORDERNO}`) declared in `execution.runtime_params`; not errors in step 6, passed as `--var` in step 9 (DEP-14) | `core/config.py`, `jar_executor.py` |
+| Quoted CIQ columns unquoted (DEP-12); `${…}` in regexes → `.+?` (DEP-13) | `network_config_gen/autofix.py` |
+| Step 8 serves recorded real output verbatim for commands without placeholders (S8-07 partly); su step's own `prompt_regex` wins (S8-15) | `network_simulator_setup/skill.py`, `topology.py` |
+
+JAR probes behind DEP-12/13 and the regex semantics: a quoted column resolves to empty while the unquoted form resolves (`404530000000132`); `${…}` in a validation regex raises `PatternSyntaxException: Illegal repetition`; validation regexes use `find()`, `^`/`$` match per line, and `.` does not cross lines.
+
+End to end with the real LLM (`python test_step.py --agents 6,8,9 --run-id b61b977c… --transcripts <RDS/PGW health checks> <RDS log>`):
+
+| | Before | After |
+|-|--------|-------|
+| Step 6 validation errors | not checked against real output | 13 → 8 → 2 by self-correction |
+| Helper scripts | flag names invented, messages hard-coded | flags + messages match the workflow |
+| Step 8 | all responses LLM-invented | 6 recorded real outputs served |
+| Step 9 | 20 commands, `sar`/scripts/`${ORDERNO}` failing | 27 commands, 21 succeed, 0 unmatched |
+
+Remaining: the `provgw status` regex (flagged by step 6, and the step 9 → 6 retry gets the real output), EAST has no IMSI (DEP-16, data), and the simulator does not create `outbox/<ORDERNO>.xml.res` (S8-16, Phase 3 VFS triggers).
 
 ## Simulator Gaps
 

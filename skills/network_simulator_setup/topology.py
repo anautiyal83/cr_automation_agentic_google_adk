@@ -212,7 +212,13 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
         if not _is_su(text) or text in result:
             continue
         user = text.split()[-1]
-        # Step prompt_regex (step 6 moves su prompt checks there) wins over a validation regex
+        # The step's own prompt_regex is what the JAR waits for after this command: a prompt
+        # matching it wins, even when the node prompt_regex does not cover it (S8-15)
+        step_regex = str(cmd.get("prompt_regex") or "")
+        own = _first_matching(_regex_examples(step_regex), step_regex) if step_regex else ""
+        if own:
+            result[text] = _with_space(own)
+            continue
         candidates = _regex_examples(str(cmd.get("prompt_regex") or "")) + _regex_examples(_validation_regex(cmd))
         if str(req.get("target_user_after_root", "")) == user:
             candidates.append(str(req.get("target_user_after_root_prompt") or ""))

@@ -77,6 +77,11 @@ _AGENT_NAMES = [
     "report_generator",            # 8
 ]
 
+def _first_agent_of_step(step_num: int) -> str:
+    """First agent (in execution order) that reports into a display step."""
+    return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
+
+
 # Retry target step → agent index
 _RETRY_STEP_TO_INDEX: dict[int, int] = {
     3: 1,   # retry CiqValidationJsonGen
@@ -127,9 +132,11 @@ class PipelineAgent(BaseAgent):
                 break
 
             # ----- CLEAR old error files before re-run -----
+            # Only the first agent of a shared display step clears it: helper_script_gen runs
+            # after network_config_gen (both step 6) and must not wipe that agent's error
             run_dir = ctx.session.state.get("run_dir", "")
             for step_num in _AGENT_DISPLAY_STEPS.get(agent.name, []):
-                if run_dir:
+                if run_dir and _first_agent_of_step(step_num) == agent.name:
                     err = Path(run_dir) / f"step_{step_num}_error.json"
                     if err.exists():
                         err.unlink()

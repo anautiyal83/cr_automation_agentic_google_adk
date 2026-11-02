@@ -26,6 +26,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent  # cr_automation_agentic_g
 PIPELINE_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 
+# Parameters the production framework passes to every execution (`--var NAME=value`);
+# the value is the dummy step 9 uses against the simulator
+DEFAULT_RUNTIME_PARAMS = {"ORDERNO": "TEST_ORDERNO"}
+
 
 # ---------------------------------------------------------------------------
 # Utility: API key masking
@@ -74,6 +78,7 @@ class PipelineConfiguration(BaseModel):
     simulator_base_port: int = 22200
     simulator_ttl_minutes: int = 60
     simulator_startup_timeout: int = 30
+    runtime_params: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_PARAMS))
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
     execution_report_jar: str = "./lib/execution-report-generator.jar"
@@ -113,6 +118,13 @@ class PipelineConfiguration(BaseModel):
 # ---------------------------------------------------------------------------
 # ConfigManager
 # ---------------------------------------------------------------------------
+
+def runtime_params() -> dict[str, str]:
+    """Framework runtime parameters ({name: test value}) from the live config, else defaults."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    return dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+
 
 class ConfigManager:
     """Async configuration manager.
@@ -180,6 +192,10 @@ class ConfigManager:
             flat["simulator_ttl_minutes"] = sim["ttl_minutes"]
         if "startup_timeout_sec" in sim:
             flat["simulator_startup_timeout"] = sim["startup_timeout_sec"]
+
+        execution = raw.get("execution", {})
+        if execution.get("runtime_params"):
+            flat["runtime_params"] = {str(k): str(v) for k, v in dict(execution["runtime_params"]).items()}
 
         ext = raw.get("external_modules", {})
         if "ciq_processor_jar" in ext:

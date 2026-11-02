@@ -17,6 +17,10 @@ Usage:
     python test_step.py --agents 8,9 --run-id <run_id>
     python test_step.py --agents 8,9 --run-id <run_id> --refix-workflow   # apply current step 6 autofix first
 
+    # Regenerate step 6 (workflow + helper scripts, real LLM) and test it on the simulator;
+    # --transcripts adds node session logs to the real-output samples step 6 checks against
+    python test_step.py --agents 6,8,9 --run-id <run_id> --transcripts a.txt b.log
+
     # Validate YAML syntax
     python test_step.py --validate <yaml_path>
 """
@@ -191,17 +195,31 @@ async def test_skill(skill_name: str, run_id: str):
 
 
 _STEP_AGENTS = {
-    "8": ("agents.network_simulator_setup_agent", "NetworkSimulatorSetupAgent"),
-    "9": ("agents.network_config_qa_agent", "NetworkConfigQAAgent"),
+    "6": [("agents.network_config_gen_agent", "NetworkConfigGenAgent"),
+          ("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
+    "8": [("agents.network_simulator_setup_agent", "NetworkSimulatorSetupAgent")],
+    "9": [("agents.network_config_qa_agent", "NetworkConfigQAAgent")],
 }
 
 
-async def test_agents(run_id: str, steps: list[str], refix_workflow: bool):
-    """Run the real pipeline agents for steps 8/9 through ADK on a copy of a run.
+def _command_samples(doc_set: dict, extra_paths: list[str]) -> list[dict]:
+    """Real command → output samples, built like requirement gathering does (spec 004 DEP-5)."""
+    from agents.requirements_agent import _text_document_paths
+    from skills.requirement_gathering.parsers import parse_command_outputs
+    paths = [doc_set.get("command_outputs_path") or ""]
+    paths += _text_document_paths(doc_set.get("additional_documents")) + list(extra_paths)
+    texts = [Path(p).read_text(encoding="utf-8", errors="replace") for p in paths if p and Path(p).exists()]
+    return parse_command_outputs("\n\n".join(texts))
+
+
+async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
+                      transcripts: list[str] | None = None):
+    """Run the real pipeline agents for steps 6/8/9 through ADK on a copy of a run.
 
     The source run is never modified: its directory is copied to
-    data/step_tests/<run>_<time>/ (simulator/, exec_output/ and old step 8/9 error files
-    are left out) and the agents run against the copy with a fresh session.
+    data/step_tests/<run>_<time>/ (simulator/, exec_output/ and the error files of the
+    steps being run are left out) and the agents run against the copy with a fresh session.
+    With step 6 the workflow and helper scripts are regenerated (real LLM).
     """
     import importlib
     import shutil
@@ -229,7 +247,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool):
 
     db = await init_database("data/pipeline.db")
     rows = await db.execute(
-        "SELECT d.uc_name, d.ciq_file_path FROM pipeline_runs r "
+        "SELECT d.uc_name, d.ciq_file_path, d.command_outputs_path, d.additional_documents "
+        "FROM pipeline_runs r "
         "JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?", (run_id,))
     if not rows:
         print(f"Run {run_id} not found in data/pipeline.db")
@@ -238,7 +257,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool):
 
     work = Path("data/step_tests") / f"{run_id[:8]}_{time.strftime('%Y%m%d_%H%M%S')}"
     shutil.copytree(src, work, ignore=shutil.ignore_patterns(
-        "simulator", "exec_output", "step_8_error.json", "step_9_error.json"))
+        "simulator", "exec_output", *(f"step_{s}_error.json" for s in steps),
+        *(["scripts"] if "6" in steps else [])))
 
     def read(name: str) -> str:
         p = work / name
@@ -257,6 +277,10 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool):
 
     session_id = str(uuid4())
     requirements = json.loads(read("requirements.json") or "{}")
+    if "6" in steps:
+        doc = requirements.setdefault("doc_extracted", {})
+        doc["command_samples"] = _command_samples(dict(rows[0]), transcripts or [])
+        print(f"Real-output samples for step 6: {len(doc['command_samples'])} commands")
     requirements_store[session_id] = requirements
     state = {
         "run_id": session_id,
@@ -273,8 +297,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool):
 
     sub_agents = []
     for step in steps:
-        module, cls = _STEP_AGENTS[step]
-        sub_agents.append(getattr(importlib.import_module(module), cls)())
+        for module, cls in _STEP_AGENTS[step]:
+            sub_agents.append(getattr(importlib.import_module(module), cls)())
     root = SequentialAgent(name="step_test", sub_agents=sub_agents)
 
     service = InMemorySessionService()
@@ -346,9 +370,11 @@ def main():
     parser.add_argument("--run-id", type=str, help="Run ID")
     parser.add_argument("--skill", type=str, help="Skill to test")
     parser.add_argument("--agents", type=str,
-                        help="Run real pipeline agents on a copy of the run, e.g. 8 or 8,9")
+                        help="Run real pipeline agents on a copy of the run, e.g. 8,9 or 6,8,9")
     parser.add_argument("--refix-workflow", action="store_true",
                         help="With --agents: apply the current step 6 autofix to the run's workflow first")
+    parser.add_argument("--transcripts", nargs="*", default=[],
+                        help="With --agents 6: extra node session logs for the real-output samples")
     parser.add_argument("--validate", type=str, help="Validate YAML file")
 
     args = parser.parse_args()
@@ -363,7 +389,7 @@ def main():
         if unknown:
             print(f"Unsupported step(s) {unknown}; available: {', '.join(_STEP_AGENTS)}")
             return
-        asyncio.run(test_agents(args.run_id, steps, args.refix_workflow))
+        asyncio.run(test_agents(args.run_id, steps, args.refix_workflow, args.transcripts))
     elif args.skill and args.run_id:
         asyncio.run(test_skill(args.skill, args.run_id))
     elif args.validate:

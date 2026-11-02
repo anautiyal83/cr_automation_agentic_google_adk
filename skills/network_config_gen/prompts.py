@@ -58,6 +58,14 @@ CRITICAL RULES:
 - register uses {regex: '... (?<varName>...) ...'}: regexes are JAVA — named groups are
   (?<name>...) NOT (?P<name>...), and names are letters/digits only (preLdapResult, not
   pre_ldap_result). Reference registered values as ${varName} (never ${register.varName})
+- Validation regexes are searched in the output (find, ^/$ match per line, '.' does not
+  cross lines). Test only the condition the validation describes, on the line that shows
+  it (e.g. just the status line or the counter value); never reproduce headers, dates or
+  the layout of the whole output. Where real output is given, the regex MUST match it.
+- Never put ${...} placeholders inside a validation or register regex: regexes are not
+  interpolated (only send is). Match the shape of the value instead (digits, a word).
+- Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
+  quoted (quoted names resolve to empty)
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
@@ -118,6 +126,8 @@ Use these runtime variable patterns in the workflow YAML:
   ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}}               — provided by the framework at runtime
   ${{varName}}                                    — value registered by an earlier step's (?<varName>...) group
   ${{SECRET.key}} / ${{ENV.NAME}}                    — globals.secrets / OS environment
+  ${{<PARAM>}}                                    — framework runtime parameter, passed at execution; use it
+                                                    directly, never register or define it: {runtime_params}
   NOT supported (resolve to empty): configData.*, nodeGroups.*, node_row.*, register.*, env.*
 
 === EXAMPLE WORKFLOW STRUCTURE ===
@@ -312,6 +322,7 @@ Phases: {phases}
   ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE>
   ${{node}} ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
   ${{varName}}                                    — registered (?<varName>...) output
+  ${{<PARAM>}}                                    — framework runtime parameter (never register it): {runtime_params}
   NOT supported: configData.*, nodeGroups.*, node_row.*, register.*, env.*
 
 === FRAMEWORK RULES (STRICT) ===
@@ -320,6 +331,9 @@ Phases: {phases}
 - nodes is a MAP (dict), NOT nodeGroups
 - validation has success/failure branches with criteria inside
 - register uses {{regex: '... (?<varName>...) ...'}} — Java named groups, letters/digits only
+- Validation regexes are searched (^/$ per line, '.' does not cross lines): test only the
+  condition the validation describes, on the line that shows it — never the whole layout
+- No ${{...}} inside regexes (only send is interpolated)
 - No NIAM login commands — use ne_id on nodes
 - No Ctrl+P+E commands — use elevate_to_root: true on nodes
 

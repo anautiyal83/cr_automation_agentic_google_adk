@@ -132,7 +132,13 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
 - `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
 - Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
-- `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders
+- CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty); no `${…}` inside regexes (not interpolated)
+- Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
+  step 9 passes their test values as `--var`
+- Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
+- `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
+  don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
+- Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
 
 ## Running
 ```powershell

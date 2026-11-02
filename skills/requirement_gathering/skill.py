@@ -28,7 +28,7 @@ from typing import Any, Awaitable, Callable
 
 from . import analyzer, compiler, questionnaire
 from .html_report import generate_questionnaire_html, generate_summary_html
-from .parsers import parse_ciq, parse_mop, parse_ssh_logs, parse_xml_samples
+from .parsers import parse_ciq, parse_command_outputs, parse_mop, parse_ssh_logs, parse_xml_samples
 from .schema_discovery import DiscoveredSchemas, discover_schemas
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,9 @@ class SkillInput:
     mop_file_path: str = ""
     ssh_log_path: str = ""
     xml_sample_paths: list[str] = field(default_factory=list)
+    # Other uploaded text documents (session logs, command outputs) — scanned only for
+    # real command → output samples, not sent to the LLM
+    transcript_paths: list[str] = field(default_factory=list)
     developer_notes: str = ""
     previous_answers: dict | None = None
     schema_dir: str | None = None
@@ -128,6 +131,8 @@ class RequirementGatheringSkill:
         mop_parsed = parse_mop(self._raw_artifacts.get("mop_text", ""))
         ssh_parsed = parse_ssh_logs(self._raw_artifacts.get("ssh_logs", ""))
         xml_parsed = parse_xml_samples(self._raw_artifacts.get("xml_samples", ""))
+        command_samples = parse_command_outputs(
+            "\n\n".join([self._raw_artifacts.get("ssh_logs", "")] + _read_texts(inp.transcript_paths)))
         self._ciq_sheets = parse_ciq(
             ciq_file_path=inp.ciq_file_path,
             ciq_data=inp.ciq_data,
@@ -141,6 +146,9 @@ class RequirementGatheringSkill:
             "ldap_port": ssh_parsed["ldap_port"],
             "xml_files": xml_parsed,
             "ciq_sheets": self._ciq_sheets,
+            # Real command outputs from uploaded transcripts: step 6 checks validation
+            # regexes against them, step 8 can reuse them as simulator responses
+            "command_samples": command_samples,
         }
 
         logger.info(
@@ -713,3 +721,14 @@ def _save_requirements(uc_name: str, requirements: dict):
                if k not in ("doc_extracted", "generation_hints")}
     doc["compiled_requirements"] = to_save
     _save_uc_doc(uc_name, doc)
+
+
+def _read_texts(paths: list[str]) -> list[str]:
+    """Contents of the given text files, each prefixed with a file separator line."""
+    texts = []
+    for path in paths or []:
+        try:
+            texts.append(f"=== {Path(path).name} ===\n" + Path(path).read_text(encoding="utf-8", errors="replace"))
+        except Exception as e:
+            logger.debug("Could not read transcript %s: %s", path, e)
+    return texts
