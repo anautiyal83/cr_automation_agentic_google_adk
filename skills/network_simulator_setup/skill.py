@@ -120,6 +120,21 @@ class NetworkSimulatorSetupSkill:
             return SkillOutput(status="failed", error="Workflow has no remote nodes to simulate")
         topology = [n.summary() for n in nodes]
 
+        # Stateful file flows (upload → produced file) via MockWire's VFS + triggers (S8-16)
+        from io import StringIO
+        from ruamel.yaml import YAML
+        from .file_flows import derive_vfs, response_lines
+        try:
+            workflow_doc = YAML(typ="safe").load(StringIO(inp.workflow_yaml)) or {}
+        except Exception:
+            workflow_doc = {}
+        produced = response_lines(inp.requirements)
+        for n in nodes:
+            n.vfs = derive_vfs(workflow_doc, n.name, produced) if isinstance(workflow_doc, dict) else None
+            if n.vfs:
+                logger.info("Topology node %s: vfs dirs=%s triggers=%d", n.name, n.vfs["dirs"],
+                            len(n.vfs.get("triggers", [])))
+
         # --- Phase 2: Command responses per node ---
         # Real outputs recorded on the nodes are served verbatim; the LLM only invents
         # responses for commands nobody recorded
@@ -140,6 +155,15 @@ class NetworkSimulatorSetupSkill:
                 logger.error("Response generation failed for %s: %s", node.name, result)
                 errors.append(f"{node.name}: response generation failed: {result}")
                 result = {}
+            # File commands on VFS paths are answered by MockWire builtins from file state
+            from .file_flows import is_vfs_command
+            dropped = [k for k in result if is_vfs_command(k, node.vfs)]
+            for k in dropped:
+                result.pop(k)
+            recorded[node.name] = {k: v for k, v in recorded[node.name].items()
+                                   if not is_vfs_command(k, node.vfs)}
+            if dropped:
+                logger.info("Phase 2: %s — %d file commands left to the VFS builtins", node.name, len(dropped))
             # Invented responses stand for a healthy node: they must pass the step's own
             # success check (recorded real output is the ground truth and is never changed)
             result = await self._conform_synthetic(inp.uc_name, node, result, set(recorded[node.name]), row)
@@ -255,27 +279,40 @@ class NetworkSimulatorSetupSkill:
                 node.warnings.append(f"{cmd!r} is checked with {len(regexes)} different expectations "
                                      "(state changes during the run) — a static response cannot pass all (S8-16)")
         bad = synthetic_mismatches(node, entries, recorded, row)
-        if not bad:
+        missing = unanswered_commands(node, entries, recorded, row)
+        if not bad and not missing:
             return entries
-        logger.info("Phase 2: %s — %d invented responses fail their step's success check; regenerating",
-                    node.name, len(bad))
+        logger.info("Phase 2: %s — %d invented responses fail their step's success check, %d commands "
+                    "have no response; regenerating", node.name, len(bad), len(missing))
         listing = "\n".join(f"- key {b['key']!r} (command: {b['cmd']})\n  must match: /{b['regex']}/\n"
                             f"  your output was: {b['output'][:300]!r}" for b in bad)
+        if missing:
+            listing += ("\n\nThese commands have NO response yet — add one each (a 'regex:' key matching "
+                        "the sent command, with the shown value as an example):\n"
+                        + "\n".join(f"- {m['cmd']}  (sent e.g. as: {m['resolved']})"
+                                    + (f"\n  must match: /{m['regex']}/" if m["regex"] else "")
+                                    for m in missing))
         user = prompts.CONFORM_USER.format(node=node.name, uc_name=uc_name, listing=listing)
         try:
             fixed = parse_llm_yaml(await self._llm_fn(prompts.NODE_RESPONSES_SYSTEM, user))
         except Exception as e:
             logger.warning("Phase 2: %s — conformance regeneration failed: %s", node.name, e)
             fixed = None
+        from .file_flows import is_vfs_command
+        from .topology import RESERVED_KEYS, _is_builtin_key
         entries = dict(entries)
-        for b in bad:
-            new = fixed.get(b["key"]) if isinstance(fixed, dict) else None
+        for key, new in (fixed.items() if isinstance(fixed, dict) else []):
+            key = str(key)
+            if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs) or key in recorded:
+                continue
             if isinstance(new, dict) and isinstance(new.get("lines"), str):
                 new = {**new, "lines": new["lines"].splitlines()}
             if isinstance(new, dict) and isinstance(new.get("lines"), list):
-                entries[b["key"]] = new
+                entries[key] = new
         for b in synthetic_mismatches(node, entries, recorded, row):
             node.warnings.append(f"invented response for {b['cmd']!r} still fails /{b['regex']}/")
+        for m in unanswered_commands(node, entries, recorded, row):
+            node.warnings.append(f"no response for {m['cmd']!r}")
         return entries
 
     # ------------------------------------------------------------------
@@ -361,6 +398,28 @@ def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row:
     return out
 
 
+# Answered by MockWire itself (shell builtins / prompt changes); everything else needs a response
+_SIM_BUILTINS = {"echo", "true", "false", ":", "pwd", "whoami", "id", "hostname", "cd", "stty", "su",
+                 "exit", "logout", "sleep"}
+
+
+def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> list[dict]:
+    """Node commands no response entry answers (the simulator would say "command not found")."""
+    from .file_flows import is_vfs_command
+    from .topology import _validation_regex
+    out, seen = [], set()
+    for c in node.commands:
+        cmd = str(c.get("cmd", "")).strip()
+        first = cmd.split(" ", 1)[0] if cmd else ""
+        if not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or is_vfs_command(cmd, node.vfs):
+            continue
+        seen.add(cmd)
+        resolved = resolve_command(cmd, row)
+        if _find_entry(entries, cmd, resolved)[1] is None:
+            out.append({"cmd": cmd, "resolved": resolved, "regex": _validation_regex(c)})
+    return out
+
+
 def resolve_command(cmd: str, row: dict) -> str:
     """The command as the JAR would send it: runtime params → test values, CIQ columns →
     first sample row, anything else → a token."""
@@ -388,6 +447,13 @@ def _find_entry(entries: dict, cmd: str, resolved: str):
                     return key, entry
             except re.error:
                 continue
+    # MockWire's longest-prefix fallback ("cmd" answers "cmd -x"), not across | ; > &
+    for key, entry in entries.items():
+        k = str(key)
+        rest = resolved[len(k):]
+        if not k.startswith("regex:") and resolved.startswith(k) and (not rest or rest[0] == " ") \
+                and not re.search(r"[|;>&]", rest):
+            return key, entry
     return None, None
 
 

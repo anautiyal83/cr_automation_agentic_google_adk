@@ -81,6 +81,8 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
                     errors.extend(step_errors)
 
     errors.extend(check_placeholders(parsed))
+    errors.extend(check_file_flows(parsed))
+    errors.extend(check_expr_vars(parsed))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
     if ciq_sheets:
@@ -146,6 +148,36 @@ def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
                    "use that variable." if alternatives else
                    f"Guard the step with when: \"configSequences.0.records.0.data.{col} != ''\"."))
     return list(problems.values())
+
+
+_ABS_PATH = re.compile(r"(?<![\w$}])/(?:[\w.${}-]+/)+[\w.${}-]+")
+
+
+def check_file_flows(parsed: dict) -> list[str]:
+    """LOCAL steps run on the automation host: a path that only exists on a node (it is
+    listed/read there or is an sftp remote_path) must be downloaded first (S8-16)."""
+    remote_paths: set[str] = set()
+    downloaded: set[str] = set()
+    problems: list[str] = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        node = str(step.get("node") or "")
+        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else None
+        if sftp:
+            if sftp.get("operation") == "download":
+                downloaded.add(str(sftp.get("local_path") or ""))
+            remote_paths.add(str(sftp.get("remote_path") or ""))
+            continue
+        send = str(step.get("send") or "")
+        if node.upper() != "LOCAL":
+            remote_paths.update(_ABS_PATH.findall(send))
+            continue
+        for path in _ABS_PATH.findall(send):
+            if path in remote_paths and path not in downloaded:
+                problems.append(
+                    f"LOCAL step '{send[:80]}' ({phase_name}) reads {path}, which exists on a remote node, "
+                    "not on the automation host: add an sftp download step "
+                    "(sftp: {operation: download, remote_path: …, local_path: …}) and use the local copy.")
+    return problems
 
 
 _WHEN_TERM = re.compile(r"^\s*configSequences\.\d+\.records\.\d+\.data\.(.+?)\s*(==|!=)\s*'([^']*)'\s*$")
@@ -265,6 +297,13 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
                     f"{verdict or 'does not match'} the real output recorded for this command. "
                     f"Real output (relevant lines):\n{_excerpt(matching[0]['output'], regex)}\n"
                     "Write the regex against this real output.")
+        captured = _expr_fails_on_real_output(step, outputs)
+        if captured:
+            problems.append(
+                f"Step '{send[:80]}' ({phase_name}): on the real output the step registers {captured}, so its "
+                "expr fails on a healthy node — the register regex captures the wrong field. Real output "
+                f"(relevant lines):\n{_excerpt(matching[0]['output'], _success_regex(step) or '')}\n"
+                "Count the columns in this output and capture the right one.")
         for reg in step.get("register") or []:
             rx = reg.get("regex") if isinstance(reg, dict) else None
             if not isinstance(rx, str):
@@ -296,6 +335,133 @@ def _check_prompt_change(step: dict, send: str, phase_name: str, samples: list[d
     return (f"Step '{send}' ({phase_name}): prompt_regex /{regex}/ does not match the prompt the "
             f"real node shows after this command: {', '.join(repr(p) for p in dict.fromkeys(seen))}. "
             "Write the prompt_regex for that prompt.")
+
+
+_EXPR_CMP = re.compile(r"^\s*([A-Za-z_]\w*)\s*(>=|<=|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def check_expr_vars(parsed: dict, runtime_params: list[str] | None = None) -> list[str]:
+    """``criteria.expr`` may only use registered variables (DEP-24): named groups of a
+    validation regex are not visible to expr; a ``register`` on the step (or an earlier
+    step) is (JAR probes 2026-11-02)."""
+    from .autofix import EXPR_IDENT, EXPR_KEYWORDS, _criteria_blocks
+    if runtime_params is None:
+        from core.config import runtime_params as configured
+        runtime_params = list(configured())
+    defined = set(_JAR_BUILTINS) | set(runtime_params)
+    defined |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
+    problems: list[str] = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str):
+                defined |= set(_NAMED_GROUP.findall(reg["regex"]))
+        for criteria in _criteria_blocks(step):
+            expr = criteria.get("expr")
+            if not isinstance(expr, str):
+                continue
+            unknown = sorted({m.group(1) for m in EXPR_IDENT.finditer(expr)} - EXPR_KEYWORDS - defined)
+            if unknown:
+                problems.append(
+                    f"Step '{str(step.get('send') or step.get('command_description'))[:80]}' ({phase_name}): expr "
+                    f"'{expr}' uses {', '.join(unknown)}, which no step registers. Register the value on this "
+                    "step (register: [{regex: '…(?<name>…)…'}]) and use exactly that name; named groups of "
+                    "the validation regex are not visible to expr.")
+    return problems
+
+
+def _expr_fails_on_real_output(step: dict, outputs: list[str]) -> str:
+    """'var=value' when a simple `var OP number` expr fails for every real output."""
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+    m = _EXPR_CMP.match(str(criteria.get("expr") or ""))
+    if not m:
+        return ""
+    var, op, limit = m.group(1), m.group(2), float(m.group(3))
+    seen = []
+    for reg in step.get("register") or []:
+        rx = reg.get("regex") if isinstance(reg, dict) else None
+        if not isinstance(rx, str) or f"<{var}>" not in rx:
+            continue
+        try:
+            compiled = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), re.MULTILINE)
+        except re.error:
+            return ""
+        for out in outputs:
+            hit = compiled.search(out.replace("\r\n", "\n"))
+            if not hit or hit.groupdict().get(var) is None:
+                continue
+            try:
+                value = float(hit.group(var))
+            except ValueError:
+                return ""
+            ok = {">=": value >= limit, "<=": value <= limit, ">": value > limit, "<": value < limit,
+                  "==": value == limit, "!=": value != limit}[op]
+            if ok:
+                return ""
+            seen.append(f"{var}={hit.group(var)}")
+    return ", ".join(seen)
+
+
+_LINE_JOIN = re.compile(r"(?:\\s[*+])?\\n(?:\\s[*+])?")
+
+
+def relax_line_joins(parsed: dict, command_samples: list[dict]) -> int:
+    """Make multi-line validation regexes tolerate lines in between (DEP-22).
+
+    LLMs write ``A\\n\\s+B`` for output where A and B are not adjacent (log lines between
+    them). When such a regex fails every real output recorded for its command, its line
+    joins become ``[\\s\\S]*?``; the change is kept only if the regex then matches. Returns
+    how many regexes changed (``parsed`` is changed in place).
+    """
+    samples = [s for s in command_samples or [] if isinstance(s, dict) and s.get("command")]
+    changed = 0
+    for _, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "").strip()
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+        criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+        regex = criteria.get("regex")
+        if not send or not isinstance(regex, str) or "${" in regex:
+            continue
+        outputs = [s["output"] for s in samples if _command_matches(send, s["command"])]
+        if not outputs or _regex_matches_any(regex, outputs) is True:
+            continue
+        relaxed = _relax_joins(_LINE_JOIN.sub(lambda _: r"[\s\S]*?", regex), outputs)
+        if relaxed and relaxed != regex:
+            criteria["regex"] = relaxed
+            changed += 1
+    return changed
+
+
+_WS_JOIN = re.compile(r"\\s[*+]")
+
+
+def _relax_joins(regex: str, outputs: list[str]) -> str:
+    """Fewest ``\\s+``/``\\s*`` joins widened to ``[\\s\\S]*?`` so the regex matches real output.
+
+    All joins are widened first; then each one is tightened back if the regex still
+    matches without it — so only the joins that really span other lines change.
+    """
+    if _regex_matches_any(regex, outputs) is True:
+        return regex
+    spots = [m.span() for m in _WS_JOIN.finditer(regex)]
+
+    def build(wide: set[int]) -> str:
+        out, last = [], 0
+        for k, (a, b) in enumerate(spots):
+            out.append(regex[last:a])
+            out.append(r"[\s\S]*?" if k in wide else regex[a:b])
+            last = b
+        return "".join(out) + regex[last:]
+
+    wide = set(range(len(spots)))
+    if not spots or _regex_matches_any(build(wide), outputs) is not True:
+        return ""
+    for k in range(len(spots)):
+        if _regex_matches_any(build(wide - {k}), outputs) is True:
+            wide.discard(k)
+    return build(wide)
 
 
 def _iter_steps(phases: Any):
@@ -456,8 +622,15 @@ def _validate_step(step: dict, index: int, phase: str, known_nodes: set, known_r
     node = step.get("node", "")
     step_id = f"Phase '{phase}' step {index}"
 
-    if not cmd:
+    # sftp / rest / email / nested-steps steps carry no 'send'
+    if not cmd and not any(k in step for k in ("sftp", "rest", "email", "steps")):
         errors.append(f"{step_id}: missing 'send' (command to execute)")
+    sftp = step.get("sftp")
+    if isinstance(sftp, dict):
+        if sftp.get("operation") not in ("upload", "download"):
+            errors.append(f"{step_id}: sftp.operation must be upload or download")
+        if not sftp.get("local_path") or not sftp.get("remote_path"):
+            errors.append(f"{step_id}: sftp needs local_path and remote_path")
 
     # Node reference check (skip placeholders)
     if node and not is_placeholder(node) and node not in known_nodes:

@@ -92,6 +92,25 @@ CRITICAL RULES:
         register: [{regex: '<field the lookup prints>[:= ]+(?<resolvedId>[0-9A-Za-z]+)'}]
     - later steps: ... ${resolvedId} ...
   (both steps register the same name; the skipped one leaves it untouched)
+- File transfers between this host (LOCAL) and a node are SFTP steps on that node, never
+  put/get/scp typed into a shell:
+    - node: PGW
+      sftp: {operation: upload, local_path: '${ORDERNO}.xml', remote_path: '/srv/x/inbox/${ORDERNO}.xml'}
+  A file produced on a node that a LOCAL step processes must be downloaded first
+  (operation: download) and the LOCAL step uses the local copy. LOCAL steps run in the
+  helper-scripts folder; relative local paths are relative to it.
+- Every non-zero exit code fails the step before its regex is checked. A check whose
+  expected result is "absent/not found" must exit 0: `ls -l <file> 2>&1 || true` with
+  regex 'No such file'.
+- criteria.expr compares REGISTERED variables only, as plain `name >= 90` (no Float()/Int(),
+  never a literal True): register the value on the same step and use exactly that name —
+    register: [{regex: 'Average: +all( +[0-9.]+){5} +(?<cpuIdle>[0-9.]+)'}]
+    validation: {success: {criteria: {regex: 'Average:', expr: 'cpuIdle >= 90'}}}
+  Named groups of the validation regex itself are not visible to expr.
+- sftp steps print nothing: give them no output regex (the transfer status decides).
+- `ls -l <file>` prints one line ending with the file name (no "total" line): match the
+  file name. To wait for a file that appears later, give that check retries and
+  retry_delay_sec (e.g. retries: 30, retry_delay_sec: 10 for "wait up to 5 minutes").
 - Quote ALL values containing colons, brackets, or special chars in YAML
 """
 
@@ -352,6 +371,9 @@ Phases: {phases}
 - Validation regexes are searched (^/$ per line, '.' does not cross lines): test only the
   condition the validation describes, on the line that shows it — never the whole layout
 - No ${{...}} inside regexes (only send is interpolated)
+- Files move with sftp steps (sftp: {{operation: upload|download, local_path, remote_path}}),
+  never put/get in a shell; download a node's file before a LOCAL step reads it
+- A non-zero exit fails the step: "must be absent" checks are `ls -l <file> 2>&1 || true`
 - No NIAM login commands — use ne_id on nodes
 - No Ctrl+P+E commands — use elevate_to_root: true on nodes
 

@@ -211,6 +211,164 @@ phases:
     assert synthetic_mismatches(node, entries, recorded={"ls /out/${ORDERNO}.res"}, row={}) == []
 
 
+FILE_FLOW = r"""
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}
+  LOCAL: {type: local}
+phases:
+  a:
+    steps:
+    - {node: LOCAL, send: "python mk.py --out '${ORDERNO}.xml'"}
+    - node: APP
+      send: ls -l /srv/out/${ORDERNO}.xml.res
+      validation: {success: {criteria: {regex: 'No such file'}}}
+    - {node: APP, send: "put ${ORDERNO}.xml /srv/in/${ORDERNO}.xml"}
+    - node: APP
+      send: ls -l /srv/out/${ORDERNO}.xml.res
+      validation: {success: {criteria: {regex: '\S+\.xml\.res'}}}
+    - {node: LOCAL, send: "python parse.py --file '/srv/out/${ORDERNO}.xml.res'"}
+"""
+
+
+def test_file_transfers_and_absence_checks_are_fixed_for_the_jar():
+    from skills.network_config_gen.autofix import fix_workflow
+    from skills.network_config_gen.validator import check_file_flows
+    steps = yaml.safe_load(fix_workflow(FILE_FLOW))["phases"]["a"]["steps"]
+    assert steps[1]["send"] == "ls -l /srv/out/${ORDERNO}.xml.res 2>&1 || true"     # exits 0
+    assert steps[2]["sftp"] == {"operation": "upload", "local_path": "${ORDERNO}.xml",
+                                "remote_path": "/srv/in/${ORDERNO}.xml"} and "send" not in steps[2]
+    assert steps[3]["send"] == "ls -l /srv/out/${ORDERNO}.xml.res"                 # presence: unchanged
+    problems = check_file_flows({"phases": {"a": {"steps": steps}}})
+    assert len(problems) == 1 and "download" in problems[0]                        # LOCAL reads a node path
+    steps.insert(4, {"node": "APP", "sftp": {"operation": "download", "remote_path": "/srv/out/${ORDERNO}.xml.res",
+                                             "local_path": "/srv/out/${ORDERNO}.xml.res"}})
+    assert not check_file_flows({"phases": {"a": {"steps": steps}}})
+
+
+def test_simulator_file_system_follows_the_workflows_file_flow():
+    from skills.network_config_gen.autofix import fix_workflow
+    from skills.network_simulator_setup.file_flows import derive_vfs, is_vfs_command
+    from skills.network_simulator_setup.topology import build_instance_config, build_topology
+    wf = fix_workflow(FILE_FLOW)
+    vfs = derive_vfs(yaml.safe_load(wf), "APP", ["<Response result=\"success\"/>"])
+    assert vfs["dirs"] == ["/srv/in", "/srv/out"]
+    assert vfs["triggers"] == [{"onCreate": r"/srv/in/(?<ORDERNO>[^/]+?)\.xml",
+                                "create": "/srv/out/${ORDERNO}.xml.res",
+                                "lines": ["<Response result=\"success\"/>"]}]
+    assert is_vfs_command(r"regex:^ls\ \-l\ /srv/out/.+?\.xml\.res$", vfs)
+    assert not is_vfs_command("uptime", vfs)
+    node = build_topology(wf)[0]
+    node.vfs = vfs
+    assert yaml.safe_load(build_instance_config(node, {}))["vfs"] == vfs
+
+
+def test_multiline_regex_is_relaxed_only_when_real_output_then_matches():
+    from skills.network_config_gen.validator import relax_line_joins
+    real = [{"command": "svc status", "output": "apache ... running (7 processes)\n"
+                                                 "2026-08-27: INFO: Checking instances status:\n"
+                                                 "        instance1... running"}]
+    step = {"node": "APP", "send": "svc status",
+            "validation": {"success": {"criteria": {"regex": r"apache .* running\n\s+instance\d+\.\.\. running"}}}}
+    wf = {"phases": {"a": {"steps": [step]}}}
+    assert relax_line_joins(wf, real) == 1
+    assert step["validation"]["success"]["criteria"]["regex"] == r"apache .* running[\s\S]*?instance\d+\.\.\. running"
+    wrong = {"node": "APP", "send": "svc status",
+             "validation": {"success": {"criteria": {"regex": r"apache .* stopped\n\s+instance"}}}}
+    assert relax_line_joins({"phases": {"a": {"steps": [wrong]}}}, real) == 0      # still wrong → untouched
+
+
+def test_step8_never_maps_echo_and_finds_commands_without_a_response():
+    from skills.network_simulator_setup.skill import unanswered_commands
+    from skills.network_simulator_setup.topology import _is_builtin_key, build_topology
+    assert _is_builtin_key("regex:^echo\\ .+?$") and _is_builtin_key("echo 123") and not _is_builtin_key("ldapsearch")
+    wf = r"""
+nodes:
+  DB: {type: remote, plugin: ssh, prompt_regex: 'db:~ #', ssh: {host: h, user: u}}
+phases:
+  a:
+    steps:
+    - {node: DB, send: "echo ${configSequences.0.records.0.data.Test IMSI}"}
+    - {node: DB, send: "ldapsearch -b msisdn=${configSequences.0.records.0.data.Test MSISDN} | grep -i IMSI"}
+    - {node: DB, send: "dbtool status -v"}
+"""
+    node = build_topology(wf)[0]
+    entries = {"dbtool status": {"lines": ["ok"]}}                                  # prefix answers -v
+    missing = unanswered_commands(node, entries, set(), {"Test MSISDN": "981"})
+    assert [m["resolved"] for m in missing] == ["ldapsearch -b msisdn=981 | grep -i IMSI"]
+
+
+SAR_REAL = [{"command": "sar 1 10", "output": "Average:        all      0.13      0.00      0.13      0.00      0.00     99.75"}]
+
+
+def test_expr_uses_registered_variables_only_and_is_checked_on_real_output():
+    from skills.network_config_gen.autofix import fix_workflow
+    from skills.network_config_gen.validator import check_against_samples, check_expr_vars
+    wf = r"""
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}
+phases:
+  a:
+    steps:
+    - node: APP
+      send: sar 1 10
+      validation: {success: {criteria: {regex: 'Average:\s+all(?:\s+\S+){5}\s+(?<idleCpu>\d+\.\d+)', expr: 'Float(idleCpu) >= 90'}}}
+    - node: APP
+      send: sar 1 10
+      validation: {success: {criteria: {regex: 'Average:', expr: 'Float(otherIdle) >= 90'}}}
+    - {node: APP, send: uptime, validation: {success: {criteria: {regex: 'up', expr: 'True'}}}}
+"""
+    steps = yaml.safe_load(fix_workflow(wf))["phases"]["a"]["steps"]
+    crit = steps[0]["validation"]["success"]["criteria"]
+    assert crit["expr"] == "idleCpu >= 90" and "(?<idleCpu>" in steps[0]["register"][0]["regex"]
+    assert "expr" not in steps[2]["validation"]["success"]["criteria"]           # literal True removed
+    problems = check_expr_vars({"phases": {"a": {"steps": steps}}}, runtime_params=[])
+    assert len(problems) == 1 and "otherIdle" in problems[0]
+    # 5 numbers instead of 6: captures the %steal column (0.00) → fails on a healthy node
+    wrong = {"node": "APP", "send": "sar 1 10",
+             "register": [{"regex": r"Average:\s+all(?:\s+\S+){4}\s+(?<idle>\d+\.\d+)"}],
+             "validation": {"success": {"criteria": {"regex": "Average:", "expr": "idle >= 90"}}}}
+    found = check_against_samples({"phases": {"a": {"steps": [wrong]}}}, SAR_REAL)
+    assert len(found) == 1 and "idle=0.00" in found[0]
+    right = dict(wrong, register=[{"regex": r"Average:\s+all(?:\s+\S+){5}\s+(?<idle>\d+\.\d+)"}])
+    assert check_against_samples({"phases": {"a": {"steps": [right]}}}, SAR_REAL) == []
+
+
+def test_sftp_steps_carry_no_output_regex():
+    from skills.network_config_gen.autofix import fix_workflow
+    wf = """
+nodes:
+  APP: {type: remote, plugin: ssh, prompt_regex: 'app:~ #', ssh: {host: h, user: u}}
+phases:
+  a:
+    steps:
+    - node: APP
+      sftp: {operation: upload, local_path: a.xml, remote_path: /in/a.xml}
+      validation: {success: {criteria: {regex: 'File transfer successful'}, message: ok}}
+"""
+    step = yaml.safe_load(fix_workflow(wf))["phases"]["a"]["steps"][0]
+    assert step["sftp"]["operation"] == "upload" and "criteria" not in step["validation"]["success"] or \
+        "regex" not in (step["validation"]["success"].get("criteria") or {})
+
+
+def test_whitespace_joins_widen_only_where_real_output_has_lines_between():
+    from skills.network_config_gen.validator import _relax_joins
+    out = ["apache ... running (7 processes)\n2026: INFO: Checking instances status:\n  instance1... running"]
+    relaxed = _relax_joins(r"apache \.\.\. running \((\d+) processes\)\s+instance\d+\.\.\. running", out)
+    assert relaxed == r"apache \.\.\. running \((\d+) processes\)[\s\S]*?instance\d+\.\.\. running"
+    assert _relax_joins(r"apache\s+stopped", out) == ""                         # wrong content stays wrong
+
+
+def test_helper_scripts_are_smoke_run_with_the_workflow_invocation():
+    from skills.helper_script_gen.skill import smoke_run
+    broken = "import argparse\np = argparse.ArgumentParser()\np.add_argument('--id')\na = p.parse_args()\nprint(ids)\n"
+    problems = smoke_run("mk.py", broken, ["python mk.py --id '${ORDERNO}'"], {"ORDERNO": "T1"})
+    assert len(problems) == 1 and "NameError" in problems[0] and "--id 'T1'" in problems[0]
+    ok = broken.replace("print(ids)", "print('created', a.id)")
+    assert smoke_run("mk.py", ok, ["python mk.py --id '${ORDERNO}'"], {"ORDERNO": "T1"}) == []
+    needs_input = "open('/no/such/input.res').read()\n"                         # environment, not code
+    assert smoke_run("rd.py", needs_input, ["python rd.py"], {}) == []
+
+
 def test_command_sample_library_fills_commands_a_run_did_not_record():
     from tools import command_samples as lib
     assert lib.add([{"command": "sar 1 10", "output": "Average: all 1 2 3 4 5 95.0"}], source="t") == 1

@@ -136,6 +136,7 @@ class NetworkConfigGenSkill:
             return SkillOutput(status="failed", error=f"Workflow generation failed: {e}")
 
         yaml_text, errors = await self._self_correct(yaml_text, errors)
+        yaml_text, errors = self._relax_against_samples(yaml_text, errors)
         status = "failed" if errors else "passed"
         logger.info("Workflow generated: %d chars, %d errors", len(yaml_text), len(errors))
 
@@ -185,6 +186,24 @@ class NetworkConfigGenSkill:
             validation_errors=errors,
             status=status,
         )
+
+    def _relax_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
+        """Deterministic last resort for multi-line regexes the LLM could not fix (DEP-22)."""
+        if not self._samples or not any("does not match the real output" in e for e in errors):
+            return yaml_text, errors
+        from .autofix import dump_yaml, parse_yaml
+        from .validator import relax_line_joins
+        parsed = parse_yaml(yaml_text)
+        if not parsed or not relax_line_joins(parsed, self._samples):
+            return yaml_text, errors
+        relaxed = dump_yaml(parsed)
+        new_errors = validate_workflow(relaxed, self._samples, self._ciq_sheets)
+        if len(new_errors) < len(errors):
+            logger.info("Relaxed multi-line regexes against real output: %d -> %d errors",
+                        len(errors), len(new_errors))
+            self._last_yaml = relaxed
+            return relaxed, new_errors
+        return yaml_text, errors
 
     async def _self_correct(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
         """Feed deterministic validation errors back to the LLM; keep the best version."""

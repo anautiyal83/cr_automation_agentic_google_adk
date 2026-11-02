@@ -14,7 +14,7 @@
 - [X] T008 E2E: `python test_step.py --agents 6,8,9 --run-id b61b977c… --transcripts … --developer-notes "…"` (2026-11-02): suite ran TC-P01 CR1/EAST and TC-P02 CR1/NORTH on a restarted simulator, report + JSON written; both FAIL for step 6 reasons — `ndsLoadStats` and `provgw status` regexes (already flagged by the step 6 validator, routed to step 6) and the MSISDN lookup never running because its `when` quoted the column (DEP-18, fixed)
 - [ ] T009 Re-run E2E after DEP-18 and the step 9 → 6 retry; target: both sunny-day cases PASS (c43f64ef with notes: 1 failing step per case — step 6 `${ifcTriggerName}` and S8-16)
 - [X] T013 Sunny-day robustness from run c43f64ef: S9-04, DEP-19/20/21, S8-17, S8-18, UI-3
-- [ ] T014 S8-16 via MockWire VFS + triggers (stateful file checks around uploads) — with 004 T055
+- [X] T014 S8-16 via MockWire VFS + triggers (stateful file checks around uploads) — with 004 T055. E2E c43f64ef with notes (3 runs, 2026-11-02): step 6 0-4 errors, step 8 passed with inbox/outbox VFS + trigger, EAST resolves IMSI via MSISDN, upload flow reached; last run 13 steps per case, 2 failing (provgw regex with \s+ join, create_xml.py NameError) — both fixed after it (DEP-22 greedy relaxation, S9-06 smoke run), re-verification pending
 
 ## Phase 2: Negative cases (later — built, switched off)
 

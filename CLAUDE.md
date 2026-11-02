@@ -139,6 +139,14 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- `criteria.expr` compares REGISTERED variables only (`cpuIdle >= 90`): no `Float()`/`Int()`, a literal `True` always
+  fails, named groups of the validation regex are invisible to expr → `register:` the value on the step (autofix)
+- A non-zero exit fails a step before its regex (`use_exit_code: false` does not help): "must be absent" checks are
+  `ls -l <file> 2>&1 || true` (autofix adds it)
+- Files move with step `sftp: {operation: upload|download, local_path, remote_path}` on the node, never `put`/`get` in a
+  shell (autofix rewrites); a node's file must be downloaded before a LOCAL step reads it (validator)
+- Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
+  upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 
 ## Running
 ```powershell

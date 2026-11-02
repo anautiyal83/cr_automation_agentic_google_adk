@@ -47,6 +47,7 @@ class NodeSpec:
     commands: list[dict] = field(default_factory=list)    # workflow steps for this node
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
+    vfs: dict | None = None      # sandbox dirs + triggers for file flows (file_flows.py, S8-16)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -93,7 +94,8 @@ def build_topology(
         if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")):
             continue
         node_cmds = [c for c in commands if c.get("node") == name]
-        if not node_cmds:
+        from .file_flows import node_steps
+        if not node_cmds and not node_steps(workflow, str(name)):  # sftp-only nodes are used too
             # Declared but used by no step (e.g. an invented gateway node): the JAR never
             # connects to it, so it needs no simulator instance (S8-17)
             logger.info("Topology: node %s is used by no step — no simulator instance", name)
@@ -157,6 +159,8 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         }
     if spec.transfer:
         cfg["transfer"] = {"sftpPrompt": "sftp> ", "scpPrompt": "scp> "}
+    if spec.vfs:
+        cfg["vfs"] = spec.vfs
 
     for key, val in (command_entries or {}).items():
         key = str(key)
@@ -170,8 +174,13 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
 def _is_builtin_key(key: str) -> bool:
     """Keys MockWire answers itself; mapping them would override builtin behaviour."""
     k = key.strip().lower()
+    if k.startswith("regex:"):
+        k = k[len("regex:"):].lstrip("^").replace("\\ ", " ")
+    # echo/true/false print exactly what a shell would: a mapped answer can only be wrong
+    # (an LLM mapped 'echo <IMSI>' to a fixed number, run c43f64ef)
+    first = k.split(" ", 1)[0].rstrip("\\")
     return (_is_su(k) or k in ("exit", "logout", "quit") or k.startswith(("stty", "ctrl+p"))
-            or "__cmd_done__" in k)
+            or "__cmd_done__" in k or first in ("echo", "true", "false", ":"))
 
 
 # ---------------------------------------------------------------------------

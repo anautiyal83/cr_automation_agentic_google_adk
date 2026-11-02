@@ -31,7 +31,15 @@ _VALID_COMMAND_FIELDS = {
     # StepDefinition fields from schemas/cli-automation-workflow-schema_v1.2.yaml
     "id", "prompt_regex", "when", "skip_when", "use_exit_code",
     "retries", "retry_delay_sec", "retry_on", "expect_reply",
+    # were stripped before S8-16: SFTP transfers, loops, REST/email steps, nested steps
+    "type", "execution_criteria", "var_meta", "for_each", "item_var", "max_iterations",
+    "continue_when", "break_when", "rest", "sftp", "email", "steps",
 }
+
+# Shell "put"/"get" are sftp sub-commands, not shell commands: the JAR's sftp step does it
+_SHELL_TRANSFER = re.compile(r"^(put|get)\s+(\S+)\s+(\S+)\s*$")
+# A success regex that expects the command to fail (file absent, …)
+_EXPECTS_ABSENCE = re.compile(r"No such file|cannot access|does not exist|not found", re.I)
 
 # Step fields the JAR only accepts as strings (a497018: LLM map-valued `when` broke deserialization)
 _STRING_ONLY_FIELDS = {"when", "skip_when", "prompt_regex"}
@@ -231,6 +239,7 @@ def fix_workflow(yaml_text: str) -> str:
 
     # --- Regex named groups + placeholders the JAR cannot resolve ---
     renames = fix_named_groups(parsed.get("phases", {}))
+    rename_expr_vars(parsed.get("phases", {}), renames)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
 
@@ -452,6 +461,8 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     _fix_criteria_expr(step)
 
     _fix_prompt_change_step(step)
+    _fix_transfer_step(step)
+    _fix_absence_check(step)
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -462,6 +473,43 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
             step.pop(key)
 
     return step
+
+
+def _fix_transfer_step(step: dict) -> None:
+    """``send: put <local> <remote>`` in a node shell → JAR sftp upload step (``get`` →
+    download). A shell has no ``put``; the JAR's sftp step transfers over the node's SSH
+    connection (verified against MockWire 2026-11-02, S8-16)."""
+    if isinstance(step.get("sftp"), dict):
+        # An sftp step prints nothing: an output regex can never match; its status decides
+        for criteria in _criteria_blocks(step):
+            criteria.pop("regex", None)
+        return
+    m = _SHELL_TRANSFER.match(str(step.get("send") or "").strip())
+    if not m or str(step.get("node", "")).upper() == "LOCAL":
+        return
+    op, a, b = m.group(1), m.group(2).strip("'\""), m.group(3).strip("'\"")
+    step["sftp"] = ({"operation": "upload", "local_path": a, "remote_path": b} if op == "put"
+                    else {"operation": "download", "remote_path": a, "local_path": b})
+    step.pop("send", None)
+    validation = step.get("validation")
+    if isinstance(validation, dict):  # transfer success is the step's own status
+        for branch in ("success", "failure"):
+            if isinstance(validation.get(branch), dict):
+                validation[branch].pop("criteria", None)
+    logger.info("Shell '%s' → sftp %s step", op, step["sftp"]["operation"])
+
+
+def _fix_absence_check(step: dict) -> None:
+    """A check whose success means the command failed (``ls`` of a file that must not exist)
+    exits non-zero, and the JAR fails any non-zero step before its regex: make it exit 0."""
+    send = str(step.get("send") or "").strip()
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+    regex = criteria.get("regex")
+    if (send and isinstance(regex, str) and _EXPECTS_ABSENCE.search(regex)
+            and "|| true" not in send and "|| :" not in send):
+        step["send"] = send + ("" if "2>&1" in send else " 2>&1") + " || true"
 
 
 def _fix_prompt_change_step(step: dict) -> None:
@@ -621,50 +669,68 @@ def _fix_validation(validation: dict, step: dict) -> dict:
     return validation
 
 
-def _fix_criteria_expr(cmd: dict) -> None:
-    """Fix unsupported Java functions in criteria.expr.
+_EXPR_CAST = re.compile(r"\b(?:Float|Int|float|int|Double|Number|parseFloat|parseInt)\s*\(\s*([A-Za-z_]\w*)\s*\)")
+_EXPR_UNSUPPORTED = re.compile(
+    r"all\s*\(|any\s*\(|re_search\s*\(|re\.match\s*\(|\.group\s*\(|json\.loads\s*\(|"
+    r"for\s+\w+\s+in\s+|lambda\s+|output\.contains\s*\(")
+_EXPR_LITERAL = re.compile(r"^\s*(true|false|1\s*==\s*1)\s*$", re.I)
+EXPR_IDENT = re.compile(r"(?<![\w.'\"])([A-Za-z_]\w*)(?!\s*\()")
+EXPR_KEYWORDS = {"and", "or", "not", "true", "false", "null", "None", "True", "False"}
 
-    The cli-automation JAR supports a limited expression language.
-    Common LLM mistakes:
-    - Python-style: all(), any(), re_search(), .group()
-    - Unsupported: re.match(), json.loads()
-    Replace with simple variable-exists or contains checks.
-    """
-    validation = cmd.get("validation", {})
+
+def _criteria_blocks(step: dict) -> list[dict]:
+    validation = step.get("validation")
     if not isinstance(validation, dict):
+        return []
+    blocks = [validation.get("criteria")]
+    blocks += [b.get("criteria") for b in (validation.get(k) for k in ("success", "failure", "warning"))
+               if isinstance(b, dict)]
+    return [c for c in blocks if isinstance(c, dict)]
+
+
+def _fix_criteria_expr(cmd: dict) -> None:
+    """Make criteria.expr evaluable by the cli-automation JAR (probed 2026-11-02, DEP-24).
+
+    The JAR compares registered context variables (``idle >= 90``). It has no Float()/Int()
+    casts, a literal ``True`` always fails, and named groups of a validation regex are not
+    visible to expr — only ``register:`` on the step makes a value available.
+    """
+    for criteria in _criteria_blocks(cmd):
+        expr = criteria.get("expr")
+        if not isinstance(expr, str):
+            continue
+        expr = _EXPR_CAST.sub(lambda m: m.group(1), expr).strip()
+        if not expr or _EXPR_LITERAL.match(expr) or _EXPR_UNSUPPORTED.search(expr):
+            criteria.pop("expr", None)  # the regex (if any) decides
+            continue
+        criteria["expr"] = expr
+        regex = criteria.get("regex")
+        groups = set(re.findall(r"\(\?P?<([A-Za-z_]\w*)>", regex)) if isinstance(regex, str) else set()
+        registered = {g for r in (cmd.get("register") or []) if isinstance(r, dict)
+                      for g in re.findall(r"\(\?P?<([A-Za-z_]\w*)>", str(r.get("regex", "")))}
+        used = {m.group(1) for m in EXPR_IDENT.finditer(expr)} - EXPR_KEYWORDS
+        if used & groups - registered:
+            cmd.setdefault("register", []).append({"regex": regex})
+
+
+def rename_expr_vars(phases: Any, renames: dict[str, str]) -> None:
+    """Apply register group renames (fix_named_groups) to expr identifiers too."""
+    if not renames:
         return
 
-    criteria = validation.get("criteria", {})
-    if not isinstance(criteria, dict):
-        return
+    def walk(steps):
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            for criteria in _criteria_blocks(step):
+                if isinstance(criteria.get("expr"), str):
+                    criteria["expr"] = EXPR_IDENT.sub(lambda m: renames.get(m.group(1), m.group(1)),
+                                                      criteria["expr"])
+            walk(step.get("steps"))
 
-    expr = criteria.get("expr", "")
-    if not isinstance(expr, str):
-        return
-
-    # Patterns that indicate unsupported functions
-    _UNSUPPORTED = [
-        r"all\s*\(", r"any\s*\(", r"re_search\s*\(", r"re\.match\s*\(",
-        r"\.group\s*\(", r"json\.loads\s*\(", r"int\s*\(\s*\)", r"\|\s*int\(\)",
-        r"for\s+\w+\s+in\s+", r"lambda\s+",
-    ]
-
-    needs_fix = any(re.search(p, expr) for p in _UNSUPPORTED)
-    if not needs_fix:
-        return
-
-    # Simplify to a basic contains/exists check
-    # Try to extract the key string being checked
-    quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", expr)
-    if quoted:
-        # Use the first quoted string as a contains check
-        check_str = quoted[0][0] or quoted[0][1]
-        criteria["expr"] = f"output.contains('{check_str}')"
-        logger.debug("Simplified unsupported expr to contains check: '%s'", check_str)
-    else:
-        # Fall back to always-true (don't block execution)
-        criteria["expr"] = "true"
-        logger.debug("Could not simplify expr, set to 'true': %s", expr[:80])
+    bodies = phases.values() if isinstance(phases, dict) else (phases or [])
+    for body in bodies:
+        walk(body.get("steps") if isinstance(body, dict) else body)
 
 
 def is_placeholder(value: Any) -> bool:

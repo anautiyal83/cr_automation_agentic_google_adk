@@ -433,6 +433,10 @@ class ScenarioSuite:
             (self.sim_dir / "config" / f"{name}.yaml").write_text(text, encoding="utf-8")
         for f in (self.sim_dir / "logs").glob("*.events.jsonl"):
             f.unlink()
+        # Every case starts from a clean node: files uploaded or produced by the previous
+        # case (inbox/<ORDERNO>.xml, outbox/….res) must not exist yet
+        shutil.rmtree(self.sim_dir / "vfs", ignore_errors=True)
+        (self.sim_dir / "vfs").mkdir(parents=True, exist_ok=True)
         sim = await start_simulator(
             self.sim_dir,
             [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []))

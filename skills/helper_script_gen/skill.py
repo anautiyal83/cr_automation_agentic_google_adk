@@ -94,6 +94,60 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
     return problems
 
 
+# Exceptions that mean the script itself is broken (not a missing input file / environment)
+_CODE_ERRORS = re.compile(r"^(NameError|SyntaxError|IndentationError|TypeError|AttributeError|UnboundLocalError|"
+                          r"ImportError|ModuleNotFoundError|KeyError|IndexError|ValueError)\b", re.M)
+_WF_PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
+
+
+def _test_values(requirements: dict) -> dict[str, str]:
+    """Placeholder test values: framework runtime params + first non-empty CIQ sample value."""
+    from core.config import runtime_params
+    values: dict[str, str] = dict(runtime_params())
+    for sheet in ((requirements.get("doc_extracted") or {}).get("ciq_sheets") or {}).values():
+        for row in (sheet or {}).get("sample_rows") or []:
+            if isinstance(row, dict):
+                for k, v in row.items():
+                    if str(v or "").strip():
+                        values.setdefault(f"configSequences.0.records.0.data.{k}", str(v))
+    return values
+
+
+def smoke_run(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
+              timeout: int = 20) -> list[str]:
+    """Run the script as the workflow does (placeholders → test values) in a temp folder.
+
+    A traceback from a programming error is a problem (S9-06: NameError in create_xml.py);
+    failures for missing inputs (a response file only a real run produces) are not.
+    """
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="helper-smoke-") as tmp:
+        Path(tmp, script_name).write_text(code, encoding="utf-8")
+        for line in command_lines[:3]:
+            resolved = _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), line)
+            try:
+                argv = shlex.split(resolved, posix=True)
+            except ValueError:
+                continue
+            if not argv or not re.match(r"python3?$", argv[0]):
+                continue
+            argv[0] = sys.executable
+            argv[1] = str(Path(tmp, Path(argv[1]).name))
+            try:
+                proc = subprocess.run(argv, cwd=tmp, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                problems.append(f"`{resolved}` did not finish within {timeout}s")
+                continue
+            err = proc.stderr or ""
+            if "Traceback (most recent call last)" in err and _CODE_ERRORS.search(err):
+                problems.append(f"running `{resolved}` crashed:\n" + "\n".join(err.strip().splitlines()[-6:]))
+    return problems
+
+
 def _longest_literal(regex: str) -> str:
     """Longest run of literal text in a regex (escaped punctuation unescaped)."""
     runs, current, i = [], "", 0
@@ -212,6 +266,7 @@ class HelperScriptGenSkill:
         errors = []
 
         output_regexes = self._script_output_regexes(inp.workflow_yaml)
+        test_values = _test_values(inp.requirements)
         for script_name, cmd_lines in needed.items():
             flags = contract_flags(cmd_lines)
             regexes = output_regexes.get(script_name, [])
@@ -230,7 +285,8 @@ class HelperScriptGenSkill:
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
-                    problems = check_script_contract(code, flags) or check_output_contract(code, regexes)
+                    problems = (check_script_contract(code, flags) or check_output_contract(code, regexes)
+                                or smoke_run(script_name, code, cmd_lines, test_values))
                     if not problems:
                         break
                     logger.warning("%s attempt %d/%d violates the CLI contract: %s",
