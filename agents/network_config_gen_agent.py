@@ -82,9 +82,21 @@ class NetworkConfigGenAgent(BaseAgent):
             if run_dir:
                 import json
                 err_file = Path(run_dir) / "step_6_error.json"
-                # failed_agents: a milestone rerun restarts from the workflow, not just the scripts
+                # failed_agents: a milestone rerun restarts from the workflow, not just the scripts;
+                # questions: what only the developer can answer, asked at the milestone (OB-13)
+                from skills.network_config_gen.skill import requirement_questions
+                try:
+                    questions = requirement_questions(
+                        output.workflow_yaml, (requirements.get("doc_extracted") or {}).get("ciq_sheets") or {})
+                except Exception as e:  # never lose the error file over a question
+                    logger.warning("Could not derive step 6 questions: %s", e)
+                    questions = []
                 err_file.write_text(json.dumps({"error": state["step_6_error"],
-                                                "failed_agents": ["network_config_gen"]}, indent=2))
+                                                "failed_agents": ["network_config_gen"],
+                                                "questions": questions}, indent=2))
+                if questions:
+                    flow.flow("NETWORK_CONFIG_GEN: %d question(s) for the developer: %s",
+                              len(questions), ", ".join(q["variable"] for q in questions))
 
         flow.flow("NETWORK_CONFIG_GEN DONE — status=%s, errors=%d",
                    output.status, len(output.validation_errors))

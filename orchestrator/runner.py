@@ -323,6 +323,56 @@ class PipelineRunner:
         except Exception:
             logger.exception("Milestone monitor error for run %s", run_id)
 
+    def answer_milestone_questions(self, run_id: str, step_num: int, answers: list[dict],
+                                   rerun: bool = True) -> str:
+        """Answers to a milestone's questions (``[{question, answer}]``, OB-13) become developer
+        notes — of this run (the step regenerates with them), its ``requirements.json`` and the
+        UC's document set (the New Run wizard pre-fills them, the requirements cache keys on
+        them) — then the step re-runs (``rerun``; the UI re-runs through its own handler).
+        Returns the added note text."""
+        lines = [f"Developer answer (step {step_num}) — {a['question']}\n{a['answer'].strip()}"
+                 for a in answers if str(a.get("answer") or "").strip()]
+        if not lines:
+            return ""
+        added = "\n\n".join(lines)
+        from agents.requirements_agent import requirements_store
+
+        def extend(notes) -> str:
+            return f"{notes.strip()}\n\n{added}" if str(notes or "").strip() else added
+
+        req = requirements_store.get(run_id)
+        if isinstance(req, dict):
+            req["developer_notes"] = extend(req.get("developer_notes"))
+        run_dir = Path(self._config.get("output_directory", "./data/runs")) / run_id
+        req_file = run_dir / "requirements.json"
+        if req_file.exists():
+            try:
+                data = json.loads(req_file.read_text(encoding="utf-8"))
+                data["developer_notes"] = extend(data.get("developer_notes"))
+                req_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            except (OSError, ValueError) as e:
+                logger.warning("Could not add the answers to %s: %s", req_file, e)
+        if self._db:
+            asyncio.create_task(self._append_document_set_notes(run_id, added))
+        flow.flow("MILESTONE ANSWERS — run=%s step=%d: %d answer(s) added to developer notes",
+                  run_id[:8], step_num, len(lines))
+        if rerun:
+            self.respond_milestone(run_id, step_num, "rerun")
+        return added
+
+    async def _append_document_set_notes(self, run_id: str, added: str) -> None:
+        try:
+            rows = await self._db.execute(
+                "SELECT d.id, d.developer_notes FROM pipeline_runs r "
+                "JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?", (run_id,))
+            if rows:
+                notes = str(rows[0]["developer_notes"] or "").strip()
+                await self._db.execute_insert(
+                    "UPDATE uc_document_sets SET developer_notes = ? WHERE id = ?",
+                    (f"{notes}\n\n{added}" if notes else added, rows[0]["id"]))
+        except Exception:
+            logger.exception("Could not save the milestone answers to the document set")
+
     def respond_milestone(self, run_id: str, step_num: int, decision: str):
         """Respond to a milestone pause: 'continue', 'rerun', or 'cancel'."""
         flow.flow("MILESTONE RESPOND — run=%s step=%d decision=%s", run_id[:8], step_num, decision)

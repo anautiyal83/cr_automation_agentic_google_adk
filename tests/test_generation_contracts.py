@@ -389,3 +389,60 @@ def test_milestone_rerun_starts_at_the_earliest_failed_agent(tmp_path):
     (tmp_path / "step_6_error.json").write_text(
         json.dumps({"failed_agents": ["network_config_gen", "helper_script_gen"]}))
     assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 0
+
+
+_GAP_CIQ = {"Sheet1": {"columns": ["Zone", "Test IMSI", "Test MSISDN"], "sample_rows": [
+    {"Zone": "EAST", "Test IMSI": None, "Test MSISDN": "9810217635"},
+    {"Zone": "NORTH", "Test IMSI": "404530000000132", "Test MSISDN": None}]}}
+_GAP_WF = """
+nodes: {RDS: {type: remote, plugin: ssh}}
+phases:
+  activity:
+    steps:
+    - node: RDS
+      when: configSequences.0.records.0.data.Test IMSI != ''
+      send: echo ${configSequences.0.records.0.data.Test IMSI}
+      register: [{regex: '(?<resolvedImsi>\\d+)'}]
+    - node: RDS
+      send: ldapsearch -b "imsi=${resolvedImsi},dc=IMSI"
+"""
+
+
+def test_step6_asks_how_rows_without_a_value_get_it():
+    from skills.network_config_gen.skill import requirement_questions
+    questions = requirement_questions(_GAP_WF, _GAP_CIQ)
+    assert [q["variable"] for q in questions] == ["resolvedImsi"]
+    text = questions[0]["question"]
+    assert "EAST" in text and "Test IMSI is empty" in text and "Test MSISDN is given" in text
+
+
+def test_milestone_answers_become_developer_notes_and_rerun(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from agents.requirements_agent import requirements_store
+    from orchestrator.runner import PipelineRunner
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "requirements.json").write_text(json.dumps({"developer_notes": "old"}))
+    requirements_store["run1"] = {"developer_notes": None}
+    calls = []
+    stub = SimpleNamespace(_config={"output_directory": str(tmp_path)}, _db=None,
+                           respond_milestone=lambda *a: calls.append(a))
+    added = PipelineRunner.answer_milestone_questions(
+        stub, "run1", 6, [{"question": "How do you get resolvedImsi?", "answer": "ldapsearch msisdn=<Test MSISDN>"},
+                          {"question": "unanswered", "answer": "  "}])
+    assert "ldapsearch msisdn=<Test MSISDN>" in added and "unanswered" not in added
+    assert requirements_store.pop("run1")["developer_notes"] == added
+    assert json.loads((tmp_path / "run1" / "requirements.json").read_text())["developer_notes"] == "old\n\n" + added
+    assert calls == [("run1", 6, "rerun")]
+
+
+def test_su_prompt_regex_is_repaired_to_the_recorded_prompt():
+    import re
+    from skills.network_config_gen.validator import repair_prompt_regexes
+    samples = [{"command": "su - sdfrun", "prompt": "[root@rds ~]#", "output": ""},
+               {"command": "ndsLoadStats", "prompt": "rdshyd201$", "output": "x"}]
+    wf = {"phases": {"pre": {"steps": [{"node": "RDS", "send": "su - sdfrun", "prompt_regex": "rdshyd201$"}]}}}
+    assert repair_prompt_regexes(wf, samples) == 1
+    regex = wf["phases"]["pre"]["steps"][0]["prompt_regex"]
+    assert re.search(regex, "rdshyd201$") and re.search(regex, "rdshyd201$ ")
+    assert repair_prompt_regexes(wf, samples) == 0

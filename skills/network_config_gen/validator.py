@@ -220,6 +220,18 @@ def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str
     Only simple guards (``<Col> == '…'`` / ``!= '…'`` joined by ``&&``) are evaluated; any
     other guard counts as true, so the check never reports a guess.
     """
+    return [
+        f"For CIQ rows like {g['label']}, step '{g['send'][:80]}' uses ${{{g['variable']}}} but no "
+        f"step that runs for that row registers it (the steps registering it are skipped by "
+        f"their when conditions, or register it without a (?<{g['variable']}>…) group). Register it for "
+        "every row — e.g. look the value up from a column that row fills, as the developer "
+        "notes / MOP describe."
+        for g in row_variable_gaps(parsed, ciq_sheets, runtime_params)]
+
+
+def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] | None = None) -> list[dict]:
+    """The gaps behind :func:`check_row_variables`: ``variable``, the CIQ ``row`` (and its
+    ``label``) that never gets it, the using step's ``send`` and the ``guard_columns``."""
     if runtime_params is None:
         from core.config import runtime_params as configured
         runtime_params = list(configured())
@@ -248,7 +260,7 @@ def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str
                 return False
         return True
 
-    problems: dict[str, str] = {}
+    problems: dict[str, dict] = {}
     for rows in sheets.values():
         for row in rows:
             label = str(next((v for v in row.values() if str(v or "").strip()), "row"))
@@ -259,12 +271,8 @@ def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str
                 for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(str(step.get("send") or ""))}:
                     if "." in name or name in defined_always or name in registered or name in problems:
                         continue
-                    problems[name] = (
-                        f"For CIQ rows like {label}, step '{str(step.get('send'))[:80]}' uses ${{{name}}} but no "
-                        f"step that runs for that row registers it (the steps registering it are skipped by "
-                        f"their when conditions, or register it without a (?<{name}>…) group). Register it for "
-                        "every row — e.g. look the value up from a column that row fills, as the developer "
-                        "notes / MOP describe.")
+                    problems[name] = {"variable": name, "row": row, "label": label,
+                                      "send": str(step.get("send")), "guard_columns": sorted(guard_cols)}
                 for reg in step.get("register") or []:
                     rx = reg.get("regex") if isinstance(reg, dict) else None
                     if isinstance(rx, str):
@@ -347,6 +355,35 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
     return problems
 
 
+def _prompts_after(send: str, samples: list[dict]) -> list[str]:
+    """Prompts the real node showed right after ``send`` (the next sample's prompt)."""
+    seen = [str(samples[i + 1].get("prompt") or "") for i in range(len(samples) - 1)
+            if isinstance(samples[i], dict) and isinstance(samples[i + 1], dict)
+            and _command_matches(send, str(samples[i].get("command", "")))]
+    return [p for p in dict.fromkeys(seen) if p]
+
+
+def repair_prompt_regexes(parsed: dict, command_samples: list[dict]) -> int:
+    """A su/exit ``prompt_regex`` that misses the prompt the real node showed next becomes
+    that prompt, escaped (``rdshyd201$`` with an unescaped end anchor never matched
+    ``rdshyd201$``; DEP-34). Only prompts recorded in transcripts are used."""
+    changed = 0
+    for _, step in _iter_steps(parsed.get("phases") or {}):
+        regex = str(step.get("prompt_regex") or "")
+        send = str(step.get("send") or "")
+        if not regex or not send:
+            continue
+        seen = _prompts_after(send, command_samples)
+        if not seen or _regex_matches_any(regex, seen + [p + " " for p in seen]) is True:
+            continue
+        literals = [re.escape(p.strip()) for p in seen if p.strip()]
+        if literals:
+            step["prompt_regex"] = (literals[0] if len(literals) == 1
+                                    else "(?:" + "|".join(literals) + ")") + r"\s*$"
+            changed += 1
+    return changed
+
+
 def _check_prompt_change(step: dict, send: str, phase_name: str, samples: list[dict]) -> str:
     """A su/exit step's prompt_regex must match the prompt the real node showed next.
 
@@ -355,9 +392,7 @@ def _check_prompt_change(step: dict, send: str, phase_name: str, samples: list[d
     regex = str(step.get("prompt_regex") or "")
     if not regex:
         return ""
-    seen = [str(samples[i + 1].get("prompt") or "") for i in range(len(samples) - 1)
-            if isinstance(samples[i], dict) and _command_matches(send, str(samples[i].get("command", "")))]
-    seen = [p for p in seen if p]
+    seen = _prompts_after(send, samples)
     if not seen:
         return ""
     if _regex_matches_any(regex, seen + [p + " " for p in seen]) is True:

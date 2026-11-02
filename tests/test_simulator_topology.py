@@ -257,3 +257,10 @@ def test_listing_mode_comes_from_samples_then_the_workflow_regex():
     assert derive_listing(steps, ["/out"], samples) == [
         {"path": "/out/[^/]+", "mode": "-rw-r-----", "owner": "provgw", "group": "sftp"}]
     assert derive_listing([{"send": "ls -l /out/x"}], ["/out"], []) == []
+
+
+def test_prompt_space_is_kept_off_when_the_regex_anchors_right_after_it():
+    from skills.network_simulator_setup.topology import _with_space
+    assert _with_space("rdshyd201", "rdshyd201$") == "rdshyd201"
+    assert _with_space("rdshyd201$", r"rdshyd201\$\s*$") == "rdshyd201$ "
+    assert _with_space("x#") == "x# "

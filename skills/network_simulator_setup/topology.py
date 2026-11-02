@@ -199,15 +199,15 @@ def _set_prompts(spec: NodeSpec, req_ssh: dict) -> None:
         host = _hostname(root) or spec.name.lower()
         # Login prompt as the node shows it before elevation; the overlay adds it to prompt_regex
         login = str(req_ssh.get("prompt_pattern") or "") or f"[{spec.user}@{host} ~]$"
-        spec.root_prompt = _with_space(root)
-        spec.login_prompt = _with_space(login)
+        spec.root_prompt = _with_space(root, spec.prompt_regex)
+        spec.login_prompt = _with_space(login, spec.prompt_regex)
         spec.prompt = spec.root_prompt
     else:
         login = _first_matching([str(req_ssh.get("prompt_pattern") or "")] + alternatives, spec.prompt_regex)
         if not login:
             login = f"{spec.name.lower()}:~ #"
             spec.warnings.append(f"no prompt satisfies prompt_regex {spec.prompt_regex!r}; using {login!r}")
-        spec.login_prompt = spec.prompt = _with_space(login)
+        spec.login_prompt = spec.prompt = _with_space(login, spec.prompt_regex)
     spec.hostname = _hostname(spec.login_prompt) or _hostname(spec.root_prompt) or spec.name.lower()
 
 
@@ -231,7 +231,7 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
         step_regex = str(cmd.get("prompt_regex") or "")
         own = _first_matching(_regex_examples(step_regex), step_regex) if step_regex else ""
         if own:
-            result[text] = _with_space(own)
+            result[text] = _with_space(own, step_regex)
             continue
         candidates = _regex_examples(str(cmd.get("prompt_regex") or "")) + _regex_examples(_validation_regex(cmd))
         if str(req.get("target_user_after_root", "")) == user:
@@ -242,7 +242,7 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
         if not chosen:
             chosen = f"{user}@{spec.name.lower()}:~>"
             spec.warnings.append(f"no prompt found for {text!r}; using {chosen!r}")
-        result[text] = _with_space(chosen)
+        result[text] = _with_space(chosen, step_regex or spec.prompt_regex)
     return result
 
 
@@ -376,8 +376,18 @@ def _first_matching(candidates: list[str], regex: str) -> str:
     return ""
 
 
-def _with_space(prompt: str) -> str:
-    return prompt if prompt.endswith(" ") else prompt + " "
+def _with_space(prompt: str, regex: str = "") -> str:
+    """The prompt followed by a space, as shells print it — unless that breaks ``regex``
+    (``rdshyd201$`` anchors right after the prompt: "rdshyd201 " never matched; S8-24)."""
+    if prompt.endswith(" "):
+        return prompt
+    if regex:
+        try:
+            if re.search(regex, prompt) and not re.search(regex, prompt + " "):
+                return prompt
+        except re.error:
+            pass
+    return prompt + " "
 
 
 # ---------------------------------------------------------------------------
