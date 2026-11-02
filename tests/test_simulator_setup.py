@@ -273,3 +273,19 @@ def test_classify_local_failure_is_workflow_when_events_present():
     local = [CommandResult(command="python create_xml.py --imsi 1", node="LOCAL", success=False,
                            output="python.exe: can't open file 'create_xml.py': [Errno 2] No such file")]
     assert classify_failures(local, [])["classification"] == "workflow"
+
+
+def test_real_output_wins_over_invented_responses():
+    from skills.network_simulator_setup.skill import merge_responses
+    dump = "ldapsearch -b \"imsi=${resolvedImsi},dc=IMSI\" objectclass=*"
+    lookup = "ldapsearch -b \"msisdn=${configSequences.0.records.0.data.Test MSISDN},dc=MSISDN\" objectclass=*"
+    commands = [{"cmd": lookup}, {"cmd": dump}]
+    recorded = {r'regex:^ldapsearch -b "imsi=(?<resolvedImsi>.+?),dc=IMSI" objectclass=\*$': {"lines": ["dn: uid=1"]}}
+    synthetic = {r'regex:ldapsearch -b "imsi=\S+,dc=IMSI"': {"lines": ["dn: imsi=invented"]},   # only the dump
+                 r'regex:ldapsearch -b "msisdn=\S+': {"lines": ["provisionedIMSI: 1"]},          # the lookup
+                 "uptime": {"lines": ["up"]}}
+    merged = merge_responses(recorded, synthetic, commands, {dump}, {"Test MSISDN": "9810217635"})
+    keys = list(merged)
+    assert keys[0].startswith(r'regex:^ldapsearch -b "imsi=')                     # real output first
+    assert r'regex:ldapsearch -b "imsi=\S+,dc=IMSI"' not in merged                # invented duplicate dropped
+    assert r'regex:ldapsearch -b "msisdn=\S+' in merged and "uptime" in merged

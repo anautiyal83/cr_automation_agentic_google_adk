@@ -697,6 +697,9 @@ _DEAD_SYNTAX = [
                                            "--var values are plain '${name}'"),
     (re.compile(r"\$\{configSequences\.[^}]*\.data\.['\"]"), "quotes the column name, which resolves "
                                                             "to empty — write it bare (spaces are fine)"),
+    (re.compile(r"\$\{configSequences\.\d+\.records\.\d+\.data\}"),
+     "is the whole CIQ record, which the JAR passes as '[object Object]' — pass the columns the "
+     "script needs one by one ('${configSequences.0.records.0.data.<Column>}')"),
 ]
 _PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
 _NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")

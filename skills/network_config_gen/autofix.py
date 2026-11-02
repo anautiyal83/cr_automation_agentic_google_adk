@@ -469,6 +469,8 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     for key in ("when", "skip_when"):
         if isinstance(step.get(key), str):
             step[key] = fix_condition_operators(step[key])
+    if str(step.get("node", "")).upper() == "LOCAL" and isinstance(step.get("send"), str):
+        step["send"] = single_quote_arguments(step["send"])
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -479,6 +481,21 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
             step.pop(key)
 
     return step
+
+
+_DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def single_quote_arguments(command: str) -> str:
+    """``--a "x y"`` → ``--a 'x y'`` in a LOCAL command. The JAR's LOCAL runner splits
+    double-quoted arguments at spaces and drops the rest of the line (probed:
+    ``--a "x y" --c "z"`` reached the program as ``['--a', 'x']``); single quotes arrive
+    intact, multi-line values too. ``${…}`` is filled in by the JAR before the shell runs,
+    so single quotes lose nothing (DEP-36)."""
+    def quote(m: re.Match) -> str:
+        value = re.sub(r'\\(["\\$`])', r"\1", m.group(1))
+        return "'" + value.replace("'", "'\\''") + "'"
+    return _DOUBLE_QUOTED.sub(quote, command)
 
 
 _WORD_OPERATOR = re.compile(r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")|\s+(and|or)\s+", re.IGNORECASE)

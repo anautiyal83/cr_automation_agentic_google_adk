@@ -184,7 +184,8 @@ class NetworkSimulatorSetupSkill:
             if recorded[node.name]:
                 logger.info("Phase 2: %s — %d responses from recorded real output",
                             node.name, len(recorded[node.name]))
-            instance_configs[node.instance] = build_instance_config(node, {**result, **recorded[node.name]})
+            instance_configs[node.instance] = build_instance_config(
+                node, merge_responses(recorded[node.name], result, node.commands, covered[node.name], row))
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
 
@@ -448,6 +449,32 @@ def resolve_command(cmd: str, row: dict) -> str:
             return str(row.get(expr.split(".data.", 1)[1].strip(), "") or "1")
         return "1"
     return re.sub(r"\$\{([^{}]+)\}", value, cmd)
+
+
+def merge_responses(recorded: dict, synthetic: dict, commands: list[dict], covered: set[str],
+                    row: dict) -> dict:
+    """Recorded/templated responses first, then the LLM's. MockWire answers with the first
+    matching key: an invented ``regex:ldapsearch … imsi=\\S+ …`` placed before the template
+    built from the real output answered the IMSI dump in a made-up format, and the workflow's
+    regex (written from the real output) failed (S8-25). Invented keys that only answer
+    commands real output covers are dropped."""
+    texts = [str(c.get("cmd", "")) for c in commands if isinstance(c, dict)]
+    uncovered = [t for t in texts if t not in covered]
+    kept = dict(synthetic)
+    for cmd in covered:
+        while True:
+            key, _ = _find_entry(kept, cmd, resolve_command(cmd, row))
+            if key is None:
+                break
+            others = [t for t in uncovered if _find_entry({key: 1}, t, resolve_command(t, row))[0] is not None]
+            if others:
+                break  # it also answers a command nobody recorded: keep it, behind the real one
+            kept.pop(key)
+            logger.info("Dropped invented response %r: real output covers %r", str(key)[:80], cmd[:80])
+    merged = dict(recorded)
+    for key, entry in kept.items():
+        merged.setdefault(key, entry)
+    return merged
 
 
 def _find_entry(entries: dict, cmd: str, resolved: str):

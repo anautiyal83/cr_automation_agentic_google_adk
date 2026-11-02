@@ -212,3 +212,17 @@ def test_when_word_operators_become_symbols_outside_quotes():
     assert fix_condition_operators(c) == c.replace(" and ", " && ")
     assert fix_condition_operators("a == 'x or y' OR b != ''") == "a == 'x or y' || b != ''"
     assert fix_condition_operators("brand != ''") == "brand != ''"
+
+
+def test_local_arguments_are_single_quoted():
+    from skills.network_config_gen.autofix import single_quote_arguments
+    cmd = 'python report.py --pre "${pre}" --name "it\'s" --out "r_${ORDERNO}.html"'
+    assert single_quote_arguments(cmd) == r"python report.py --pre '${pre}' --name 'it'\''s' --out 'r_${ORDERNO}.html'"
+    assert single_quote_arguments("python x.py --a 'y'") == "python x.py --a 'y'"
+
+
+def test_whole_ciq_record_placeholder_is_rejected():
+    from skills.network_config_gen.validator import check_placeholders
+    wf = {"nodes": {"LOCAL": {"type": "local"}}, "phases": {"a": {"steps": [
+        {"node": "LOCAL", "send": "python r.py --ciq '${configSequences.0.records.0.data}'"}]}}}
+    assert any("object Object" in e for e in check_placeholders(wf))
