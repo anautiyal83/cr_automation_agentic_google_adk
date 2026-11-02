@@ -36,7 +36,7 @@ class VendorSection:
                         .tooltip("Save all vendors, nodes, activities & settings to config/seed.json")
                     ui.button("+ Add Vendor", icon="add",
                               on_click=self._show_add_vendor_dialog) \
-                        .props("unelevated color=deep-purple-6 size=sm no-caps")
+                        .props("unelevated color=primary size=sm no-caps")
 
             self._vendor_container = ui.column().classes("w-full gap-3")
 
@@ -82,7 +82,7 @@ class VendorSection:
                         ui.label(v.name).classes("text-subtitle1 font-bold")
                     with ui.row().classes("gap-1"):
                         ui.button(icon="edit", on_click=lambda vid=v.id: self._show_edit_vendor_dialog(vid)) \
-                            .props("flat round size=sm color=deep-purple-6")
+                            .props("flat round size=sm color=primary")
                         ui.button(icon="delete", on_click=lambda vid=v.id, vn=v.name: self._confirm_delete(vid, vn)) \
                             .props("flat round size=sm color=red-4")
 
@@ -118,11 +118,11 @@ class VendorSection:
                         ui.icon("dns", size="16px").classes("cr-text-accent")
                         ui.label("Node Types").classes("text-caption font-semibold")
                         ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
-                            .props("flat size=xs color=deep-purple-6 no-caps")
+                            .props("flat size=xs color=primary no-caps")
 
                     for nt in v.node_types:
                         with ui.row().classes("items-center gap-2 ml-6"):
-                            ui.badge(nt.name, color="deep-purple-3").props("rounded dense")
+                            ui.badge(nt.name, color="primary").props("rounded dense")
                             ssh_cfg = nt.ssh_config or {}
                             elevate = ssh_cfg.get("elevate_to_root", False)
                             prompt = ssh_cfg.get("prompt_pattern", "")
@@ -145,7 +145,7 @@ class VendorSection:
                         ui.icon("dns", size="16px").classes("cr-text-dim")
                         ui.label("No node types").classes("text-caption cr-text-dim")
                         ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
-                            .props("flat size=xs color=deep-purple-6 no-caps")
+                            .props("flat size=xs color=primary no-caps")
 
                 # Activities
                 if v.activities:
@@ -153,11 +153,11 @@ class VendorSection:
                         ui.icon("play_circle", size="16px").classes("cr-text-accent")
                         ui.label("Activities").classes("text-caption font-semibold")
                         ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
-                            .props("flat size=xs color=deep-purple-6 no-caps")
+                            .props("flat size=xs color=primary no-caps")
 
                     for act in v.activities:
                         with ui.row().classes("items-center gap-2 ml-6"):
-                            ui.badge(act.display_name or act.name, color="teal-3").props("rounded dense")
+                            ui.badge(act.display_name or act.name, color="primary").props("rounded dense")
                             nodes_str = ", ".join(act.node_types) if act.node_types else "all"
                             phases_str = ", ".join(act.default_phases) if act.default_phases else "default"
                             n_fields = len(act.ciq_mapping.get("field_mappings", []))
@@ -173,7 +173,7 @@ class VendorSection:
                         ui.icon("play_circle", size="16px").classes("cr-text-dim")
                         ui.label("No activities").classes("text-caption cr-text-dim")
                         ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
-                            .props("flat size=xs color=deep-purple-6 no-caps")
+                            .props("flat size=xs color=primary no-caps")
 
     # ------------------------------------------------------------------
     # Vendor dialogs
@@ -253,7 +253,7 @@ class VendorSection:
                     name_input, gw_enabled, gw_name, gw_host, gw_port, gw_user, gw_pass,
                     gw_auth, gw_kex, gw_hka, gw_prompt,
                     ssh_user,
-                )).props("unelevated color=deep-purple-6 no-caps")
+                )).props("unelevated color=primary no-caps")
 
         dialog.open()
 
@@ -374,7 +374,7 @@ class VendorSection:
                 ui.button("Save", icon="save", on_click=lambda: self._save_node_from_dialog(
                     dialog, nt, vendor_id, name, login_method, node_prompt,
                     elevate_root,
-                )).props("unelevated color=deep-purple-6 no-caps")
+                )).props("unelevated color=primary no-caps")
 
         dialog.open()
 
@@ -447,7 +447,7 @@ class VendorSection:
             with ui.row().classes("gap-2 flex-wrap"):
                 for n in available_nodes:
                     node_checks[n] = ui.checkbox(n, value=n in act.node_types) \
-                        .props("dense color=deep-purple-6")
+                        .props("dense color=primary")
 
             ui.label("Default Phases").classes("text-caption font-semibold mt-2")
             phases = ui.input("Phases (comma-separated)",
@@ -473,7 +473,7 @@ class VendorSection:
                 ui.label("Field Mappings (CIQ Column → Node Field)").classes("text-caption font-semibold")
                 add_mapping_btn = ui.button("+ Add Field", icon="add",
                     on_click=lambda: self._add_mapping_row(mappings_container, mapping_rows)) \
-                    .props("flat size=xs color=deep-purple-6 no-caps")
+                    .props("flat size=xs color=primary no-caps")
 
             mapping_rows: list[dict] = []
             mappings_container = ui.column().classes("w-full gap-1")
@@ -492,7 +492,7 @@ class VendorSection:
                 ui.button("Save", icon="save", on_click=lambda: self._save_activity_from_dialog(
                     dialog, act, vendor_id, name, display, node_checks, phases,
                     node_id_col, gw_id_col, group_col, data_sheet, mapping_rows,
-                )).props("unelevated color=deep-purple-6 no-caps")
+                )).props("unelevated color=primary no-caps")
 
         dialog.open()
 

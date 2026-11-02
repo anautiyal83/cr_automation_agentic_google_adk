@@ -33,7 +33,7 @@ class UsageSection:
             with ui.row().classes("w-full items-center justify-end"):
                 with ui.row().classes("gap-2"):
                     ui.button("Refresh", icon="refresh", on_click=self._refresh) \
-                        .props("flat color=deep-purple-6 size=sm no-caps")
+                        .props("flat color=primary size=sm no-caps")
                     ui.button("Clear", icon="delete_outline", on_click=self._clear) \
                         .props("flat color=red-4 size=sm no-caps")
 
@@ -125,7 +125,7 @@ class UsageSection:
         self.summary_row.clear()
         with self.summary_row:
             cards = [
-                ("LLM Calls", str(stats["total_calls"]), "call_made", "#6C63FF"),
+                ("LLM Calls", str(stats["total_calls"]), "call_made", "#0B5FFF"),
                 ("Total Tokens", f"{stats['total_tokens']:,}", "token", "#0891B2"),
                 ("Est. Cost", f"${stats['total_cost']:.4f}", "attach_money", "#16A34A"),
                 ("Prompt Tokens", f"{stats['total_prompt']:,}", "upload", "#8B5CF6"),

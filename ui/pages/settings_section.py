@@ -168,7 +168,7 @@ class SettingsSection:
                         ).classes("flex-1").props("outlined dense")
                         ui.button("Save Key", icon="vpn_key",
                                   on_click=self._save_key) \
-                            .props("unelevated color=deep-purple-6 size=sm")
+                            .props("unelevated color=primary size=sm")
 
                 with ui.card().classes("w-full p-3 cr-card-inner"):
                     ui.label("Default LLM Model").classes("text-caption font-semibold")
@@ -207,7 +207,7 @@ class SettingsSection:
                     with ui.card().classes("flex-1 p-3 cr-card-inner"):
                         ui.label("Test Failure Retries").classes("text-caption font-semibold")
                         self.test_retry = ui.slider(min=1, max=10, value=3, step=1) \
-                            .props("label-always color=deep-purple-6")
+                            .props("label-always color=primary")
 
                     with ui.card().classes("flex-1 p-3 cr-card-inner"):
                         ui.label("Infrastructure Retries").classes("text-caption font-semibold")
@@ -264,7 +264,7 @@ class SettingsSection:
             with ui.row().classes("w-full justify-end"):
                 ui.button("Save All Settings", icon="save",
                           on_click=self._save_all) \
-                    .props("unelevated color=deep-purple-6 size=sm")
+                    .props("unelevated color=primary size=sm")
 
     @staticmethod
     def _card_header(title: str, icon: str, desc: str):

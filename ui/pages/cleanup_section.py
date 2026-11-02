@@ -12,7 +12,7 @@ from ui.components import status_cells
 
 STATUS_COLORS = {
     "completed": "#16A34A", "failed": "#DC2626",
-    "cancelled": "#D97706", "running": "#6C63FF", "pending": "#94A3B8",
+    "cancelled": "#D97706", "running": "#0B5FFF", "pending": "#94A3B8",
 }
 
 PAGE_SIZE = 10
@@ -51,7 +51,7 @@ class CleanupSection:
                           on_click=self._confirm_bulk_cleanup) \
                     .props("flat dense no-caps color=red-6 size=sm")
                 ui.button("Refresh", icon="refresh", on_click=self._refresh) \
-                    .props("flat color=deep-purple-6 size=sm no-caps")
+                    .props("flat color=primary size=sm no-caps")
 
             self.table = ui.table(
                 columns=[

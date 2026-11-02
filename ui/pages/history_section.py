@@ -13,8 +13,9 @@ PAGE_SIZE = 10
 
 
 class HistorySection:
-    def __init__(self, runner=None, on_rerun=None, on_view_outputs=None):
+    def __init__(self, runner=None, on_rerun=None, on_view_outputs=None, on_open_run=None):
         self.runner = runner
+        self.on_open_run = on_open_run  # callback(run_id) -> run page
         self.on_rerun = on_rerun  # callback(run) -> navigate to progress
         self.on_view_outputs = on_view_outputs  # callback(run_id) -> navigate to outputs
         self._current_page = 1
@@ -93,13 +94,16 @@ class HistorySection:
             # Custom body slot for action buttons
             self.table.add_slot('body-cell-actions', '''
                 <q-td :props="props">
+                    <q-btn flat dense icon="open_in_new" color="primary" size="sm"
+                           @click="$parent.$emit('open_run', props.row)"
+                           label="Open" no-caps class="q-mr-xs" />
                     <q-btn flat dense icon="info_outline" color="grey-7" size="sm"
                            @click="$parent.$emit('details', props.row)"
                            label="Details" no-caps class="q-mr-xs" />
-                    <q-btn flat dense icon="source" color="teal-6" size="sm"
+                    <q-btn flat dense icon="source" color="primary" size="sm"
                            @click="$parent.$emit('view', props.row)"
                            label="Outputs" no-caps class="q-mr-xs" />
-                    <q-btn flat dense icon="replay" color="deep-purple-6" size="sm"
+                    <q-btn flat dense icon="replay" color="primary" size="sm"
                            @click="$parent.$emit('rerun', props.row)"
                            label="Re-run" no-caps />
                 </q-td>
@@ -108,6 +112,7 @@ class HistorySection:
             self.table.on('rerun', self._on_rerun)
             self.table.on('view', self._on_view)
             self.table.on('details', self._on_details)
+            self.table.on('open_run', self._on_open_run)
 
             # Pagination row
             with ui.row().classes("w-full items-center justify-center gap-2 py-1"):
@@ -235,6 +240,11 @@ class HistorySection:
             self.btn_next.props("disable")
         else:
             self.btn_next.props(remove="disable")
+
+    async def _on_open_run(self, e):
+        row = e.args if isinstance(e.args, dict) else {}
+        if self.on_open_run and row.get("id"):
+            await self.on_open_run(row["id"])
 
     async def _on_details(self, e):
         row = e.args

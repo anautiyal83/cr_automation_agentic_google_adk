@@ -55,53 +55,69 @@ _config_manager = None
 
 CUSTOM_CSS = """
 <style>
-/* --- Dark theme (default) --- */
-body.body--dark {
-    --cr-primary: #6C63FF;
-    --cr-primary-dark: #5A52D5;
-    --cr-accent: #00D9FF;
-    --cr-surface: #1E1E2E;
-    --cr-surface-light: #2A2A3E;
-    --cr-surface-hover: #33334A;
-    --cr-text: #E8E8F0;
-    --cr-text-dim: #9090A8;
-    --cr-success: #4ADE80;
-    --cr-error: #F87171;
-    --cr-warning: #FBBF24;
-    --cr-border: #3A3A50;
-    --cr-header-bg: linear-gradient(90deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    --cr-body-bg: linear-gradient(135deg, #0F0F1A 0%, #1A1A2E 50%, #16213E 100%);
-    --cr-hero-bg: linear-gradient(135deg, rgba(108,99,255,0.1) 0%, rgba(0,217,255,0.05) 100%);
-    --cr-shadow: rgba(0,0,0,0.3);
-    --cr-card-value: #E8E8F0;
+/* --- Theme A "Enterprise light": one blue primary, neutral greys, no gradients --- */
+body.body--light {
+    --cr-primary: #0B5FFF;
+    --cr-primary-dark: #0047D6;
+    --cr-primary-soft: #EAF1FF;
+    --cr-accent: #0B5FFF;
+    --cr-surface: #FFFFFF;
+    --cr-surface-light: #F9FAFB;
+    --cr-surface-hover: #F2F4F7;
+    --cr-text: #101828;
+    --cr-text-dim: #667085;
+    --cr-success: #039855;
+    --cr-error: #D92D20;
+    --cr-warning: #DC6803;
+    --cr-info: #1570EF;
+    --cr-border: #E4E7EC;
+    --cr-header-bg: #FFFFFF;
+    --cr-header-text: #101828;
+    --cr-body-bg: #F7F8FA;
+    --cr-hero-bg: #FFFFFF;
+    --cr-shadow: rgba(16,24,40,0.06);
+    --cr-card-value: #101828;
     background: var(--cr-body-bg) !important;
 }
-/* --- Light theme --- */
-body.body--light {
-    --cr-primary: #4F46E5;
-    --cr-primary-dark: #4338CA;
-    --cr-accent: #0891B2;
-    --cr-surface: #FFFFFF;
-    --cr-surface-light: #F8FAFC;
-    --cr-surface-hover: #F1F5F9;
-    --cr-text: #1E293B;
-    --cr-text-dim: #64748B;
-    --cr-success: #16A34A;
-    --cr-error: #DC2626;
-    --cr-warning: #D97706;
-    --cr-border: #E2E8F0;
-    --cr-header-bg: linear-gradient(90deg, #1E293B 0%, #334155 50%, #1E293B 100%);
-    --cr-body-bg: #F1F5F9;
-    --cr-hero-bg: linear-gradient(135deg, rgba(79,70,229,0.06) 0%, rgba(8,145,178,0.03) 100%);
-    --cr-shadow: rgba(0,0,0,0.08);
-    --cr-card-value: #1E293B;
+body.body--dark {
+    --cr-primary: #4C8DFF;
+    --cr-primary-dark: #2F74F5;
+    --cr-primary-soft: rgba(76,141,255,0.14);
+    --cr-accent: #4C8DFF;
+    --cr-surface: #161B26;
+    --cr-surface-light: #1D2433;
+    --cr-surface-hover: #242C3D;
+    --cr-text: #F2F4F7;
+    --cr-text-dim: #98A2B3;
+    --cr-success: #32D583;
+    --cr-error: #F97066;
+    --cr-warning: #FDB022;
+    --cr-info: #53B1FD;
+    --cr-border: #2B3446;
+    --cr-header-bg: #161B26;
+    --cr-header-text: #F2F4F7;
+    --cr-body-bg: #0F131C;
+    --cr-hero-bg: #161B26;
+    --cr-shadow: rgba(0,0,0,0.35);
+    --cr-card-value: #F2F4F7;
     background: var(--cr-body-bg) !important;
 }
 .cr-header {
     background: var(--cr-header-bg) !important;
+    color: var(--cr-header-text) !important;
     border-bottom: 1px solid var(--cr-border);
-    box-shadow: 0 2px 12px var(--cr-shadow);
+    box-shadow: none;
     z-index: 1000;
+}
+.cr-logo {
+    width: 28px; height: 28px; border-radius: 7px; background: var(--cr-primary); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+}
+.cr-breadcrumb { font-size: 13px; color: var(--cr-text-dim); }
+.cr-breadcrumb b { color: var(--cr-text); font-weight: 600; }
+.cr-nav-group {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--cr-text-dim); padding: 14px 16px 4px;
 }
 .cr-header .q-btn {
     z-index: 1001;
@@ -214,7 +230,7 @@ body.body--light {
     background: var(--cr-surface-light); border: 2px solid var(--cr-border);
     transition: all 0.3s ease;
 }
-.cr-step-circle-active { background: rgba(108,99,255,0.15); }
+.cr-step-circle-active { background: rgba(11,95,255,0.15); }
 /* Step tracker: 10 equal boxes, fixed height, same border in every state */
 .cr-steps { display: flex; align-items: center; width: 100%; padding: 2px 0; }
 .cr-step { flex: 1 1 0; min-width: 0; }
@@ -229,7 +245,7 @@ body.body--light {
 .cr-step-box.is-failed { border-color: var(--cr-error); background: rgba(220,38,38,0.04); }
 .cr-step-box.is-retrying { border-color: var(--cr-warning); background: rgba(217,119,6,0.05); }
 .cr-step-box.is-in-progress {
-    border-color: var(--cr-primary); background: rgba(108,99,255,0.07);
+    border-color: var(--cr-primary); background: rgba(11,95,255,0.07);
     box-shadow: 0 0 0 1px var(--cr-primary);
 }
 .cr-step-num { font-size: 10px; font-weight: 600; color: var(--cr-text); }
@@ -277,6 +293,8 @@ body.body--light {
     color: white !important;
     border-color: var(--cr-primary) !important;
 }
+.cr-settings-tab.active .q-btn__content, .cr-settings-tab.active .q-icon { color: #fff !important; }
+.cr-settings-tab:not(.active) { background: var(--cr-surface) !important; }
 /* Layout — entire page is fixed viewport, only cr-content scrolls */
 html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 * { box-sizing: border-box; }
@@ -327,9 +345,10 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     color: var(--cr-text);
 }
 .cr-sidebar-item.active {
-    background: var(--cr-surface-hover);
+    background: var(--cr-primary-soft);
     color: var(--cr-primary);
     border-left-color: var(--cr-primary);
+    font-weight: 600;
 }
 .cr-sidebar-item .material-icons {
     font-size: 16px;
@@ -378,6 +397,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 /* One card level only: cards inside a page card are flat panels */
 .cr-section { border-radius: 12px !important; box-shadow: 0 1px 3px var(--cr-shadow) !important; }
 .cr-section .q-card, .cr-section .cr-card-inner { box-shadow: none !important; }
+.cr-content .q-card { box-shadow: 0 1px 2px var(--cr-shadow) !important; border: 1px solid var(--cr-border); }
+.cr-section { box-shadow: 0 1px 2px var(--cr-shadow) !important; }
 .cr-card-inner { border-radius: 10px !important; }
 /* Buttons: sentence case everywhere */
 .q-btn { text-transform: none !important; letter-spacing: normal !important; }
@@ -415,6 +436,72 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-upload-card .q-uploader__subtitle { display: none; }
 .cr-upload-card .q-uploader__title { font-size: 12px; font-weight: 600; }
 .cr-upload-card .q-uploader__list { min-height: 40px; padding: 6px 8px; }
+/* --- Run page (Live Run): header card, step list, tabbed detail --- */
+.cr-run-banner {
+    background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
+    padding: 14px 16px;
+}
+.cr-run-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 12px; width: 100%;
+                 align-items: start; }
+@media (max-width: 900px) { .cr-run-layout { grid-template-columns: minmax(0, 1fr); } }
+.cr-run-steps {
+    background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
+    padding: 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.cr-run-steps-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+                      color: var(--cr-text-dim); padding: 6px 8px 8px; }
+.cr-step-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+    cursor: pointer; border: 1px solid transparent; transition: background .15s, border-color .15s;
+}
+.cr-step-row:hover { background: var(--cr-surface-hover); }
+.cr-step-row.is-selected { background: var(--cr-primary-soft); border-color: var(--cr-primary); }
+.cr-step-row .cr-step-circle { width: 26px; height: 26px; flex-shrink: 0; }
+.cr-step-row.is-in-progress .cr-step-circle { background: var(--cr-primary-soft); }
+.cr-step-row-name { font-size: 13px; color: var(--cr-text); white-space: nowrap; overflow: hidden;
+                    text-overflow: ellipsis; }
+.cr-step-row .cr-step-num { font-size: 11px; color: var(--cr-text-dim); font-weight: 500; }
+.cr-step-row .cr-step-status { font-size: 11px; margin-top: 0; }
+.cr-step-duration { font-size: 11px; color: var(--cr-text-dim); }
+.cr-run-detail {
+    background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
+    padding: 14px 16px; min-height: 420px;
+}
+.cr-run-detail-head { padding-bottom: 10px; }
+.cr-tabs { border-bottom: 1px solid var(--cr-border); }
+.cr-tabs .q-tab { min-height: 36px; padding: 0 12px; color: var(--cr-text-dim); }
+.cr-tabs .q-tab__label { font-size: 13px; font-weight: 500; }
+.cr-tabs .q-tab__icon { font-size: 16px; }
+.cr-tab-panels, .cr-tab-panels .q-tab-panel { background: transparent !important; padding: 12px 0 0 !important; }
+.cr-kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
+.cr-kv-key { color: var(--cr-text-dim); font-size: 12px; }
+.cr-kv-value { font-size: 13px; color: var(--cr-text); }
+.cr-review-panel {
+    border: 1px solid var(--cr-warning); background: rgba(220,104,3,0.05); border-radius: 10px;
+    padding: 12px 14px; margin-top: 8px;
+}
+.cr-file-row { width: 100%; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--cr-border); }
+.cr-file-row:last-child { border-bottom: none; }
+.cr-file-name { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--cr-text);
+                word-break: break-all; }
+.cr-test-summary { font-size: 13px; color: var(--cr-text-dim); margin-bottom: 4px; }
+.cr-test-summary b { color: var(--cr-text); }
+.cr-test-row { border: 1px solid var(--cr-border); border-radius: 10px !important; margin-bottom: 6px; }
+.cr-log {
+    background: #0F131C; color: #D0D5DD; border-radius: 10px; padding: 12px; margin: 0; width: 100%;
+    font: 12px/1.5 "JetBrains Mono", Consolas, monospace; max-height: 520px; overflow: auto; white-space: pre-wrap;
+}
+.cr-empty { padding: 40px 12px; gap: 4px !important; text-align: center; }
+.cr-status-pending, .cr-status-skipped { background: rgba(102,112,133,0.12); color: var(--cr-text-dim); }
+/* --- New Run wizard --- */
+.cr-wizard { width: 100%; background: transparent !important; box-shadow: none !important; }
+.cr-wizard .q-stepper__header { border-bottom: 1px solid var(--cr-border); }
+.cr-wizard .q-stepper__tab { padding: 12px 16px; }
+.cr-wizard .q-stepper__title { font-size: 13px; font-weight: 600; }
+.cr-wizard .q-stepper__caption { font-size: 11px; }
+.cr-wizard .q-stepper__step-inner { padding: 16px 4px 4px !important; }
+.cr-wizard .q-stepper__nav { padding: 12px 4px 4px !important; }
+.cr-summary { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
 /* Settings tabs + sub-tabs share one look */
 .cr-settings-tab { min-height: 30px !important; font-size: 12px !important; padding: 2px 12px !important; }
 </style>
@@ -508,20 +595,25 @@ def create_app() -> None:
 .nicegui-disconnected { opacity: 0.3; pointer-events: none; }
 </style>""")
         ui.add_head_html("""<style>
-body { font-family: "Inter", sans-serif !important; font-size: 12px !important; }
-.q-field--dense .q-field__control { min-height: 28px !important; }
-.q-field--dense .q-field__label { font-size: 11px !important; }
-.q-field--dense .q-field__native, .q-field--dense input { font-size: 12px !important; }
-.q-btn--dense { min-height: 28px !important; font-size: 11px !important; }
-.q-card { padding: 8px !important; }
+body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
+       font-feature-settings: "tnum" 1; color: var(--cr-text); }
+.q-field--dense .q-field__control { min-height: 32px !important; }
+.q-field--dense .q-field__label { font-size: 12px !important; }
+.q-field--dense .q-field__native, .q-field--dense input { font-size: 13px !important; }
+.q-btn { border-radius: 8px !important; font-weight: 500; }
+.q-btn--dense { min-height: 30px !important; font-size: 12px !important; }
+.q-card { padding: 8px !important; border-radius: 10px !important; }
 .q-card__section { padding: 6px 10px !important; }
-.text-h5 { font-size: 16px !important; line-height: 1.3 !important; }
-.text-h6 { font-size: 14px !important; line-height: 1.3 !important; }
-.text-subtitle1 { font-size: 13px !important; }
-.text-subtitle2 { font-size: 12px !important; }
-.text-body1 { font-size: 12px !important; }
-.text-body2 { font-size: 11px !important; }
-.text-caption { font-size: 10px !important; }
+.text-h5 { font-size: 20px !important; line-height: 1.3 !important; }
+.text-h6 { font-size: 16px !important; line-height: 1.3 !important; }
+.text-subtitle1 { font-size: 14px !important; }
+.text-subtitle2 { font-size: 13px !important; }
+.text-body1 { font-size: 13px !important; }
+.text-body2 { font-size: 12px !important; }
+.text-caption { font-size: 11px !important; }
+.q-field--outlined .q-field__control { border-radius: 8px !important; }
+.q-field--outlined .q-field__control:before { border-color: var(--cr-border) !important; }
+.q-linear-progress { border-radius: 99px; }
 .q-expansion-item__content { padding: 4px 8px !important; }
 .q-slider { margin: 2px 0 !important; }
 .q-badge { font-size: 10px !important; padding: 1px 6px !important; }
@@ -539,18 +631,25 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
         dark = ui.dark_mode(False)
         is_dark = {"value": False}
+        # Theme A: Quasar brand colours follow the design tokens
+        ui.colors(primary="#0B5FFF", secondary="#475467", accent="#0B5FFF", dark="#161B26",
+                  positive="#039855", negative="#D92D20", info="#1570EF", warning="#DC6803")
 
         # --- Header ---
-        with ui.header(fixed=True).classes("cr-header items-center justify-between px-4").style("min-height: 48px; height: 48px"):
-            with ui.row().classes("items-center gap-3"):
-                ui.icon("precision_manufacturing", size="20px").classes("text-[#6C63FF]")
-                ui.label("NetConfig").classes("text-body2 font-bold leading-tight")
-                ui.label("·").style("color: #9090A8; font-size: 10px")
-                ui.label("Agentic Pipeline").classes("text-caption leading-tight").style("color: #9090A8")
+        with ui.header(fixed=True).classes("cr-header items-center justify-between px-4").style("min-height: 52px; height: 52px"):
+            with ui.row().classes("items-center gap-3 no-wrap"):
+                with ui.element("div").classes("cr-logo"):
+                    ui.icon("hub", size="18px")
+                ui.label("NetConfig").classes("font-bold").style("font-size: 15px")
+                ui.element("div").style("width:1px;height:20px;background:var(--cr-border);margin:0 4px")
+                with ui.row().classes("cr-breadcrumb items-center gap-1 no-wrap"):
+                    ui.label("Workspace")
+                    ui.icon("chevron_right", size="16px")
+                    breadcrumb = ui.label("Dashboard").classes("font-semibold").style("color: var(--cr-text)")
             with ui.row().classes("items-center gap-2"):
-                ui.badge("v0.1.0").props("color=grey-8 text-color=grey-4 outline")
+                ui.label("v0.1.0").classes("text-caption cr-text-dim")
                 theme_btn = ui.button(icon="light_mode") \
-                    .props("flat round size=sm color=grey-5") \
+                    .props("flat round size=sm color=grey-7") \
                     .tooltip("Toggle theme")
 
                 def toggle_theme():
@@ -562,17 +661,24 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
         progress = None
 
-        # --- Menu items definition ---
-        menu_items = [
-            ("dashboard", "Dashboard", "dashboard"),
-            ("new_run", "New Pipeline Run", "add_circle_outline"),
-            ("progress", "Pipeline Progress", "view_timeline"),
-            ("outputs", "Output Documents", "source"),
-            ("history", "Run History", "history"),
-            ("cleanup", "Artifact Cleanup", "cleaning_services"),
-            ("usage", "LLM Usage", "analytics"),
-            ("settings", "Settings", "tune"),
+        # --- Menu items definition (grouped like a product sidebar) ---
+        menu_groups = [
+            ("Workspace", [
+                ("dashboard", "Dashboard", "space_dashboard"),
+                ("new_run", "New Run", "add_circle_outline"),
+                ("progress", "Live Run", "play_circle_outline"),
+            ]),
+            ("Results", [
+                ("outputs", "Output Documents", "folder_open"),
+                ("history", "Run History", "history"),
+            ]),
+            ("Admin", [
+                ("usage", "LLM Usage", "insights"),
+                ("cleanup", "Artifact Cleanup", "cleaning_services"),
+                ("settings", "Settings", "settings"),
+            ]),
         ]
+        section_labels = {key: (group, label) for group, items in menu_groups for key, label, _ in items}
 
         # Content containers dict — filled below
         content_panels: dict = {}
@@ -591,6 +697,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 sidebar_items[prev].classes(remove="active")
             if section in sidebar_items:
                 sidebar_items[section].classes(add="active")
+            breadcrumb.text = section_labels.get(section, ("", section))[1]
             # Fire refresh hooks for the target section
             for hook in on_navigate_hooks.get(section, []):
                 try:
@@ -622,20 +729,17 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
         # --- Sidebar ---
         with ui.column().classes("cr-sidebar"):
-            # Brand area
-            with ui.column().classes("px-5 pb-3 gap-0"):
-                ui.label("NAVIGATION").classes("text-[10px] font-bold tracking-widest cr-stat-title")
-            ui.element("div").classes("cr-sidebar-divider")
-
-            for key, label, icon in menu_items:
-                item = ui.element("div").classes(
-                    f"cr-sidebar-item {'active' if key == 'dashboard' else ''}"
-                )
-                with item:
-                    ui.icon(icon)
-                    ui.label(label)
-                item.on("click", lambda _, k=key: navigate(k))
-                sidebar_items[key] = item
+            for group, items in menu_groups:
+                ui.label(group).classes("cr-nav-group")
+                for key, label, icon in items:
+                    item = ui.element("div").classes(
+                        f"cr-sidebar-item {'active' if key == 'dashboard' else ''}"
+                    )
+                    with item:
+                        ui.icon(icon)
+                        ui.label(label)
+                    item.on("click", lambda _, k=key: navigate(k))
+                    sidebar_items[key] = item
 
             # Spacer + footer
             ui.element("div").style("flex:1")
@@ -655,7 +759,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
                 # Summary stat cards
                 with ui.element("div").classes("cr-stat-grid"):
-                    runs_label = stat_card("Total Runs", "0", "rocket_launch", "#6C63FF")
+                    runs_label = stat_card("Total Runs", "0", "rocket_launch", "#0B5FFF")
                     success_label = stat_card("Success Rate", "\u2014", "check_circle", "#16A34A")
                     failed_label = stat_card("Failed", "0", "cancel", "#DC2626")
                     duration_label = stat_card("Avg Duration", "\u2014", "timer", "#0891B2")
@@ -670,7 +774,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                         status_chart = ui.echart({
                             "tooltip": {"trigger": "item"},
                             "series": [{"type": "pie", "radius": ["40%", "70%"],
-                                        "label": {"color": "#9090A8", "fontSize": 11},
+                                        "label": {"color": "#98A2B3", "fontSize": 11},
                                         "data": []}],
                         }).classes("w-full").style("height: 180px")
 
@@ -679,17 +783,17 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                         card_title("Runs by Use Case", "bar_chart")
                         uc_chart = ui.echart({
                             "tooltip": {"trigger": "axis"},
-                            "legend": {"bottom": 0, "textStyle": {"color": "#9090A8", "fontSize": 11}},
+                            "legend": {"bottom": 0, "textStyle": {"color": "#98A2B3", "fontSize": 11}},
                             "grid": {"left": 36, "right": 16, "top": 12, "bottom": 52},
                             "xAxis": {"type": "category", "data": [],
-                                      "axisLabel": {"color": "#9090A8", "fontSize": 10, "interval": 0}},
+                                      "axisLabel": {"color": "#98A2B3", "fontSize": 10, "interval": 0}},
                             "yAxis": {"type": "value", "minInterval": 1,
-                                      "axisLabel": {"color": "#9090A8"}},
+                                      "axisLabel": {"color": "#98A2B3"}},
                             "series": [
                                 {"type": "bar", "name": "Completed", "stack": "total",
-                                 "itemStyle": {"color": "#4ADE80"}, "data": []},
+                                 "itemStyle": {"color": "#12B76A"}, "data": []},
                                 {"type": "bar", "name": "Failed", "stack": "total",
-                                 "itemStyle": {"color": "#F87171"}, "data": []},
+                                 "itemStyle": {"color": "#F04438"}, "data": []},
                             ],
                         }).classes("w-full").style("height: 180px")
 
@@ -781,10 +885,10 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
                         # Status pie chart
                         pie_data = []
-                        if completed: pie_data.append({"value": completed, "name": "Completed", "itemStyle": {"color": "#4ADE80"}})
-                        if failed: pie_data.append({"value": failed, "name": "Failed", "itemStyle": {"color": "#F87171"}})
-                        if cancelled: pie_data.append({"value": cancelled, "name": "Cancelled", "itemStyle": {"color": "#9090A8"}})
-                        if running: pie_data.append({"value": running, "name": "Running", "itemStyle": {"color": "#6C63FF"}})
+                        if completed: pie_data.append({"value": completed, "name": "Completed", "itemStyle": {"color": "#12B76A"}})
+                        if failed: pie_data.append({"value": failed, "name": "Failed", "itemStyle": {"color": "#F04438"}})
+                        if cancelled: pie_data.append({"value": cancelled, "name": "Cancelled", "itemStyle": {"color": "#98A2B3"}})
+                        if running: pie_data.append({"value": running, "name": "Running", "itemStyle": {"color": "#0B5FFF"}})
                         status_chart.options["series"][0]["data"] = pie_data or [{"value": 0, "name": "No runs"}]
                         status_chart.update()
 
@@ -866,7 +970,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
             with ui.column().classes("cr-page") as panel:
                 content_panels["new_run"] = panel
                 panel.set_visibility(False)
-                page_header("New Pipeline Run", "Choose the vendor, node types and activity, upload the UC documents and start")
+                page_header("New Run", "Set up a pipeline run in three steps: activity, documents, notes & review")
                 with ui.card().classes("cr-section w-full p-4"):
                     upload_section = UploadSection(on_start_pipeline=on_start_pipeline, db=_db)
                     on_navigate_hooks.setdefault("new_run", []).append(upload_section._load_vendors)
@@ -875,8 +979,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
             with ui.column().classes("cr-page") as panel:
                 content_panels["progress"] = panel
                 panel.set_visibility(False)
-                page_header("Pipeline Progress", "Live status of the current run, milestones and reviews")
-                with ui.card().classes("cr-section w-full p-4"):
+                page_header("Live Run", "Follow each step, review milestones, inspect artifacts, test cases and logs")
+                with ui.column().classes("w-full gap-0"):
                     async def _progress_view_details(run_id):
                         navigate("history")
                         # Trigger details for this run in history section
@@ -933,10 +1037,16 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                             from uuid import UUID as _UUID
                             await output_viewer.refresh_for_run(_UUID(run_id))
 
+                    async def on_open_run(run_id):
+                        navigate("progress")
+                        if progress:
+                            await progress.view_run(str(run_id))
+
                     history_section = HistorySection(
                         runner=_runner,
                         on_rerun=on_rerun,
                         on_view_outputs=on_view_outputs,
+                        on_open_run=on_open_run,
                     )
                     _refs.history = history_section
                     on_navigate_hooks.setdefault("history", []).append(history_section._refresh)

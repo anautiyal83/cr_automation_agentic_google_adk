@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
+from pathlib import Path
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
@@ -16,7 +18,7 @@ from core.events import event_bus
 
 STATUS_CONFIG = {
     "pending":     {"color": "#94A3B8", "icon": "radio_button_unchecked", "text": "#94A3B8"},
-    "in_progress": {"color": "#6C63FF", "icon": "sync",                  "text": "#6C63FF"},
+    "in_progress": {"color": "#0B5FFF", "icon": "sync",                  "text": "#0B5FFF"},
     "passed":      {"color": "#16A34A", "icon": "check_circle",          "text": "#16A34A"},
     "failed":      {"color": "#DC2626", "icon": "cancel",                "text": "#DC2626"},
     "retrying":    {"color": "#D97706", "icon": "replay",                "text": "#D97706"},
@@ -71,48 +73,70 @@ class ProgressSection:
             ui.timer(0.5, self._restore_active_run, once=True)
 
     def _build_ui(self):
-        with ui.column().classes("w-full gap-4"):
-            # Status banner
-            self.banner = ui.element("div").classes("w-full p-4 rounded-xl cr-card-inner").style(
-                "background: rgba(108,99,255,0.06)"
-            )
+        self._selected_step = 1
+        self._follow_live = True          # select the running step until the user picks one
+        self._step_started: dict[int, float] = {}
+        self._run_dir = ""
+        self._uc_name = ""
+        with ui.column().classes("w-full gap-3"):
+            # Run header: status, actions, progress
+            self.banner = ui.element("div").classes("w-full cr-run-banner")
             with self.banner:
-                with ui.row().classes("items-center justify-between w-full"):
-                    with ui.row().classes("items-center gap-3"):
-                        self.status_icon = ui.icon("hourglass_empty", size="28px") \
+                with ui.row().classes("items-center justify-between w-full no-wrap"):
+                    with ui.row().classes("items-center gap-3 no-wrap"):
+                        self.status_icon = ui.icon("hourglass_empty", size="26px") \
                             .classes("cr-text-dim")
                         with ui.column().classes("gap-0"):
                             self.status_label = ui.label("No active pipeline run") \
                                 .classes("text-subtitle1 font-semibold")
-                            self.status_detail = ui.label("Start a new run from the upload section") \
+                            self.status_detail = ui.label("Start a new run from New Run") \
                                 .classes("text-caption cr-text-dim")
-                    with ui.row().classes("gap-1") as self.action_btns:
+                    with ui.row().classes("gap-2 no-wrap") as self.action_btns:
                         self.restart_btn = ui.button("Restart", icon="restart_alt",
                             on_click=self._restart) \
-                            .props("flat color=deep-purple-6 size=sm no-caps")
+                            .props("outline color=primary size=sm no-caps")
                         self.stop_btn = ui.button("Stop", icon="pause",
                             on_click=self._stop) \
-                            .props("flat color=warning size=sm no-caps")
-                        self.cancel_btn = ui.button("Cancel", icon="cancel",
+                            .props("outline color=warning size=sm no-caps")
+                        self.cancel_btn = ui.button("Cancel", icon="close",
                             on_click=self._cancel) \
-                            .props("flat color=red-4 size=sm no-caps")
+                            .props("outline color=negative size=sm no-caps")
                     self.action_btns.set_visibility(False)
+                # Progress bar
+                self.progress_bar = ui.linear_progress(value=0, show_value=False) \
+                    .props("color=primary rounded size=6px").classes("mt-3")
+                self.progress_bar.set_visibility(False)
 
-            # Progress bar
-            self.progress_bar = ui.linear_progress(value=0, show_value=False) \
-                .props("color=deep-purple-6 stripe animate rounded size=8px")
-            self.progress_bar.set_visibility(False)
+            # Run page: step list (left) + selected step detail (right)
+            with ui.element("div").classes("cr-run-layout"):
+                with ui.element("div").classes("cr-run-steps"):
+                    ui.label("Pipeline steps").classes("cr-run-steps-title")
+                    for i in range(1, 11):
+                        self._step_widget(i)
 
-            # Step tracker — single row of equal-size boxes (CSS .cr-steps / .cr-step-box)
-            with ui.element("div").classes("cr-steps"):
-                for i in range(1, 11):
-                    self._step_widget(i)
-                    if i < 10:
-                        connector = ui.element("div").classes("cr-step-connector")
-                        self.step_widgets[i]["connector"] = connector
-
-            # Error / retry detail area
-            self.detail_container = ui.column().classes("w-full")
+                with ui.element("div").classes("cr-run-detail"):
+                    with ui.row().classes("items-center justify-between w-full no-wrap cr-run-detail-head"):
+                        with ui.column().classes("gap-0 min-w-0"):
+                            self.sel_title = ui.label("").classes("text-subtitle1 font-semibold")
+                            self.sel_meta = ui.label("").classes("text-caption cr-text-dim")
+                        self.sel_status = ui.html("")
+                    with ui.tabs().props("dense no-caps align=left active-color=primary "
+                                         "indicator-color=primary").classes("cr-tabs") as self.tabs:
+                        ui.tab("overview", "Overview", icon="info_outline")
+                        ui.tab("artifacts", "Artifacts", icon="description")
+                        ui.tab("tests", "Test cases", icon="fact_check")
+                        ui.tab("logs", "Logs", icon="subject")
+                    with ui.tab_panels(self.tabs, value="overview").classes("w-full cr-tab-panels"):
+                        with ui.tab_panel("overview"):
+                            self.overview_info = ui.column().classes("w-full gap-2")
+                            self._build_overview_actions()
+                        with ui.tab_panel("artifacts"):
+                            self.artifacts_box = ui.column().classes("w-full gap-0")
+                        with ui.tab_panel("tests"):
+                            self.tests_box = ui.column().classes("w-full gap-2")
+                        with ui.tab_panel("logs"):
+                            self.logs_box = ui.column().classes("w-full gap-2")
+                    self.tabs.on_value_change(lambda _: self._refresh_tab())
 
             # Pre-built questionnaire dialog (populated on demand)
             self._q_dialog = ui.dialog().props("maximized")
@@ -124,71 +148,225 @@ class ProgressSection:
                     "background: #f8f9fc; color: #1a1a2e"
                 )
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
+        self._select_step(1, user=False)
 
-            # Milestone review panel (hidden until milestone reached)
-            self.milestone_row = ui.column().classes("w-full gap-3 mt-2")
-            self.milestone_row.set_visibility(False)
-            with self.milestone_row:
-                # Artifact info row
-                with ui.row().classes("w-full items-center gap-3 cr-card-inner p-3"):
-                    ui.icon("description", size="20px").classes("cr-text-accent")
-                    self.ms_artifact_label = ui.label("").classes("text-body2 font-semibold flex-1")
-                    self.ms_view_btn = ui.button("View Artifact", icon="visibility",
-                        on_click=self._show_artifact_dialog) \
-                        .props("flat color=deep-purple-6 size=sm no-caps")
-                # Extra artifact files (view/download) — populated dynamically
-                self.ms_extra_files_row = ui.row().classes("w-full items-center gap-3 cr-card-inner p-3")
-                self.ms_extra_files_row.set_visibility(False)
-                # Action buttons
-                with ui.row().classes("w-full gap-3"):
-                    self.ms_continue_btn = ui.button("Continue", icon="play_arrow",
-                        on_click=lambda: self._milestone_respond("continue")) \
-                        .props("unelevated color=positive size=sm no-caps")
-                    self.ms_skip_btn = ui.button("Skip & Continue", icon="skip_next",
-                        on_click=lambda: self._milestone_respond("continue")) \
-                        .props("unelevated color=warning size=sm no-caps")
-                    self.ms_skip_btn.set_visibility(False)
-                    self.ms_rerun_btn = ui.button("Re-run Step", icon="replay",
-                        on_click=lambda: self._milestone_respond("rerun")) \
-                        .props("unelevated color=deep-purple-6 size=sm no-caps")
-                    self.ms_cancel_btn = ui.button("Cancel Pipeline", icon="stop",
-                        on_click=lambda: self._milestone_respond("cancel")) \
-                        .props("unelevated color=negative size=sm no-caps")
-                # Container for questionnaire-specific button (cleared on each call)
-                self.ms_questionnaire_row = ui.row().classes("w-full gap-3")
-                self.ms_questionnaire_row.set_visibility(False)
+    def _build_overview_actions(self):
+        """Milestone review, error details and completion actions (Overview tab)."""
+        # Error / retry detail area
+        self.detail_container = ui.column().classes("w-full")
 
-            # Completion actions (hidden until pipeline finishes)
-            self.completion_row = ui.row().classes("w-full items-center gap-3 mt-2")
-            self.completion_row.set_visibility(False)
-            with self.completion_row:
-                self.btn_details = ui.button("View Full Details", icon="info_outline",
-                                             on_click=self._go_details) \
-                    .props("unelevated color=deep-purple-6 size=sm no-caps")
-                self.btn_outputs = ui.button("Browse Outputs", icon="source",
-                                             on_click=self._go_outputs) \
-                    .props("unelevated color=teal-6 size=sm no-caps")
+        # Milestone review panel (hidden until milestone reached)
+        self.milestone_row = ui.column().classes("w-full gap-3 cr-review-panel")
+        self.milestone_row.set_visibility(False)
+        with self.milestone_row:
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("rate_review", size="18px").classes("cr-text-warning")
+                ui.label("Review required").classes("font-semibold")
+            # Artifact info row
+            with ui.row().classes("w-full items-center gap-3 cr-card-inner p-3"):
+                ui.icon("description", size="20px").classes("cr-text-accent")
+                self.ms_artifact_label = ui.label("").classes("text-body2 font-semibold flex-1")
+                self.ms_view_btn = ui.button("View artifact", icon="visibility",
+                    on_click=self._show_artifact_dialog) \
+                    .props("flat color=primary size=sm no-caps")
+            # Extra artifact files (view/download) — populated dynamically
+            self.ms_extra_files_row = ui.row().classes("w-full items-center gap-3 cr-card-inner p-3")
+            self.ms_extra_files_row.set_visibility(False)
+            # Action buttons
+            with ui.row().classes("w-full gap-2"):
+                self.ms_continue_btn = ui.button("Approve & continue", icon="check",
+                    on_click=lambda: self._milestone_respond("continue")) \
+                    .props("unelevated color=primary size=sm no-caps")
+                self.ms_skip_btn = ui.button("Skip & continue", icon="skip_next",
+                    on_click=lambda: self._milestone_respond("continue")) \
+                    .props("unelevated color=warning size=sm no-caps")
+                self.ms_skip_btn.set_visibility(False)
+                self.ms_rerun_btn = ui.button("Re-run step", icon="replay",
+                    on_click=lambda: self._milestone_respond("rerun")) \
+                    .props("outline color=primary size=sm no-caps")
+                self.ms_cancel_btn = ui.button("Cancel pipeline", icon="stop",
+                    on_click=lambda: self._milestone_respond("cancel")) \
+                    .props("outline color=negative size=sm no-caps")
+            # Container for questionnaire-specific button (cleared on each call)
+            self.ms_questionnaire_row = ui.row().classes("w-full gap-3")
+            self.ms_questionnaire_row.set_visibility(False)
+
+        # Completion actions (hidden until pipeline finishes)
+        self.completion_row = ui.row().classes("w-full items-center gap-2 mt-2")
+        self.completion_row.set_visibility(False)
+        with self.completion_row:
+            self.btn_details = ui.button("View full details", icon="info_outline",
+                                         on_click=self._go_details) \
+                .props("unelevated color=primary size=sm no-caps")
+            self.btn_outputs = ui.button("Browse outputs", icon="folder_open",
+                                         on_click=self._go_outputs) \
+                .props("outline color=primary size=sm no-caps")
 
     def _step_widget(self, step_num: int):
-        with ui.element("div").classes("cr-step") as col:
-            with ui.element("div").classes("cr-step-box") as box:
-                # Circle icon
-                icon_container = ui.element("div").classes("cr-step-circle")
-                with icon_container:
-                    step_icon = ui.icon(
-                        STEP_ICONS.get(step_num, "circle"), size="14px"
-                    ).classes("cr-text-dim")
-
-                # Step number + name (two lines max, full name in the tooltip)
+        with ui.element("div").classes("cr-step-row") as box:
+            box.on("click", lambda _, n=step_num: self._select_step(n, user=True))
+            icon_container = ui.element("div").classes("cr-step-circle")
+            with icon_container:
+                step_icon = ui.icon(STEP_ICONS.get(step_num, "circle"), size="14px").classes("cr-text-dim")
+            with ui.column().classes("gap-0 min-w-0 flex-1"):
                 label = ui.label(f"Step {step_num}").classes("cr-step-num")
-                name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-name")
-                name.tooltip(_SHORT_NAMES.get(step_num, ""))
-                status_label = ui.label("pending").classes("cr-step-status")
+                name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-row-name")
+            with ui.column().classes("items-end gap-0"):
+                status_label = ui.label("Pending").classes("cr-step-status")
+                duration = ui.label("").classes("cr-step-duration")
 
-            self.step_widgets[step_num] = {
-                "col": col, "box": box, "icon_container": icon_container, "step_icon": step_icon,
-                "label": label, "name": name, "status": status_label,
-            }
+        self.step_widgets[step_num] = {
+            "col": box, "box": box, "icon_container": icon_container, "step_icon": step_icon,
+            "label": label, "name": name, "status": status_label, "duration": duration,
+            "raw_status": "pending",
+        }
+
+    # ------------------------------------------------------------------
+    # Run page: selection, tabs
+    # ------------------------------------------------------------------
+
+    def _select_step(self, step_num: int, user: bool = False):
+        if step_num not in self.step_widgets:
+            return
+        if user:
+            self._follow_live = self.step_widgets[step_num]["raw_status"] == "in_progress"
+        self._selected_step = step_num
+        for n, w in self.step_widgets.items():
+            w["box"].classes(add="is-selected") if n == step_num else w["box"].classes(remove="is-selected")
+        self._refresh_selected_header()
+        self._refresh_tab()
+
+    def _refresh_selected_header(self):
+        n = self._selected_step
+        w = self.step_widgets.get(n, {})
+        raw = w.get("raw_status", "pending")
+        self.sel_title.text = f"Step {n} · {_SHORT_NAMES.get(n, '')}"
+        meta = [f"Duration {w['duration'].text}" if w.get("duration") and w["duration"].text else ""]
+        if self._uc_name:
+            meta.append(self._uc_name)
+        self.sel_meta.text = " · ".join(m for m in meta if m)
+        base = raw.split("(")[0].strip()
+        self.sel_status.content = (f"<span class='cr-status cr-status-{base.replace('_', '-')}'>"
+                                   f"{_humanize(raw)}</span>")
+
+    def _refresh_tab(self):
+        tab = self.tabs.value if hasattr(self, "tabs") else "overview"
+        if tab == "artifacts":
+            self._render_artifacts()
+        elif tab == "tests":
+            self._render_tests()
+        elif tab == "logs":
+            self._render_logs()
+        else:
+            self._render_overview()
+
+    def _render_overview(self):
+        self.overview_info.clear()
+        n = self._selected_step
+        w = self.step_widgets.get(n, {})
+        raw = w.get("raw_status", "pending")
+        with self.overview_info:
+            if not self.active_run_id:
+                _empty_state("play_circle_outline", "No run selected",
+                             "Start a run from New Run, or re-run one from Run History.")
+                return
+            with ui.element("div").classes("cr-kv"):
+                for k, v in (("Step", f"{n} — {_SHORT_NAMES.get(n, '')}"),
+                             ("Status", _humanize(raw)),
+                             ("Duration", w["duration"].text if w.get("duration") and w["duration"].text else "—"),
+                             ("Agent", _STEP_AGENTS.get(n, "—")),
+                             ("Produces", _STEP_OUTPUTS.get(n, "—"))):
+                    ui.label(k).classes("cr-kv-key")
+                    ui.label(v).classes("cr-kv-value")
+
+    def _render_artifacts(self):
+        self.artifacts_box.clear()
+        with self.artifacts_box:
+            files = _step_files(self._run_dir, self._uc_name, self._selected_step)
+            if not files:
+                _empty_state("description", "No artifacts yet",
+                             "Files this step writes to the run folder appear here.")
+                return
+            for f in files:
+                with ui.row().classes("cr-file-row items-center no-wrap"):
+                    ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
+                    with ui.column().classes("gap-0 flex-1 min-w-0"):
+                        ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
+                        ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
+                    ui.button("View", icon="visibility", on_click=lambda _, p=f: _open_view(p)) \
+                        .props("flat dense color=primary size=sm no-caps")
+                    ui.button("Download", icon="download", on_click=lambda _, p=f: ui.download(str(p))) \
+                        .props("flat dense color=primary size=sm no-caps")
+
+    def _render_tests(self):
+        import json as _json
+        self.tests_box.clear()
+        with self.tests_box:
+            path = Path(self._run_dir) / f"{self._uc_name}_test-cases.json" if self._run_dir else None
+            if not path or not path.exists():
+                _empty_state("fact_check", "No test cases yet",
+                             "Step 9 runs the scenario test cases on the simulator; results appear here.")
+                return
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            ui.html(f"<div class='cr-test-summary'><b>{data.get('passed', 0)}</b> of "
+                    f"<b>{data.get('total', 0)}</b> test cases passed</div>")
+            for tc in data.get("test_cases", []):
+                failed = [c for c in tc.get("checks", []) if not c.get("ok")]
+                with ui.expansion().classes("w-full cr-test-row").props("dense") as exp:
+                    with exp.add_slot("header"):
+                        with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                            ui.html(f"<span class='cr-status cr-status-"
+                                    f"{'completed' if tc['status'] == 'PASS' else 'failed'}'>{tc['status']}</span>")
+                            ui.label(tc["id"]).classes("cr-file-name")
+                            ui.label(tc["title"]).classes("flex-1")
+                            ui.label(tc.get("actual", "")).classes("text-caption cr-text-dim")
+                    ui.label(f"Expected: {tc.get('expected', '')}").classes("text-body2")
+                    for c in tc.get("checks", []):
+                        with ui.row().classes("items-start gap-2 no-wrap"):
+                            ui.icon("check_circle" if c["ok"] else "cancel", size="16px") \
+                                .classes("cr-text-success" if c["ok"] else "cr-text-error")
+                            ui.label(c["check"] + (f" — {c['detail']}" if c.get("detail") and not c["ok"] else "")) \
+                                .classes("text-body2")
+                    if failed:
+                        ui.label(f"{len([x for x in tc.get('commands', []) if x.get('validation') == 'failed'])} "
+                                 "failed step(s); see the full report in Artifacts (step 9).").classes("text-caption cr-text-dim")
+
+    def _render_logs(self):
+        self.logs_box.clear()
+        with self.logs_box:
+            lines = _step_log_lines(self._selected_step)
+            if not lines:
+                _empty_state("subject", "No log lines", "Agent log lines for this step appear here.")
+                return
+            ui.html("<pre class='cr-log'>" + "\n".join(_esc(l) for l in lines[-300:]) + "</pre>")
+
+    async def _load_run_info(self):
+        if not (self.runner and self.active_run_id):
+            return
+        try:
+            state = await self.runner.get_state(str(self.active_run_id))
+            self._run_dir = state.get("run_dir", "") or self._run_dir
+            self._uc_name = state.get("uc_name", "") or self._uc_name
+        except Exception:
+            pass
+        if not self._uc_name and self.runner._db:
+            try:
+                rows = await self.runner._db.execute(
+                    "SELECT d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
+                    "ON r.document_set_id = d.id WHERE r.id = ?", (str(self.active_run_id),))
+                if rows:
+                    self._uc_name = rows[0].get("uc_name") or self._uc_name
+            except Exception:
+                pass
+        # First run folder that exists: session state, the artifact store, the default layout
+        store = getattr(self.runner, "_artifact_store", None)
+        candidates = [self._run_dir,
+                      str(Path(getattr(store, "base_dir", getattr(store, "_base_dir", "")) or "data/runs")
+                          / str(self.active_run_id)),
+                      str(Path(__file__).resolve().parents[2] / "data" / "runs" / str(self.active_run_id))]
+        self._run_dir = next((c for c in candidates if c and Path(c).is_dir()), self._run_dir)
+        self._refresh_selected_header()
+        self._refresh_tab()
 
     async def _restore_active_run(self):
         """Check runner's live state (or DB) for any running/paused pipeline and restore the progress view."""
@@ -261,6 +439,7 @@ class ProgressSection:
             self.active_run_id = run_id
             self.action_btns.set_visibility(True)
             self.progress_bar.set_visibility(True)
+            await self._load_run_info()
 
             # Restore step visuals from live session state first, then DB
             restored_steps = set()
@@ -297,9 +476,9 @@ class ProgressSection:
                 self.status_label.text = f"Pipeline Running — {uc_name}"
                 self.status_detail.text = f"Step {step}/{TOTAL_STEPS}: {_SHORT_NAMES.get(step, '')}"
                 self.progress_bar.value = (step - 1) / TOTAL_STEPS if step > 0 else 0
-                self.progress_bar.props("color=deep-purple-6 stripe animate")
+                self.progress_bar.props("color=primary")
                 self.banner.style(replace=(
-                    "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+                    "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
                 ))
                 event_bus.subscribe(self._on_event, run_id)
             elif status == "paused_milestone":
@@ -309,7 +488,7 @@ class ProgressSection:
 
                 self.status_icon.name = "rate_review"
                 self.status_icon.classes(replace="cr-text-warning")
-                self.progress_bar.props("color=deep-purple-6")
+                self.progress_bar.props("color=primary")
                 self.progress_bar.props(remove="animate")
                 self.banner.style(replace=(
                     "background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3)"
@@ -391,13 +570,13 @@ class ProgressSection:
         self.milestone_row.set_visibility(False)
         self.progress_bar.set_visibility(True)
         self.progress_bar.value = 0
-        self.progress_bar.props("color=deep-purple-6 stripe animate indeterminate")
+        self.progress_bar.props("color=primary indeterminate")
         self.status_icon.name = "hourglass_top"
         self.status_icon.classes(replace="cr-text-accent cr-spin")
         self.status_label.text = "Pipeline Starting..."
         self.status_detail.text = "Initializing agents and loading models — this may take a few seconds"
         self.banner.style(replace=(
-            "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+            "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
         ))
         # Reset all steps to pending first
         for i in range(1, TOTAL_STEPS + 1):
@@ -405,6 +584,8 @@ class ProgressSection:
 
         # Subscribe to events FIRST (before any steps can complete)
         event_bus.subscribe(self._on_event, run_id)
+        self._run_dir, self._uc_name, self._follow_live = "", "", True
+        ui.timer(0.5, self._load_run_info, once=True)
 
         # Periodic sync: catch up with steps that completed before subscription
         async def _sync_steps():
@@ -423,9 +604,56 @@ class ProgressSection:
         ui.timer(1.0, _sync_steps, once=True)
         ui.timer(3.0, _sync_steps, once=True)
 
+    async def view_run(self, run_id: str):
+        """Open a finished (or any) run on the run page: steps, artifacts, test cases, logs."""
+        live = self.runner._active_runs.get(str(run_id), {}) if self.runner else {}
+        if live.get("status") in ("running", "paused_milestone", "paused_hil"):
+            await self.start_tracking(UUID(str(run_id)))
+            return
+        self.active_run_id = UUID(str(run_id))
+        self._run_dir, self._uc_name, self._follow_live = "", "", False
+        self._step_started.clear()
+        self.action_btns.set_visibility(False)
+        self.milestone_row.set_visibility(False)
+        self.completion_row.set_visibility(True)
+        status, error, statuses = "unknown", "", {}
+        if self.runner and self.runner._db:
+            try:
+                rows = await self.runner._db.execute(
+                    "SELECT status, error_summary, current_step FROM pipeline_runs WHERE id = ?", (str(run_id),))
+                if rows:
+                    status = str(rows[0].get("status") or "").replace("PipelineStatus.", "").lower()
+                    error = rows[0].get("error_summary") or ""
+                for sr in await self.runner._db.execute(
+                        "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY rowid",
+                        (str(run_id),)):
+                    statuses[sr["step_number"]] = str(sr.get("status") or "").replace("StepStatus.", "").lower()
+            except Exception as exc:
+                logger.warning("view_run: could not read run %s: %s", str(run_id)[:8], exc)
+        for i in range(1, TOTAL_STEPS + 1):
+            self._update_step_visual(i, statuses.get(i, "pending"))
+        failed = [n for n, st in statuses.items() if st.startswith("failed")]
+        done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
+        ok = status == "completed"
+        self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
+        self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
+                                 else "cr-text-dim")
+        self.status_label.text = f"Run {str(run_id)[:8]} — {_humanize(status)}"
+        self.status_detail.text = error or f"{done}/{TOTAL_STEPS} steps passed"
+        self.banner.style(replace="")
+        self.progress_bar.set_visibility(True)
+        self.progress_bar.props(remove="indeterminate")
+        self.progress_bar.value = done / TOTAL_STEPS
+        self.progress_bar.props(f"color={'positive' if ok else 'negative' if status == 'failed' else 'primary'}")
+        await self._load_run_info()
+        self._select_step(failed[0] if failed else max(statuses or {1: 0}), user=False)
+
     async def _on_event(self, event: PipelineEvent):
         # Ignore events if run was already cleared (cancelled/stopped)
         if not self.active_run_id:
+            return
+        # Another run is open on the run page: its view must not take live events
+        if getattr(event, "run_id", None) and str(event.run_id) != str(self.active_run_id):
             return
         # Run UI updates within NiceGUI client context (needed for background task events)
         if self._client:
@@ -471,12 +699,12 @@ class ProgressSection:
             self.status_detail.text = f"Retrying from step {event.step_number} (attempt {n})..."
             self.milestone_row.set_visibility(False)
             self.action_btns.set_visibility(True)
-            self.progress_bar.props("color=deep-purple-6 stripe animate")
+            self.progress_bar.props("color=primary")
             self.status_icon.name = "sync"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
             self.status_label.text = "Pipeline Running"
             self.banner.style(replace=(
-                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+                "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
             ))
         elif event.event_type == "milestone_reached":
             milestone = event.payload.get("milestone", "")
@@ -517,6 +745,9 @@ class ProgressSection:
             self.progress_bar.value = max(event.step_number, 1) / TOTAL_STEPS
             self.progress_bar.props(remove="animate")
             self.status_label.text = f"Review: {milestone}"
+            if event.step_number in self.step_widgets:
+                self._select_step(event.step_number)
+            self.tabs.set_value("overview")
 
             # Requirements Gathering (step 0) — show interactive questionnaire dialog
             if event.step_number == 0:
@@ -602,23 +833,34 @@ class ProgressSection:
         w["icon_container"].style(replace=f"border-color: {cfg['color']}")
         w["step_icon"].name = cfg["icon"]
         w["step_icon"].classes(replace=f"text-[{cfg['text']}]")
-        w["status"].text = status
+        w["raw_status"] = status
+        w["status"].text = _humanize(status)
         w["status"].style(replace=f"color: {cfg['text']}")
 
-        # Box state: same size in every state; only colours change (CSS .cr-step-box.is-*)
-        if "box" in w:
-            state = base if base in ("in_progress", "passed", "failed", "retrying") else ""
-            w["box"].classes(replace=f"cr-step-box {('is-' + state.replace('_', '-')) if state else ''}")
+        # Step timing from the live events (restored runs have no start time)
+        if base == "in_progress":
+            self._step_started[step_num] = time.monotonic()
+            w["duration"].text = ""
+        elif base in ("passed", "failed") and step_num in self._step_started:
+            w["duration"].text = _fmt_duration(time.monotonic() - self._step_started.pop(step_num))
+        elif base == "pending":
+            w["duration"].text = ""
 
-        # Connector after a passed / running step takes its colour
-        if "connector" in w:
-            color = cfg["color"] if base in ("passed", "in_progress") else "var(--cr-border)"
-            w["connector"].style(replace=f"--cr-conn: {color}")
+        # Row state: same size in every state; only colours change (CSS .cr-step-row.is-*)
+        state = base if base in ("in_progress", "passed", "failed", "retrying") else ""
+        selected = " is-selected" if step_num == getattr(self, "_selected_step", 0) else ""
+        w["box"].classes(replace=f"cr-step-row {('is-' + state.replace('_', '-')) if state else ''}{selected}")
+
+        # The page follows the running step until the user picks another one
+        if base == "in_progress" and getattr(self, "_follow_live", False) and step_num != self._selected_step:
+            self._select_step(step_num)
+        elif step_num == getattr(self, "_selected_step", 0) and hasattr(self, "sel_title"):
+            self._refresh_selected_header()
 
     def _mark_remaining_skipped(self):
-        """Mark all steps still showing 'pending' as 'skipped'."""
+        """Mark all steps still pending as skipped."""
         for sn, w in self.step_widgets.items():
-            if w["status"].text == "pending":
+            if w.get("raw_status", "pending") == "pending":
                 self._update_step_visual(sn, "skipped")
 
     def _show_milestone_review(self, step_num: int, milestone: str, artifact_file: str,
@@ -698,7 +940,7 @@ class ProgressSection:
                         if serve_url:
                             ui.button("View", icon="visibility",
                                       on_click=lambda u=serve_url: ui.navigate.to(u, new_tab=True)) \
-                                .props("flat color=deep-purple-6 size=sm no-caps")
+                                .props("flat color=primary size=sm no-caps")
                             ui.button("Download", icon="download",
                                       on_click=lambda u=serve_url: ui.download(u)) \
                                 .props("flat color=positive size=sm no-caps")
@@ -730,7 +972,7 @@ class ProgressSection:
         with self.ms_questionnaire_row:
             ui.button("Answer Questions", icon="quiz",
                       on_click=lambda q=questions, m=milestone_name: self._open_questionnaire_dialog(q, m)) \
-                .props("unelevated color=deep-purple-6 size=sm no-caps")
+                .props("unelevated color=primary size=sm no-caps")
         self.ms_questionnaire_row.set_visibility(True)
 
         # Auto-open the dialog on first show
@@ -783,7 +1025,7 @@ class ProgressSection:
                             1 for q in questions
                             if isinstance(q, dict) and q.get("importance") == "critical"
                         )
-                        ui.badge(f"{len(questions)} questions", color="deep-purple-4") \
+                        ui.badge(f"{len(questions)} questions", color="primary") \
                             .props("rounded")
                         if critical_count:
                             ui.badge(f"{critical_count} critical", color="red-5") \
@@ -812,11 +1054,11 @@ class ProgressSection:
                                 "border-bottom: 1px solid #e2e5f1"
                             ):
                                 with ui.row().classes("items-center gap-2"):
-                                    ui.icon(icon, size="20px").style("color: #6C63FF")
+                                    ui.icon(icon, size="20px").style("color: #0B5FFF")
                                     ui.label(label).style(
                                         "font-size: 0.95rem; font-weight: 600; color: #2d2b55"
                                     )
-                                    ui.badge(f"{len(cat_questions)}", color="deep-purple-3") \
+                                    ui.badge(f"{len(cat_questions)}", color="primary") \
                                         .props("rounded dense").style("color: #4a4578")
 
                             with ui.column().classes("w-full gap-0"):
@@ -871,7 +1113,7 @@ class ProgressSection:
                                                     "true", "yes", "1",
                                                 )
                                                 inp = ui.switch("Yes", value=default_val) \
-                                                    .props("color=deep-purple-6 dense")
+                                                    .props("color=primary dense")
                                                 self._q_answer_inputs[q_id] = inp
 
                                             elif q_options and len(q_options) <= 5:
@@ -882,7 +1124,7 @@ class ProgressSection:
                                                     else str(q_options[0])
                                                 )
                                                 inp = ui.radio(opts_with_other, value=sel) \
-                                                    .props("dense color=deep-purple-6 inline")
+                                                    .props("dense color=primary inline")
                                                 other_input = (
                                                     ui.input(placeholder="Specify your answer")
                                                     .props("outlined dense")
@@ -947,7 +1189,7 @@ class ProgressSection:
 
                                             if default_str and q_type not in ("boolean",):
                                                 ui.label(f"Default: {default_str}").style(
-                                                    "font-size: 0.72rem; color: #6C63FF; "
+                                                    "font-size: 0.72rem; color: #0B5FFF; "
                                                     "font-style: italic; margin-top: 4px"
                                                 )
 
@@ -964,7 +1206,7 @@ class ProgressSection:
                     ui.button("Submit Answers", icon="send",
                               on_click=lambda: self._submit_questionnaire(
                                   dialog, self._q_answer_inputs, use_defaults=False)) \
-                        .props("unelevated color=deep-purple-6 no-caps")
+                        .props("unelevated color=primary no-caps")
 
         dialog.open()
 
@@ -1006,7 +1248,7 @@ class ProgressSection:
         self.milestone_row.set_visibility(False)
         self.action_btns.set_visibility(True)
         self.banner.style(replace=(
-            "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+            "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
         ))
         self.progress_bar.props("stripe animate")
 
@@ -1093,7 +1335,7 @@ class ProgressSection:
             self.status_label.text = "Pipeline Running"
             self.status_detail.text = "Continuing..."
             self.banner.style(replace=(
-                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+                "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
             ))
             self.progress_bar.props("stripe animate")
             self.action_btns.set_visibility(True)
@@ -1139,7 +1381,7 @@ class ProgressSection:
                 self.status_label.text = "Re-running Step"
                 self.status_detail.text = "Re-generating artifact..."
             self.banner.style(replace=(
-                "background: rgba(108,99,255,0.08); border: 1px solid rgba(108,99,255,0.3)"
+                "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
             ))
             self.progress_bar.props("stripe animate")
             self.action_btns.set_visibility(True)
@@ -1168,8 +1410,8 @@ class ProgressSection:
         self.status_icon.name = "hourglass_empty"
         self.status_icon.classes(replace="cr-text-dim")
         self.status_label.text = "No active pipeline run"
-        self.status_detail.text = "Start a new run from the upload section"
-        self.banner.style(replace="background: rgba(108,99,255,0.06)")
+        self.status_detail.text = "Start a new run from New Run"
+        self.banner.style(replace="")
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
 
@@ -1252,3 +1494,110 @@ class ProgressSection:
     async def _go_outputs(self):
         if self.active_run_id and self.on_view_outputs:
             await self.on_view_outputs(str(self.active_run_id))
+
+
+# ---------------------------------------------------------------------------
+# Run page helpers
+# ---------------------------------------------------------------------------
+
+_STEP_AGENTS = {
+    1: "requirements_gatherer", 2: "requirements_gatherer", 3: "ciq_validation_json_gen",
+    4: "ciq_validation_json_gen", 5: "ciq_validation_json_qa", 6: "network_config_gen + helper_script_gen",
+    7: "network_config_mop_qa", 8: "network_simulator_setup", 9: "network_config_exec_qa",
+    10: "report_generator",
+}
+_STEP_OUTPUTS = {
+    1: "Parsed documents", 2: "requirements.json, requirements summary",
+    3: "validation-rules.yaml", 4: "json-output.yaml, CIQ JSON data",
+    5: "CIQ QA report", 6: "Execution workflow YAML, helper scripts",
+    7: "MOP QA report", 8: "Simulator configs, simulator report",
+    9: "Test-case report and results", 10: "Final pipeline report",
+}
+# File-name fragments per step (relative path inside the run folder)
+_STEP_FILE_RULES = {
+    1: ("requirements.json",), 2: ("requirements-summary", "requirements.json"),
+    3: ("validation-rules",), 4: ("json-output", "json_data/"),
+    5: ("ciq-qa-report", "ciq_validation/", "qa/"), 6: ("{uc}.yaml", "scripts/"),
+    7: ("mop-qa-report", "mop_output/"), 8: ("simulator-report", "simulator-config", "simulator/manifest"),
+    9: ("network-qa-report", "test-cases.json"), 10: ("pipeline-report", "final-report"),
+}
+_STEP_LOG_KEYS = {
+    1: ("requirements",), 2: ("requirements",), 3: ("ciq_validation_json_gen", "CIQ_GEN"),
+    4: ("ciq_validation_json_gen", "CIQ_GEN"), 5: ("ciq_validation_json_qa", "CIQ_QA"),
+    6: ("network_config_gen", "helper_script_gen", "HELPER_SCRIPT"), 7: ("mop_qa", "MOP_QA"),
+    8: ("network_simulator_setup", "SIMULATOR"), 9: ("network_config_qa", "NETWORK_CONFIG_QA", "scenarios"),
+    10: ("report",),
+}
+
+
+def _humanize(status: str) -> str:
+    return str(status or "pending").replace("_", " ").capitalize()
+
+
+def _empty_state(icon: str, title: str, text: str) -> None:
+    with ui.column().classes("cr-empty items-center w-full"):
+        ui.icon(icon, size="36px").classes("cr-text-dim")
+        ui.label(title).classes("font-semibold")
+        ui.label(text).classes("text-caption cr-text-dim")
+
+
+def _step_files(run_dir: str, uc_name: str, step: int) -> list:
+    if not run_dir or not Path(run_dir).is_dir():
+        return []
+    root = Path(run_dir)
+    rules = [r.replace("{uc}", uc_name) for r in _STEP_FILE_RULES.get(step, ())]
+    found = []
+    for f in sorted(root.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(root).as_posix()
+        if rel.count("/") > 1 or rel.startswith(("exec_output/", "simulator/logs", "simulator/outputs",
+                                                   "simulator/vfs", "simulator/config")):
+            continue
+        top_level = "/" not in rel
+        if any((r.endswith("/") and rel.startswith(r)) or (not r.endswith("/") and top_level and r in f.name)
+               for r in rules):
+            found.append(f)
+    return found[:60]
+
+
+def _file_icon(path) -> str:
+    suffix = Path(path).suffix.lower()
+    return {".html": "web", ".json": "data_object", ".yaml": "code", ".yml": "code",
+            ".py": "terminal", ".xml": "code"}.get(suffix, "description")
+
+
+def _size(n: int) -> str:
+    return f"{n} B" if n < 1024 else f"{n / 1024:.1f} KB" if n < 1024 * 1024 else f"{n / 1048576:.1f} MB"
+
+
+def _open_view(path) -> None:
+    from ui.pages.output_viewer_section import OutputViewerSection
+    OutputViewerSection._view_dialog(Path(path))
+
+
+def _esc(text: str) -> str:
+    import html as _html
+    return _html.escape(text)
+
+
+def _step_log_lines(step: int) -> list[str]:
+    from core.logging_config import LOG_DIR
+    log = Path(LOG_DIR) / "flow.log"
+    if not log.exists():
+        return []
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 600_000))
+            text = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+    keys = _STEP_LOG_KEYS.get(step, ())
+    return [l for l in text.splitlines() if any(k.lower() in l.lower() for k in keys)]
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"

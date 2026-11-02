@@ -60,7 +60,7 @@ class OutputViewerSection:
                     on_change=self._on_run_selected,
                 ).classes("flex-1").props("outlined dense")
                 ui.button("Refresh", icon="refresh", on_click=self._load_runs) \
-                    .props("flat color=deep-purple-6 size=sm no-caps")
+                    .props("flat color=primary size=sm no-caps")
 
             # File list area (hidden until a run is selected)
             with ui.column().classes("w-full gap-2") as self.viewer_row:
@@ -105,7 +105,7 @@ class OutputViewerSection:
                 self.cache_table.on('clear_cache', self._on_clear_cache)
                 with ui.row().classes("w-full justify-end mt-2 gap-2"):
                     ui.button("Refresh", icon="refresh", on_click=self._refresh_cache) \
-                        .props("flat size=sm no-caps color=deep-purple-6")
+                        .props("flat size=sm no-caps color=primary")
                     ui.button("Clear All Cache", icon="delete_sweep",
                               on_click=self._clear_all_cache) \
                         .props("flat size=sm no-caps color=red-6")
@@ -247,10 +247,10 @@ class OutputViewerSection:
             ui.label(_format_size(size)).classes("text-caption cr-text-dim")
             ui.button("View", icon="visibility",
                       on_click=lambda _, p=fpath: self._view_dialog(p)) \
-                .props("flat dense size=xs color=deep-purple-6 no-caps")
+                .props("flat dense size=xs color=primary no-caps")
             ui.button("Download", icon="download",
                       on_click=lambda _, p=fpath: ui.download(str(p))) \
-                .props("flat dense size=xs color=teal-6 no-caps")
+                .props("flat dense size=xs color=primary no-caps")
 
     @staticmethod
     def _view_dialog(fpath: Path):
@@ -275,7 +275,7 @@ class OutputViewerSection:
                 with ui.row().classes("gap-1"):
                     ui.button("Download", icon="download",
                               on_click=lambda: ui.download(str(fpath))) \
-                        .props("flat size=sm color=teal-6 no-caps")
+                        .props("flat size=sm color=primary no-caps")
                     ui.button(icon="close", on_click=dialog.close) \
                         .props("flat round size=sm color=grey-6")
             with ui.scroll_area().classes("flex-1"):

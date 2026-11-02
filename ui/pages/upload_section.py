@@ -71,20 +71,21 @@ class UploadSection:
         self._build_ui()
 
     def _build_ui(self) -> None:
-        with ui.column().classes("w-full gap-2"):
-            # Pipeline Configuration — vendor-driven cascading selectors
-            with ui.card().classes("w-full p-3 cr-card-inner").style(
-                "background: rgba(108,99,255,0.06)"
-            ):
-                with ui.row().classes("w-full gap-2 items-center no-wrap"):
-                    ui.icon("business", size="20px").classes("cr-text-accent")
+        # Three-step wizard: 1 activity → 2 documents → 3 notes & review → start
+        with ui.stepper().props("flat animated header-nav active-color=primary done-color=positive") \
+                .classes("cr-wizard") as self.stepper:
+            with ui.step("activity", title="Activity", icon="hub").props('caption="Vendor, node types, activity"'):
+                ui.label("What is this run for?").classes("text-subtitle1 font-semibold")
+                ui.label("The vendor profile fills node and activity options; the UC name is derived "
+                         "from your selection.").classes("text-caption cr-text-dim")
+                with ui.row().classes("w-full gap-3 items-center no-wrap mt-2"):
                     self.vendor_select = ui.select(
                         {}, label="Vendor",
                         on_change=self._on_vendor_change,
                     ).classes("flex-1").props("outlined dense")
 
                     self.node_select = ui.select(
-                        [], label="Node Types",
+                        [], label="Node types",
                         multiple=True,
                         on_change=self._on_node_change,
                     ).classes("flex-1").props("outlined dense use-chips")
@@ -94,80 +95,131 @@ class UploadSection:
                         on_change=self._on_activity_change,
                     ).classes("flex-1").props("outlined dense")
 
-                    self.uc_name_label = ui.label("") \
-                        .classes("text-body2 font-mono font-semibold cr-text-accent")
-
                 # Fallback: manual entry when no vendor profiles exist
-                with ui.row().classes("w-full gap-2 items-end") as self._manual_row:
-                    ui.icon("edit", size="16px").classes("cr-text-dim")
+                with ui.row().classes("w-full gap-3 items-center no-wrap") as self._manual_row:
                     self.manual_node_input = ui.input(
-                        "Node Type (manual)", placeholder="e.g., PGW",
+                        "Node type (manual)", placeholder="e.g., PGW",
                     ).classes("flex-1").props("outlined dense")
                     self.manual_node_input.on("update:model-value", self._on_manual_node_change)
                     self.manual_activity_input = ui.input(
-                        "Activity Name (manual)", placeholder="e.g., IFC_Capability_Modification",
+                        "Activity name (manual)", placeholder="e.g., IFC_Capability_Modification",
                         autocomplete=self._activity_names,
                     ).classes("flex-1").props("outlined dense")
                     self.manual_activity_input.on("update:model-value", self._on_manual_activity_change)
                 self._manual_row.set_visibility(False)
 
-            # Load vendor data
-            ui.timer(0.5, self._load_vendors, once=True)
+                with ui.row().classes("items-center gap-2 mt-1"):
+                    ui.label("Use case:").classes("text-caption cr-text-dim")
+                    self.uc_name_label = ui.label("—").classes("cr-file-name font-semibold")
 
-            # Document upload grid — equal columns, wraps on narrow screens
-            with ui.element("div").classes("cr-grid-3"):
-                for doc in DOC_TYPES:
-                    self._upload_card(doc)
+                with ui.stepper_navigation():
+                    ui.button("Next: documents", on_click=self.stepper.next) \
+                        .props("unelevated color=primary no-caps icon-right=arrow_forward")
 
-                # Additional documents — compact inline
-                with ui.card().classes("cr-upload-card"):
-                    with ui.column().classes("w-full gap-1 items-center"):
-                        with ui.row().classes("w-full items-center justify-between"):
-                            with ui.row().classes("items-center gap-1"):
-                                ui.icon("attach_file", size="18px").classes("cr-text-accent")
-                                ui.label("Additional Docs").classes("text-caption font-semibold")
-                            ui.html('<span class="cr-badge cr-badge-optional">Optional</span>')
-                        ui.upload(
-                            label="Drop or click",
-                            multiple=True,
-                            auto_upload=True,
-                            on_upload=self._handle_additional_upload,
-                        ).props('flat bordered color=grey-1 text-color=deep-purple-7').classes("w-full")
-                        self.additional_docs_list = ui.column().classes("w-full gap-0")
-
-            # Developer Notes — domain knowledge input
-            with ui.expansion("Developer Notes & Guidance", icon="engineering") \
-                    .classes("w-full").props("dense header-class='text-caption font-semibold'"):
-                ui.label(
-                    "Provide domain-specific guidance for YAML generation: SSH details, "
-                    "LDAP connection strings, environment paths, retry strategies, "
-                    "node-specific commands, or any knowledge not in the MOP/CIQ."
-                ).classes("text-caption cr-text-dim")
-                self.developer_notes = ui.textarea(
-                    placeholder="e.g.:\n"
-                    "- Use NIAM failover: try niamID-1, then niamID-2, then niamID-3\n"
-                    "- Root escalation via 'su - root' with password 'siemens'\n"
-                    "- LDAP on RDS: ldapsearch -x -h localhost -p 16611 -D 'cn=pgwAdminUser' -w 8123Admi\n"
-                    "- Backup config before changes using 'configtool export'\n"
-                    "- SSH: kex_algorithms=+diffie-hellman-group14-sha1, host_key_algorithms=+ssh-rsa",
-                ).props("outlined autogrow rows=3").classes("w-full").style("font-size: 11px; font-family: monospace")
-
-            # Validation + options + action — compact single row
-            self.validation_container = ui.column().classes("w-full")
-
-            with ui.row().classes("w-full justify-between items-center"):
-                self.review_checkbox = ui.checkbox(
-                    "Review at milestones",
-                    value=True,
-                ).classes("text-caption")
-                self.validation_label = ui.label("Upload required documents to continue") \
+            with ui.step("documents", title="Documents", icon="upload_file") \
+                    .props('caption="CIQ, MOP, command outputs, …"'):
+                ui.label("Upload the use-case documents").classes("text-subtitle1 font-semibold")
+                ui.label("Required documents are marked; node session logs (.txt/.log) under Additional "
+                         "docs give step 6 real command outputs to check against.") \
                     .classes("text-caption cr-text-dim")
-                self.start_btn = ui.button(
-                    "Start Pipeline", icon="play_arrow",
-                    on_click=self._on_start,
-                ).props("unelevated color=deep-purple-6 size=md rounded") \
-                    .classes("px-6")
-                self.start_btn.disable()
+                with ui.element("div").classes("cr-grid-3 mt-2"):
+                    for doc in DOC_TYPES:
+                        self._upload_card(doc)
+
+                    # Additional documents — compact inline
+                    with ui.card().classes("cr-upload-card"):
+                        with ui.column().classes("w-full gap-1 items-center"):
+                            with ui.row().classes("w-full items-center justify-between"):
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.icon("attach_file", size="18px").classes("cr-text-accent")
+                                    ui.label("Additional Docs").classes("text-caption font-semibold")
+                                ui.html('<span class="cr-badge cr-badge-optional">Optional</span>')
+                            ui.upload(
+                                label="Drop or click",
+                                multiple=True,
+                                auto_upload=True,
+                                on_upload=self._handle_additional_upload,
+                            ).props('flat bordered color=grey-1 text-color=primary').classes("w-full")
+                            self.additional_docs_list = ui.column().classes("w-full gap-0")
+
+                with ui.stepper_navigation():
+                    ui.button("Back", icon="arrow_back", on_click=self.stepper.previous) \
+                        .props("flat color=primary no-caps")
+                    ui.button("Next: notes & review", on_click=self.stepper.next) \
+                        .props("unelevated color=primary no-caps icon-right=arrow_forward")
+
+            with ui.step("review", title="Notes & review", icon="fact_check") \
+                    .props('caption="Guidance, summary, start"'):
+                with ui.element("div").classes("cr-grid-2"):
+                    with ui.column().classes("gap-2"):
+                        ui.label("Developer notes").classes("text-subtitle2 font-semibold")
+                        ui.label(
+                            "Domain guidance step 6 follows as authoritative: SSH details, LDAP strings, "
+                            "how to resolve identifiers, node-specific commands, anything not in the MOP/CIQ."
+                        ).classes("text-caption cr-text-dim")
+                        self.developer_notes = ui.textarea(
+                            placeholder="e.g.:\n"
+                            "- The test subscriber is given by IMSI or MSISDN; when only the MSISDN is\n"
+                            "  given, resolve the IMSI via ldapsearch ... msisdn=... | grep -i provisionedIMSI\n"
+                            "- Use NIAM failover: try niamID-1, then niamID-2, then niamID-3\n"
+                            "- SSH: kex_algorithms=+diffie-hellman-group14-sha1, host_key_algorithms=+ssh-rsa",
+                        ).props("outlined autogrow rows=8").classes("w-full") \
+                            .style("font-size: 12px; font-family: monospace")
+                    with ui.column().classes("gap-2"):
+                        ui.label("Summary").classes("text-subtitle2 font-semibold")
+                        self.summary_box = ui.element("div").classes("cr-summary cr-card-inner p-3")
+
+                # Validation + options + action
+                self.validation_container = ui.column().classes("w-full")
+                with ui.row().classes("w-full justify-between items-center mt-2"):
+                    self.review_checkbox = ui.checkbox(
+                        "Pause for review at milestones",
+                        value=True,
+                    )
+                    self.validation_label = ui.label("Upload required documents to continue") \
+                        .classes("text-caption cr-text-dim")
+
+                with ui.stepper_navigation():
+                    ui.button("Back", icon="arrow_back", on_click=self.stepper.previous) \
+                        .props("flat color=primary no-caps")
+                    self.start_btn = ui.button(
+                        "Start pipeline", icon="play_arrow",
+                        on_click=self._on_start,
+                    ).props("unelevated color=primary no-caps")
+                    self.start_btn.disable()
+
+        self.stepper.on_value_change(lambda e: self._refresh_summary() if e.value == "review" else None)
+
+        # Load vendor data
+        ui.timer(0.5, self._load_vendors, once=True)
+
+    def _refresh_summary(self) -> None:
+        """Step 3 summary: what will run, which documents are in."""
+        self.summary_box.clear()
+
+        def _files(key):
+            v = self.paths.get(key)
+            return [v] if isinstance(v, str) and v else list(v or [])
+
+        with self.summary_box:
+            for k, v in (("Use case", self.uc_name or "—"),
+                         ("Node types", ", ".join(self.selected_node_types) or self.node_type or "—"),
+                         ("Activity", self.selected_activity_name or self.activity_name or "—")):
+                ui.label(k).classes("cr-kv-key")
+                ui.label(v).classes("cr-kv-value")
+            for doc in DOC_TYPES:
+                files = _files(doc["key"])
+                ui.label(doc["label"]).classes("cr-kv-key")
+                if files:
+                    ui.html("<span class='cr-status cr-status-completed'>"
+                            f"{len(files)} file{'s' if len(files) > 1 else ''}</span> "
+                            + ", ".join(Path(f).name.split("_", 1)[-1] for f in files[:3]))
+                elif doc["required"]:
+                    ui.html("<span class='cr-status cr-status-failed'>Missing</span>")
+                else:
+                    ui.label("—").classes("cr-text-dim")
+            ui.label("Additional docs").classes("cr-kv-key")
+            ui.label(", ".join(d.get("name", "") for d in self.additional_docs) or "—").classes("cr-kv-value")
 
     def _upload_card(self, doc: dict) -> None:
         key = doc["key"]
@@ -190,7 +242,7 @@ class UploadSection:
                     multiple=True,
                     auto_upload=True,
                     on_upload=lambda e, k=key, m=is_multi: self._handle_upload(e, k, multi=m),
-                ).props(f'accept="{doc["accept"]}" flat bordered color=grey-1 text-color=deep-purple-7').classes("w-full")
+                ).props(f'accept="{doc["accept"]}" flat bordered color=grey-1 text-color=primary').classes("w-full")
 
                 if is_multi:
                     file_list = ui.column().classes("w-full gap-0")
@@ -293,10 +345,10 @@ class UploadSection:
     def _update_uc_name(self) -> None:
         if self.node_type and self.activity_name:
             self.uc_name = f"{self.node_type}_{self.activity_name}"
-            self.uc_name_label.text = f"UC: {self.uc_name}"
+            self.uc_name_label.text = self.uc_name
         else:
             self.uc_name = ""
-            self.uc_name_label.text = ""
+            self.uc_name_label.text = "—"
 
     async def _remove_multi_file(self, doc_key: str, index: int) -> None:
         paths = self.paths.get(doc_key, [])

@@ -611,5 +611,12 @@
 - Step boxes sized by their labels (2px border on the active one), connectors painted as blocks, dashboard banner/KPIs at half width, nested cards, mixed button cases, Settings without a title, sidebar labels wrapping.
 - **Fix**: `ui/components.py` (page header, KPI tile, card title, status pills) + one CSS layer in `ui/app.py`; step tracker = 10 equal fixed-height boxes; responsive grids; uploader headers readable.
 
+### UI-2 — Product theme, run page, New Run wizard (Enhancement, Done 2026-11-02)
+- Theme A "Enterprise light": one blue primary (#0B5FFF) via design tokens + Quasar brand colours, neutral greys, no gradients, 13px base type, 32px controls, light header with logo + breadcrumb, grouped sidebar (Workspace / Results / Admin), token-driven dark mode.
+- Live Run page: run header (status, actions, progress), vertical step list with status + duration, tabbed step detail (Overview with inline milestone review · Artifacts with view/download · Test cases from `<uc>_test-cases.json` · Logs from `logs/flow.log`); Run History "Open" loads any past run read-only; live events of another run are ignored while one is open.
+- New Run: 3-step wizard (Activity → Documents → Notes & review with live summary), same widgets and handlers.
+- Found while building: `progress_section.py` used `Path` without a module import (NameError swallowed by NiceGUI) — fixed; flow log lives in `logs/`, not `data/logs/`.
+- Known limit: the Logs tab filters the global flow log by step, not by run.
+
 ### OB-6 — Resume after server restart not implemented (Medium, Open)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.
