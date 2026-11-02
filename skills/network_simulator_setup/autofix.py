@@ -19,15 +19,21 @@ _BASE_PORT = 2222
 
 
 def clean_yaml_response(text: str) -> str:
-    """Strip markdown code fences and leading/trailing noise."""
+    """Strip markdown code fences, multi-doc separators, and leading/trailing noise."""
     text = re.sub(r"^```(?:ya?ml)?\s*\n?", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+
+    # Strip multi-document separators (LLM sometimes generates separate configs per node)
+    # Keep only the first document — MockWire uses one config file per server
+    if "\n---\n" in text:
+        text = text.split("\n---\n")[0]
+        logger.info("Stripped multi-document YAML — keeping first document only")
 
     lines = text.split("\n")
     yaml_start = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped and (stripped.startswith(("#", "---", "servers", "nodes", "simulator"))
+        if stripped and (stripped.startswith(("#", "servers", "nodes", "simulator"))
                          or ":" in stripped):
             yaml_start = i
             break
@@ -36,10 +42,15 @@ def clean_yaml_response(text: str) -> str:
 
 
 def parse_yaml(text: str) -> dict | list | None:
-    """Parse YAML text, returning dict/list or None on failure."""
+    """Parse YAML text, returning dict/list or None on failure.
+
+    Allows duplicate keys (common in MockWire configs where command strings repeat).
+    """
     try:
         from ruamel.yaml import YAML
-        parsed = YAML().load(StringIO(text))
+        yaml = YAML()
+        yaml.allow_duplicate_keys = True
+        parsed = yaml.load(StringIO(text))
         if isinstance(parsed, dict):
             return dict(parsed)
         if isinstance(parsed, list):

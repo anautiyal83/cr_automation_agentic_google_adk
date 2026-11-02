@@ -23,9 +23,9 @@ _VALID_NODE_FIELDS = {
 }
 
 _VALID_COMMAND_FIELDS = {
-    "cmd", "command", "node", "description", "validation", "register",
-    "on_failure", "timeout", "target_user", "delay", "expect", "send",
-    "escalation", "exit_after", "ciq_params", "purpose", "syntax",
+    "cmd", "command", "node", "description", "command_description",
+    "validation", "register", "on_failure", "timeout", "timeout_sec",
+    "target_user", "delay", "expect", "send", "escalation", "exit_after",
 }
 
 _VALID_VALIDATION_FIELDS = {
@@ -316,6 +316,11 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
 
     # Fix criteria.expr — replace unsupported Java functions
     _fix_criteria_expr(step)
+
+    # Strip unknown fields that cause JAR deserialization errors
+    for key in list(step.keys()):
+        if key not in _VALID_COMMAND_FIELDS:
+            step.pop(key)
 
     return step
 
