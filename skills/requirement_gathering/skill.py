@@ -362,6 +362,9 @@ class RequirementGatheringSkill:
 
         # Merge deterministic extractions (override LLM gaps)
         requirements = compiler.merge_doc_extracted(requirements, self._doc_extracted)
+        # Developer notes verbatim: step 6 follows them as authoritative guidance
+        if self._developer_notes:
+            requirements["developer_notes"] = self._developer_notes
 
         # Enforce user answers as hard overrides
         requirements = compiler.enforce_answers(

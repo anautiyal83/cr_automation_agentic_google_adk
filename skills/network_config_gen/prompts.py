@@ -65,7 +65,8 @@ CRITICAL RULES:
 - Never put ${...} placeholders inside a validation or register regex: regexes are not
   interpolated (only send is). Match the shape of the value instead (digits, a word).
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
-  quoted (quoted names resolve to empty)
+  quoted (quoted names resolve to empty) — in `when` expressions too:
+  when: "configSequences.0.records.0.data.Test Column != ''"   (a quoted name is always false)
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
@@ -80,6 +81,17 @@ CRITICAL RULES:
     ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
 - A CIQ column that can be empty for some rows: guard the step with
   when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
+- An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an
+  identifier given directly or a second identifier it must be looked up from): resolve it
+  ONCE into a registered variable, then use only that variable in every later command:
+    - step A, when: "configSequences.0.records.0.data.<ColA> != ''":
+        send: echo ${configSequences.0.records.0.data.<ColA>}
+        register: [{regex: '(?<resolvedId>[0-9A-Za-z]+)'}]
+    - step B, when: "configSequences.0.records.0.data.<ColA> == ''":
+        send: <the lookup command from the MOP/developer notes using <ColB>>
+        register: [{regex: '<field the lookup prints>[:= ]+(?<resolvedId>[0-9A-Za-z]+)'}]
+    - later steps: ... ${resolvedId} ...
+  (both steps register the same name; the skipped one leaves it untouched)
 - Quote ALL values containing colons, brackets, or special chars in YAML
 """
 
@@ -113,6 +125,9 @@ Orchestration:
 
 === DEVELOPER ANSWERS (AUTHORITATIVE — override all other sources) ===
 {developer_answers}
+
+=== DEVELOPER NOTES (AUTHORITATIVE domain guidance — follow it) ===
+{developer_notes}
 
 === SCHEMA REFERENCE ===
 {schema_summary}
@@ -316,6 +331,9 @@ Phases: {phases}
 
 === DEVELOPER ANSWERS (AUTHORITATIVE) ===
 {developer_answers}
+
+=== DEVELOPER NOTES (AUTHORITATIVE) ===
+{developer_notes}
 
 === VARIABLE PATTERNS ===
   ${{configSequences.0.records.0.data.<Column>}} — CIQ value

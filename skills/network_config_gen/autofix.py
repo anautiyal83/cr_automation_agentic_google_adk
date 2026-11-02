@@ -46,6 +46,13 @@ _STRING_ONLY_FIELDS = {"when", "skip_when", "prompt_regex"}
 _QUOTED_COLUMN = re.compile(r"\$\{(configSequences\.\d+\.records\.\d+\.data\.)(?:'+([^'}]*)'+|\"([^\"}]*)\")\}")
 
 
+_REC_ROW = re.compile(r"\$\{rec_row\.data\.(?:'+([^'}]*)'+|\"([^\"}]*)\"|([^}]+))\}")
+
+
+def _rec_row_column(m: re.Match) -> str:
+    return "${configSequences.0.records.0.data." + (m.group(1) or m.group(2) or m.group(3)).strip() + "}"
+
+
 def _unquote_column(m: re.Match) -> str:
     return "${" + m.group(1) + (m.group(2) if m.group(2) is not None else m.group(3)).strip() + "}"
 
@@ -58,8 +65,15 @@ _PLACEHOLDER_REWRITES = [
     (re.compile(r"\$\{configData\.tables\.(?:'+[^']*'+|\"[^\"]*\"|[^.}]+)\."
                 r"(?:'+([^']*)'+|\"([^\"]*)\"|([^}]+))\}"),
      lambda m: "${configSequences.0.records.0.data." + (m.group(1) or m.group(2) or m.group(3)).strip() + "}"),
+    # DEP-17: the production framework's record syntax ${rec_row.data.<Col>} (also seen in
+    # MOPs and developer notes) → the JAR's first record of the node group
+    (_REC_ROW, _rec_row_column),
     # DEP-12: a quoted column resolves to empty; the JAR wants it bare (spaces ok)
     (_QUOTED_COLUMN, _unquote_column),
+    # DEP-18: same in bare `when` paths — a quoted column makes the condition false, so
+    # e.g. an identifier lookup guarded by it never runs (JAR-verified 2026-11-02)
+    (re.compile(r"(?<!\{)(configSequences\.\d+\.records\.\d+\.data\.)(?:'([^'\n]*)'|\"([^\"\n]*)\")"),
+     lambda m: m.group(1) + (m.group(2) if m.group(2) is not None else m.group(3)).strip()),
     # DEP-1: ${node_row.<NODE>.NIAM_NAME<n>} → ${<NODE>.niamID-<n>}
     (re.compile(r"\$\{node_row\.([A-Za-z0-9_]+)\.NIAM_NAME(\d+)\}"), r"${\1.niamID-\2}"),
     # DEP-7: registered outputs are plain context variables: ${register.x} → ${x}
@@ -104,6 +118,7 @@ def sanitize_yaml(text: str) -> str:
     Also handles list items: ``- description: value: with colon``, and unquotes CIQ
     column names in placeholders (DEP-12), which break single-quoted scalars.
     """
+    text = _REC_ROW.sub(_rec_row_column, text)
     text = _QUOTED_COLUMN.sub(_unquote_column, text)
     fixed_lines = []
     for line in text.split("\n"):

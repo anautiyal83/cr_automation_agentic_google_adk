@@ -1,0 +1,21 @@
+# Tasks: Step 9 Scenario Test Cases
+
+**Input**: [spec.md](spec.md)
+
+## Phase 1: Sunny day (done 2026-11-02)
+
+- [X] T001 Probe JAR failure semantics (`stop` / `continue`, skipped steps absent from the report) and `when` + conditional register
+- [X] T002 `jar_executor.prepare_execution` / `execute_target` (one `execute` per case); `run_execution_test` built on them
+- [X] T003 `scenarios.py`: workflow model (phase kind, effective `on_failure`), sunny-day catalogue, alignment of executed commands to steps, evaluation, failure routing
+- [X] T004 Simulator restart per case (agent-provided control keeps `shared.state` registration); step 8 configs restored
+- [X] T005 `scenario_report.py`: HTML test-case report; `<uc>_test-cases.json`
+- [X] T006 Skill + agent wiring: scenario mode when the simulator overlay exists; step 9 status from case results; `step_9_error.json` lists failing cases
+- [X] T007 Unit tests `tests/test_scenarios.py`
+- [X] T008 E2E: `python test_step.py --agents 6,8,9 --run-id b61b977c… --transcripts … --developer-notes "…"` (2026-11-02): suite ran TC-P01 CR1/EAST and TC-P02 CR1/NORTH on a restarted simulator, report + JSON written; both FAIL for step 6 reasons — `ndsLoadStats` and `provgw status` regexes (already flagged by the step 6 validator, routed to step 6) and the MSISDN lookup never running because its `when` quoted the column (DEP-18, fixed)
+- [ ] T009 Re-run E2E after DEP-18 and the step 9 → 6 retry; target: both sunny-day cases PASS
+
+## Phase 2: Negative cases (later — built, switched off)
+
+- [ ] T010 Enable `include_negatives`; E2E pre-check / activity / post-check / login faults
+- [ ] T011 Show negative fault output + checks in the step 9 milestone view
+- [ ] T012 Decide policy when a workflow has no gating pre-check (report finding vs fail)

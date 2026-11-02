@@ -250,7 +250,9 @@ _DEAD_SYNTAX = [
     (re.compile(r"\$\{\{"), "uses '${{…}}' — write '${…}'"),
     (re.compile(r"\$\{configData\."), "uses 'configData…' — CIQ values are "
                                        "'${configSequences.0.records.0.data.<Column>}'"),
-    (re.compile(r"\$\{node_row\."), "uses 'node_row…' — NIAM IDs are '${<NODE>.niamID-<n>}'; "
+    (re.compile(r"\$\{rec_row\."), "uses 'rec_row…' — CIQ values are "
+                                    "'${configSequences.0.records.0.data.<Column>}'"),
+    (re.compile(r"\$\{node_row\."),"uses 'node_row…' — NIAM IDs are '${<NODE>.niamID-<n>}'; "
                                      "other node fields are not in the CIQ JSON"),
     (re.compile(r"\$\{(register|env)\."), "uses 'register.'/'env.' — registered values and "
                                            "--var values are plain '${name}'"),

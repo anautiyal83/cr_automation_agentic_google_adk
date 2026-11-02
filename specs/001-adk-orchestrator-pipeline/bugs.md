@@ -444,7 +444,11 @@
 | DEP-13 | — | `${…}` inside validation/register regexes is not interpolated → PatternSyntaxException | Fixed (autofix → `.+?`; validator; prompt) |
 | DEP-14 | — | `${ORDERNO}` is a framework runtime parameter, flagged as never registered and empty in step 9 | Fixed: `execution.runtime_params` in config; step 6 treats them as defined, step 9 passes `--var NAME=<test value>` |
 | DEP-15 | — | `su` step `prompt_regex` (`sdfrun@rdsggn01:~>`) differs from the real prompt after su (`rdsggn01$`) | Fixed: validator checks it against the next prompt in the transcript |
-| DEP-16 | — | EAST CIQ rows have no IMSI → `--imsi ''`, `imsi=,` (data / `when` guard) | Open |
+| DEP-16 | — | EAST CIQ rows have no IMSI → `--imsi ''`, `imsi=,` | Not a data error: the subscriber is given by IMSI *or* MSISDN → DEP-17 |
+| DEP-17 | — | IMSI must be resolved via MSISDN when only the MSISDN is given (`ldapsearch … msisdn=… \| grep -i provisionedIMSI`); production syntax `${rec_row.data.<Col>}` unknown to the JAR | Fixed (generic): step 6 prompt pattern "identifier from one of several columns" (`when`-guarded steps registering one variable, JAR-verified), autofix `rec_row.data` → `configSequences.0.records.0.data` |
+| DEP-18 | — | Quoted CIQ column in a bare `when` path (`data.'Test MSISDN' != ''`) is always false → the guarded lookup never runs | Fixed (autofix unquotes; prompt rule) |
+| G-3 | — | Developer notes never reached step 6 (only requirement gathering saw them) | Fixed: kept verbatim in `requirements.developer_notes`; authoritative section in the step 6 generate/regenerate prompts |
+| S9-03 | — | Step 9 never executed a failure scenario: LLM test-case descriptions graded against one all-success run | Fixed by [005](../005-scenario-testing/spec.md): test cases from workflow + CIQ JSON, run per case on the simulator, test-case report (sunny day now, negatives later) |
 | G-1 | — | Step 6 `regenerate()` sent only the first 10 000 chars of the workflow → truncated output | Fixed (60 000) |
 | G-2 | — | Self-correction ranked unparseable YAML as 1 error and kept it over a valid workflow | Fixed (`_rank`: invalid YAML is worst; error now names line + text) |
 | S8-16 | — | Simulator has no response file after the XML upload (`outbox/<ORDERNO>.xml.res`), so `ls`/`parse_response.py` fail | Open (Phase 3: VFS triggers) |
@@ -599,6 +603,13 @@
 ### OB-8 — helper_script_gen failure shows as passed (High, Fixed 2026-11-02)
 - The agent never sets `step_6_status` or writes `step_6_error.json`, so a failed or partial script generation passes the step 6 milestone and can be cached. Tracked as [003](../003-helper-script-gen/spec.md) H-1.
 - **Fix**: the agent sets `step_6_status=failed` and merges its error into `step_6_error.json`. A second bug turned up while fixing it (**OB-9**): `PipelineAgent` deleted the step's error file before *every* agent, so `helper_script_gen` wiped `network_config_gen`'s step 6 error. Now only the first agent of a shared display step clears it (`_first_agent_of_step`). Test: `tests/test_generation_contracts.py`.
+
+### OB-10 — A second UI instance marks live runs as failed (High, Open)
+- `ProgressSection._restore_active_run` marks any `running` DB run that its own runner does not hold as "Server restarted — pipeline lost". A second server (or a preview) on the same `data/pipeline.db` therefore fails the first server's live run. Happened 2026-11-02 with a UI preview on :8001 (row restored). Mitigation: previews use a DB copy; fix: record the owning process (pid/port) on the run and only recover runs whose owner is gone.
+
+### UI-1 — Inconsistent layout across pages (Medium, Fixed 2026-11-02)
+- Step boxes sized by their labels (2px border on the active one), connectors painted as blocks, dashboard banner/KPIs at half width, nested cards, mixed button cases, Settings without a title, sidebar labels wrapping.
+- **Fix**: `ui/components.py` (page header, KPI tile, card title, status pills) + one CSS layer in `ui/app.py`; step tracker = 10 equal fixed-height boxes; responsive grids; uploader headers readable.
 
 ### OB-6 — Resume after server restart not implemented (Medium, Open)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.

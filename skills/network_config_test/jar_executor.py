@@ -145,8 +145,50 @@ async def run_execution_test(
     so it is invoked once per node group found in the CIQ JSON data. Each run
     writes its report to ``exec_output/<crGroup>/``.
     """
-    java = _java_cmd(java_home)
+    plan = await prepare_execution(workflow_path, json_output_path, ciq_file_path, output_dir,
+                                   java_home, timeout, ciq_processor_jar, validation_rules_path)
+    if plan.get("error"):
+        return {"success": False, "exit_code": -1, "stdout": "", "stderr": plan["error"]}
+
     exec_dir = Path(output_dir) / "exec_output"
+    # Drop reports from previous attempts so results reflect this run only
+    if exec_dir.exists():
+        shutil.rmtree(exec_dir, ignore_errors=True)
+    exec_dir.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for target in plan["targets"]:
+        result = await execute_target(plan, cli_jar, workflow_path, target,
+                                      exec_dir / (target[2] or "default"), java_home, timeout,
+                                      runtime_vars)
+        results.append(result)
+
+    failed = [r for r in results if not r["success"]]
+    return {
+        "success": not failed,
+        "exit_code": failed[0]["exit_code"] if failed else 0,
+        "stdout": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stdout']}" for r in results),
+        "stderr": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stderr']}"
+                            for r in results if r["stderr"]),
+        "targets": [{"node": r["node"], "cr_group": r["cr_group"], "success": r["success"]}
+                    for r in results],
+    }
+
+
+async def prepare_execution(
+    workflow_path: str,
+    json_output_path: str,
+    ciq_file_path: str,
+    output_dir: str,
+    java_home: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar",
+    validation_rules_path: str = "",
+) -> dict:
+    """Everything ``execute`` needs, computed once: CIQ JSON targets
+    ``[(json_file, node_group, cr_group)]``, schema, node type/activity and the LOCAL cwd.
+    Returns ``{"error": …}`` when there is nothing to execute."""
+    java = _java_cmd(java_home)
     json_data_dir = Path(output_dir) / "json_data"
 
     uc_name = Path(workflow_path).stem
@@ -178,70 +220,59 @@ async def run_execution_test(
         json_inputs = _find_json_data(json_data_dir)
 
     if not json_inputs:
-        return {
-            "success": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": "No JSON data file for execution test.",
-        }
+        return {"error": "No JSON data file for execution test."}
 
     targets = _execution_targets(json_inputs)
     if not targets:
-        return {
-            "success": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": "No node groups found in CIQ JSON data (expected data.nodeGroups[].nodes[].node).",
-        }
+        return {"error": "No node groups found in CIQ JSON data (expected data.nodeGroups[].nodes[].node)."}
 
-    # Drop reports from previous attempts so results reflect this run only
-    if exec_dir.exists():
-        shutil.rmtree(exec_dir, ignore_errors=True)
-    exec_dir.mkdir(parents=True, exist_ok=True)
-
-    schema_path = sanitized_rules or validation_rules_path or json_output_path
-    results = []
     # LOCAL workflow steps run "python create_xml.py ..." in the JAR's working directory:
     # use the helper scripts folder from step 6 (all other paths are passed absolute)
     scripts_dir = Path(output_dir) / "scripts"
-    local_cwd = str(scripts_dir.resolve()) if scripts_dir.is_dir() else None
-
-    for json_input, node, cr_group in targets:
-        target_dir = exec_dir / (cr_group or "default")
-        target_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            java, "-jar", _abs(cli_jar),
-            "execute",
-            "--json", _abs(json_input),
-            "--schema", _abs(schema_path),
-            "--yaml", _abs(workflow_path),
-            "--node", node,
-            "--output-dir", _abs(target_dir),
-        ]
-        if cr_group:
-            cmd += ["--cr", cr_group]
-        if node_type:
-            cmd += ["--node-type", node_type]
-        if activity:
-            cmd += ["--activity", activity]
-        for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
-            cmd += ["--var", f"{key}={value}"]
-
-        result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
-                                cwd=local_cwd)
-        result.update(node=node, cr_group=cr_group)
-        results.append(result)
-
-    failed = [r for r in results if not r["success"]]
     return {
-        "success": not failed,
-        "exit_code": failed[0]["exit_code"] if failed else 0,
-        "stdout": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stdout']}" for r in results),
-        "stderr": "\n".join(f"=== {r['cr_group']}/{r['node']} ===\n{r['stderr']}"
-                            for r in results if r["stderr"]),
-        "targets": [{"node": r["node"], "cr_group": r["cr_group"], "success": r["success"]}
-                    for r in results],
+        "targets": targets,
+        "schema_path": sanitized_rules or validation_rules_path or json_output_path,
+        "node_type": node_type,
+        "activity": activity,
+        "local_cwd": str(scripts_dir.resolve()) if scripts_dir.is_dir() else None,
     }
+
+
+async def execute_target(
+    plan: dict,
+    cli_jar: str,
+    workflow_path: str,
+    target: tuple[str, str, str],
+    out_dir: str | Path,
+    java_home: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    runtime_vars: dict[str, str] | None = None,
+) -> dict:
+    """One ``execute`` run for one (json_file, node_group, cr_group); report in ``out_dir``."""
+    json_input, node, cr_group = target
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    cmd = [
+        _java_cmd(java_home), "-jar", _abs(cli_jar),
+        "execute",
+        "--json", _abs(json_input),
+        "--schema", _abs(plan["schema_path"]),
+        "--yaml", _abs(workflow_path),
+        "--node", node,
+        "--output-dir", _abs(out_dir),
+    ]
+    if cr_group:
+        cmd += ["--cr", cr_group]
+    if plan.get("node_type"):
+        cmd += ["--node-type", plan["node_type"]]
+    if plan.get("activity"):
+        cmd += ["--activity", plan["activity"]]
+    for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
+        cmd += ["--var", f"{key}={value}"]
+
+    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
+                            cwd=plan.get("local_cwd"))
+    result.update(node=node, cr_group=cr_group)
+    return result
 
 
 def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:

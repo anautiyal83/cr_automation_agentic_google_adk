@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+class _SimulatorControl:
+    """Scenario runs restart MockWire; keep it registered so every exit path stops it."""
+
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+
+    async def stop(self) -> None:
+        from shared.state import stop_simulator
+        await stop_simulator(self.run_id)
+
+    def register(self, sim) -> None:
+        from shared.state import simulator_processes
+        simulator_processes[self.run_id] = sim
+
+
 class NetworkConfigQAAgent(BaseAgent):
     """Step 9: Execution test against simulator + failure classification."""
     name: str = "network_config_exec_qa"
@@ -69,20 +84,25 @@ class NetworkConfigQAAgent(BaseAgent):
             html_template_path=config.get("mop_template", ""),
             java_home=config.get("java_home"),
             execution_workflow_path=str(overlay) if overlay and overlay.exists() else "",
+            mockwire_jar=config.get("mockwire_jar", "lib/mockwire/mockwire-simulator/mockwire.jar"),
+            simulator_control=_SimulatorControl(run_id),
         )
 
         output = await skill.test(inp)
 
-        # Save execution QA report
+        # Save the test-case report (HTML for review, JSON for the final report / tooling)
         if run_dir and output.report_html:
             report_path = Path(run_dir) / f"{uc_name}_network-qa-report.html"
             report_path.write_text(output.report_html, encoding="utf-8")
+        if run_dir and output.scenario_results:
+            import json
+            (Path(run_dir) / f"{uc_name}_test-cases.json").write_text(json.dumps({
+                "uc_name": uc_name, "total": output.total, "passed": output.passed,
+                "failed": output.failed, "notes": output.notes,
+                "test_cases": output.scenario_results}, indent=2), encoding="utf-8")
 
-        # Save execution test status (Step 9)
-        exec_failed = any(
-            not c.success or c.validation_status == "failed"
-            for c in output.command_results
-        ) or not inp.execution_workflow_path  # nothing executed without the simulator
+        # Save execution test status (Step 9): every test case must behave as expected
+        exec_failed = output.status != "passed" or not inp.execution_workflow_path
         state["step_9_status"] = "failed" if exec_failed else "passed"
 
         # On failure, set retry target based on failure classification
@@ -112,6 +132,9 @@ class NetworkConfigQAAgent(BaseAgent):
                 err_file = Path(run_dir) / "step_9_error.json"
                 err_file.write_text(json.dumps({
                     "error": f"{output.failed}/{output.total} tests failed",
+                    "failed_test_cases": [
+                        {"id": t.id, "scenario": t.description, "target": t.target_node, "errors": t.errors}
+                        for t in output.test_cases if t.status != "PASS"],
                     "classification": classification,
                     "retry_target": retry_target,
                     "simulator_issues": output.failure_classification.get("simulator_issues", []),
@@ -119,6 +142,12 @@ class NetworkConfigQAAgent(BaseAgent):
                     # exact commands MockWire had no response for (from its event log)
                     "unmatched_commands": output.failure_classification.get("unmatched_commands", []),
                 }, indent=2), encoding="utf-8")
+        elif exec_failed and run_dir:
+            # Failed without a routable cause (nothing ran): the error file is the step status
+            import json
+            (Path(run_dir) / "step_9_error.json").write_text(json.dumps({
+                "error": output.error or f"{output.failed}/{output.total} tests failed",
+                "notes": output.notes}, indent=2), encoding="utf-8")
 
         # Stop simulator after testing (a step 8 retry starts a fresh one)
         try:

@@ -112,6 +112,7 @@ class NetworkConfigGenSkill:
             ssh_summary=ctx["ssh"],
             xml_summary=ctx["xml"],
             developer_answers=ctx["answers"],
+            developer_notes=ctx["notes"],
             schema_summary=self._schema_summary,
             phases=ctx["phases_str"],
             runtime_params=ctx["runtime_params"],
@@ -156,6 +157,7 @@ class NetworkConfigGenSkill:
             nodes_summary=ctx["nodes"],
             phases=ctx["phases_str"],
             developer_answers=ctx["answers"],
+            developer_notes=ctx["notes"],
             runtime_params=ctx["runtime_params"],
         )
 
@@ -297,6 +299,7 @@ class NetworkConfigGenSkill:
             "ssh": "\n".join(ssh_lines) or "No SSH data",
             "xml": str(xml_summary)[:5000] or "No XML samples",
             "answers": answers_text,
+            "notes": str(req.get("developer_notes") or "").strip()[:6000] or "None",
             "phases_str": ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck",
             "runtime_params": ", ".join(f"${{{p}}}" for p in runtime_params()) or "none",
         }

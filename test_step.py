@@ -213,7 +213,7 @@ def _command_samples(doc_set: dict, extra_paths: list[str]) -> list[dict]:
 
 
 async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
-                      transcripts: list[str] | None = None):
+                      transcripts: list[str] | None = None, developer_notes: str = ""):
     """Run the real pipeline agents for steps 6/8/9 through ADK on a copy of a run.
 
     The source run is never modified: its directory is copied to
@@ -281,6 +281,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         doc = requirements.setdefault("doc_extracted", {})
         doc["command_samples"] = _command_samples(dict(rows[0]), transcripts or [])
         print(f"Real-output samples for step 6: {len(doc['command_samples'])} commands")
+        if developer_notes:
+            requirements["developer_notes"] = developer_notes
     requirements_store[session_id] = requirements
     state = {
         "run_id": session_id,
@@ -347,17 +349,29 @@ def _print_step_test_summary(work: Path, uc_name: str, steps: list[str]):
             print(f"  {inst['name']:<8} port {inst['port']:<6} status {inst['status']:<8} log {inst['log_file']}")
 
     if "9" in steps:
-        cmds = parse_execution_results(str(work))
-        events = read_simulator_events(str(work))
-        print(f"\nExecution: {len(cmds)} commands", dict(Counter(c.validation_status for c in cmds)))
-        for c in cmds:
-            if not c.success or c.validation_status == "failed":
-                print(f"  FAIL {c.node:5} {c.phase[:22]:22} {c.command[:60]!r}")
-        print("Simulator events:", dict(Counter(e.get("source") for e in events)))
+        tc_file = work / f"{uc_name}_test-cases.json"
+        if tc_file.exists():
+            tcs = json.loads(tc_file.read_text(encoding="utf-8"))
+            print(f"\nTest cases: {tcs['passed']}/{tcs['total']} passed")
+            for tc in tcs["test_cases"]:
+                print(f"  {tc['status']:4} {tc['id']} {tc['title']} — {tc['actual']}")
+                for chk in tc["checks"]:
+                    if not chk["ok"]:
+                        print(f"         x {chk['check']}: {chk['detail'][:150]}")
+            for note in tcs.get("notes", []):
+                print(f"  note: {note}")
+        else:
+            cmds = parse_execution_results(str(work))
+            events = read_simulator_events(str(work))
+            print(f"\nExecution: {len(cmds)} commands", dict(Counter(c.validation_status for c in cmds)))
+            for c in cmds:
+                if not c.success or c.validation_status == "failed":
+                    print(f"  FAIL {c.node:5} {c.phase[:22]:22} {c.command[:60]!r}")
+            print("Simulator events:", dict(Counter(e.get("source") for e in events)))
 
     print("\nArtifacts:")
     for name in (f"{uc_name}_simulator-report.html", f"simulator/{uc_name}.yaml",
-                 f"{uc_name}_network-qa-report.html"):
+                 f"{uc_name}_network-qa-report.html", f"{uc_name}_test-cases.json"):
         p = work / name
         if p.exists():
             print(f"  {p}")
@@ -375,6 +389,8 @@ def main():
                         help="With --agents: apply the current step 6 autofix to the run's workflow first")
     parser.add_argument("--transcripts", nargs="*", default=[],
                         help="With --agents 6: extra node session logs for the real-output samples")
+    parser.add_argument("--developer-notes", default="",
+                        help="With --agents 6: developer notes (as typed in the UI) for step 6")
     parser.add_argument("--validate", type=str, help="Validate YAML file")
 
     args = parser.parse_args()
@@ -389,7 +405,8 @@ def main():
         if unknown:
             print(f"Unsupported step(s) {unknown}; available: {', '.join(_STEP_AGENTS)}")
             return
-        asyncio.run(test_agents(args.run_id, steps, args.refix_workflow, args.transcripts))
+        asyncio.run(test_agents(args.run_id, steps, args.refix_workflow, args.transcripts,
+                                args.developer_notes))
     elif args.skill and args.run_id:
         asyncio.run(test_skill(args.skill, args.run_id))
     elif args.validate:
