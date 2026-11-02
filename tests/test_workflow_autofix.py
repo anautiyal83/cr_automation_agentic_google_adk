@@ -110,3 +110,60 @@ def test_check_placeholders_flags_dead_syntax_and_unknown_roots():
     assert "${nodeGroups.RDS.host}" in problems
     for ok in ("${RDS.niamID-1}", "${SECRET.pw}", "${NODE_TYPE}", "${crGroup}", "VNI}"):
         assert ok not in problems
+
+
+def test_local_step_reading_a_node_file_by_name_gets_a_download():
+    from skills.network_config_gen.autofix import fix_missing_downloads
+    from skills.network_config_gen.validator import check_file_flows
+    wf = {"phases": {"activity": {"steps": [
+        {"node": "LOCAL", "send": "python create_xml.py --out ${ORDERNO}.xml"},
+        {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
+                                 "remote_path": "/in/${ORDERNO}.xml"}},
+        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"},
+    ]}}}
+    assert len(check_file_flows(wf)) == 1  # the uploaded ${ORDERNO}.xml is local: not flagged
+    assert fix_missing_downloads(wf) == 1
+    steps = wf["phases"]["activity"]["steps"]
+    assert steps[3]["sftp"] == {"operation": "download", "remote_path": "/out/${ORDERNO}.xml.res",
+                                "local_path": "${ORDERNO}.xml.res", "overwrite": True}
+    assert check_file_flows(wf) == []
+
+
+def test_always_empty_register_used_in_a_command_is_rejected():
+    from skills.network_config_gen.validator import check_empty_registers
+    wf = {"phases": {"a": {"steps": [
+        {"node": "RDS", "send": "echo none", "register": [{"regex": "(?<resolvedImsi>)"}]},
+        {"node": "RDS", "send": "ldapsearch -b \"imsi=${resolvedImsi},dc=IMSI\""},
+    ]}}}
+    assert len(check_empty_registers(wf)) == 1
+    wf["phases"]["a"]["steps"][1]["send"] = "uptime"
+    assert check_empty_registers(wf) == []
+
+
+def test_downloads_overwrite_the_previous_node_groups_file():
+    from skills.network_config_gen.autofix import fix_workflow
+    import yaml
+    wf = yaml.safe_load(fix_workflow(
+        "nodes: {PGW: {type: remote, plugin: ssh}}\nphases:\n  a:\n    steps:\n"
+        "    - {node: PGW, sftp: {operation: download, remote_path: /o/x.res, local_path: x.res}}\n"))
+    assert wf["phases"]["a"]["steps"][0]["sftp"]["overwrite"] is True
+
+
+def test_ls_of_one_file_never_prints_total():
+    from skills.network_config_gen.validator import check_file_listing_regexes
+
+    def wf(send, regex):
+        return {"phases": {"a": {"steps": [{"node": "PGW", "send": send,
+                                            "validation": {"success": {"criteria": {"regex": regex}}}}]}}}
+    assert len(check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"total\s+\d+\s+.+?\.xml\.res"))) == 1
+    assert check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"^-rw\S+\s+\d+.+\.xml\.res$")) == []
+    assert check_file_listing_regexes(wf("ls -l /o/", r"total\s+\d+")) == []  # a directory has a total
+
+
+def test_overlay_shortens_polls_for_the_simulator():
+    from skills.network_simulator_setup.overlay import _shorten_polls
+    phases = {"a": {"steps": [{"send": "ls", "retries": 30, "retry_delay_sec": 10}, {"send": "x", "retries": 2}]}}
+    _shorten_polls(phases)
+    assert phases["a"]["steps"][0]["retries"] == 3 and phases["a"]["steps"][0]["retry_delay_sec"] == 2
+    assert phases["a"]["steps"][1]["retries"] == 2

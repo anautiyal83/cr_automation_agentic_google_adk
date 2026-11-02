@@ -238,3 +238,22 @@ def test_node_responses_retry_after_unparseable_answer(ciq_json):
     skill = NetworkSimulatorSetupSkill(llm_fn=llm)
     entries = asyncio.run(skill._generate_node_responses("UC", rds, "", ""))
     assert entries == {"ndsLoadStats": {"lines": ["ok"]}}
+
+
+def test_su_prompt_is_generated_from_the_step_prompt_regex():
+    from skills.network_simulator_setup.topology import _first_matching, _regex_examples
+    regex = r"(?m)(?:^|\n)rdshyd201\s*\$\s*$"
+    assert _first_matching(_regex_examples(regex), regex) == "rdshyd201$"
+    regex = r"(?m)(?:^|\n)(?:[a-zA-Z0-9._-]+@)?pgwggn01[#~]\s*$"
+    assert _first_matching(_regex_examples(regex), regex) == "pgwggn01#"
+
+
+def test_listing_mode_comes_from_samples_then_the_workflow_regex():
+    from skills.network_simulator_setup.file_flows import derive_listing
+    steps = [{"node": "PGW", "send": "ls -l /out/${X}.res",
+              "validation": {"success": {"criteria": {"regex": r"^-rwx------\s+\d+\s+\S+"}}}}]
+    assert derive_listing(steps, ["/out"], []) == [{"path": "/out/[^/]+", "mode": "-rwx------"}]
+    samples = [{"command": "ls -l /out", "output": "total 4\n-rw-r----- 1 provgw sftp 312 Nov 03 00:27 a.res"}]
+    assert derive_listing(steps, ["/out"], samples) == [
+        {"path": "/out/[^/]+", "mode": "-rw-r-----", "owner": "provgw", "group": "sftp"}]
+    assert derive_listing([{"send": "ls -l /out/x"}], ["/out"], []) == []

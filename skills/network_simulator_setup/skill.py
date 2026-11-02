@@ -97,6 +97,12 @@ class SkillOutput:
     error: str = ""
 
 
+def _sample_on(sample: dict, node: str) -> bool:
+    """A recorded sample of this node (samples without a node count for every node)."""
+    where = str(sample.get("node") or "")
+    return not where or where.upper() == node.upper()
+
+
 class NetworkSimulatorSetupSkill:
     """Builds per-node MockWire configs and optionally starts the simulator.
 
@@ -128,9 +134,12 @@ class NetworkSimulatorSetupSkill:
             workflow_doc = YAML(typ="safe").load(StringIO(inp.workflow_yaml)) or {}
         except Exception:
             workflow_doc = {}
+        from tools.command_samples import with_library
+        samples = with_library(list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or []))
         produced = response_lines(inp.requirements)
         for n in nodes:
-            n.vfs = derive_vfs(workflow_doc, n.name, produced) if isinstance(workflow_doc, dict) else None
+            n.vfs = (derive_vfs(workflow_doc, n.name, produced, [x for x in samples if _sample_on(x, n.name)])
+                     if isinstance(workflow_doc, dict) else None)
             if n.vfs:
                 logger.info("Topology node %s: vfs dirs=%s triggers=%d", n.name, n.vfs["dirs"],
                             len(n.vfs.get("triggers", [])))
@@ -138,8 +147,6 @@ class NetworkSimulatorSetupSkill:
         # --- Phase 2: Command responses per node ---
         # Real outputs recorded on the nodes are served verbatim; the LLM only invents
         # responses for commands nobody recorded
-        from tools.command_samples import with_library
-        samples = with_library(list((inp.requirements.get("doc_extracted") or {}).get("command_samples") or []))
         recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
         # Commands answered from real output, incl. placeholder commands as templates (S8-21)
         covered: dict[str, set[str]] = {}

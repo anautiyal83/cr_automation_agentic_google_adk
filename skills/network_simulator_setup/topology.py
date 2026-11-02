@@ -255,9 +255,16 @@ def _validation_regex(cmd: dict) -> str:
 
 
 def _regex_examples(regex: str) -> list[str]:
-    """Concrete strings for each top-level alternative of a prompt regex (best effort)."""
+    """Concrete strings for each top-level alternative of a prompt regex (best effort).
+
+    A string generated from the parsed regex comes first: the text heuristic kept inline
+    flags and line-start groups, so ``su - sdfrun`` answered with the regex itself (S8-22).
+    """
     examples = []
     for alt in _split_alternatives(regex or ""):
+        generated = _shortest_match(alt)
+        if generated:
+            examples.append(generated)
         text = alt.strip()
         if text.startswith("^"):
             text = text[1:]
@@ -270,6 +277,67 @@ def _regex_examples(regex: str) -> list[str]:
         if text:
             examples.append(text)  # callers keep only candidates that re-match the regex
     return examples
+
+
+def _shortest_match(regex: str) -> str:
+    """A short string matching ``regex`` (Java syntax), from its parse tree; "" when unsure."""
+    try:
+        from re import _constants as C, _parser as P  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        import sre_constants as C, sre_parse as P
+    py = re.sub(r"\(\?<(?=[A-Za-z])", "(?P<", regex)  # Java named groups
+    try:
+        tree = P.parse(py)
+    except Exception:
+        return ""
+
+    def char_of(items) -> str:
+        negate = any(op is C.NEGATE for op, _ in items)
+        allowed = []
+        for op, av in items:
+            if op is C.LITERAL:
+                allowed.append(chr(av))
+            elif op is C.RANGE:
+                allowed.append(chr(av[0]))
+            elif op is C.CATEGORY:
+                allowed.append({C.CATEGORY_DIGIT: "1", C.CATEGORY_WORD: "x", C.CATEGORY_SPACE: " ",
+                                C.CATEGORY_NOT_DIGIT: "x", C.CATEGORY_NOT_WORD: " ",
+                                C.CATEGORY_NOT_SPACE: "x"}.get(av, "x"))
+        if negate:
+            return next((c for c in "xa1-" if c not in allowed), "")
+        return allowed[0] if allowed else ""
+
+    def gen(nodes) -> str:
+        out = ""
+        for op, av in nodes:
+            if op is C.LITERAL:
+                out += chr(av)
+            elif op is C.NOT_LITERAL:
+                out += "x" if chr(av) != "x" else "y"
+            elif op is C.ANY:
+                out += "x"
+            elif op is C.IN:
+                out += char_of(av)
+            elif op in (C.MAX_REPEAT, C.MIN_REPEAT, getattr(C, "POSSESSIVE_REPEAT", None)):
+                lo, _, sub = av
+                out += gen(sub) * lo
+            elif op is C.SUBPATTERN:
+                out += gen(av[-1])
+            elif op is getattr(C, "ATOMIC_GROUP", None):
+                out += gen(av)
+            elif op is C.BRANCH:
+                out += min((gen(b) for b in av[1]), key=len)
+            elif op in (C.AT, C.ASSERT, C.ASSERT_NOT):
+                continue
+            else:
+                raise ValueError(op)
+        return out
+
+    try:
+        text = gen(tree).strip("\r\n")
+        return text if text and re.search(py, text) else ""
+    except Exception:
+        return ""
 
 
 def _split_alternatives(regex: str) -> list[str]:

@@ -40,7 +40,8 @@ def node_steps(workflow: dict, node: str) -> list[dict]:
     return out
 
 
-def derive_vfs(workflow: dict, node: str, response_lines: list[str]) -> dict | None:
+def derive_vfs(workflow: dict, node: str, response_lines: list[str],
+               samples: list[dict] | None = None) -> dict | None:
     """``vfs`` section for one node, or None when the node has no file flows."""
     uploads: list[tuple[int, str]] = []
     checks: list[tuple[int, str]] = []
@@ -76,7 +77,66 @@ def derive_vfs(workflow: dict, node: str, response_lines: list[str]) -> dict | N
     vfs: dict[str, Any] = {"dirs": dirs}
     if triggers:
         vfs["triggers"] = triggers
+    listing = derive_listing(node_steps(workflow, node), dirs, samples or [])
+    if listing:
+        vfs["listing"] = listing
     return vfs
+
+
+# `ls -l` line of a real node: mode, links, owner, group
+_LONG_LINE = re.compile(r"^([-dl][rwxsStT-]{9})[.+@]?\s+\d+\s+(\S+)\s+(\S+)\s", re.MULTILINE)
+_MODE = re.compile(r"(?<![\w-])([-d][r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-])(?![\w-])")
+
+
+def derive_listing(steps: list[dict], dirs: list[str], samples: list[dict]) -> list[dict]:
+    """``vfs.listing``: the ``ls -l`` columns of files in each directory as the real node shows
+    them (S8-23). MockWire prints ``-rw-r--r--`` by default; a workflow regex written from the
+    real node (``^-rwx------\\s+…``) never matched, and a 30-retry poll hung the case.
+    Recorded ``ls`` output of the directory wins, else the mode the workflow's regex spells out."""
+    listing = []
+    for d in dirs:
+        entry: dict[str, str] = {}
+        for s in samples:
+            cmd = str(s.get("command") or "")
+            if _FILE_CMD.match(cmd) and d in cmd:
+                hit = next((m for m in _LONG_LINE.finditer(str(s.get("output") or "")) if m.group(1)[0] == "-"),
+                           None)
+                if hit:
+                    entry = {"mode": hit.group(1), "owner": hit.group(2), "group": hit.group(3)}
+                    break
+        if not entry:
+            for step in steps:
+                send = str(step.get("send") or "")
+                if not (_FILE_CMD.match(send) and d in send):
+                    continue
+                for regex in _success_regexes(step):
+                    m = _MODE.search(regex.replace("\\-", "-"))
+                    if m:
+                        entry = {"mode": m.group(1)}
+                        break
+                if entry:
+                    break
+        if entry:
+            listing.append({"path": re.escape(d) + "/[^/]+", **entry})
+    return listing
+
+
+def _success_regexes(step: dict) -> list[str]:
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == "regex" and isinstance(v, str):
+                    found.append(v)
+                elif k != "failure":
+                    walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(step.get("validation") or {})
+    return found
 
 
 def is_vfs_command(key: str, vfs: dict | None) -> bool:

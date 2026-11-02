@@ -213,7 +213,8 @@ def _command_samples(doc_set: dict, extra_paths: list[str]) -> list[dict]:
 
 
 async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
-                      transcripts: list[str] | None = None, developer_notes: str = ""):
+                      transcripts: list[str] | None = None, developer_notes: str = "",
+                      source: str = ""):
     """Run the real pipeline agents for steps 6/8/9 through ADK on a copy of a run.
 
     The source run is never modified: its directory is copied to
@@ -240,7 +241,7 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         return
 
     config = await _ensure_api_key()
-    src = Path("data/runs") / run_id
+    src = Path(source) if source else Path("data/runs") / run_id
     if not src.exists():
         print(f"Run dir not found: {src}")
         return
@@ -392,6 +393,9 @@ def main():
                         help="With --agents 6: extra node session logs for the real-output samples")
     parser.add_argument("--developer-notes", default="",
                         help="With --agents 6: developer notes (as typed in the UI) for step 6")
+    parser.add_argument("--source", default="",
+                        help="With --agents: copy this dir (e.g. an earlier data/step_tests/<dir>) "
+                             "instead of data/runs/<run-id>")
     parser.add_argument("--validate", type=str, help="Validate YAML file")
 
     args = parser.parse_args()
@@ -407,7 +411,7 @@ def main():
             print(f"Unsupported step(s) {unknown}; available: {', '.join(_STEP_AGENTS)}")
             return
         asyncio.run(test_agents(args.run_id, steps, args.refix_workflow, args.transcripts,
-                                args.developer_notes))
+                                args.developer_notes, args.source))
     elif args.skill and args.run_id:
         asyncio.run(test_skill(args.skill, args.run_id))
     elif args.validate:

@@ -51,7 +51,31 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
             ssh.pop("ne_id", None)
         # Quoted: the JAR reads YAML 1.1 (SnakeYAML), where a bare `no` is boolean false
         ssh["strict_host_key_checking"] = SingleQuotedScalarString("no")
+    _shorten_polls(workflow.get("phases") or {})
     return dump_yaml(workflow)
+
+
+# The simulator answers at once (trigger files appear on upload): a poll that has not
+# passed after a few quick tries never will, and 30 x 10 s outlasted the case timeout,
+# which left no report at all (S9-08)
+SIM_MAX_RETRIES = 3
+SIM_MAX_RETRY_DELAY = 2
+
+
+def _shorten_polls(phases) -> None:
+    def walk(steps):
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            if isinstance(step.get("retries"), int) and step["retries"] > SIM_MAX_RETRIES:
+                step["retries"] = SIM_MAX_RETRIES
+            for key in ("retry_delay_sec", "retry_delay"):
+                if isinstance(step.get(key), (int, float)) and step[key] > SIM_MAX_RETRY_DELAY:
+                    step[key] = SIM_MAX_RETRY_DELAY
+            walk(step.get("steps"))
+
+    for body in (phases.values() if isinstance(phases, dict) else phases):
+        walk(body.get("steps") if isinstance(body, dict) else body)
 
 
 def extend_prompt_regex(regex: str, prompts: list[str]) -> str:

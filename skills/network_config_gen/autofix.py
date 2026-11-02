@@ -243,6 +243,7 @@ def fix_workflow(yaml_text: str) -> str:
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
     fix_expression_placeholders(parsed)
+    fix_missing_downloads(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -484,6 +485,7 @@ def _fix_transfer_step(step: dict) -> None:
         # An sftp step prints nothing: an output regex can never match; its status decides
         for criteria in _criteria_blocks(step):
             criteria.pop("regex", None)
+        _allow_overwrite(step["sftp"])
         return
     m = _SHELL_TRANSFER.match(str(step.get("send") or "").strip())
     if not m or str(step.get("node", "")).upper() == "LOCAL":
@@ -491,6 +493,7 @@ def _fix_transfer_step(step: dict) -> None:
     op, a, b = m.group(1), m.group(2).strip("'\""), m.group(3).strip("'\"")
     step["sftp"] = ({"operation": "upload", "local_path": a, "remote_path": b} if op == "put"
                     else {"operation": "download", "remote_path": a, "local_path": b})
+    _allow_overwrite(step["sftp"])
     step.pop("send", None)
     validation = step.get("validation")
     if isinstance(validation, dict):  # transfer success is the step's own status
@@ -498,6 +501,13 @@ def _fix_transfer_step(step: dict) -> None:
             if isinstance(validation.get(branch), dict):
                 validation[branch].pop("criteria", None)
     logger.info("Shell '%s' → sftp %s step", op, step["sftp"]["operation"])
+
+
+def _allow_overwrite(sftp: dict) -> None:
+    """A download whose local file exists fails with ``overwrite=false`` — and the file of
+    the previous node group always exists when one run handles several (DEP-30)."""
+    if sftp.get("operation") == "download" and "overwrite" not in sftp:
+        sftp["overwrite"] = True
 
 
 def _fix_absence_check(step: dict) -> None:
@@ -771,6 +781,98 @@ def fix_expression_placeholders(parsed: dict) -> int:
     if changed:
         logger.info("Rewrote %d expression placeholders to registered variables", changed)
     return changed
+
+
+_ABS_PATH = re.compile(r"(?<![\w$}])/(?:[\w.${}-]+/)+[\w.${}-]+")
+
+
+def remote_file_reads(parsed: dict) -> list[dict]:
+    """LOCAL steps that read a file which only exists on a node (listed/read there, or an
+    sftp upload target) without an earlier sftp download of it — by absolute path or by its
+    bare name (``parse_response.py --response_file '${ORDERNO}.xml.res'`` after
+    ``ls -l /…/outbox/${ORDERNO}.xml.res`` on PGW; DEP-29).
+
+    Each hit: ``steps`` (the list holding the LOCAL step), ``index``, ``phase``, ``send``,
+    ``node``/``remote_path`` (where the file is) and ``local_name`` (what the step reads).
+    """
+    phases = parsed.get("phases") or {}
+    items = list(phases.items()) if isinstance(phases, dict) else []
+    # Files that exist locally anyway: anything uploaded from or downloaded to the host
+    local: set[str] = set()
+
+    def collect(steps):
+        for step in steps or []:
+            if isinstance(step, dict):
+                sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else None
+                if sftp and sftp.get("operation") == "upload" and sftp.get("local_path"):
+                    local.add(str(sftp["local_path"]).rsplit("/", 1)[-1])
+                collect(step.get("steps"))
+
+    for _, body in items:
+        collect(body.get("steps") if isinstance(body, dict) else body)
+
+    remote: dict[str, tuple[str, str]] = {}  # full path and basename -> (node, full path)
+    downloaded: set[str] = set()
+    hits: list[dict] = []
+
+    def walk(phase, steps):
+        for i, step in enumerate(list(steps or [])):
+            if not isinstance(step, dict):
+                continue
+            node = str(step.get("node") or "")
+            sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else None
+            if sftp:
+                if sftp.get("operation") == "download":
+                    downloaded.add(str(sftp.get("local_path") or ""))
+                    downloaded.add(str(sftp.get("local_path") or "").rsplit("/", 1)[-1])
+                elif sftp.get("remote_path"):
+                    path = str(sftp["remote_path"])
+                    remote[path] = remote[path.rsplit("/", 1)[-1]] = (node, path)
+            elif node.upper() != "LOCAL":
+                for path in _ABS_PATH.findall(str(step.get("send") or "")):
+                    remote[path] = remote[path.rsplit("/", 1)[-1]] = (node, path)
+            else:
+                send = str(step.get("send") or "")
+                tokens = {t.strip("'\"") for t in re.split(r"[\s=]+", send)}
+                for token in sorted(tokens):
+                    name = token.rsplit("/", 1)[-1]
+                    if (token in remote and token not in downloaded and name not in downloaded
+                            and name not in local and ("/" in token or "." in token)):
+                        hits.append({"steps": steps, "index": i, "phase": phase, "send": send,
+                                     "node": remote[token][0], "remote_path": remote[token][1],
+                                     "local_name": name, "token": token})
+                        downloaded.add(name)
+            walk(phase, step.get("steps"))
+
+    for phase, body in items:
+        walk(phase, body.get("steps") if isinstance(body, dict) else body)
+    return hits
+
+
+def fix_missing_downloads(parsed: dict) -> int:
+    """Insert the sftp download a LOCAL step needs before it (the node and path are known
+    from the step that lists the file there); absolute remote paths in the LOCAL command
+    are pointed at the local copy."""
+    hits = remote_file_reads(parsed)
+    for hit in reversed(hits):  # later inserts first: indices stay valid
+        steps, i = hit["steps"], hit["index"]
+        step = steps[i]
+        if hit["token"].startswith("/"):
+            step["send"] = str(step["send"]).replace(hit["token"], hit["local_name"])
+        download = {
+            "node": hit["node"],
+            "sftp": {"operation": "download", "remote_path": hit["remote_path"], "local_path": hit["local_name"],
+                     "overwrite": True},
+            "command_description": f"Download {hit['local_name']} from {hit['node']} for the local step",
+            "validation": {"description": "File transfer successful",
+                           "success": {"criteria": {}, "message": f"{hit['local_name']} downloaded."},
+                           "failure": {"message": f"Failed to download {hit['local_name']}."}},
+        }
+        if step.get("when"):
+            download["when"] = step["when"]
+        steps.insert(i, download)
+        logger.info("Inserted sftp download of %s from %s before LOCAL step", hit["remote_path"], hit["node"])
+    return len(hits)
 
 
 def _insert_fallback_register(parsed: dict, var: str, column: str) -> None:

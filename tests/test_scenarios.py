@@ -238,11 +238,14 @@ def test_file_transfers_and_absence_checks_are_fixed_for_the_jar():
     assert steps[2]["sftp"] == {"operation": "upload", "local_path": "${ORDERNO}.xml",
                                 "remote_path": "/srv/in/${ORDERNO}.xml"} and "send" not in steps[2]
     assert steps[3]["send"] == "ls -l /srv/out/${ORDERNO}.xml.res"                 # presence: unchanged
-    problems = check_file_flows({"phases": {"a": {"steps": steps}}})
-    assert len(problems) == 1 and "download" in problems[0]                        # LOCAL reads a node path
-    steps.insert(4, {"node": "APP", "sftp": {"operation": "download", "remote_path": "/srv/out/${ORDERNO}.xml.res",
-                                             "local_path": "/srv/out/${ORDERNO}.xml.res"}})
+    # LOCAL reads a node path: the download is inserted and the command uses the local copy (DEP-29)
+    assert steps[4]["node"] == "APP" and steps[4]["sftp"] == {
+        "operation": "download", "remote_path": "/srv/out/${ORDERNO}.xml.res", "local_path": "${ORDERNO}.xml.res",
+        "overwrite": True}
+    assert steps[5]["send"] == "python parse.py --file '${ORDERNO}.xml.res'"
     assert not check_file_flows({"phases": {"a": {"steps": steps}}})
+    del steps[4]
+    assert len(check_file_flows({"phases": {"a": {"steps": steps}}})) == 1
 
 
 def test_simulator_file_system_follows_the_workflows_file_flow():
@@ -487,3 +490,11 @@ def test_developer_notes_reach_the_step6_prompt():
     notes = "Either IMSI or MSISDN is given; resolve IMSI via MSISDN"
     asyncio.run(NetworkConfigGenSkill(llm).generate(SkillInput(uc_name="UC", requirements={"developer_notes": notes})))
     assert notes in seen[0] and "ONE OF several CIQ columns" in seen[0]
+
+
+def test_jar_success_status_is_a_passing_run():
+    from skills.network_config_test.scenarios import run_passed
+    for status in ("SUCCESS", "success", "PASS", "COMPLETED"):
+        assert run_passed(status)
+    for status in ("FAIL", "FAILED", "", None):
+        assert not run_passed(status)

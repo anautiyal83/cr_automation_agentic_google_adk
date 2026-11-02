@@ -146,10 +146,11 @@ class PipelineAgent(BaseAgent):
             uc_name = ctx.session.state.get("uc_name", "")
             cache_hit = False
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
                 cache = ArtifactCache()
                 if agent.name in CACHEABLE_AGENTS:
-                    has = cache.has_cache(uc_name, agent.name)
+                    has = cache.has_cache(uc_name, agent.name,
+                                          inputs_fingerprint(ctx.session.state.get("document_set")))
                     flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
                     if has:
                         cached = cache.load_cache(uc_name, agent.name)
@@ -234,7 +235,7 @@ class PipelineAgent(BaseAgent):
 
             # ----- SAVE TO CACHE (on success) -----
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
                 if agent.name in CACHEABLE_AGENTS:
                     all_passed = all(
                         ctx.session.state.get(f"step_{sn}_status", "passed") != "failed"
@@ -251,7 +252,8 @@ class PipelineAgent(BaseAgent):
                             req = requirements_store.get(run_id_str)
                             if req:
                                 cache_data["requirements_json"] = _json.dumps(req, indent=2)
-                        cache.save_cache(uc_name, agent.name, cache_data)
+                        cache.save_cache(uc_name, agent.name, cache_data,
+                                         inputs=inputs_fingerprint(ctx.session.state.get("document_set")))
             except Exception as e:
                 logger.debug("Cache save failed for %s: %s", agent.name, e)
 
@@ -313,6 +315,12 @@ class PipelineAgent(BaseAgent):
                                retry_target, current_count)
                 else:
                     target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                    # The retried agent must regenerate, not reload what just failed (OB-11)
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
+                    except Exception as e:
+                        logger.debug("Cache clear failed on auto-retry: %s", e)
                     flow.flow("AUTO-RETRY — step %d -> agent index %d (count=%d/%d)",
                                retry_target, target_index, current_count, MAX_RETRIES)
                     await self._publish(run_id_str, "retry_started", retry_target)

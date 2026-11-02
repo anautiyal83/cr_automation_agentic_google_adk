@@ -93,6 +93,7 @@ Step 8 writes `simulator/<uc>.yaml` (overlay.py: instance host/port/user, litera
 - [X] T051 `jar_executor.run_execution_test`: use the overlay, remove the dead `simulator_host/port` parameters, fix `--node` to loop every zone × CR from the JSON (`--node EAST --cr CR1`, …) and merge the reports (DEP-2, F8). Pick up ports from `manifest.json`, not session state.
 - [X] T054 Raise DEP-4 (su/exit prompt validation) and DEP-5 (sar column regex) against Step 6 prompts/autofix, so Step 9 → 6 retries can fix them. **Done 2026-11-02**: generic real-output checks + self-correction (spec.md "Generation contracts"); DEP-11..15 fixed with it.
 - [X] T055 Simulator response files for upload flows (`outbox/<ORDERNO>.xml.res` after an XML upload) via MockWire VFS triggers (S8-16). Done 2026-11-02 (`file_flows.py`, MockWire 0b37ef0).
+- [X] T056 `ls -l` columns like the real node (MockWire `vfs.listing`, 575344d; step 8 `derive_listing`, S8-23) and su/login prompts generated from the parsed prompt regex (S8-22). Done 2026-11-03.
 - [ ] T052 `regenerate(feedback)`: rebuild only the failing commands' responses, rewrite files, restart the affected instances, and re-run sanity. Load context from `run_dir`, not ADK state.
 - [ ] T053 Final smoke test: the cli-automation `execute` on a generated 1-command-per-node workflow.
 

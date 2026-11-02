@@ -30,11 +30,13 @@ SELF_CORRECTION_ROUNDS = 2  # regenerate with validator errors as feedback
 EXTRA_ROUND_IF_IMPROVING = 1  # one more round while the error count still drops
 
 # Validator error kinds, so a correction round sees what to work on (most specific first)
+_INCOMPLETE = ("workflow has no", "no workflow step runs on", "looks cut short")
 _ERROR_KINDS = [
+    ("Incomplete workflow — parts of the MOP are missing", _INCOMPLETE),
     ("Regexes / expr vs the REAL output of the command", ("real output",)),
     ("su/exit prompt_regex vs the real prompt", ("prompt_regex",)),
     ("Variables a CIQ row never gets / unknown expr variables",
-     ("registers it", "no step registers", "never registered")),
+     ("registers it", "no step registers", "never registered", "always-empty value")),
     ("Placeholders the JAR cannot resolve", ("Unresolvable placeholder",)),
     ("CIQ columns some rows leave empty", ("sample rows",)),
     ("File transfers", ("LOCAL step", "sftp")),
@@ -86,10 +88,23 @@ class SkillOutput:
 
 
 def _rank(errors: list[str]) -> float:
-    """Fewer errors is better, but YAML that does not parse is worse than any workflow."""
+    """Fewer errors is better, but YAML that does not parse is worse than any workflow and a
+    workflow missing parts of the MOP is worse than a complete one with mistakes (G-6)."""
     if any(e.startswith("Invalid YAML syntax") for e in errors):
         return float("inf")
-    return len(errors)
+    return len(errors) + 1000 * sum(any(k in e for k in _INCOMPLETE) for e in errors)
+
+
+def _expected_coverage(requirements: dict) -> dict:
+    """What the workflow must cover, from the requirements: phases and commands per node
+    (LOCAL and NIAM helper entries are not nodes the workflow must log in to)."""
+    phases = list((requirements.get("category_3_orchestration") or {}).get("phases") or [])
+    node_commands: dict[str, int] = {}
+    for c in (requirements.get("category_2_commands") or {}).get("commands") or []:
+        node = str(c.get("node") or "") if isinstance(c, dict) else ""
+        if node and node.upper() != "LOCAL" and not node.lower().startswith("niam"):
+            node_commands[node] = node_commands.get(node, 0) + 1
+    return {"phases": phases, "node_commands": node_commands}
 
 
 class NetworkConfigGenSkill:
@@ -112,6 +127,7 @@ class NetworkConfigGenSkill:
         self._last_yaml = ""
         self._samples: list[dict] = []
         self._ciq_sheets: dict = {}
+        self._expected: dict = {}
 
     async def generate(self, inp: SkillInput) -> SkillOutput:
         """Generate workflow YAML from requirements.
@@ -128,6 +144,7 @@ class NetworkConfigGenSkill:
         from tools.command_samples import with_library
         self._samples = with_library(list(doc.get("command_samples") or []))
         self._ciq_sheets = dict(doc.get("ciq_sheets") or {})
+        self._expected = _expected_coverage(inp.requirements)
 
         self._schema_summary = inp.generation_hints.get("step_6", "")
         if not self._schema_summary:
@@ -158,7 +175,7 @@ class NetworkConfigGenSkill:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets)
+            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets, self._expected)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow generation failed: %s", e, exc_info=True)
@@ -204,7 +221,7 @@ class NetworkConfigGenSkill:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
             yaml_text = fix_workflow(yaml_text)
-            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets)
+            errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets, self._expected)
             self._last_yaml = yaml_text
         except Exception as e:
             logger.error("Workflow regeneration failed: %s", e, exc_info=True)
@@ -233,7 +250,7 @@ class NetworkConfigGenSkill:
         if not changed:
             return yaml_text, errors
         repaired = dump_yaml(parsed)
-        new_errors = validate_workflow(repaired, self._samples, self._ciq_sheets)
+        new_errors = validate_workflow(repaired, self._samples, self._ciq_sheets, self._expected)
         if _rank(new_errors) < _rank(errors):
             logger.info("Repaired %d regexes against real output: %d -> %d errors",
                         changed, len(errors), len(new_errors))

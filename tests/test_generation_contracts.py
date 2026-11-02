@@ -287,3 +287,73 @@ phases:
 def test_shared_display_step_is_cleared_only_by_its_first_agent():
     assert _first_agent_of_step(6) == "network_config_gen"   # not helper_script_gen
     assert _first_agent_of_step(8) == "network_simulator_setup"
+
+
+def _workflow(phases: dict) -> dict:
+    return {"phases": {name: {"steps": [{"name": f"s{i}", "node": node, "command": "show"}
+                                        for i, node in enumerate(nodes)]}
+                       for name, nodes in phases.items()}}
+
+
+_EXPECTED = {"phases": ["preNodeHealthCheck", "activity", "postNodeHealthCheck"],
+             "node_commands": {"RDS": 20, "PGW": 20}}
+
+
+def test_cut_short_workflow_is_incomplete():
+    from skills.network_config_gen.validator import check_completeness
+    errors = check_completeness(_workflow({"preNodeHealthCheck": ["RDS"] * 5}), _EXPECTED)
+    assert any("activity" in e for e in errors)
+    assert any("post-check" in e for e in errors)
+    assert any("node PGW" in e for e in errors)
+    assert any("cut short" in e for e in errors)
+
+
+def test_complete_workflow_passes_completeness():
+    from skills.network_config_gen.validator import check_completeness
+    wf = _workflow({"pre_checks": ["RDS", "PGW"] * 3, "activity": ["RDS"] * 4, "postNodeHealthCheck": ["PGW"] * 3})
+    assert check_completeness(wf, _EXPECTED) == []
+    assert check_completeness(wf, {}) == []
+
+
+def test_incomplete_workflow_ranks_below_one_with_mistakes():
+    from skills.network_config_gen.skill import _rank
+    many_mistakes = ["Unresolvable placeholder ${x}"] * 30
+    incomplete = ["The workflow has 5 steps for 106 MOP commands in the requirements — it looks cut short"]
+    assert _rank(incomplete) > _rank(many_mistakes)
+
+
+def test_expected_coverage_skips_local_and_niam_entries():
+    from skills.network_config_gen.skill import _expected_coverage
+    req = {"category_3_orchestration": {"phases": ["activity"]},
+           "category_2_commands": {"commands": [{"node": "RDS"}, {"node": "LOCAL"}, {"node": "niam_lookup"},
+                                                {"node": "RDS"}]}}
+    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2}}
+
+
+def test_cache_is_stale_after_code_or_input_change(tmp_path, monkeypatch):
+    import storage.artifact_cache as ac
+    cache = ac.ArtifactCache(str(tmp_path))
+    cache.save_cache("UC", "network_config_gen", {"workflow_yaml": "phases: {}"}, inputs="a")
+    assert cache.has_cache("UC", "network_config_gen", "a")
+    assert not cache.has_cache("UC", "network_config_gen", "b")
+    monkeypatch.setattr(ac, "code_version", lambda name: "changed")
+    assert not cache.has_cache("UC", "network_config_gen", "a")
+
+
+def test_regenerated_agent_invalidates_later_caches(tmp_path):
+    from storage.artifact_cache import ArtifactCache
+    cache = ArtifactCache(str(tmp_path))
+    cache.save_cache("UC", "helper_script_gen", {"helper_scripts": {"a.py": "print(1)"}})
+    assert cache.has_cache("UC", "helper_script_gen")
+    cache.save_cache("UC", "network_config_gen", {"workflow_yaml": "phases: {}"})
+    assert not cache.has_cache("UC", "helper_script_gen")
+    cache.clear_from_step("UC", "network_config_qa")  # nothing cached after step 6: keeps the cache
+    assert cache.has_cache("UC", "network_config_gen")
+
+
+def test_inputs_fingerprint_hashes_file_content_not_path(tmp_path):
+    from storage.artifact_cache import inputs_fingerprint
+    a, b = tmp_path / "a.xlsx", tmp_path / "b.xlsx"
+    a.write_bytes(b"same"); b.write_bytes(b"same")
+    assert inputs_fingerprint({"ciq_file_path": str(a), "id": 1}) == inputs_fingerprint({"ciq_file_path": str(b), "id": 2})
+    assert inputs_fingerprint({"developer_notes": "x"}) != inputs_fingerprint({"developer_notes": "y"})

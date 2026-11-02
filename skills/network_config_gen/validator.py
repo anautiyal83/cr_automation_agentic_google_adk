@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
-                      ciq_sheets: dict | None = None) -> list[str]:
+                      ciq_sheets: dict | None = None, expected: dict | None = None) -> list[str]:
     """Validate workflow YAML structure. Returns list of error strings.
 
     With ``command_samples`` (real ``{command, output}`` pairs from uploaded transcripts,
@@ -83,6 +83,9 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_placeholders(parsed))
     errors.extend(check_file_flows(parsed))
     errors.extend(check_expr_vars(parsed))
+    errors.extend(check_empty_registers(parsed))
+    errors.extend(check_file_listing_regexes(parsed))
+    errors.extend(check_completeness(parsed, expected))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
     if ciq_sheets:
@@ -150,34 +153,61 @@ def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
     return list(problems.values())
 
 
-_ABS_PATH = re.compile(r"(?<![\w$}])/(?:[\w.${}-]+/)+[\w.${}-]+")
+_EMPTY_GROUP = re.compile(r"\(\?<([A-Za-z][A-Za-z0-9]*)>\)")
+
+
+def check_empty_registers(parsed: dict) -> list[str]:
+    """``register: [{regex: (?<x>)}]`` always stores "": every later ``${x}`` then runs with an
+    empty value (``ldapsearch -b "imsi=,…"`` for CIQ rows without a Test IMSI, DEP-31). The
+    value has to come from somewhere real for those rows — another CIQ column or a lookup."""
+    problems: list[str] = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            regex = str(reg.get("regex") or "") if isinstance(reg, dict) else ""
+            for var in _EMPTY_GROUP.findall(regex):
+                users = [str(s.get("send") or "")[:70] for _, s in _iter_steps(parsed.get("phases") or {})
+                         if "${" + var + "}" in str(s.get("send") or "")]
+                if users:
+                    problems.append(
+                        f"Step '{str(step.get('send') or step.get('command_description') or '')[:60]}' "
+                        f"({phase_name}) registers {var} as an always-empty value ((?<{var}>)), and "
+                        f"{len(users)} step(s) use ${{{var}}} (e.g. '{users[0]}') — they would run with an "
+                        f"empty value. Obtain {var} for those CIQ rows from real data (another CIQ column or "
+                        "a lookup command whose output registers it), or skip the steps with `when`.")
+    return problems
+
+
+_LS_ONE_FILE = re.compile(r"^\s*ls\s+-\w*l\w*\s+['\"]?(/\S*?/[^/\s'\"]*\.[^/\s'\"]+)['\"]?(?:\s+2>&1)?(?:\s*\|\|\s*true)?\s*$")
+
+
+def check_file_listing_regexes(parsed: dict) -> list[str]:
+    """``ls -l <one file>`` prints just that file's line — no ``total N`` (that is printed for
+    directories). A success regex requiring ``total`` never matches, on the node or the
+    simulator, and a poll on it retries until it times out (DEP-32)."""
+    problems = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        m = _LS_ONE_FILE.match(str(step.get("send") or ""))
+        if not m:
+            continue
+        from .autofix import _criteria_blocks
+        for criteria in _criteria_blocks(step):
+            regex = str(criteria.get("regex") or "")
+            if re.search(r"(?<![A-Za-z])total\b", regex):
+                problems.append(
+                    f"Step '{step.get('send')}' ({phase_name}): `ls -l` of a single file prints only the "
+                    f"file's line (e.g. '-rw-r--r-- 1 user group 312 Nov  3 00:45 {m.group(1)}'), never a "
+                    f"'total' line — its regex {regex!r} can never match. Match the file's line instead.")
+    return problems
 
 
 def check_file_flows(parsed: dict) -> list[str]:
     """LOCAL steps run on the automation host: a path that only exists on a node (it is
-    listed/read there or is an sftp remote_path) must be downloaded first (S8-16)."""
-    remote_paths: set[str] = set()
-    downloaded: set[str] = set()
-    problems: list[str] = []
-    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
-        node = str(step.get("node") or "")
-        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else None
-        if sftp:
-            if sftp.get("operation") == "download":
-                downloaded.add(str(sftp.get("local_path") or ""))
-            remote_paths.add(str(sftp.get("remote_path") or ""))
-            continue
-        send = str(step.get("send") or "")
-        if node.upper() != "LOCAL":
-            remote_paths.update(_ABS_PATH.findall(send))
-            continue
-        for path in _ABS_PATH.findall(send):
-            if path in remote_paths and path not in downloaded:
-                problems.append(
-                    f"LOCAL step '{send[:80]}' ({phase_name}) reads {path}, which exists on a remote node, "
-                    "not on the automation host: add an sftp download step "
-                    "(sftp: {operation: download, remote_path: …, local_path: …}) and use the local copy.")
-    return problems
+    listed/read there or is an sftp remote_path) must be downloaded first (S8-16, DEP-29)."""
+    from .autofix import remote_file_reads
+    return [f"LOCAL step '{hit['send'][:80]}' ({hit['phase']}) reads {hit['token']}, which exists on "
+            f"{hit['node']} ({hit['remote_path']}), not on the automation host: add an sftp download step "
+            "(sftp: {operation: download, remote_path: …, local_path: …}) before it and use the local copy."
+            for hit in remote_file_reads(parsed)]
 
 
 _WHEN_TERM = re.compile(r"^\s*configSequences\.\d+\.records\.\d+\.data\.(.+?)\s*(==|!=)\s*'([^']*)'\s*$")
@@ -335,6 +365,50 @@ def _check_prompt_change(step: dict, send: str, phase_name: str, samples: list[d
     return (f"Step '{send}' ({phase_name}): prompt_regex /{regex}/ does not match the prompt the "
             f"real node shows after this command: {', '.join(repr(p) for p in dict.fromkeys(seen))}. "
             "Write the prompt_regex for that prompt.")
+
+
+_PHASE_KINDS = ("pre", "activity", "post")
+
+
+def _phase_kind(name: str) -> str:
+    """preNodeHealthCheck / pre_checks -> pre, postNodeHealthCheck -> post, anything else -> activity."""
+    text = re.sub(r"[^a-z]", "", str(name).lower())
+    if text.startswith("pre"):
+        return "pre"
+    return "post" if text.startswith("post") else "activity"
+
+
+def check_completeness(parsed: dict, expected: dict | None) -> list[str]:
+    """The workflow covers what the requirements describe (G-6): a step in every phase kind
+    the requirements list, every node that has commands, and a plausible share of the
+    commands — an LLM answer cut short (76 lines, RDS pre-checks only) passed every other
+    check because nothing in it was wrong."""
+    if not expected:
+        return []
+    steps_by_kind: dict[str, int] = {}
+    used_nodes: set[str] = set()
+    total = 0
+    for name, step in _iter_steps(parsed.get("phases") or {}):
+        kind = _phase_kind(name)
+        steps_by_kind[kind] = steps_by_kind.get(kind, 0) + 1
+        used_nodes.add(str(step.get("node") or "").upper())
+        total += 1
+    problems = []
+    labels = {"pre": "pre-check", "activity": "activity", "post": "post-check"}
+    for kind in sorted({_phase_kind(p) for p in expected.get("phases") or []}, key=_PHASE_KINDS.index):
+        if not steps_by_kind.get(kind):
+            problems.append(f"The requirements have {'an' if kind == 'activity' else 'a'} {labels[kind]} phase but the workflow has no "
+                            f"{labels[kind]} steps — generate the COMPLETE workflow (all phases of the MOP).")
+    node_cmds: dict[str, int] = expected.get("node_commands") or {}
+    for node, count in sorted(node_cmds.items()):
+        if count >= 2 and node.upper() not in used_nodes:
+            problems.append(f"The requirements list {count} commands on node {node} but no workflow step "
+                            f"runs on {node} — include its steps.")
+    wanted = sum(node_cmds.values())
+    if wanted >= 8 and total < wanted * 0.25:
+        problems.append(f"The workflow has {total} steps for {wanted} MOP commands in the requirements — it "
+                        "looks cut short; output the complete workflow.")
+    return problems
 
 
 _EXPR_CMP = re.compile(r"^\s*([A-Za-z_]\w*)\s*(>=|<=|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")

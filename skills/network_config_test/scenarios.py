@@ -132,6 +132,14 @@ def matches_command(send: str, executed: str) -> bool:
     return re.fullmatch(pattern, executed) is not None
 
 
+_PASSING_RUN = {"PASS", "PASSED", "SUCCESS", "SUCCEEDED", "COMPLETED", "OK"}
+
+
+def run_passed(overall_status: str) -> bool:
+    """The JAR reports a clean run as overall_status SUCCESS (FAIL otherwise)."""
+    return str(overall_status or "").strip().upper() in _PASSING_RUN
+
+
 def java_regex_matches(regex: str, text: str) -> bool:
     """The JAR's validation semantics: find(), ^/$ per line, '.' does not cross lines."""
     py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
@@ -633,7 +641,7 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
                                       for c in failed[:5])))
         checks.append(Check("Simulator answered every command", not unmatched,
                             "; ".join(str(e.get("input", ""))[:80] for e in unmatched[:5])))
-        checks.append(Check("Run reported PASS", result.overall_status.upper() == "PASS", result.overall_status))
+        checks.append(Check("Run reported PASS", run_passed(result.overall_status), result.overall_status))
         result.actual = (f"{len(cmds)} steps ran, {len(failed)} failed; run {result.overall_status}")
     elif sc.fault and sc.fault.kind == "login":
         inst = node_instance.get(sc.fault.node, "")
@@ -644,7 +652,7 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
                             f"{len(received)} commands reached it"))
         checks.append(Check(f"No step on {sc.fault.node} succeeded", not node_ok,
                             "; ".join(c.command[:60] for c in node_ok[:3])))
-        checks.append(Check("Run reported FAIL", result.overall_status.upper() != "PASS", result.overall_status))
+        checks.append(Check("Run reported FAIL", not run_passed(result.overall_status), result.overall_status))
         if sc.policy in ("stop", "run"):
             later = [c for c, i in zip(cmds, idx) if i is not None and i > sc.fault.step_index]
             checks.append(Check("Nothing ran after the failed login", not later,
@@ -670,7 +678,7 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
             has_later = any(s.index > fault_i for s in steps)
             checks.append(Check(f"on_failure={sc.policy}: later steps still ran", bool(later) or not has_later,
                                 f"{len(later)} later steps ran"))
-        checks.append(Check("Run reported FAIL", result.overall_status.upper() != "PASS", result.overall_status))
+        checks.append(Check("Run reported FAIL", not run_passed(result.overall_status), result.overall_status))
         result.actual = (("fault detected" if detected else "fault NOT detected" if reached else "fault not reached")
                          + f"; {len(later)} later steps ran; run {result.overall_status}")
 

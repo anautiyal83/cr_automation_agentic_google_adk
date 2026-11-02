@@ -18,6 +18,7 @@ Cache structure:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
@@ -47,6 +48,57 @@ _AGENT_CACHE_MAP: dict[str, list[tuple[str, str]]] = {
 # Agent names that can be skipped if cache is valid
 CACHEABLE_AGENTS = set(_AGENT_CACHE_MAP.keys())
 
+# Pipeline order of the cacheable agents (a cleared agent invalidates the ones after it)
+_AGENT_ORDER = ["requirements_gatherer", "ciq_validation_json_gen", "network_config_gen", "helper_script_gen"]
+
+# Code that produces each agent's artifacts: a change invalidates its cache (OB-11) —
+# a UI run kept serving a workflow generated before the step 6 fixes
+_AGENT_SOURCES: dict[str, list[str]] = {
+    "requirements_gatherer": ["skills/requirement_gathering", "agents/requirements_agent.py"],
+    "ciq_validation_json_gen": ["skills/ciq_validation_json_gen", "agents/ciq_validation_json_gen_agent.py"],
+    "network_config_gen": ["skills/network_config_gen", "agents/network_config_gen_agent.py"],
+    "helper_script_gen": ["skills/helper_script_gen", "agents/helper_script_gen_agent.py"],
+}
+_ROOT = Path(__file__).resolve().parent.parent
+_VOLATILE_KEYS = {"id", "run_id", "document_set_id", "created_at", "uploaded_at", "updated_at"}
+
+
+def code_version(agent_name: str) -> str:
+    """Hash of the source files that generate an agent's artifacts."""
+    h = hashlib.sha256()
+    for rel in _AGENT_SOURCES.get(agent_name, []):
+        path = _ROOT / rel
+        files = sorted(path.rglob("*")) if path.is_dir() else [path]
+        for f in files:
+            if f.is_file() and f.suffix in (".py", ".md", ".yaml", ".json", ".txt") and "__pycache__" not in f.parts:
+                h.update(str(f.relative_to(_ROOT)).encode())
+                h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def inputs_fingerprint(document_set: dict | None) -> str:
+    """Hash of what the user gave the run: notes, settings and the CONTENT of the uploaded
+    files (paths differ per upload). Requirements cached for other documents or without the
+    developer notes must not be reused (OB-11)."""
+    h = hashlib.sha256()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for k in sorted(value):
+                if k not in _VOLATILE_KEYS:
+                    h.update(f"<{k}>".encode())
+                    walk(value[k])
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str) and value and len(value) < 1024 and Path(value).is_file():
+            h.update(hashlib.sha256(Path(value).read_bytes()).digest())
+        else:
+            h.update(json.dumps(value, default=str).encode())
+
+    walk(document_set or {})
+    return h.hexdigest()[:16]
+
 
 class ArtifactCache:
     """Manages UC-level artifact caching."""
@@ -58,8 +110,9 @@ class ArtifactCache:
     def uc_cache_dir(self, uc_name: str) -> Path:
         return self._cache_dir / uc_name
 
-    def has_cache(self, uc_name: str, agent_name: str) -> bool:
-        """Check if valid cached artifacts exist for this agent+UC."""
+    def has_cache(self, uc_name: str, agent_name: str, inputs: str = "") -> bool:
+        """Check if valid cached artifacts exist for this agent+UC, made by the current code
+        from the same inputs (``inputs``: :func:`inputs_fingerprint` of the document set)."""
         entries = _AGENT_CACHE_MAP.get(agent_name, [])
         if not entries:
             return False
@@ -79,7 +132,15 @@ class ArtifactCache:
 
         # Check that cache status is "passed" for this agent
         agent_status = meta.get("agent_status", {}).get(agent_name)
-        return agent_status == "passed"
+        if agent_status != "passed":
+            return False
+        if meta.get("code_version", {}).get(agent_name) != code_version(agent_name):
+            logger.info("Cache for %s/%s is stale: generator code changed", uc_name, agent_name)
+            return False
+        if inputs and meta.get("inputs") != inputs:
+            logger.info("Cache for %s/%s is stale: documents or notes changed", uc_name, agent_name)
+            return False
+        return True
 
     def load_cache(self, uc_name: str, agent_name: str) -> dict[str, str]:
         """Load cached artifacts for an agent. Returns {artifact_key: content}."""
@@ -105,7 +166,7 @@ class ArtifactCache:
         return result
 
     def save_cache(self, uc_name: str, agent_name: str,
-                   artifacts: dict[str, Any], status: str = "passed") -> None:
+                   artifacts: dict[str, Any], status: str = "passed", inputs: str = "") -> None:
         """Save artifacts to cache for this agent+UC."""
         entries = _AGENT_CACHE_MAP.get(agent_name, [])
         if not entries:
@@ -123,6 +184,7 @@ class ArtifactCache:
             if cache_file.endswith("/"):
                 # Directory — content is dict of {filename: text}
                 if isinstance(content, dict):
+                    shutil.rmtree(path, ignore_errors=True)  # no scripts left from an older version
                     path.mkdir(parents=True, exist_ok=True)
                     for fname, text in content.items():
                         (path / fname).write_text(str(text), encoding="utf-8")
@@ -135,6 +197,18 @@ class ArtifactCache:
         agent_status = meta.setdefault("agent_status", {})
         agent_status[agent_name] = status
         meta.setdefault("timestamps", {})[agent_name] = datetime.now(timezone.utc).isoformat()
+        meta.setdefault("code_version", {})[agent_name] = code_version(agent_name)
+        if inputs:
+            if meta.get("inputs") != inputs:
+                # Artifacts of other agents were made from other documents
+                for other in list(meta.get("agent_status", {})):
+                    if other != agent_name:
+                        meta["agent_status"].pop(other, None)
+            meta["inputs"] = inputs
+        if agent_name in _AGENT_ORDER:
+            # The agent produced new artifacts: what was cached after it was built from the old ones
+            for later in _AGENT_ORDER[_AGENT_ORDER.index(agent_name) + 1:]:
+                meta.get("agent_status", {}).pop(later, None)
         self._write_meta(uc_name, meta)
 
         logger.info("Cached %d artifacts for %s/%s (status=%s)",
@@ -158,6 +232,7 @@ class ArtifactCache:
             meta = self._read_meta(uc_name)
             meta.get("agent_status", {}).pop(agent_name, None)
             meta.get("timestamps", {}).pop(agent_name, None)
+            meta.get("code_version", {}).pop(agent_name, None)
             self._write_meta(uc_name, meta)
             logger.info("Cleared cache for %s/%s", uc_name, agent_name)
         else:
@@ -165,19 +240,12 @@ class ArtifactCache:
             logger.info("Cleared all cache for %s", uc_name)
 
     def clear_from_step(self, uc_name: str, from_agent: str) -> None:
-        """Clear cache for an agent and all downstream agents."""
-        # Order of agents in pipeline
-        agent_order = [
-            "requirements_gatherer",
-            "ciq_validation_json_gen",
-            "network_config_gen",
-            "helper_script_gen",
-        ]
-        try:
-            idx = agent_order.index(from_agent)
-        except ValueError:
-            idx = 0
-        for agent in agent_order[idx:]:
+        """Clear cache for an agent and all downstream agents. Agents after the cached ones
+        (QA, simulator, report) have nothing cached: re-running them keeps the cache
+        (it used to fall back to clearing everything)."""
+        if from_agent not in _AGENT_ORDER:
+            return
+        for agent in _AGENT_ORDER[_AGENT_ORDER.index(from_agent):]:
             self.clear_cache(uc_name, agent)
 
     def list_cached_ucs(self) -> list[dict]:
