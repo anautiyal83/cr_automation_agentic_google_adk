@@ -56,6 +56,7 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-4 | `su`/`exit` steps validate the prompt, but the JAR strips prompts from output, so they can never pass (found in spike) | Step 6 |
 | DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
 | DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
+| DEP-10 | With `elevate_to_root: true`, node `prompt_regex` must also match the login prompt, else "node prompt not reached after interactive login" (found 2026-11-02 with the new MockWire) | Step 6 / step 9 overlay |
 
 ### Step 6 placeholder & regex findings (2026-11-02 JAR probes; fixed in `network_config_gen` autofix + prompt)
 

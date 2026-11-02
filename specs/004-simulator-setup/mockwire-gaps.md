@@ -145,3 +145,46 @@ fidelity or diagnostics; **P3** = convenience or production parity.
 
 - Remove the redundant `echo __CMD_DONE__:$?` entry from `autofix.RUNTIME_COMMANDS`, since MockWire handles the marker natively. Keeping it would mask real exit codes once MW-02 lands. *(Done 2026-11-02.)*
 - When a gap is fixed upstream, drop its workaround here and in `plan.md`. Order of value for the reference UC: MW-01, MW-03, MW-04, MW-02, MW-05, then MW-11.
+
+## Implementation status (2026-11-02)
+
+Implemented in the MockWire source (`D:/Nokia/workspace/mockwire`, branch
+`feature/netconfig-testing-gaps`, **not yet committed**, not yet copied into `lib/mockwire`).
+Covered by 12 JUnit tests (`mvn -o test`) plus SSH and cli-automation end-to-end runs.
+Docs: MockWire `USER_MANUAL.md` §2, §3.6–3.14, §8–9 and the new agent guide `AGENTS.md`
+(its worked example was executed against the new JAR).
+
+| ID | Status | How |
+|----|--------|-----|
+| MW-01 | **Done** | `Ctrl+P,<key>` → `CTRL+P+<KEY>` routed to a `ctrl+p+<key>` command (`pushPrompt` root). Verified: `execute` with `elevate_to_root: true` runs both zones in 14.9 s (was a ~18 s stall per session) |
+| MW-02 | **Done** | `exitCode:` per command/response; `$?` and `__CMD_DONE__` report it; unmatched → 127 |
+| MW-03 | **Done** | `$1..$9`, `${n}`, `${name}` from `regex:` keys in lines, pushPrompt and state; `template: true` for files |
+| MW-04 | **Done** | `setState` / `clearState` / `whenState` (per instance; keys can use captures) |
+| MW-05 | **Done** | In-shell `sftp put/get`, `scp`; `vfs.triggers` (`onCreate` → `create`, delay, captures); the real SFTP subsystem is rooted in the VFS and fires triggers too |
+| MW-06 | **Done** | `ls [-l]`, `cat`, `touch`, `mkdir -p`, `rm`, `cd`, `pwd`, `>`/`>>` on a per-instance sandbox VFS (`vfs.root/dirs/files`) |
+| MW-07 | **Done** | `echo` with `$?`, `$USER`, `$HOME`, `$PWD`, `$HOSTNAME`, `config.env` |
+| MW-08 | **Done** | Builtin `su [-] user` (auth user prompt, `whoami`); `exit` pops a level and closes only at the login prompt |
+| MW-09 | **Done** | `stty -echo`/`echo` toggles session echo, even when the config maps `stty`; `terminalMode: PLAIN` is no longer needed for cli-automation (verified) |
+| MW-10 | **Done** | `--config`, `--responses`, `--events-file`, `--vfs-root`, `--host-key`, `--bind`, `--help` |
+| MW-11 | **Done** | `WARN UNMATCHED [...]` log line plus a JSON Lines event log (`source`: exact/regex/prefix/builtin:x/ctrl/unmatched). Verified: flags exactly the EAST `ldapsearch` with the empty IMSI |
+| MW-12 | **Done** | `whoami`, `id`, `hostname` (`config.hostname`), `date` (`config.fixedTime`) |
+| MW-13 | Open | One NIAM gateway serving many nodes by neId: not needed while step 8 runs one instance per node |
+| MW-14 | Partly | `--host-key` gives a stable key; known_hosts export not added |
+
+Also fixed while there:
+- A prefix match swallowed pipes, redirects and `;`. Key `sar 1 10` answered `sar 1 10 | grep x` unfiltered, so `<exact cmd> | filter` never worked before.
+- `awk '{print $NF}'` threw NumberFormatException.
+- YAML keys containing `;` still match as a whole.
+
+New client-side finding (workflow, step 6): with `elevate_to_root: true` the node `prompt_regex`
+must also match the **login** prompt, or `execute` fails with "node prompt not reached after
+interactive login". Tracked as DEP-10 in spec.md.
+
+### Pipeline adoption (spec 004 follow-up)
+
+- [ ] Commit the MockWire branch; copy the new JAR into `lib/mockwire/mockwire-simulator/`
+- [ ] Step 8 runner: start with `--config/--responses/--events-file/--vfs-root` (stop copying the JAR per run), `loginDelayMs: 0`
+- [ ] Topology: login prompt = requirements `prompt_pattern`, `ctrl+p+e` → root prompt, `su` via `auth.users`; drop `terminalMode: PLAIN` and the `stty` entry
+- [ ] Step 9 overlay: keep `elevate_to_root: true`; `prompt_regex` = login|root|su prompts (DEP-10)
+- [ ] Step 9 classification: read `events_*.jsonl`; `unmatched` → retry step 8, otherwise → step 6
+- [ ] Phase 3 responses: regex keys with captures, `setState`/`whenState` for pre/post checks, `vfs.triggers` for file-drop flows (PGW `sftp put` → `.xml.res`)
