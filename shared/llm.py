@@ -83,6 +83,22 @@ async def call_llm(
     except Exception:
         pass
 
+    # Fallback: read API key and model from DB if not in config or env
+    if not config.get("openrouter_api_key") and not os.environ.get("OPENROUTER_API_KEY"):
+        try:
+            import sqlite3
+            from pathlib import Path
+            db_path = Path(__file__).resolve().parent.parent / "data" / "pipeline.db"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path))
+                for key, cfg_key in [("api_key", "openrouter_api_key"), ("default_model", "default_model")]:
+                    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+                    if row and row[0] and not config.get(cfg_key):
+                        config[cfg_key] = row[0]
+                conn.close()
+        except Exception:
+            pass
+
     model = model or config.get("default_model", os.environ.get(
         "LLM_MODEL", "openrouter/google/gemini-2.5-flash"
     ))
