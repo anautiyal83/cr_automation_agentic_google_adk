@@ -414,15 +414,15 @@
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
 | S8-01 | Critical | Step 9 never targets the simulator; execution resolves to real NIAM hosts from CIQ | Open |
-| S8-02 | Critical | All nodes collapse into one config (first-document strip from a497018) | Open |
+| S8-02 | Critical | All nodes collapse into one config (first-document strip from a497018) | Fixed (004 Phase 2): one MockWire instance per remote node |
 | S8-03 | Critical | Step 8 always fails validation; `_extract_ports()` always `[]` | Fixed (uncommitted, 004 Phase 1): MockWire-format validator |
 | S8-04 | High | Sanity check is raw TCP, not SSH; results meaningless | Open |
 | S8-05 | High | Cross-run pollution in shared `lib/mockwire` config dir; `file:` responses never found | Fixed (uncommitted, 004 Phase 1): per-run JAR copy; nothing written to lib/ |
 | S8-06 | High | Simulator process leaks on failure/cancel/re-run; undrained PIPEs; no TTL | Fixed (uncommitted, 004 Phase 1): registry + stop on every exit path, log files, --ttl-minutes |
 | S8-07 | High | Phase 2 (command → response) is a stub returning `{}` | Open |
-| S8-08 | Medium | `regenerate()` doesn't write, restart, or re-sanity; skill kept in session state | Open |
+| S8-08 | Medium | `regenerate()` doesn't write, restart, or re-sanity; skill kept in session state | Partly fixed (004 Phase 2): retry re-runs setup with step 9 feedback from disk; targeted regeneration in Phase 5 |
 | S8-09 | Medium | MockWire error truncated to 500 chars; root cause hidden | Fixed (uncommitted, 004 Phase 1): error carries log path + last 50 lines |
-| S8-10 | Medium | Prompts, `su` escalation, and NIAM not modelled | Open |
+| S8-10 | Medium | Prompts, `su` escalation, and NIAM not modelled | Fixed (004 Phase 2): prompts/`su`/NIAM built deterministically; Ctrl+P,E elevation is a MockWire gap (MW-01) |
 | S8-11 | Medium | Placeholder commands left to LLM instead of resolved from CIQ JSON | Open |
 | S8-12 | Low | Unused `simulator.endpoint/port`; CWD-dependent JAR path; `LOCAL` gets stub server | Fixed (uncommitted, 004 Phase 1): config wired, JAR path from project root, LOCAL skipped |
 | S8-13 | High | `extract_workflow_commands()` read `cmd`/list phases; workflows use `send:` + phase map → LLM prompt never saw any command | Fixed (uncommitted, 004 Phase 1) |
@@ -431,6 +431,7 @@
 | DEP-3 | — | Malformed `${{…}}` placeholders in generated workflow (step 6 autofix) | Open |
 | DEP-4 | — | `su`/`exit` steps validate a prompt the JAR strips from output (step 6) | Open |
 | DEP-5 | — | `sar 1 10` regex expects 5 numeric columns; real output has 6 (step 6) | Open |
+| DEP-6 | — | `${configData…'Test IMSI'}` resolves empty in `execute` and stays unresolved in the MOP (step 6) | Open |
 
 ## Step 9: Execution QA
 

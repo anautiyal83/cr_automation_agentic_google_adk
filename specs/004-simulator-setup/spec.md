@@ -55,6 +55,9 @@ Step 8 = `network_simulator_setup` agent → `skills/network_simulator_setup/`. 
 | DEP-3 | Malformed `${{…}}` placeholders in generated workflow (`${{env.ORDERNO}}`, `${{configData…}}`) | Step 6 autofix |
 | DEP-4 | `su`/`exit` steps validate the prompt, but the JAR strips prompts from output, so they can never pass (found in spike) | Step 6 |
 | DEP-5 | The `sar 1 10` regex expects 5 numeric columns; real output has 6 (found in spike) | Step 6 |
+| DEP-6 | `${configData.tables.'Profile Modification'.'Test IMSI'}` resolves to empty in `execute` (`-b "imsi=,dc=IMSI…"`) and stays unresolved in the MOP. Placeholder path doesn't match the CIQ JSON. | Step 6 |
+
+DEP-4 is worse than first thought: the `su - sdfrun` step is "On failure: Execution will stop", so its prompt-validation failure aborts the whole pre-health-check phase (2026-11-02 Phase 2 E2E). DEP-1 is confirmed by the MOP: `niamId: ""`, `address: ""` for every node.
 
 DEP-2 was **confirmed** (Step 9 had never executed a command: `node not found: PGW_RDS`, research.md F8). **Fixed 2026-11-02**: `run_execution_test` runs once per zone × CR group from the CIQ JSON, with reports in `exec_output/<crGroup>/`.
 

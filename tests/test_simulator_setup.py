@@ -21,9 +21,11 @@ from skills.network_config_test.jar_executor import _execution_targets, _find_js
 from skills.network_config_test.result_parser import parse_execution_results
 from skills.network_simulator_setup.autofix import (
     RUNTIME_COMMANDS,
+    dump_yaml,
+    ensure_runtime_entries,
     extract_workflow_commands,
     extract_workflow_nodes,
-    fix_simulator_config,
+    parse_llm_yaml,
     parse_yaml,
 )
 from skills.network_simulator_setup.simulator_runner import (
@@ -102,8 +104,14 @@ def test_extract_workflow_commands_reads_send_and_phase_map():
 # Autofix + validator
 # ---------------------------------------------------------------------------
 
-def test_fix_adds_runtime_entries_and_exit_pop():
-    parsed = parse_yaml(fix_simulator_config(LLM_CONFIG))
+def fixed_config(text: str = LLM_CONFIG) -> str:
+    parsed = parse_yaml(text)
+    ensure_runtime_entries(parsed)
+    return dump_yaml(parsed)
+
+
+def test_ensure_runtime_entries_and_exit_pop():
+    parsed = parse_yaml(fixed_config())
     assert parsed["config"]["terminalMode"] == "PLAIN"
     for key in RUNTIME_COMMANDS:
         assert key in parsed
@@ -111,7 +119,7 @@ def test_fix_adds_runtime_entries_and_exit_pop():
 
 
 def test_validator_accepts_fixed_flat_config(tmp_path):
-    fixed = fix_simulator_config(LLM_CONFIG)
+    fixed = fixed_config()
     (tmp_path / "sar.txt").write_text("Average: all 99.25\n")
     assert validate_mockwire_config(fixed, tmp_path) == []
 
@@ -182,7 +190,7 @@ def test_parse_execution_results_reads_per_cr_reports(tmp_path):
 def test_mockwire_start_manifest_stop(tmp_path):
     async def scenario():
         sim_dir = prepare_simulator_dir(str(tmp_path), str(MOCKWIRE_JAR))
-        write_instance_files(sim_dir, "RDS", fix_simulator_config(LLM_CONFIG),
+        write_instance_files(sim_dir, "RDS", fixed_config(),
                              {"sar.txt": "Average: all 99.25\n"})
         inst = SimulatorInstance(name="RDS", port=allocate_ports(1)[0], nodes=["RDS"])
         sim = await start_simulator(sim_dir, [inst], ttl_minutes=5)
@@ -208,7 +216,7 @@ def test_mockwire_start_manifest_stop(tmp_path):
 def test_mockwire_port_conflict_reports_log_tail(tmp_path):
     async def scenario():
         sim_dir = prepare_simulator_dir(str(tmp_path), str(MOCKWIRE_JAR))
-        write_instance_files(sim_dir, "RDS", fix_simulator_config(LLM_CONFIG))
+        write_instance_files(sim_dir, "RDS", fixed_config())
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("0.0.0.0", 0))
             s.listen()

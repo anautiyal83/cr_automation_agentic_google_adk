@@ -1,164 +1,58 @@
-"""LLM prompt templates for MockWire simulator configuration generation."""
+"""LLM prompt templates for MockWire command → response generation.
+
+The LLM only writes command responses for one node at a time. Prompts, users,
+NIAM, escalation (`su`/`exit`) and runtime entries are built deterministically
+(see topology.py).
+"""
 from __future__ import annotations
 
-SIMULATOR_GEN_SYSTEM = """\
-You are a network simulator configuration expert. You generate MockWire SSH \
-simulator YAML configurations that mock telecom network nodes for automated \
-testing of execution workflows.
+NODE_RESPONSES_SYSTEM = """\
+You write realistic command outputs for a MockWire SSH simulator that stands in for \
+a telecom network node during automated workflow testing.
 
-Your output must be valid YAML — no markdown fencing, no explanations, just YAML.
+Output ONLY a YAML map — no markdown fences, no explanations. Each key is a command \
+the workflow sends; each value has a "lines:" list with the exact output lines.
 
-=== MOCKWIRE CONFIG FORMAT (STRICT — follow exactly) ===
-
-MockWire config is a YAML map with these top-level keys:
-
-config:                    # Server settings
-  prompt: '<default shell prompt>'
-  delayMs: 100             # Response delay
-  jitterMs: 20
-  idleTimeoutSec: 300
-
-auth:                      # Authentication
-  enabled: true
-  users:
-  - username: '<ssh_user>'
-    password: '<password or * for any>'
-    prompt: '<user-specific prompt>'
-  - username: '<escalated_user>'
-    password: '<password or * for any>'
-    prompt: '<escalated prompt>'
-
-# Command → response mappings (top-level keys):
-# Each key is the EXACT command string (or regex: prefixed pattern)
-# Each value has either "lines:" (list of output lines) or "file:" (path to response file)
-
+FORMAT:
 "<exact command string>":
   lines:
-  - 'line 1 of output'
-  - 'line 2 of output'
-
-"regex:<java regex pattern>":
+  - '<output line 1>'
+  - '<output line 2>'
+"regex:<java regex matching the command>":
   lines:
-  - 'output for any command matching the regex'
+  - '<output line>'
 
-"<command with file response>":
-  file: '<path to response file>'
-
-CRITICAL RULES:
-- Root is a MAP, NOT a list. No "- hosts:" at root.
-- Commands are top-level keys (strings), not nested under "commands:"
-- Use exact command strings as keys, or "regex:" prefix for patterns
-- Quote command keys that contain special characters
-- "lines:" value is a list of strings (each line of output)
-- Config is for ONE node/host. Generate SEPARATE configs per node.
-- Response output must satisfy the workflow's validation criteria
+RULES:
+- One entry per command listed. Use the exact command text as the key when it has no \
+${...} placeholders.
+- When the command contains ${...} placeholders, use a "regex:" key: escape regex \
+metacharacters in the literal parts and replace each placeholder with \\S+ (or .* \
+inside quotes).
+- Output must look like the real tool's output (e.g. real `sar` prints %user %nice \
+%system %iowait %steal %idle) AND satisfy the step's success validation.
+- Commands that print nothing on success get `lines: []`.
+- Do NOT emit config, auth, niam, su, exit or stty entries.
+- Use SINGLE quotes for every key and every output line (never double quotes: \
+regex backslashes like \\S are invalid escapes in double-quoted YAML). Double any \
+single quote inside a value.
+- Keep outputs short and realistic (at most ~20 lines per command); never pad \
+lines with whitespace.
 """
 
-SIMULATOR_GEN_USER = """\
-Generate MockWire simulator configuration YAML for the workflow below.
-Generate ONE config file per node. Separate configs with "---" YAML document separator.
+NODE_RESPONSES_USER = """\
+UC: {uc_name}
+Node: {node} (prompt after login: {prompt!r})
 
-=== UC NAME ===
-{uc_name}
+=== COMMANDS SENT TO THIS NODE (phase | command | success validation) ===
+{commands}
 
-=== WORKFLOW YAML (nodes and commands to simulate) ===
-{workflow_summary}
-
-=== NODE DEFINITIONS ===
-{nodes_summary}
-
-=== REQUIREMENTS ===
-{requirements_summary}
-
-=== SIMULATOR SCHEMA REFERENCE ===
-{schema_summary}
-
-=== EXAMPLE CONFIG (for one node) ===
-
-config:
-  prompt: 'rdsggn01:~ #'
-  delayMs: 100
-  jitterMs: 20
-  idleTimeoutSec: 300
-
-auth:
-  enabled: true
-  users:
-  - username: oamsys
-    password: '*'
-    prompt: '[oamsys@rdsggn01 ~]$'
-  - username: sdfrun
-    password: '*'
-    prompt: 'sdfrun@rdsggn01:~>'
-
-"sar 1 10":
-  lines:
-  - 'Linux 3.10.0 (rdsggn01) _x86_64_ (4 CPU)'
-  - ''
-  - '10:00:01 AM     CPU     %user     %nice   %system   %iowait    %steal     %idle'
-  - '10:00:02 AM     all      0.50      0.00      0.25      0.00      0.00     99.25'
-  - 'Average:        all      0.50      0.00      0.25      0.00      0.00     99.25'
-
-"ss -tunap":
-  lines:
-  - 'REMOTE NODE STATUS  Link UP'
-  - 'REMOTE NODE STATUS  Link UP'
-
-"ndsLoadStats":
-  lines:
-  - 'Updates Rejected:        0'
-  - 'Queries Rejected:        0'
-
-"regex:ldapsearch.*objectclass.*":
-  lines:
-  - 'dn: imsi=404530000000132,dc=IMSI,dc=C-NTDB'
-  - 'scscfMandCap: 15'
-  - 'scscfOptCap: 14'
-  - 'globalFilterIds: BH_40453'
-
-=== INSTRUCTIONS ===
-For each node in the workflow:
-
-1. Create a config section with the node's prompt pattern
-2. Create auth users for all users referenced in the workflow (oamsys, sdfrun, provgw, root)
-3. Map every "send" command from the workflow to a response:
-   - For health checks: return output with PASSING values
-   - For LDAP queries: return realistic subscriber data
-   - For file operations: return success acknowledgment
-   - For script commands: return expected output
-4. Use "regex:" prefix for commands with variable parameters (${{...}})
-5. Ensure output satisfies the workflow's validation criteria (regex/expr)
-
-Output ONLY valid YAML. No markdown, no code fences, no explanations.
+=== SIMULATOR HINTS FROM REQUIREMENTS ===
+{hints}
+{feedback}
+Write the YAML map of command responses for node {node}.
 """
 
-SIMULATOR_REGENERATE = """\
-The simulator configuration below caused test failures. Fix the issues.
-
-=== CURRENT SIMULATOR CONFIG YAML ===
-{current_yaml}
-
-=== TEST FAILURES ===
-{test_failures}
-
-=== REVIEWER ANALYSIS ===
-{reviewer_analysis}
-
-=== WORKFLOW NODES AND COMMANDS ===
-{workflow_summary}
-
-=== MOCKWIRE FORMAT REMINDER ===
-- Root is a MAP (not a list)
-- Commands are top-level keys → {{lines: [...] or file: '...'}}
-- Use "regex:..." for variable commands
-- Config has: config, auth, and command keys
-
-=== INSTRUCTIONS ===
-1. Fix ONLY the issues identified in the test failures.
-2. Ensure every "send" command in the workflow has a matching response.
-3. Ensure prompt patterns match between workflow and simulator.
-4. Ensure response output satisfies validation criteria.
-5. Output the COMPLETE corrected YAML — not a diff, the full file.
-
-Output ONLY valid YAML. No markdown, no code fences, no explanations.
+FEEDBACK_SECTION = """
+=== PREVIOUS EXECUTION TEST FAILURES (fix these responses) ===
+{feedback}
 """

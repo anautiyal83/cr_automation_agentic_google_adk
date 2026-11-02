@@ -62,13 +62,17 @@ Done ahead of plan: T032 runtime entries (`terminalMode: PLAIN`, `stty -echo`, `
 - [X] T016 Remove the dead `simulator.endpoint/port` config, or wire it as the bind host. Resolve the JAR path from the project root.
 - [X] T017 Investigate the 18 s first-command delay and the `estty -echo` stray char (F9). **Root cause: unsupported Ctrl+P,E elevation (MockWire gap MW-01). Workaround: root prompt at login + overlay `elevate_to_root: false` (T050).**
 
-### Phase 2: Topology and server configs (fixes S8-02, S8-10, S8-12)
-- [ ] T020 `topology.py`: build instances from workflow `nodes` (skip `type: local`), CIQ JSON niamIDs, requirements Cat 1, and vendor profile. Add a repo-server instance when backup/transfer commands are detected.
-- [ ] T021 Per instance, a deterministic `config:` / `auth:` / `niam:` section. Login user and prompt must satisfy `nodes.<N>.prompt_regex`. Escalation users come from workflow `su - <user>` steps.
-- [ ] T022 Drop the multi-doc `---` stripping and single-file writer. One `config/<instance>.yaml` per instance.
+### Phase 2: Topology and server configs (fixes S8-02, S8-10, S8-12): done 2026-11-02
+
+`topology.py` builds one `NodeSpec` per remote node: the root prompt (post-elevation, MW-01), `su` → `pushPrompt` taken from step validation / requirements / `prompt_regex`, NIAM neIds from every zone in the CIQ JSON, and `transfer:` for sftp/scp nodes. The LLM now writes command responses only, one call per node (`prompts.NODE_RESPONSES_*`), and deterministic entries always win. Parsing repairs LLM YAML (fences, `---` merge, double-quoted regex keys, truncation). A step 9 → 8 retry re-runs `setup()` with failed commands read from `step_9_error.json` + `exec_output/` (part of T052). Tests: `tests/test_simulator_topology.py` (7, including a real SSH flow: NIAM neId → root prompt → `su` push → command → `exit` pop).
+
+Real-LLM E2E on run b61b977c: step 8 builds RDS (9 entries) and PGW (7 entries) instances in 13 s. Step 9 executes against them for EAST and NORTH (7 s). Remaining failures are DEP-4 (the `su` step aborts the health-check phase), DEP-6 (IMSI placeholder resolves empty) and regex keys that don't match the sent command (Phase 3).
+- [X] T020 `topology.py`: build instances from workflow `nodes` (skip `type: local`), CIQ JSON niamIDs, requirements Cat 1, and vendor profile. Add a repo-server instance when backup/transfer commands are detected.
+- [X] T021 Per instance, a deterministic `config:` / `auth:` / `niam:` section. Login user and prompt must satisfy `nodes.<N>.prompt_regex`. Escalation users come from workflow `su - <user>` steps.
+- [X] T022 Drop the multi-doc `---` stripping and single-file writer. One `config/<instance>.yaml` per instance.
 
 ### Phase 3: Commands and responses (fixes S8-07, S8-11)
-- [ ] T030 `command_catalog.py`: extract every remote step (`send`/`cmd`), keyed per node, with phase and validation.
+- [ ] T030 `command_catalog.py`: build the catalogue from step 7's MOP HTML (`mop_output/*.html` → `const MOP_GROUPS = [...]`: per zone, each command with `target` node, phase, validation and execution criteria, rendered by the same JAR as `execute`). Fall back to workflow steps when no MOP exists. Commands still containing `${…}` in the MOP are unresolved in the JAR too (DEP-6): report them and key them by regex.
 - [ ] T031 Placeholder resolver: substitute `${configData…}` / `${nodeGroups…}` from the CIQ JSON (first CR group). Convert `${register…}` / `${env…}` / leftovers into escaped `regex:` keys. Tolerate `${{…}}` (DEP-3).
 - [ ] T032 Builtin catalogue: mandatory per instance: `terminalMode: PLAIN`, `stty -echo` (F5, F6; the `__CMD_DONE__` marker is native to MockWire). Escalation: `su - X` → `pushPrompt`, `exit` → `popPrompt` (F7). Common commands: `sar`, `ss`, `ndsLoadStats`, `ls -l`, `sftp put`.
 - [ ] T033 SSH-log harvester: map uploaded session-log command → output pairs (reuse the requirement_gathering SSH-log parser) into responses.

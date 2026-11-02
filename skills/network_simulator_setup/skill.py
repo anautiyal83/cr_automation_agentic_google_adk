@@ -1,32 +1,29 @@
 """Network Simulator Setup — main skill orchestrator.
 
 Four phases:
-1. Config generation — MockWire server config (hosts, ports, users, prompts)
-2. Command-response mapping — UC-specific command → output configs per node
-3. Start simulator — launch MockWire JAR, health-check, return process handle
+1. Topology — one MockWire instance per remote workflow node, with prompts, users,
+   NIAM neIds and `su` escalation built deterministically (topology.py)
+2. Command-response mapping — UC command outputs per node (LLM, one call per node)
+3. Start simulator — write per-run configs, launch one MockWire process per node
 4. Sanity testing — verify each node: SSH connect, prompt, basic cmd, escalation, UC cmd
 
 Two entry points:
-- ``setup(input)`` — runs all 4 phases: generate → write → start → sanity test
-- ``regenerate(feedback)`` — regenerate configs after execution test failures (phases 1+2 only)
+- ``setup(input)`` — runs all 4 phases
+- ``regenerate(feedback)`` — re-runs setup() with execution test feedback, restarting
+  the simulator with the corrected responses
 
 Call ``output.simulator.stop()`` when testing is complete to shut down the simulator.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import re
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from dataclasses import dataclass, field, replace
+from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import (
-    clean_yaml_response,
-    fix_simulator_config,
-    extract_workflow_nodes,
-    extract_workflow_commands,
-)
+from .autofix import parse_llm_yaml
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -40,6 +37,7 @@ from .simulator_runner import (
     write_instance_files,
 )
 from .sanity_check import SanityResult, run_sanity_checks
+from .topology import NodeSpec, build_instance_config, build_topology
 from .validator import validate_mockwire_config
 
 logger = logging.getLogger(__name__)
@@ -54,10 +52,11 @@ class SkillInput:
     workflow_yaml: str = ""
     requirements: dict = field(default_factory=dict)
     generation_hints: dict = field(default_factory=dict)
+    ciq_json_files: list[str] = field(default_factory=list)  # CIQ JSON data (niamIDs)
+    feedback: str = ""  # execution test failures to fix (retry from step 9)
     run_dir: str = ""
     mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
     java_home: str | None = None
-    schema_dir: str | None = None
     auto_start: bool = True  # if False, skip phase 3 (just generate configs)
     host: str = "localhost"
     base_port: int = BASE_PORT
@@ -76,8 +75,10 @@ class RegenerateFeedback:
 @dataclass
 class SkillOutput:
     """Output from network simulator setup."""
-    simulator_config_yaml: str = ""
-    response_configs: dict[str, str] = field(default_factory=dict)  # filename → yaml content
+    simulator_config_yaml: str = ""  # all instance configs, for review
+    instance_configs: dict[str, str] = field(default_factory=dict)  # instance → config yaml
+    response_configs: dict[str, str] = field(default_factory=dict)  # filename → content
+    topology: list[dict] = field(default_factory=list)  # NodeSpec summaries
     config_dir: str = ""  # <run_dir>/simulator
     manifest_path: str = ""
     simulator: SimulatorProcess | None = None  # call .stop() when done
@@ -89,68 +90,49 @@ class SkillOutput:
 
 
 class NetworkSimulatorSetupSkill:
-    """Generates MockWire configs and optionally starts the simulator.
+    """Builds per-node MockWire configs and optionally starts the simulator.
 
-    Phase 1: Generate simulator server config (LLM)
-    Phase 2: Generate UC-specific command-response mappings (LLM)
-    Phase 3: Write files to disk and start MockWire JAR (deterministic)
-
-    Stateful: retains context between setup() and regenerate() calls.
+    Stateful: retains the last input so regenerate() can rebuild with feedback.
     """
 
     def __init__(self, llm_fn: LlmFn):
         self._llm_fn = llm_fn
-        self._uc_name = ""
-        self._workflow_yaml = ""
-        self._requirements: dict = {}
-        self._workflow_nodes: list[str] = []
-        self._schema_summary = ""
-        self._last_config_yaml = ""
-        self._last_response_configs: dict[str, str] = {}
+        self._last_input: SkillInput | None = None
 
     async def setup(self, inp: SkillInput) -> SkillOutput:
-        """Run all 3 phases: generate configs → write to disk → start simulator."""
-        self._uc_name = inp.uc_name
-        self._workflow_yaml = inp.workflow_yaml
-        self._requirements = inp.requirements
-
+        """Run all phases: topology → responses → write + start → sanity."""
+        self._last_input = inp
         if not inp.workflow_yaml:
             return SkillOutput(status="failed", error="No workflow YAML provided")
 
-        # Extract nodes and commands from workflow
-        self._workflow_nodes = extract_workflow_nodes(inp.workflow_yaml)
-        workflow_commands = extract_workflow_commands(inp.workflow_yaml)
+        # --- Phase 1: Topology (deterministic) ---
+        nodes = build_topology(inp.workflow_yaml, inp.requirements, inp.ciq_json_files)
+        if not nodes:
+            return SkillOutput(status="failed", error="Workflow has no remote nodes to simulate")
+        topology = [n.summary() for n in nodes]
 
-        self._schema_summary = inp.generation_hints.get("step_8", "")
-        if not self._schema_summary:
-            self._schema_summary = self._discover_simulator_schema(inp.schema_dir)
+        # --- Phase 2: Command responses per node (LLM) ---
+        hints = str(inp.generation_hints.get("step_8", "") or "")
+        results = await asyncio.gather(
+            *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback) for n in nodes),
+            return_exceptions=True,
+        )
+        errors: list[str] = []
+        instance_configs: dict[str, str] = {}
+        for node, result in zip(nodes, results):
+            if isinstance(result, Exception):
+                logger.error("Response generation failed for %s: %s", node.name, result)
+                errors.append(f"{node.name}: response generation failed: {result}")
+                result = {}
+            instance_configs[node.instance] = build_instance_config(node, result)
+        review_yaml = _review_yaml(nodes, instance_configs)
 
-        # --- Phase 1: Generate simulator server config ---
-        ctx = self._build_prompt_context(workflow_commands)
-        try:
-            config_yaml = await self._generate_config(ctx)
-        except Exception as e:
-            logger.error("Phase 1 (config generation) failed: %s", e, exc_info=True)
-            return SkillOutput(status="failed", error=f"Config generation failed: {e}")
+        if errors:
+            return SkillOutput(simulator_config_yaml=review_yaml, instance_configs=instance_configs,
+                               topology=topology, validation_errors=errors, status="failed",
+                               error="; ".join(errors))
 
-        # --- Phase 2: Generate command-response mappings ---
-        try:
-            response_configs = await self._generate_responses(ctx, workflow_commands)
-        except Exception as e:
-            logger.error("Phase 2 (response generation) failed: %s", e, exc_info=True)
-            # Still return config even if responses fail
-            return SkillOutput(
-                simulator_config_yaml=config_yaml,
-                status="failed",
-                error=f"Response generation failed: {e}",
-            )
-
-        self._last_config_yaml = config_yaml
-        self._last_response_configs = response_configs
-
-        errors = validate_mockwire_config(config_yaml)
-
-        # --- Phase 3: Write files and start simulator ---
+        # --- Phase 3: Write files and start one MockWire per node ---
         config_dir = ""
         manifest_path = ""
         ports: list[int] = []
@@ -158,16 +140,16 @@ class NetworkSimulatorSetupSkill:
         sanity = None
 
         if inp.run_dir:
-            # Until per-node topology lands (spec 004 Phase 2), one instance serves all nodes
-            instance_name = _instance_name(inp.uc_name)
             try:
                 sim_dir = prepare_simulator_dir(inp.run_dir, inp.mockwire_jar)
             except SimulatorStartError as e:
-                return SkillOutput(simulator_config_yaml=config_yaml, status="failed", error=str(e))
+                return SkillOutput(simulator_config_yaml=review_yaml, instance_configs=instance_configs,
+                                   topology=topology, status="failed", error=str(e))
             config_dir = str(sim_dir)
-            write_instance_files(sim_dir, instance_name, config_yaml, response_configs)
-            errors = validate_mockwire_config(
-                config_yaml, sim_dir / "outputs" / instance_name / "responses")
+            for node in nodes:
+                write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
+                errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
+                    instance_configs[node.instance], sim_dir / "outputs" / node.instance / "responses")]
 
             if inp.auto_start and errors:
                 logger.error("Skipping simulator start — config invalid: %s", errors)
@@ -175,11 +157,9 @@ class NetworkSimulatorSetupSkill:
 
             elif inp.auto_start:
                 try:
-                    instances = [SimulatorInstance(
-                        name=instance_name,
-                        port=allocate_ports(1, inp.base_port)[0],
-                        nodes=list(self._workflow_nodes),
-                    )]
+                    node_ports = allocate_ports(len(nodes), inp.base_port)
+                    instances = [SimulatorInstance(name=n.instance, port=p, nodes=[n.name])
+                                 for n, p in zip(nodes, node_ports)]
                     simulator = await start_simulator(
                         sim_dir, instances,
                         java_home=inp.java_home,
@@ -201,12 +181,11 @@ class NetworkSimulatorSetupSkill:
                 # --- Phase 4: Sanity testing ---
                 if simulator and simulator.is_running:
                     try:
-                        cat1 = self._requirements.get("category_1_node_activity", {})
-                        node_configs = cat1.get("nodes", [])
                         sanity = await run_sanity_checks(
                             ports=ports,
-                            node_configs=node_configs,
-                            workflow_commands=workflow_commands,
+                            node_configs=[{"name": n.name, "prompt_regex": n.prompt_regex}
+                                          for n in nodes],
+                            workflow_commands=[c for n in nodes for c in n.commands],
                         )
                         if not sanity.all_passed:
                             errors.append(f"Sanity failed: {sanity.summary}")
@@ -217,160 +196,76 @@ class NetworkSimulatorSetupSkill:
                         logger.error("Phase 4 (sanity check) failed: %s", e, exc_info=True)
                         errors.append(f"Sanity check error: {e}")
 
-        status = "failed" if errors else "passed"
         return SkillOutput(
-            simulator_config_yaml=config_yaml,
-            response_configs=response_configs,
+            simulator_config_yaml=review_yaml,
+            instance_configs=instance_configs,
+            topology=topology,
             config_dir=config_dir,
             manifest_path=manifest_path,
             simulator=simulator,
             ports=ports,
             sanity=sanity,
             validation_errors=errors,
-            status=status,
-        )
-
-    async def regenerate(self, feedback: RegenerateFeedback) -> SkillOutput:
-        """Regenerate configs using execution test feedback (phases 1+2 only, no restart)."""
-        if not self._last_config_yaml:
-            return SkillOutput(status="failed", error="No simulator context — call setup() first")
-
-        workflow_commands = extract_workflow_commands(self._workflow_yaml)
-        ctx = self._build_prompt_context(workflow_commands)
-        test_failures_text = json.dumps(feedback.test_results, indent=2, default=str)[:5000]
-
-        user_prompt = prompts.SIMULATOR_REGENERATE.format(
-            current_yaml=self._last_config_yaml[:8000],
-            test_failures=test_failures_text,
-            reviewer_analysis=feedback.reviewer_analysis[:3000],
-            workflow_summary=ctx["workflow"],
-        )
-
-        try:
-            raw = await self._llm_fn(prompts.SIMULATOR_GEN_SYSTEM, user_prompt)
-            config_yaml = clean_yaml_response(raw)
-            config_yaml = fix_simulator_config(config_yaml)
-            self._last_config_yaml = config_yaml
-        except Exception as e:
-            logger.error("Simulator config regeneration failed: %s", e, exc_info=True)
-            return SkillOutput(status="failed", error=f"Regeneration failed: {e}")
-
-        errors = validate_mockwire_config(config_yaml)
-
-        return SkillOutput(
-            simulator_config_yaml=config_yaml,
-            response_configs=self._last_response_configs,
-            validation_errors=errors,
             status="failed" if errors else "passed",
         )
 
+    async def regenerate(self, feedback: RegenerateFeedback) -> SkillOutput:
+        """Rebuild and restart the simulator using execution test feedback."""
+        if not self._last_input:
+            return SkillOutput(status="failed", error="No simulator context — call setup() first")
+        text = json.dumps(feedback.test_results, indent=2, default=str)[:5000]
+        if feedback.reviewer_analysis:
+            text += "\n\nReviewer analysis:\n" + feedback.reviewer_analysis[:3000]
+        return await self.setup(replace(self._last_input, feedback=text))
+
     # ------------------------------------------------------------------
-    # Phase 1: Config generation
+    # Phase 2: Command responses
     # ------------------------------------------------------------------
 
-    async def _generate_config(self, ctx: dict[str, str]) -> str:
-        """Phase 1: Generate simulator server config via LLM."""
-        user_prompt = prompts.SIMULATOR_GEN_USER.format(
-            uc_name=self._uc_name,
-            workflow_summary=ctx["workflow"],
-            nodes_summary=ctx["nodes"],
-            requirements_summary=ctx["requirements"],
-            schema_summary=self._schema_summary,
+    async def _generate_node_responses(
+        self, uc_name: str, node: NodeSpec, hints: str, feedback: str,
+    ) -> dict:
+        """Ask the LLM for command → response entries for one node."""
+        commands = [c for c in node.commands if str(c.get("cmd", "")).strip()]
+        if not commands:
+            return {}
+        lines = []
+        for c in commands:
+            val = c.get("validation") or {}
+            desc = val.get("description", "") if isinstance(val, dict) else ""
+            crit = ((val.get("success") or {}).get("criteria") or {}) if isinstance(val, dict) else {}
+            regex = crit.get("regex", "") if isinstance(crit, dict) else ""
+            lines.append(f"- {c.get('phase', '')} | {c['cmd']} | {desc}"
+                         + (f" (regex: {regex})" if regex else ""))
+
+        user_prompt = prompts.NODE_RESPONSES_USER.format(
+            uc_name=uc_name,
+            node=node.name,
+            prompt=node.prompt,
+            commands="\n".join(lines),
+            hints=hints or "(none)",
+            feedback=prompts.FEEDBACK_SECTION.format(feedback=feedback) if feedback else "",
         )
+        logger.info("Phase 2: Generating responses for %s (%d commands)", node.name, len(commands))
+        raw = await self._llm_fn(prompts.NODE_RESPONSES_SYSTEM, user_prompt)
+        parsed = parse_llm_yaml(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM did not return a YAML map of command responses")
 
-        logger.info("Phase 1: Generating simulator config (%d char prompt)", len(user_prompt))
-        raw = await self._llm_fn(prompts.SIMULATOR_GEN_SYSTEM, user_prompt)
-        yaml_text = clean_yaml_response(raw)
-        yaml_text = fix_simulator_config(yaml_text)
-        return yaml_text
-
-    # ------------------------------------------------------------------
-    # Phase 2: Command-response mapping
-    # ------------------------------------------------------------------
-
-    async def _generate_responses(
-        self, ctx: dict[str, str], workflow_commands: list[dict]
-    ) -> dict[str, str]:
-        """Phase 2: Generate UC-specific command-response configs.
-
-        Returns dict of {filename: yaml_content} for response files per node.
-        Currently generates responses as part of the main config.
-        Can be extended to produce separate per-node response files.
-        """
-        # For now, responses are embedded in the main config YAML
-        # generated in phase 1. This method is a hook for future
-        # separation into per-node response files.
-        #
-        # When MockWire supports external response directories:
-        # - Generate per-node response YAML files
-        # - Return {"RDS_responses.yaml": "...", "PGW_responses.yaml": "..."}
-        return {}
-
-    # ------------------------------------------------------------------
-    # Prompt context builders
-    # ------------------------------------------------------------------
-
-    def _build_prompt_context(self, workflow_commands: list[dict]) -> dict[str, str]:
-        """Build prompt sections from workflow and requirements."""
-        wf_lines = [f"Nodes: {', '.join(self._workflow_nodes)}"]
-        by_phase: dict[str, list[str]] = {}
-        for c in workflow_commands:
-            phase = c.get("phase", "unknown")
-            cmd = c.get("cmd", "?")
-            node = c.get("node", "?")
-            val = c.get("validation", {})
-            val_desc = ""
-            if isinstance(val, dict):
-                val_desc = val.get("description", val.get("criteria", {}).get("expr", ""))
-            by_phase.setdefault(phase, []).append(f"  {cmd} on {node} — expects: {val_desc[:80]}")
-        for phase, cmds in by_phase.items():
-            wf_lines.append(f"\nPhase: {phase}")
-            wf_lines.extend(cmds)
-
-        cat1 = self._requirements.get("category_1_node_activity", {})
-        nodes = cat1.get("nodes", [])
-        node_lines = []
-        for n in nodes:
-            if isinstance(n, dict):
-                node_lines.append(
-                    f"  {n.get('name', '?')}: user={n.get('ssh', {}).get('user', 'oamsys')}, "
-                    f"prompt={n.get('ssh', {}).get('prompt_regex', n.get('prompt_regex', '?'))}, "
-                    f"escalation={n.get('escalation', {}).get('method', 'none')}"
-                )
-
-        cat2 = self._requirements.get("category_2_commands", {})
-        commands = cat2.get("commands", [])
-        req_lines = [f"Total commands: {len(commands)}"]
-        ldap = cat2.get("ldap", {})
-        if ldap:
-            req_lines.append(f"LDAP: host={ldap.get('host')}, port={ldap.get('port')}")
-
-        return {
-            "workflow": "\n".join(wf_lines),
-            "nodes": "\n".join(node_lines) or "No node details",
-            "requirements": "\n".join(req_lines),
-        }
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _discover_simulator_schema(schema_dir: str | None = None) -> str:
-        """Read simulator config schema if available."""
-        from pathlib import Path
-        if schema_dir:
-            schema_path = Path(schema_dir) / "simulator_config.schema.yaml"
-        else:
-            schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "simulator_config.schema.yaml"
-        if schema_path.exists():
-            try:
-                return schema_path.read_text(encoding="utf-8")[:4000]
-            except Exception:
-                pass
-        return ""
+        entries = {}
+        for key, val in parsed.items():
+            if isinstance(val, dict) and isinstance(val.get("lines"), str):
+                val = {**val, "lines": val["lines"].splitlines()}
+            if isinstance(val, dict) and ("lines" in val or "file" in val):
+                entries[str(key)] = dict(val)
+        logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
+        return entries
 
 
-def _instance_name(uc_name: str) -> str:
-    """MockWire instance name — used as config/<name>.yaml and outputs/<name>/."""
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", uc_name) or "simulator"
+def _review_yaml(nodes: list[NodeSpec], instance_configs: dict[str, str]) -> str:
+    """All instance configs as one multi-document YAML for milestone review."""
+    parts = []
+    for n in nodes:
+        parts.append(f"# ===== Instance {n.instance} — node {n.name} =====\n"
+                     f"{instance_configs.get(n.instance, '').rstrip()}\n")
+    return "---\n".join(parts)

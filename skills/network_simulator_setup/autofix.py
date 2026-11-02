@@ -1,8 +1,8 @@
-"""Auto-fix utilities for MockWire simulator configuration YAML.
+"""YAML helpers and auto-fixes for MockWire simulator configuration.
 
-Fixes common LLM mistakes:
-- Repair YAML syntax (truncation, list root, old hosts format)
+- Parse LLM output robustly (code fences, `---` documents, truncation)
 - Add the runtime entries the cli-automation JAR depends on
+- Read nodes and commands from workflow YAML
 """
 from __future__ import annotations
 
@@ -21,26 +21,63 @@ RUNTIME_COMMANDS: dict[str, dict] = {
 
 
 def clean_yaml_response(text: str) -> str:
-    """Strip markdown code fences, multi-doc separators, and leading/trailing noise."""
+    """Strip markdown code fences, document separators and leading prose.
+
+    ``---`` separators are removed so several documents merge into one map
+    (an LLM sometimes splits its answer; dropping documents would lose entries).
+    """
+    fenced = re.search(r"```(?:ya?ml)?[ \t]*\n(.*?)```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1)  # ignore prose around a fenced block
     text = re.sub(r"^```(?:ya?ml)?\s*\n?", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
-
-    # Strip multi-document separators (LLM sometimes generates separate configs per node)
-    # Keep only the first document — MockWire uses one config file per server
-    if "\n---\n" in text:
-        text = text.split("\n---\n")[0]
-        logger.info("Stripped multi-document YAML — keeping first document only")
+    text = re.sub(r"^(---|\.\.\.)\s*$", "", text, flags=re.MULTILINE)
 
     lines = text.split("\n")
     yaml_start = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped and (stripped.startswith(("#", "servers", "nodes", "simulator"))
-                         or ":" in stripped):
+        if stripped and (stripped.startswith("#") or ":" in stripped):
             yaml_start = i
             break
 
     return "\n".join(lines[yaml_start:]).rstrip()
+
+
+def parse_llm_yaml(text: str) -> dict | list | None:
+    """Clean, parse, and if needed repair LLM-generated YAML."""
+    cleaned = clean_yaml_response(text)
+    parsed = parse_yaml(cleaned)
+    if parsed is None:
+        for label, repaired in (
+            ("double-quote escapes", _requote_backslash_scalars(cleaned)),
+            ("truncation", _repair_truncated_yaml(_requote_backslash_scalars(cleaned))),
+        ):
+            parsed = parse_yaml(repaired)
+            if parsed is not None:
+                logger.info("Parsed LLM YAML after %s repair", label)
+                break
+    return parsed
+
+
+_DQ_SCALAR = re.compile(r'^(\s*(?:-\s+)?)"((?:[^"\\]|\\.)*)"(\s*:.*|\s*)$')
+
+
+def _requote_backslash_scalars(text: str) -> str:
+    """Re-quote double-quoted keys/items containing backslashes with single quotes.
+
+    LLMs write regex keys like ``"regex:ls \\S+\\.xml"``: ``\\S`` is an invalid
+    escape in a YAML double-quoted scalar, so the whole document fails to parse.
+    Single-quoted scalars take backslashes literally, which is what the regex means.
+    """
+    out = []
+    for line in text.split("\n"):
+        m = _DQ_SCALAR.match(line)
+        if m and "\\" in m.group(2):
+            inner = m.group(2).replace('\\"', '"').replace("\\\\", "\\").replace("'", "''")
+            line = f"{m.group(1)}'{inner}'{m.group(3)}"
+        out.append(line)
+    return "\n".join(out)
 
 
 def parse_yaml(text: str) -> dict | list | None:
@@ -73,13 +110,32 @@ def dump_yaml(data: dict) -> str:
     return stream.getvalue()
 
 
+def ensure_runtime_entries(parsed: dict) -> None:
+    """Add what the cli-automation JAR needs from every MockWire instance.
+
+    - ``config.terminalMode: PLAIN`` — echoed input breaks the JAR's output capture
+    - ``stty -echo`` answered silently
+    - ``exit`` → ``popPrompt`` when the config escalates with ``su``, so leaving
+      the escalated shell returns to the login prompt instead of closing the session
+    """
+    config = parsed.setdefault("config", {})
+    if isinstance(config, dict):
+        config["terminalMode"] = "PLAIN"
+
+    for key, value in RUNTIME_COMMANDS.items():
+        parsed.setdefault(key, dict(value))
+
+    has_su = any(str(k).startswith(("su ", "regex:su")) for k in parsed)
+    if has_su and "exit" not in parsed:
+        parsed["exit"] = {"lines": [], "popPrompt": True}
+
+
 def _repair_truncated_yaml(yaml_text: str) -> str:
     """Attempt to repair YAML truncated by LLM token limits.
 
     Fixes:
     - Unclosed quotes (single or double)
-    - Incomplete list items
-    - Missing trailing newline
+    - Incomplete trailing lines
     """
     lines = yaml_text.split("\n")
 
@@ -107,122 +163,6 @@ def _repair_truncated_yaml(yaml_text: str) -> str:
         break
 
     return "\n".join(lines)
-
-
-def fix_simulator_config(yaml_text: str) -> str:
-    """Apply auto-fix rules to simulator config YAML.
-
-    Handles:
-    - Truncated YAML repair (unclosed quotes, incomplete lines)
-    - List-at-root → extract first map element
-    - hosts/servers nested format → flatten to MockWire format
-    - Runtime entries required by the cli-automation JAR (see ensure_runtime_entries)
-    """
-    yaml_text = clean_yaml_response(yaml_text)
-    parsed = parse_yaml(yaml_text)
-    if parsed is None:
-        # Try repairing truncated YAML
-        yaml_text = _repair_truncated_yaml(yaml_text)
-        parsed = parse_yaml(yaml_text)
-        if parsed is None:
-            logger.warning("YAML repair failed — returning raw text")
-            return yaml_text
-
-    # Fix: if root is a list, extract the first dict element
-    if isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict):
-                parsed = item
-                logger.info("Extracted dict from root list")
-                break
-        else:
-            return yaml_text
-
-    # Fix: if root has "hosts" key with nested structure, flatten
-    if "hosts" in parsed and isinstance(parsed["hosts"], list):
-        parsed = _flatten_hosts_format(parsed)
-
-    # Ensure "config" section exists
-    if "config" not in parsed:
-        parsed["config"] = {"prompt": "#", "delayMs": 100, "jitterMs": 20, "idleTimeoutSec": 300}
-
-    ensure_runtime_entries(parsed)
-    return dump_yaml(parsed)
-
-
-def ensure_runtime_entries(parsed: dict) -> None:
-    """Add what the cli-automation JAR needs from every MockWire instance.
-
-    - ``config.terminalMode: PLAIN`` — echoed input breaks the JAR's output capture
-    - ``stty -echo`` and the ``__CMD_DONE__`` sentinel echo
-    - ``exit`` → ``popPrompt`` when the config escalates with ``su``, so leaving
-      the escalated shell returns to the login prompt instead of closing the session
-    """
-    config = parsed.setdefault("config", {})
-    if isinstance(config, dict):
-        config["terminalMode"] = "PLAIN"
-
-    for key, value in RUNTIME_COMMANDS.items():
-        parsed.setdefault(key, dict(value))
-
-    has_su = any(str(k).startswith(("su ", "regex:su")) for k in parsed)
-    if has_su and "exit" not in parsed:
-        parsed["exit"] = {"lines": [], "popPrompt": True}
-
-
-def _flatten_hosts_format(parsed: dict) -> dict:
-    """Convert old hosts-based format to MockWire flat format.
-
-    Input:  {hosts: [{hostname, port, users: {...}, commands: {...}}]}
-    Output: {config: {...}, auth: {...}, "cmd1": {lines: [...]}, ...}
-    """
-    result = {}
-    hosts = parsed.get("hosts", [])
-    if not hosts or not isinstance(hosts, list):
-        return parsed
-
-    host = hosts[0] if isinstance(hosts[0], dict) else {}
-
-    # Config
-    prompt = "#"
-    users_data = host.get("users", {})
-    if isinstance(users_data, dict):
-        first_user = next(iter(users_data.values()), {})
-        if isinstance(first_user, dict):
-            prompt = first_user.get("prompt", "#")
-
-    result["config"] = {
-        "prompt": prompt,
-        "delayMs": 100,
-        "jitterMs": 20,
-        "idleTimeoutSec": 300,
-    }
-
-    # Auth
-    auth_users = []
-    if isinstance(users_data, dict):
-        for username, uconfig in users_data.items():
-            if isinstance(uconfig, dict):
-                auth_users.append({
-                    "username": username,
-                    "password": uconfig.get("password", "*"),
-                    "prompt": uconfig.get("prompt", prompt),
-                })
-    result["auth"] = {"enabled": True, "users": auth_users}
-
-    # Commands
-    commands = host.get("commands", {})
-    if isinstance(commands, dict):
-        for cmd_key, cmd_val in commands.items():
-            if isinstance(cmd_val, dict):
-                output = cmd_val.get("output", "")
-                if isinstance(output, str):
-                    result[cmd_key] = {"lines": output.strip().split("\n")}
-                elif isinstance(cmd_val.get("lines"), list):
-                    result[cmd_key] = {"lines": cmd_val["lines"]}
-
-    logger.info("Flattened hosts format → MockWire format (%d commands)", len(commands))
-    return result
 
 
 def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
