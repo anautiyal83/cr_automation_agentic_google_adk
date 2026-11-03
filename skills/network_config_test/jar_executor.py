@@ -494,7 +494,7 @@ def _parse_uc_name(uc_name: str) -> tuple[str, str]:
     if m:
         return m.group(1), m.group(2)
     # Fallback: split at first digit group
-    m = re.match(r"^([A-Za-z_]+)_(.+)$", uc_name)
+    m = re.match(r"^([A-Za-z]+)_(.+)$", uc_name)  # MRF_ANNOUNCEMENT_LOADING → MRF, ANNOUNCEMENT_LOADING
     if m:
         return m.group(1), m.group(2)
     return uc_name, uc_name

@@ -126,6 +126,7 @@ class CiqValidationJsonGenSkill:
                 self._ciq_sheets,
                 self._requirements,
                 self._json_output_schema_summary,
+                ciq_file_path=self._ciq_file_path,
             )
             self._last_json_output_yaml = json_yaml
         except Exception as e:
@@ -192,6 +193,9 @@ class CiqValidationJsonGenSkill:
                     test_failures_text,
                     feedback.reviewer_analysis,
                     self._json_output_schema_summary,
+                    uc_name=self._uc_name,
+                    ciq_file_path=self._ciq_file_path,
+                    requirements=self._requirements,
                 )
                 self._last_json_output_yaml = json_yaml
             except Exception as e:

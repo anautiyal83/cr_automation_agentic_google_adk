@@ -279,7 +279,7 @@ class OutputViewerSection:
 
         dialog = ui.dialog().props("maximized")
         with dialog, ui.card().classes("w-full h-full p-0").style(
-            "display: flex; flex-direction: column"
+            "display: flex; flex-direction: column; max-height: 100vh"
         ):
             with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
                 "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
@@ -291,6 +291,13 @@ class OutputViewerSection:
                         .props("flat size=sm color=primary no-caps")
                     ui.button(icon="close", on_click=dialog.close) \
                         .props("flat round size=sm color=grey-6")
+            if fpath.suffix.lower() in (".html", ".htm") and fpath.exists():
+                # Reports render as pages (shown as escaped source before: raw tags on screen)
+                from nicegui import app
+                ui.element("iframe").props(f'src="{app.add_media_file(local_file=fpath)}"').style(
+                    "width: 100%; flex: 1; border: none; min-height: 0")
+                dialog.open()
+                return
             with ui.scroll_area().classes("flex-1"):
                 if is_binary:
                     with ui.column().classes("items-center justify-center p-8 gap-2"):
