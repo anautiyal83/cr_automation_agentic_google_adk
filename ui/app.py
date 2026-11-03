@@ -410,7 +410,7 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     font-size: 11px !important; font-weight: 600 !important; color: var(--cr-text-dim) !important;
     background: var(--cr-surface-light);
 }
-.cr-content .q-table tbody td { font-size: 12px !important; }
+.cr-content .q-table tbody td { font-size: 11px !important; }
 .cr-content .q-table--dense .q-table th, .cr-content .q-table--dense .q-table td { padding: 6px 12px !important; }
 /* Status pills */
 .cr-status {
@@ -472,8 +472,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-run-uc { font: 500 11px/1.2 var(--cr-mono); color: var(--cr-text-dim); white-space: nowrap; overflow: hidden;
              text-overflow: ellipsis; min-width: 0; }
 .cr-run-chip:empty, .cr-run-uc:empty { display: none; }
-.cr-run-title { font-size: 15px; font-weight: 600; line-height: 20px; color: var(--cr-text); letter-spacing: -0.01em; }
-.cr-run-sub { font-size: 12px; line-height: 16px; color: var(--cr-text-dim); }
+.cr-run-title { font-size: 14px; font-weight: 600; line-height: 19px; color: var(--cr-text); letter-spacing: -0.01em; }
+.cr-run-sub { font-size: 11px; line-height: 15px; color: var(--cr-text-dim); }
 .cr-seg-bar { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; margin-top: 14px; }
 .cr-seg { height: 6px; border-radius: 3px; background: var(--cr-border); transition: background 0.3s; }
 .cr-seg.is-passed, .cr-seg.is-completed { background: var(--cr-success); }
@@ -490,7 +490,7 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-kpi { padding: 6px 12px; border-right: 1px solid var(--cr-border); min-width: 0; }
 .cr-kpi:last-child { border-right: none; }
 .cr-kpi-label { font: 600 9px/1.5 var(--cr-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--cr-text-dim); }
-.cr-kpi-value { font: 600 13px/1.5 var(--cr-mono); color: var(--cr-text); white-space: nowrap; overflow: hidden;
+.cr-kpi-value { font: 600 12px/1.5 var(--cr-mono); color: var(--cr-text); white-space: nowrap; overflow: hidden;
                 text-overflow: ellipsis; }
 @media (max-width: 700px) {
     .cr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -550,9 +550,9 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-step-duration { font: 500 10px/13px var(--cr-mono); color: var(--cr-text-dim); margin-top: 3px; }
 .cr-step-row-name, .cr-step-agent { max-width: 100%; }
 .cr-step-right { flex-shrink: 0; }
-.cr-file-label { font-size: 12px; font-weight: 600; line-height: 16px; color: var(--cr-text); }
+.cr-file-label { font-size: 11.5px; font-weight: 600; line-height: 15px; color: var(--cr-text); }
 .cr-file-path { font: 400 10px/14px var(--cr-mono); color: var(--cr-text-dim); word-break: break-all; }
-.cr-run-banner .q-btn { font-size: 11px; }
+.cr-run-banner .q-btn { font-size: 10.5px; }
 /* Same height as the step list: the step list sets the row height (contain: size keeps the detail's
    content out of it), the detail scrolls inside */
 .cr-run-detail {
@@ -561,13 +561,13 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-run-detail-head { padding-bottom: 12px; }
 .cr-eyebrow { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; color: var(--cr-primary); }
-.cr-detail-title { font-size: 15px; line-height: 20px; font-weight: 600; color: var(--cr-text); letter-spacing: -0.01em; }
+.cr-detail-title { font-size: 14px; line-height: 19px; font-weight: 600; color: var(--cr-text); letter-spacing: -0.01em; }
 .cr-detail-meta { font: 400 11px/1.5 var(--cr-mono); color: var(--cr-text-dim); }
 .cr-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
 @media (max-width: 700px) { .cr-spec { grid-template-columns: minmax(0, 1fr); } }
 .cr-spec-cell { border: 1px solid var(--cr-border); border-radius: 8px; padding: 6px 10px; background: var(--cr-surface-light); min-width: 0; }
 .cr-spec-key { font: 700 9px/1.5 var(--cr-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--cr-text-dim); }
-.cr-spec-value { font-size: 12px; line-height: 16px; color: var(--cr-text); word-break: break-word; }
+.cr-spec-value { font-size: 11.5px; line-height: 15px; color: var(--cr-text); word-break: break-word; }
 .cr-console { width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid #1F2937; background: #0B0F17; }
 .cr-console-bar {
     display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: #111827;
@@ -600,7 +600,7 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-tabs { border-bottom: 1px solid var(--cr-border); }
 .cr-tabs .q-tab { min-height: 32px; padding: 0 10px; color: var(--cr-text-dim); }
-.cr-tabs .q-tab__label { font-size: 12px; font-weight: 500; }
+.cr-tabs .q-tab__label { font-size: 11.5px; font-weight: 500; }
 .cr-tabs .q-tab__icon { font-size: 14px; }
 .cr-tab-panels, .cr-tab-panels .q-tab-panel { background: transparent !important; padding: 12px 0 0 !important; }
 .cr-kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
@@ -639,8 +639,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-page-header { padding-bottom: 2px; }
 .cr-page-eyebrow { font: 700 10px/1.5 var(--cr-mono); letter-spacing: 0.12em; text-transform: uppercase;
                    color: var(--cr-primary); }
-.cr-page-title { font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -0.01em; }
-.cr-page-subtitle { font-size: 12px; line-height: 16px; margin-top: 1px; }
+.cr-page-title { font-size: 15px; font-weight: 600; line-height: 20px; letter-spacing: -0.01em; }
+.cr-page-subtitle { font-size: 11px; line-height: 15px; margin-top: 1px; }
 /* Cards: flat, bordered, one radius */
 .cr-section, .cr-content .q-card {
     box-shadow: none !important; border-radius: 12px !important; border: 1px solid var(--cr-border) !important;
@@ -659,18 +659,18 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-stat-icon-wrap .q-icon { font-size: 16px !important; }
 .cr-stat-title-text { font: 600 9px/1.5 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase;
                       color: var(--cr-text-dim); }
-.cr-stat-value-text { font: 600 16px/1.35 var(--cr-mono); }
+.cr-stat-value-text { font: 600 14px/1.35 var(--cr-mono); }
 /* Tables: mono uppercase headers, quiet rows */
 .cr-content .q-table__container { box-shadow: none !important; }
 .cr-content .q-table thead th {
     font: 700 9.5px/1.4 var(--cr-mono) !important; letter-spacing: 0.08em; text-transform: uppercase;
     color: var(--cr-text-dim) !important; background: var(--cr-surface-light) !important;
 }
-.cr-content .q-table tbody td { font-size: 12px !important; }
-.cr-content .q-table:not(.q-table--dense) tbody td { padding: 8px 12px; height: 40px; }
-.cr-content .q-table:not(.q-table--dense) thead th { padding: 8px 12px; height: 34px; }
+.cr-content .q-table tbody td { font-size: 11px !important; }
+.cr-content .q-table:not(.q-table--dense) tbody td { padding: 6px 10px; height: 36px; }
+.cr-content .q-table:not(.q-table--dense) thead th { padding: 6px 10px; height: 30px; }
 .cr-content .q-table tbody tr:hover td { background: var(--cr-surface-hover); }
-.cr-content .q-table__bottom--nodata { font-size: 12px; color: var(--cr-text-dim); }
+.cr-content .q-table__bottom--nodata { font-size: 11px; color: var(--cr-text-dim); }
 .cr-content .q-table__bottom--nodata .q-icon { font-size: 16px !important; color: var(--cr-text-dim); }
 .cr-content .q-table__bottom { font-size: 11px; }
 /* Status pills: the same chip as the step list */
@@ -684,20 +684,20 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-status-paused, .cr-status-waiting, .cr-status-retrying, .cr-status-awaiting-review { border-color: rgba(220,104,3,0.3); }
 /* Header + sidebar */
 .cr-nav-group { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; padding: 14px 16px 6px; }
-.cr-sidebar-item { font-size: 12px; padding: 7px 14px 7px 13px; }
-.cr-breadcrumb { font-size: 12px; }
+.cr-sidebar-item { font-size: 11.5px; padding: 6px 14px 6px 13px; }
+.cr-breadcrumb { font-size: 11.5px; }
 .cr-breadcrumb > div:first-child { font: 600 10px/1 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase; }
 /* Buttons, inputs, tabs, expansions */
-.cr-content .q-btn { font-size: 12px; }
-.cr-content .q-field__native, .cr-content .q-field__input, .cr-content .q-select__dropdown-icon { font-size: 12.5px; }
-.cr-content .q-field__label { font-size: 12px; }
-.cr-settings-tab { font-size: 12px !important; border-radius: 8px !important; }
-.cr-content .q-tab__label { font-size: 12px; font-weight: 500; }
-.cr-content .q-expansion-item .q-item__label { font-size: 12px; font-weight: 600; }
-.cr-content .q-expansion-item .q-item { min-height: 38px; }
+.cr-content .q-btn { font-size: 11px; }
+.cr-content .q-field__native, .cr-content .q-field__input, .cr-content .q-select__dropdown-icon { font-size: 12px; }
+.cr-content .q-field__label { font-size: 11px; }
+.cr-settings-tab { font-size: 11px !important; border-radius: 8px !important; }
+.cr-content .q-tab__label { font-size: 11.5px; font-weight: 500; }
+.cr-content .q-expansion-item .q-item__label { font-size: 11.5px; font-weight: 600; }
+.cr-content .q-expansion-item .q-item { min-height: 34px; }
 /* New Run wizard */
-.cr-wizard .q-stepper__title { font-size: 12px; }
-.cr-wizard .q-stepper__caption { font-size: 10.5px; font-family: var(--cr-mono); }
+.cr-wizard .q-stepper__title { font-size: 11.5px; }
+.cr-wizard .q-stepper__caption { font-size: 10px; font-family: var(--cr-mono); }
 /* Empty states */
 .cr-empty .q-icon { opacity: 0.6; }
 /* Log blocks anywhere: the run page console look */
@@ -794,22 +794,22 @@ def create_app() -> None:
 .nicegui-disconnected { opacity: 0.3; pointer-events: none; }
 </style>""")
         ui.add_head_html("""<style>
-body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
+body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
        font-feature-settings: "tnum" 1; color: var(--cr-text); }
 .q-field--dense .q-field__control { min-height: 32px !important; }
-.q-field--dense .q-field__label { font-size: 12px !important; }
-.q-field--dense .q-field__native, .q-field--dense input { font-size: 13px !important; }
+.q-field--dense .q-field__label { font-size: 11px !important; }
+.q-field--dense .q-field__native, .q-field--dense input { font-size: 12px !important; }
 .q-btn { border-radius: 8px !important; font-weight: 500; }
-.q-btn--dense { min-height: 30px !important; font-size: 12px !important; }
+.q-btn--dense { min-height: 28px !important; font-size: 11px !important; }
 .q-card { padding: 8px !important; border-radius: 10px !important; }
 .q-card__section { padding: 6px 10px !important; }
-.text-h5 { font-size: 20px !important; line-height: 1.3 !important; }
-.text-h6 { font-size: 16px !important; line-height: 1.3 !important; }
-.text-subtitle1 { font-size: 14px !important; }
-.text-subtitle2 { font-size: 13px !important; }
-.text-body1 { font-size: 13px !important; }
-.text-body2 { font-size: 12px !important; }
-.text-caption { font-size: 11px !important; }
+.text-h5 { font-size: 17px !important; line-height: 1.3 !important; }
+.text-h6 { font-size: 14px !important; line-height: 1.3 !important; }
+.text-subtitle1 { font-size: 13px !important; }
+.text-subtitle2 { font-size: 12px !important; }
+.text-body1 { font-size: 12px !important; }
+.text-body2 { font-size: 11px !important; }
+.text-caption { font-size: 10.5px !important; }
 .q-field--outlined .q-field__control { border-radius: 8px !important; }
 .q-field--outlined .q-field__control:before { border-color: var(--cr-border) !important; }
 .q-linear-progress { border-radius: 99px; }
@@ -1316,6 +1316,9 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
             # sent already showing it)
             if page in content_panels:
                 navigate(page)
+                # Its data loader ran before the browser connected (empty tables): run it again
+                # once connected (a ui.timer starts only then)
+                ui.timer(0.3, lambda: navigate(page), once=True)
 
             # Load saved settings
             await settings_section.load_saved_settings()
