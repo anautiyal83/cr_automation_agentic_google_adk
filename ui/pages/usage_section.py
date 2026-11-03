@@ -56,13 +56,13 @@ class UsageSection:
 
     async def _clear(self):
         from shared.llm import clear_usage_stats
-        clear_usage_stats()
+        await clear_usage_stats()
         ui.notify("Usage stats cleared", type="info")
         await self._refresh()
 
     async def _refresh(self):
-        from shared.llm import get_usage_stats
-        raw = get_usage_stats()
+        from shared.llm import load_usage_stats
+        raw = await load_usage_stats()
 
         # Aggregate totals
         by_model: dict[str, dict] = {}

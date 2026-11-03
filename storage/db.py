@@ -87,6 +87,21 @@ CREATE TABLE IF NOT EXISTS hil_requests (
     answered_at TEXT
 );
 
+-- One row per LLM call; run_id = pipeline_runs.id (CLI/step-test runs have no pipeline_runs row)
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
+    uc_name TEXT NOT NULL DEFAULT '',
+    step TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    elapsed_sec REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS generated_configs (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES pipeline_runs(id),
@@ -175,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_step_results_run ON step_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_retry_attempts_step ON retry_attempts(step_result_id);
 CREATE INDEX IF NOT EXISTS idx_hil_requests_run ON hil_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_generated_configs_run ON generated_configs(run_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_run ON llm_usage(run_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_base_uc ON knowledge_base_entries(uc_name);
 CREATE INDEX IF NOT EXISTS idx_node_types_vendor ON node_types(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_activities_vendor ON activities(vendor_id);

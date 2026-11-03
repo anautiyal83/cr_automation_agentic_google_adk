@@ -325,6 +325,28 @@ class HistorySection:
                         if err:
                             ui.label(f"  Error: {err[:120]}").classes("text-caption cr-text-error ml-8")
 
+            # --- LLM usage of this run (table llm_usage) ---
+            try:
+                usage = await db.execute(
+                    "SELECT step, COUNT(*) AS calls, SUM(total_tokens) AS tokens, SUM(cost_usd) AS cost, "
+                    "SUM(elapsed_sec) AS secs FROM llm_usage WHERE run_id = ? GROUP BY step ORDER BY MIN(id)",
+                    (str(run_id),))
+            except Exception:
+                usage = []
+            if usage:
+                calls = sum(u["calls"] for u in usage)
+                tokens = sum(u["tokens"] or 0 for u in usage)
+                cost = sum(u["cost"] or 0 for u in usage)
+                with ui.expansion(f"LLM Usage — {calls} calls · {tokens:,} tokens · ${cost:.4f}",
+                                  icon="analytics").classes("w-full").props("dense"):
+                    for u in usage:
+                        with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
+                            ui.label(u["step"] or "—").classes("text-caption font-semibold flex-1 font-mono")
+                            ui.label(f"{u['calls']} calls").classes("text-caption cr-text-dim")
+                            ui.label(f"{(u['tokens'] or 0):,} tokens").classes("text-caption cr-text-dim")
+                            ui.label(f"{(u['secs'] or 0):.0f}s").classes("text-caption cr-text-dim")
+                            ui.label(f"${(u['cost'] or 0):.4f}").classes("text-caption font-mono")
+
             # --- Final Documents (the run's deliverables, as on step 10 / Output Documents) ---
             from ui.pages.output_viewer_section import OutputViewerSection, _final_documents
             uc_name = (doc or {}).get("uc_name") or row.get("uc_name") or ""
@@ -520,7 +542,7 @@ class HistorySection:
                     disk_cleaned += 1
 
                 # Delete from DB tables
-                for table in ("step_results", "generated_configs"):
+                for table in ("step_results", "generated_configs", "llm_usage"):
                     try:
                         await db.execute_insert(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
                     except Exception:

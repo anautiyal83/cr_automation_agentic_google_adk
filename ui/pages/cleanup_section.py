@@ -304,7 +304,7 @@ class CleanupSection:
     async def _delete_run_from_db(self, run_id: str):
         """Delete a single run and its related records from the DB."""
         db = self.runner._db
-        for table in ("retry_attempts", "step_results", "generated_configs", "hil_requests"):
+        for table in ("retry_attempts", "step_results", "generated_configs", "hil_requests", "llm_usage"):
             try:
                 if table == "retry_attempts":
                     await db.execute_insert(

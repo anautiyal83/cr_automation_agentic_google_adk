@@ -6,7 +6,6 @@ that the pipeline already depends on.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -15,36 +14,37 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Track LLM usage for the usage stats page. Kept in data/llm_usage.jsonl as well: the in-memory
-# list alone was empty after every server restart (LLM Usage page / dashboard showed nothing)
-_USAGE_FILE = Path(__file__).resolve().parent.parent / "data" / "llm_usage.jsonl"
+# LLM usage: one row per call in the pipeline DB (table llm_usage, keyed by run_id with the run's
+# data) once the runner registers it; the in-memory list alone was lost on every server restart.
+# Without a DB (CLI step tests) usage stays in memory only.
+_usage_log: list[dict] = []
+_usage_db = None  # storage.db.Database
 
 
-def _load_usage() -> list[dict]:
-    try:
-        lines = _USAGE_FILE.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    out = []
-    for line in lines:
-        try:
-            out.append(json.loads(line))
-        except ValueError:
-            continue
-    return out
+def set_usage_db(db) -> None:
+    """Persist LLM usage in this database from now on (PipelineRunner registers its DB)."""
+    global _usage_db
+    _usage_db = db
 
 
-_usage_log: list[dict] = _load_usage()
+_USAGE_COLUMNS = ("run_id", "uc_name", "step", "model", "prompt_tokens", "completion_tokens",
+                  "total_tokens", "cost_usd", "elapsed_sec")
 
 
-def _record_usage(entry: dict) -> None:
+async def _record_usage(entry: dict) -> None:
     _usage_log.append(entry)
+    if _usage_db is None:
+        return
     try:
-        _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(_USAGE_FILE, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except OSError as e:
-        logger.debug("LLM usage not persisted: %s", e)
+        from datetime import datetime, timezone
+        created = datetime.fromtimestamp(entry.get("timestamp") or time.time(), tz=timezone.utc).isoformat()
+        await _usage_db.execute_insert(
+            f"INSERT INTO llm_usage ({', '.join(_USAGE_COLUMNS)}, created_at) "
+            f"VALUES ({', '.join('?' * (len(_USAGE_COLUMNS) + 1))})",
+            tuple(entry.get(c) or (0 if c not in ("run_id", "uc_name", "step", "model") else "")
+                  for c in _USAGE_COLUMNS) + (created,))
+    except Exception as e:  # usage tracking must never fail an LLM call
+        logger.warning("LLM usage not stored in the database: %s", e)
 
 # Current context — set by the pipeline before each agent runs
 _current_context: dict[str, str] = {"run_id": "", "uc_name": "", "step": ""}
@@ -193,7 +193,7 @@ async def call_llm(
         "uc_name": _current_context.get("uc_name", ""),
         "step": _current_context.get("step", ""),
     }
-    _record_usage(entry)
+    await _record_usage(entry)
 
     if attempt > 0:
         logger.info("LLM call succeeded after %d retries (%.1fs total)", attempt, elapsed)
@@ -218,14 +218,29 @@ def get_llm_fn(config: dict | None = None):
 
 
 def get_usage_stats() -> list[dict]:
-    """Return LLM usage log for the stats page."""
+    """LLM calls of this process (in memory). The UI reads ``load_usage_stats`` (all runs, DB)."""
     return list(_usage_log)
 
 
-def clear_usage_stats():
-    """Clear the usage log (memory and data/llm_usage.jsonl)."""
+async def load_usage_stats(run_id: str = "") -> list[dict]:
+    """Every recorded LLM call from the DB (all runs, or one run), oldest first; the in-memory
+    log when no DB is registered. Same keys as the in-memory entries (``timestamp`` = epoch)."""
+    if _usage_db is None:
+        return [e for e in _usage_log if not run_id or e.get("run_id") == run_id]
+    from datetime import datetime
+    rows = await _usage_db.execute(
+        f"SELECT {', '.join(_USAGE_COLUMNS)}, created_at FROM llm_usage "
+        + ("WHERE run_id = ? " if run_id else "") + "ORDER BY id", (run_id,) if run_id else ())
+    for r in rows:
+        try:
+            r["timestamp"] = datetime.fromisoformat(str(r.pop("created_at"))).timestamp()
+        except (TypeError, ValueError):
+            r["timestamp"] = 0.0
+    return rows
+
+
+async def clear_usage_stats() -> None:
+    """Delete all recorded LLM usage (memory and DB)."""
     _usage_log.clear()
-    try:
-        _USAGE_FILE.unlink(missing_ok=True)
-    except OSError as e:
-        logger.debug("LLM usage file not removed: %s", e)
+    if _usage_db is not None:
+        await _usage_db.execute_insert("DELETE FROM llm_usage")

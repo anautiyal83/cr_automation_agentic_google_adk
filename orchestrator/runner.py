@@ -49,6 +49,10 @@ class PipelineRunner:
         else:
             self._config = {}
         self._db = db
+        if db is not None:
+            # LLM usage rows go into the same DB as the runs (table llm_usage, by run_id)
+            from shared.llm import set_usage_db
+            set_usage_db(db)
         self._artifact_store = artifact_store
         self._session_service = InMemorySessionService()
         self._active_runs: dict[str, dict] = {}  # run_id → {session, task, state}

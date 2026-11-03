@@ -1081,8 +1081,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                         duration_label.text = f"{sum(durations) / len(durations):.0f}s" if durations else "\u2014"
 
                         # LLM stats
-                        from shared.llm import get_usage_stats
-                        llm_raw = get_usage_stats()
+                        from shared.llm import load_usage_stats
+                        llm_raw = await load_usage_stats()
                         total_tokens = sum(e.get("total_tokens", 0) for e in llm_raw)
                         total_cost = sum(e.get("cost_usd", 0) for e in llm_raw)
                         tokens_label.text = f"{total_tokens:,}" if total_tokens else "0"
