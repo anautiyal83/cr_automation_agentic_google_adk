@@ -403,9 +403,9 @@ def _niam_ids_by_node(json_files: list[str]) -> dict[str, list[str]]:
         except Exception as e:
             logger.warning("Could not read CIQ JSON %s: %s", jf, e)
             continue
-        data = doc.get("data", doc) if isinstance(doc, dict) else {}
-        for group in data.get("nodeGroups") or []:
-            for entry in (group.get("nodes") or []) if isinstance(group, dict) else []:
+        from tools.ciq_json import node_groups
+        for _, group in node_groups(doc):
+            for entry in group.get("nodes") or []:
                 if not isinstance(entry, dict):
                     continue
                 for node_name, props in entry.items():

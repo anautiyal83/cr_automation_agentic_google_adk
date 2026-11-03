@@ -71,8 +71,11 @@
 **Constraints the build must honor**:
 - `data.schemaVersion: "2"`, or the JAR uses its v1 parser.
 - `data.meta{nodeType, activity}` from the UC name.
-- `nodeGroups[]` at the data root, not under `crGroups`.
-- `segregate_by: Index.CRGroup`.
+- One JSON for the whole CIQ (`output_mode: single`, no `segregate_by`): `crGroups[]` at the top, each CR
+  with `crGroup`, `email` and its `nodeGroups[]` (user decision 2026-11-03, G-14b). cli-automation 1.x
+  generate (one MOP per CR) and execute (`--cr/--node`) accept it — BUG-035's "No nodes found" no longer
+  occurs. Readers use `tools.ciq_json.node_groups` (both shapes).
+- Node targets come from the CIQ layout (`json_output_builder`): one per zone (PGW_RDS) or per named node (MRF).
 - One node entry per zone, with node types as subkeys.
 
 **Deviation**: Constitution Principle II says configs are LLM-generated. This is a justified exception: there is no per-UC variance, so the LLM added only risk.

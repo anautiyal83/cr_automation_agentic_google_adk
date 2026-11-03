@@ -224,7 +224,7 @@ async def prepare_execution(
 
     targets = _execution_targets(json_inputs)
     if not targets:
-        return {"error": "No node groups found in CIQ JSON data (expected data.nodeGroups[].nodes[].node)."}
+        return {"error": "No node groups found in CIQ JSON data (expected crGroups[].nodeGroups[].nodes[].node)."}
 
     # LOCAL workflow steps run "python create_xml.py ..." in the JAR's working directory:
     # use the helper scripts folder from step 6 (all other paths are passed absolute)
@@ -298,8 +298,9 @@ def _find_json_data(json_data_dir: Path) -> list[str]:
 def _execution_targets(json_files: list[str]) -> list[tuple[str, str, str]]:
     """List (json_file, node, cr_group) for every node group in the CIQ JSON data.
 
-    The execute subcommand's ``--node`` is the node-group key from
-    ``data.nodeGroups[].nodes[].node`` (e.g. a zone like ``EAST``), not the node type.
+    The execute subcommand's ``--node`` is the target key from ``…nodeGroups[].nodes[].node``
+    (a zone like ``EAST``, or a node like ``MRF1``), not the node type; node groups sit under
+    ``crGroups[]`` (one file for the whole CIQ) or at the root (one file per CR).
     """
     targets: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -309,11 +310,8 @@ def _execution_targets(json_files: list[str]) -> list[tuple[str, str, str]]:
         except Exception as e:
             logger.warning("Could not read CIQ JSON data %s: %s", jf, e)
             continue
-        data = doc.get("data", doc) if isinstance(doc, dict) else {}
-        for group in data.get("nodeGroups", []) or []:
-            if not isinstance(group, dict):
-                continue
-            cr_group = str(group.get("crGroup", "") or "")
+        from tools.ciq_json import node_groups
+        for cr_group, group in node_groups(doc):
             names = [n.get("node") for n in group.get("nodes", []) or [] if isinstance(n, dict)]
             names = [str(n) for n in names if n] or [str(group.get("nodeGroup", "") or "")]
             for name in names:

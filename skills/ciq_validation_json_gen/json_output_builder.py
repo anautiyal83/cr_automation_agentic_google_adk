@@ -146,9 +146,14 @@ def build_json_output(ciq_sheets: dict, rows: dict, uc_name: str, hints: dict | 
     logger.info("json-output: %s targets, index %s (CR %s, group %s), node sheet %s, data %s, %d NIAM column(s)",
                 "node" if node_targets else "group", index, cr_col, group_col, node or "-", data_sheet or "-",
                 len(niam_cols))
+    # One JSON for the whole CIQ: crGroups[] at the top, each CR holding its nodeGroups[]
+    # (user decision 2026-11-03; no segregate_by — cli-automation generate/execute accept it)
+    cr_groups = {"_each": f"DISTINCT {index}.{cr_col} AS $cr", "crGroup": "$cr"}
+    if email_col:
+        cr_groups["email"] = f"{index}.{_q(email_col)} WHERE {index}.{cr_col} = $cr"
+    cr_groups["nodeGroups"] = node_groups
     return {
-        "output_mode": "individual",
-        "segregate_by": {"sheet": index, "column": cr_col, "as": "$cr"},
+        "output_mode": "single",
         "data": {"schemaVersion": "2", "meta": {"nodeType": node_type, "activity": activity},
-                 "nodeGroups": node_groups},
+                 "crGroups": cr_groups},
     }
