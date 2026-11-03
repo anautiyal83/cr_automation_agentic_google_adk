@@ -171,7 +171,7 @@ class RequirementGatheringSkill:
         if self._vendor_profile:
             analysis_notes += "\n\n" + _vendor_profile_summary(self._vendor_profile)
         if self._all_answers:
-            analysis_notes += "\n\n=== Previously Answered Questions ===\n" + json.dumps(self._all_answers, indent=2)
+            analysis_notes += "\n\n=== Previously Answered Questions ===\n" + self._answers_text()
 
         # --- LLM analysis ---
         self._analysis = await analyzer.analyze_uc(
@@ -182,6 +182,7 @@ class RequirementGatheringSkill:
             cmd_summary,
             analysis_notes,
         )
+        self._drop_answered_gaps()
 
         readiness = self._analysis.get("overall_readiness", "INSUFFICIENT")
 
@@ -291,7 +292,7 @@ class RequirementGatheringSkill:
         if self._vendor_profile:
             combined_notes += "\n\n" + _vendor_profile_summary(self._vendor_profile)
         if self._all_answers:
-            combined_notes += "\n\n=== Developer Answers ===\n" + json.dumps(self._all_answers, indent=2)
+            combined_notes += "\n\n=== Developer Answers ===\n" + self._answers_text()
 
         ciq_summary = self._build_ciq_summary()
         mop_summary = self._build_mop_summary()
@@ -305,6 +306,7 @@ class RequirementGatheringSkill:
             cmd_summary,
             combined_notes,
         )
+        self._drop_answered_gaps()
 
         readiness = self._analysis.get("overall_readiness", "INSUFFICIENT")
 
@@ -463,6 +465,42 @@ class RequirementGatheringSkill:
     ) -> str:
         """Generate questionnaire HTML for a round. Returns HTML string."""
         return generate_questionnaire_html(self._uc_name, questions, round_num)
+
+    def _answers_text(self) -> str:
+        """Developer answers as Q/A pairs for the LLM: ``{"orch_q2": "ls -ltrh …"}`` alone does not
+        say what was answered, and the re-analysis raised the same gaps again (OB-21)."""
+        parts = []
+        for qid, answer in self._all_answers.items():
+            question = self._question_texts.get(qid)
+            parts.append(f"Q: {question}\nA: {answer}" if question else f"{qid}: {answer}")
+        return "\n\n".join(parts)
+
+    def _drop_answered_gaps(self) -> None:
+        """Remove gaps that an answered question already covers (most of the gap's words are in
+        the question); with no gap left the requirements are COMPLETE."""
+        answered = [_gap_words(self._question_texts[qid]) for qid, a in self._all_answers.items()
+                    if qid in self._question_texts and str(a).strip()]
+        if not answered or not isinstance(self._analysis, dict):
+            return
+        dropped, left = [], 0
+        for cat in ("category_1_node_activity", "category_2_commands", "category_3_orchestration"):
+            section = self._analysis.get(cat)
+            if not isinstance(section, dict) or not isinstance(section.get("gaps"), list):
+                continue
+            keep = []
+            for gap in section["gaps"]:
+                words = _gap_words(gap if isinstance(gap, str) else json.dumps(gap))
+                if words and any(len(words & q) / len(words) >= 0.6 for q in answered):
+                    dropped.append(gap)
+                else:
+                    keep.append(gap)
+            section["gaps"] = keep
+            left += len(keep)
+        if dropped:
+            logger.info("Dropped %d gap(s) already answered by the developer: %s", len(dropped),
+                        "; ".join(str(g)[:80] for g in dropped))
+            if not left:
+                self._analysis["overall_readiness"] = "COMPLETE"
 
     def _store_question_texts(self, questions: list[dict] | None):
         """Store question ID → question text mapping for the summary report."""
@@ -723,6 +761,29 @@ def _migrate_old_files(uc_name: str) -> dict | None:
 
 
 # Convenience accessors — used by the skill
+_GAP_STOPWORDS = {
+    "the", "and", "for", "with", "from", "what", "how", "which", "are", "should", "can", "does", "any",
+    "there", "this", "that", "its", "into", "exact", "specific", "command", "commands", "syntax",
+    "method", "way", "detail", "details", "need", "needed", "use", "used", "using", "mop", "mention",
+    "mentions", "when", "where", "who", "will", "would", "must", "not", "also", "each", "all",
+}
+
+
+def _gap_words(text: str) -> set[str]:
+    """Content words of a gap/question, lightly stemmed (transferring/transferred → transferr)."""
+    import re
+    words = set()
+    for w in re.findall(r"[a-z0-9_]+(?:\.[a-z0-9_]+)*", str(text).lower()):
+        if w in _GAP_STOPWORDS or (len(w) < 3 and not w.isdigit()):
+            continue
+        for suffix in ("ing", "ed", "s"):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[: -len(suffix)]
+                break
+        words.add(w)
+    return words
+
+
 def _load_answers(uc_name: str) -> dict:
     return _load_uc_doc(uc_name).get("developer_answers", {})
 

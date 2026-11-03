@@ -44,7 +44,7 @@ async def analyze_uc(
     )
 
     try:
-        response = await llm_fn(prompt, SYSTEM_PROMPT)
+        response = await llm_fn(SYSTEM_PROMPT, prompt)
         return json.loads(_extract_json(response))
     except Exception as e:
         logger.error("UC analysis failed: %s", e)
@@ -88,7 +88,7 @@ async def compile_requirements(
     ) + extra_context
 
     try:
-        response = await llm_fn(prompt, SYSTEM_PROMPT)
+        response = await llm_fn(SYSTEM_PROMPT, prompt)
         return json.loads(_extract_json(response))
     except Exception as e:
         logger.error("Requirements compilation failed: %s", e)

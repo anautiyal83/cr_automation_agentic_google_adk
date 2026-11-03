@@ -43,7 +43,7 @@ async def generate_questions(
     )
 
     try:
-        response = await llm_fn(prompt, SYSTEM_PROMPT)
+        response = await llm_fn(SYSTEM_PROMPT, prompt)
         response = response.strip()
         if response.startswith("```"):
             m = re.search(r'```(?:json)?\s*\n(.*?)```', response, re.DOTALL)

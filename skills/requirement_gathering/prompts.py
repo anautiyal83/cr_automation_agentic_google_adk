@@ -33,6 +33,8 @@ IMPORTANT: Mark items as KNOWN (not gaps) if the information is visible in ANY o
 - Shell prompts visible in SSH logs are KNOWN
 - Command syntax in MOP is KNOWN
 - XML structure in sample files is KNOWN
+- Anything a developer answer (Q/A pairs in DEVELOPER NOTES) covers is KNOWN — never ask it again,
+  even when the answer is short ("sftp plugin in the framework", "True")
 - Only report GENUINE gaps — information that truly cannot be found anywhere in the provided data
 
 UC Name: {uc_name}
