@@ -226,6 +226,11 @@ class OutputViewerSection:
             groups.setdefault(group, []).append(f)
 
         with self.file_list:
+            final = _final_documents(run_root, self._uc_name(run_id))
+            if final:
+                with ui.expansion("Final Documents", icon="verified", value=True)                         .classes("w-full").props("dense header-class='text-body2 font-semibold'"):
+                    for label, fpath in final:
+                        self._file_row(fpath, label)
             for group_name in sorted(groups.keys()):
                 group_files = groups[group_name]
                 label = group_name.replace("_", " ").title()
@@ -234,7 +239,10 @@ class OutputViewerSection:
                     for fpath in sorted(group_files, key=lambda p: p.name):
                         self._file_row(fpath)
 
-    def _file_row(self, fpath: Path):
+    def _uc_name(self, run_id: str) -> str:
+        return next((str(r.get("uc_name") or "") for r in self._all_runs if str(r.get("id")) == str(run_id)), "")
+
+    def _file_row(self, fpath: Path, label: str = ""):
         suffix = fpath.suffix.lower()
         icon = ICON_MAP.get(suffix, "insert_drive_file")
         size = fpath.stat().st_size if fpath.exists() else 0
@@ -243,7 +251,12 @@ class OutputViewerSection:
             "border-bottom: 1px solid var(--cr-border)"
         ):
             ui.icon(icon, size="16px").classes("cr-text-accent")
-            ui.label(fpath.name).classes("text-xs font-mono flex-1")
+            if label:
+                with ui.column().classes("gap-0 flex-1 min-w-0"):
+                    ui.label(label).classes("text-xs font-semibold")
+                    ui.label(fpath.name).classes("text-caption font-mono cr-text-dim")
+            else:
+                ui.label(fpath.name).classes("text-xs font-mono flex-1")
             ui.label(_format_size(size)).classes("text-caption cr-text-dim")
             ui.button("View", icon="visibility",
                       on_click=lambda _, p=fpath: self._view_dialog(p)) \
@@ -344,6 +357,17 @@ class OutputViewerSection:
         self.viewer_row.set_visibility(True)
         self.empty_state.set_visibility(False)
         self._load_file_tree(str(run_id))
+
+
+def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, Path]]:
+    """The final report, then the run's deliverables in step 10 order."""
+    if not uc_name or not run_root.is_dir():
+        return []
+    from skills.report_generation.deliverables import collect_deliverables
+    docs = [(label, run_root / f"{uc_name}_report{ext}")
+            for label, ext in (("Final Report", ".html"), ("Final Report (Excel)", ".xlsx"))]
+    docs = [(label, f) for label, f in docs if f.is_file()]
+    return docs + [(d.label, d.path) for d in collect_deliverables(run_root, uc_name)]
 
 
 def _format_size(size: int) -> str:
