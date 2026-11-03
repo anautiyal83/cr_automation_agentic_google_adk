@@ -140,6 +140,12 @@ class NetworkSimulatorSetupSkill:
         for n in nodes:
             n.vfs = (derive_vfs(workflow_doc, n.name, produced, [x for x in samples if _sample_on(x, n.name)])
                      if isinstance(workflow_doc, dict) else None)
+            from .guards import backup_seed_files
+            seeds = backup_seed_files(n.commands, inp.ciq_json_files)
+            if seeds:
+                n.vfs = n.vfs or {"dirs": []}
+                n.vfs.setdefault("files", {}).update(seeds)
+                logger.info("Topology node %s: %d backup sources seeded in the VFS", n.name, len(seeds))
             if n.vfs:
                 logger.info("Topology node %s: vfs dirs=%s triggers=%d", n.name, n.vfs["dirs"],
                             len(n.vfs.get("triggers", [])))
@@ -212,7 +218,8 @@ class NetworkSimulatorSetupSkill:
             for node in nodes:
                 write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
                 errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
-                    instance_configs[node.instance], sim_dir / "outputs" / node.instance / "responses")]
+                    instance_configs[node.instance], sim_dir / "outputs" / node.instance / "responses",
+                    builtins_only=_builtins_only(node))]
 
             if inp.auto_start and errors:
                 logger.error("Skipping simulator start — config invalid: %s", errors)
@@ -425,18 +432,29 @@ _SIM_BUILTINS = {"echo", "true", "false", ":", "pwd", "whoami", "id", "hostname"
                  "exit", "logout", "sleep"}
 
 
+def _builtins_only(node: NodeSpec) -> bool:
+    """Every command of the node is answered by MockWire itself (sftp steps send nothing)."""
+    from .topology import file_builtin
+    cmds = [str(c.get("cmd") or "").strip() for c in node.commands]
+    return all(not c or c.split(" ", 1)[0] in _SIM_BUILTINS or file_builtin(c) for c in cmds)
+
+
 def command_key_regex(cmd: str) -> str:
     """A ``regex:`` key body for a workflow command: literal parts escaped, ``${…}`` → ``\\S+``,
     shell substitutions ``$(…)`` → ``.+?`` (``$(date +%Y%m%d%H%M%S)`` holds a space: the LLM's
-    ``\\S+`` never matched and every MRF test case got "tar: command not found", S8-26)."""
+    ``\\S+`` never matched and every MRF test case got "tar: command not found", S8-26).
+    Inside single quotes ``'${…}'`` → ``[^']*``: a registered value may be empty or hold
+    spaces (``if [[ '${backupFileName}' == '' …`` with nothing registered, S8-32)."""
     out = []
+    quoted = False
     for part in re.split(r"(\$\{[^{}]+\}|\$\([^()]*\))", cmd):
         if part.startswith("${"):
-            out.append(r"\S+")
+            out.append(r"[^']*" if quoted else r"\S+")
         elif part.startswith("$("):
             out.append(r".+?")
         else:
             out.append(re.sub(r"([\\.^$|?*+()\[\]{}])", r"\\\1", part))
+            quoted ^= part.count("'") % 2 == 1
     return "".join(out)
 
 
@@ -514,12 +532,13 @@ def fill_unanswered(node: NodeSpec, entries: dict, recorded: set[str], row: dict
 def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> list[dict]:
     """Node commands no response entry answers (the simulator would say "command not found")."""
     from .file_flows import is_vfs_command
-    from .topology import _validation_regex
+    from .topology import _validation_regex, file_builtin
     out, seen = [], set()
     for c in node.commands:
         cmd = str(c.get("cmd", "")).strip()
         first = cmd.split(" ", 1)[0] if cmd else ""
-        if not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or is_vfs_command(cmd, node.vfs):
+        if (not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or file_builtin(cmd)
+                or is_vfs_command(cmd, node.vfs)):
             continue
         seen.add(cmd)
         resolved = resolve_command(cmd, row)

@@ -283,9 +283,15 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
 
     workflow_yaml = read(f"{uc_name}.yaml")
     if refix_workflow:
-        from skills.network_config_gen.autofix import fix_workflow
+        from skills.network_config_gen import structure
+        from skills.network_config_gen.autofix import dump_yaml, fix_workflow, parse_yaml
         from skills.network_config_gen.validator import validate_workflow
-        workflow_yaml = fix_workflow(workflow_yaml)
+        flat = parse_yaml(workflow_yaml)  # autofix works on the LLM's flat form
+        workflow_yaml = fix_workflow(dump_yaml(structure.flattened(flat)) if flat else workflow_yaml)
+        parsed = parse_yaml(workflow_yaml)
+        if parsed:  # records loop, repo backups, transfer checksums (as step 6 does)
+            structure.apply(parsed, json.loads(read("requirements.json") or "{}"))
+            workflow_yaml = dump_yaml(parsed)
         (work / f"{uc_name}.yaml").write_text(workflow_yaml, encoding="utf-8")
         problems = validate_workflow(workflow_yaml)
         print(f"Workflow re-fixed with current step 6 autofix ({len(problems)} validator findings)")

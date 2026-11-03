@@ -443,3 +443,52 @@ def filter_vendor_profile_questions(
         )
 
     return filtered
+
+
+_BACKUP = re.compile(r"\bback\s?-?up\b", re.I)
+_REPO_ANSWER = re.compile(r"(?:(?P<user>[\w.-]+)@)?(?P<host>\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][\w.-]*)(?::(?P<port>\d+))?")
+
+
+def repo_server_question(mop_commands: list[dict]) -> list[dict]:
+    """Where backups go: a MOP with a backup step stores it on a repo server, a node of the
+    execution YAML (step 6, structure.py). Proposed from execution.repo_server."""
+    texts = [f"{c.get('phase', '')} {c.get('command', '')}" for c in mop_commands or [] if isinstance(c, dict)]
+    if not any(_BACKUP.search(t) for t in texts):
+        return []
+    from core.config import repo_server
+    cfg = repo_server()
+    return [{
+        "id": "orch_repo_server",
+        "category": "orchestration",
+        "question": ("The MOP takes a backup. It is stored on a repo server (every transfer checked with "
+                     "sha256sum). Which server: user@host[:port] and the backup directory?"),
+        "importance": "critical",
+        "input_type": "text",
+        "default_value": f"{cfg['user']}@{cfg['host']}:{cfg['port']} {cfg['backup_dir']}",
+        "context": ("The backup archive is copied from the node to the automation server and from there to "
+                    "the repo server; a rollback fetches it back the same way. The server becomes the node "
+                    f"{cfg['node']} of the execution YAML (password: secret {cfg['password_secret']})."),
+        "helper_text": "e.g. backup@10.20.30.40:22 /backup/netconfig",
+    }]
+
+
+def parse_repo_server(answer: str) -> dict:
+    """``user@host[:port] /backup/dir`` (any order, extra words ignored) → repo_server fields."""
+    text = str(answer or "")
+    out: dict = {}
+    path = re.search(r"(?<![\w:])(/[^\s,;]*)", text)
+    if path:
+        out["backup_dir"] = path.group(1).rstrip("/") or "/"
+        text = text.replace(path.group(1), " ")
+    for m in _REPO_ANSWER.finditer(text):
+        token = m.group(0)
+        if m.group("user") or m.group("port") or "." in m.group("host") or m.group("host").startswith("["):
+            out["host"] = m.group("host").strip("[]")
+            if m.group("user"):
+                out["user"] = m.group("user")
+            if m.group("port"):
+                out["port"] = m.group("port")
+            break
+        if token.lower() not in {"user", "host", "port", "dir", "directory", "backup", "and", "the", "on"}:
+            out.setdefault("host", m.group("host"))
+    return out

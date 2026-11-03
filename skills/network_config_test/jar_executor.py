@@ -488,28 +488,31 @@ def _mkdir(path: Path) -> Path:
 def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str) -> list[str]:
     """Placeholder files for sftp uploads of the activity's INPUTS: a relative local_path no
     LOCAL step produces (MRF uploads each CIQ ``INPUT_FILE``; nothing in a test run provides it,
-    so the upload failed with FileNotFoundException, S9-09). Values come from the target's first
-    CIQ record, as the JAR resolves them. Returns the files created."""
+    so the upload failed with FileNotFoundException, S9-09). One per CIQ record of the target
+    (record loops upload every record's file, DEP-9). Returns the files created."""
     import re
     from tools.ciq_json import node_groups
     try:
         doc = json.loads(Path(json_file).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    record = {}
+    records: list[dict] = []
     for cr, group in node_groups(doc):
         if (not cr_group or cr == cr_group) and node in [str(n.get("node")) for n in group.get("nodes") or []]:
             seqs = group.get("configSequences") or [{}]
-            recs = (seqs[0] or {}).get("records") or [{}]
-            record = (recs[0] or {}).get("data") or {}
+            records = [(r or {}).get("data") or {} for r in ((seqs[0] or {}).get("records") or [{}])]
             break
-    local_text, uploads = [], []
+    local_text, uploads, items = [], [], {"rec"}
 
     def walk(steps):
         for s in steps or []:
             if not isinstance(s, dict):
                 continue
-            if str(s.get("node", "")).upper() == "LOCAL" and isinstance(s.get("send"), str):
+            if s.get("item_var"):
+                items.add(str(s["item_var"]))
+            # steps added by step 6 (checksums, repo backups) read files, they do not make them
+            added = str(s.get("id") or "").startswith("nc_")
+            if not added and str(s.get("node", "")).upper() == "LOCAL" and isinstance(s.get("send"), str):
                 local_text.append(s["send"])
             sftp = s.get("sftp")
             if isinstance(sftp, dict) and sftp.get("operation") == "upload" and sftp.get("local_path"):
@@ -517,22 +520,24 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
             walk(s.get("steps"))
     for body in (workflow.get("phases") or {}).values():
         walk(body.get("steps") if isinstance(body, dict) else body)
+    ref = re.compile(r"\$\{(?:configSequences\.\d+\.records\.\d+|" + "|".join(map(re.escape, items))
+                     + r")\.data\.([^}]+)\}")
 
-    def resolve(text):
-        return re.sub(r"\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}",
-                      lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
     created = []
-    for raw in uploads:
-        path = resolve(raw)
-        if not path or "${" in path or Path(path).is_absolute():
-            continue
-        produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
-        target = Path(cwd) / path
-        if produced or target.exists():
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"test input staged by step 9 for {path}\n", encoding="utf-8")
-        created.append(str(target))
+    for record in records or [{}]:
+        def resolve(text, record=record):
+            return ref.sub(lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
+        for raw in uploads:
+            path = resolve(raw)
+            if not path or "${" in path or Path(path).is_absolute():
+                continue
+            produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
+            target = Path(cwd) / path
+            if produced or target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"test input staged by step 9 for {path}\n", encoding="utf-8")
+            created.append(str(target))
     return created
 
 
@@ -589,6 +594,9 @@ def _local_step_env(env: dict[str, str]) -> dict[str, str]:
         found = next((c for c in candidates if (c / "bash.exe").exists()), None)
         if found:
             extra.append(str(found))
+            coreutils = found.parent / "usr" / "bin"  # sha256sum for transfer checksums
+            if found.name == "bin" and (coreutils / "sha256sum.exe").exists():
+                extra.append(str(coreutils))
         else:
             logger.warning("No bash found for LOCAL workflow steps (install Git for Windows)")
     py_dir = str(Path(sys.executable).parent)

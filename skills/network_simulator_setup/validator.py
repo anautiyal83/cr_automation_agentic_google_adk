@@ -14,13 +14,15 @@ _COMMAND_FIELDS = {"lines", "file", "responses", "interactive", "pushPrompt", "p
                    "exitCode", "setState", "clearState"}
 
 
-def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = None) -> list[str]:
+def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = None,
+                            builtins_only: bool = False) -> list[str]:
     """Return a list of problems (empty when the config is usable).
 
     Args:
         yaml_text: MockWire config YAML.
         responses_dir: ``outputs/<instance>/responses`` — when given, ``file:``
             references are checked for existence.
+        builtins_only: the node's commands need no response entries.
     """
     parsed = parse_yaml(yaml_text)
     if parsed is None:
@@ -46,7 +48,9 @@ def validate_mockwire_config(yaml_text: str, responses_dir: str | Path | None = 
             errors.append("niam.enabled is true but no niam user has neIds")
 
     commands = {k: v for k, v in parsed.items() if k not in RESERVED_KEYS}
-    if not any(not str(k).lower().startswith("ctrl+p") for k in commands):
+    # builtins_only: every command of the node is answered by MockWire itself (a repo server
+    # that only receives files: mkdir, sha256sum, sftp)
+    if not builtins_only and not any(not str(k).lower().startswith("ctrl+p") for k in commands):
         errors.append("No UC command responses defined")
 
     elevation = commands.get("ctrl+p+e")

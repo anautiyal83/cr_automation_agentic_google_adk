@@ -209,6 +209,7 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
                 "node": step.get("node", ""),
                 "phase": phase_name,
                 "validation": step.get("validation", {}),
+                "register": step.get("register") or [],
                 "prompt_regex": step.get("prompt_regex", ""),
             })
     return commands
@@ -231,4 +232,15 @@ def _iter_phase_steps(parsed: dict):
         if not isinstance(phase, dict):
             continue
         steps = phase.get("steps", phase.get("commands", []))
-        yield key, [s for s in steps or [] if isinstance(s, dict)]
+        yield key, list(_leaf_steps(steps))
+
+
+def _leaf_steps(steps):
+    """Steps in order; a container (``type: loop`` over CIQ records) stands for its steps."""
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        if isinstance(s.get("steps"), list):
+            yield from _leaf_steps(s["steps"])
+        else:
+            yield s

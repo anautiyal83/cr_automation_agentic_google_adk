@@ -78,7 +78,8 @@ def _term(term: str) -> bool:
 
 
 def targets(ciq_json_files: list[str]) -> list[dict]:
-    """[{"node", "nodeGroup", "crGroup", "record", "fields"}] for every node of the CIQ JSON."""
+    """[{"node", "nodeGroup", "crGroup", "record", "fields"}] for every node and CIQ record of
+    the CIQ JSON (record loops run a command once per record, DEP-9)."""
     from tools.ciq_json import node_groups
     out = []
     for jf in ciq_json_files or []:
@@ -88,11 +89,12 @@ def targets(ciq_json_files: list[str]) -> list[dict]:
             continue
         for cr, group in node_groups(doc):
             seqs = group.get("configSequences") or [{}]
-            record = (((seqs[0] or {}).get("records") or [{}])[0] or {}).get("data") or {}
+            records = [(r or {}).get("data") or {} for r in ((seqs[0] or {}).get("records") or [{}])]
             for n in group.get("nodes") or []:
                 fields = {f"{k}.{f}": v for k, d in n.items() if isinstance(d, dict) for f, v in d.items()}
-                out.append({"node": str(n.get("node", "")), "nodeGroup": str(group.get("nodeGroup", "")),
-                            "crGroup": cr, "record": record, "fields": fields})
+                for record in records:
+                    out.append({"node": str(n.get("node", "")), "nodeGroup": str(group.get("nodeGroup", "")),
+                                "crGroup": cr, "record": record, "fields": fields})
     return out
 
 
@@ -102,7 +104,7 @@ def _resolve(cmd: str, t: dict) -> str:
 
     def value(m):
         expr = m.group(1).strip()
-        if expr.startswith("configSequences.") and ".data." in expr:
+        if ".data." in expr and (expr.startswith("configSequences.") or "." not in expr.split(".data.", 1)[0]):
             v = t["record"].get(expr.split(".data.", 1)[1].strip())
         elif expr in t["fields"]:
             v = t["fields"][expr]
@@ -112,6 +114,73 @@ def _resolve(cmd: str, t: dict) -> str:
             v = params.get(expr)
         return m.group(0) if v is None else str(v)
     return re.sub(r"\$\{([^{}]+)\}", value, cmd)
+
+
+def backup_seed_files(commands: list[dict], ciq_json_files: list[str]) -> dict[str, list[str]]:
+    """VFS files that make the sources of a ``tar -c`` backup exist on the simulated node (the
+    MockWire ``tar`` builtin archives what is in the VFS; a missing source fails the step).
+    A directory source gets one seed file in it."""
+    from skills.network_config_gen.structure import tar_archive
+    from .topology import file_builtin
+    files: dict[str, list[str]] = {}
+    tgts = targets(ciq_json_files) or [{"record": {}, "fields": {}, "node": "", "nodeGroup": "", "crGroup": ""}]
+    for c in commands:
+        cmd = str(c.get("cmd", "")).strip()
+        if not file_builtin(cmd) or not cmd.startswith("tar"):
+            continue
+        for t in tgts:
+            parsed = tar_archive(_resolve(cmd, t))
+            for src in (parsed[1] if parsed else []):
+                if "${" in src or not src.startswith("/"):
+                    continue
+                last = src.rstrip("/").rsplit("/", 1)[-1]
+                path = src.rstrip("/") + "/existing_content.dat" if src.endswith("/") or "." not in last else src
+                files.setdefault(path, ["existing content (NetConfig simulator seed)"])
+    return files
+
+
+_GREP = re.compile(r"^grep((?:\s+-[a-zA-Z]+)*)\s+'?([^'|]+?)'?\s*$")
+
+
+def _inner_response(inner: str, entries: dict, command: dict) -> list[str]:
+    """What the guarded command prints when its condition holds: its own response, else its
+    first pipeline stage's filtered by ``| grep``, else a line built from the step's regexes
+    (with the grepped value) — every CIQ record runs it now (DEP-9: PGW NORTH's 2nd record
+    has IFC 40453; the responses were written for the 1st, where the guard does not hold)."""
+    from .skill import _find_entry
+    from .topology import _regex_examples, _validation_regex
+    from skills.network_config_test.scenarios import java_regex_matches
+    if not inner:
+        return []
+    entry = _find_entry(entries, inner, inner)[1]
+    stages = [s.strip() for s in inner.split(" | ")]
+    greps = [g for g in (_GREP.match(s) for s in stages[1:]) if g]
+    if entry is None and len(stages) > 1:
+        entry = _find_entry(entries, stages[0], stages[0])[1]
+        if isinstance(entry, dict):
+            lines = list(entry.get("lines") or [])
+            for g in greps:
+                flags = re.I if "i" in (g.group(1) or "") else 0
+                keep = "v" not in (g.group(1) or "")
+                lines = [ln for ln in lines if bool(re.search(re.escape(g.group(2)), ln, flags)) == keep]
+            entry = {"lines": lines}
+    lines = list(entry.get("lines") or []) if isinstance(entry, dict) else []
+    success = re.sub(r"\|\s*" + SKIPPED + r"\s*$|^\s*" + SKIPPED + r"\s*\|", "", _validation_regex(command))
+    registers = [str(r.get("regex") if isinstance(r, dict) else r) for r in command.get("register") or []]
+
+    def fits(text: str) -> bool:
+        return all(java_regex_matches(rx, text) for rx in [success, *registers] if rx)
+    if fits("\n".join(lines)):
+        return lines
+    # the grepped value goes in place of a generated "x" (last one first: a register usually
+    # captures a later field), so the line is one grep would really have kept
+    value = greps[0].group(2) if greps and "v" not in (greps[0].group(1) or "") else ""
+    for cand in [c for rx in registers + [success] if rx for c in _regex_examples(rx)]:
+        variants = [cand[::-1].replace("x", value[::-1], 1)[::-1], cand.replace("x", value, 1)] if value else []
+        for variant in variants + [cand]:
+            if fits(variant) and (not value or value.lower() in variant.lower()):
+                return [variant]
+    return lines
 
 
 def guarded_responses(commands: list[dict], entries: dict, ciq_json_files: list[str]) -> dict:
@@ -133,9 +202,7 @@ def guarded_responses(commands: list[dict], entries: dict, ciq_json_files: list[
             except (ValueError, re.error):
                 continue
             if holds:
-                inner = m.group(2)
-                entry = (_find_entry(entries, inner, inner)[1] or {}) if inner else {}
-                lines = list(entry.get("lines") or []) if isinstance(entry, dict) else []
+                lines = _inner_response(m.group(2), entries, c)
             else:
                 lines = [SKIPPED]
             out["regex:" + command_key_regex(resolved)] = {"lines": lines}

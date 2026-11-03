@@ -62,6 +62,14 @@ def format_validation_errors(errors: list[str], limit: int = 24000) -> str:
     return "\n".join(lines)[:limit]
 
 
+def _flat(yaml_text: str) -> str:
+    """The workflow as the LLM writes it (structure.py loops/added steps removed)."""
+    from . import structure
+    from .autofix import dump_yaml, parse_yaml
+    parsed = parse_yaml(yaml_text)
+    return dump_yaml(structure.flattened(parsed)) if parsed else yaml_text
+
+
 @dataclass
 class SkillInput:
     """Input for network configuration generation."""
@@ -284,7 +292,7 @@ class NetworkConfigGenSkill:
         # The LLM must return the COMPLETE workflow, so it must see all of it
         # (workflows are often > 10 KB; a cut-off input produced a cut-off output)
         user_prompt = prompts.WORKFLOW_REGENERATE.format(
-            current_yaml=self._last_yaml[:60000],
+            current_yaml=_flat(self._last_yaml)[:60000],
             test_failures=test_failures_text,
             reviewer_analysis=feedback.reviewer_analysis[:3000],
             nodes_summary=ctx["nodes"],
@@ -315,12 +323,17 @@ class NetworkConfigGenSkill:
         )
 
     def _ciq_fixes(self, yaml_text: str) -> str:
-        """Autofix steps that need the CIQ: the MOP's example directory → the CIQ path column."""
+        """Autofix steps that need the CIQ (the MOP's example directory → the CIQ path column),
+        then the pipeline's structure: every CIQ record, backups on the repo server, transfer
+        checksums (structure.py)."""
+        from . import structure
         from .autofix import dump_yaml, parse_yaml, use_path_columns
         parsed = parse_yaml(yaml_text)
-        if parsed and use_path_columns(parsed, (self._expected or {}).get("record_columns")):
-            return dump_yaml(parsed)
-        return yaml_text
+        if not parsed:
+            return yaml_text
+        changed = use_path_columns(parsed, (self._expected or {}).get("record_columns"))
+        changed += structure.apply(parsed, self._requirements)
+        return dump_yaml(parsed) if changed else yaml_text
 
     def _repair_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
         """Deterministic repairs against recorded real output (no LLM): widen line joins

@@ -123,7 +123,8 @@ lib/                               # JARs + MockWire
 ```
 ${configSequences.0.records.0.data.<Column>}  — CIQ value (first record of the node group; spaces OK)
 ${<NODE>.niamID-<n>}                          — NIAM ID of a CIQ node, e.g. ${RDS.niamID-1}
-${node} ${nodeGroup} ${crGroup} ${email}      — current node group / CR group
+${nodeGroup} ${crGroup} ${email}              — current node group / CR group (${node}: never — it
+                                              empties the MOP of a node group with several nodes)
 ${NODE_TYPE} ${SUB_ACTIVITY_NAME}             — provided by the JAR at runtime
 ${varName}                                    — registered (?<varName>…) output or --var value
 ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environment
@@ -152,6 +153,10 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   `ls -l <file> 2>&1 || true` (autofix adds it)
 - Files move with step `sftp: {operation: upload|download, local_path, remote_path}` on the node, never `put`/`get` in a
   shell (autofix rewrites); a node's file must be downloaded before a LOCAL step reads it (validator)
+- Step 6 `structure.py` (after the LLM, idempotent; validator + regenerate see the flat form): record steps run in a
+  `type: loop` over `${configSequences.0.records}` (`${rec.data.<Col>}`, `reverse_order: false` — null NPEs); a
+  backup phase's `tar -c` archive goes node → LOCAL → `REPO` (`execution.repo_server`, step 1 `orch_repo_server`) and
+  back on rollback; every sftp transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps: `id: nc_*`
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
   upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 

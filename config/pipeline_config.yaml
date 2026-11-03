@@ -35,6 +35,16 @@ execution:
   # dummy values when executing against the simulator.
   runtime_params:
     ORDERNO: "TEST_ORDERNO"
+  # Backups are taken on this server (step 6 adds it as node REPO to every workflow with a
+  # backup phase: node archive -> LOCAL -> REPO, each hop checked with sha256sum).
+  # The password is the workflow secret ${SECRET.<password_secret>}.
+  repo_server:
+    node: "REPO"
+    host: "repo-server"
+    port: "22"
+    user: "backup"
+    password_secret: "repo_password"
+    backup_dir: "/backup/netconfig"
 
 storage:
   database_path: "./data/pipeline.db"

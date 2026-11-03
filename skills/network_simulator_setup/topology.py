@@ -180,7 +180,21 @@ def _is_builtin_key(key: str) -> bool:
     # (an LLM mapped 'echo <IMSI>' to a fixed number, run c43f64ef)
     first = k.split(" ", 1)[0].rstrip("\\")
     return (_is_su(k) or k in ("exit", "logout", "quit") or k.startswith(("stty", "ctrl+p"))
-            or "__cmd_done__" in k or first in ("echo", "true", "false", ":"))
+            or "__cmd_done__" in k or first in ("echo", "true", "false", ":") or file_builtin(k))
+
+
+# Answered from the sandbox VFS: a checksum must be the one of the bytes that were really
+# transferred, and a backup archive must exist to be downloaded (MockWire a025dec)
+_FILE_BUILTINS = ("sha256sum", "md5sum", "mkdir")
+_TAR_CREATE = re.compile(r"^tar\s+-?[a-z]*c[a-z]*f?[a-z]*\s", re.I)
+
+
+def file_builtin(cmd: str) -> bool:
+    """A command (or response key) MockWire's file builtins answer."""
+    k = cmd.strip()
+    if k.lower().startswith("regex:"):
+        k = k[len("regex:"):].lstrip("^").replace("\\ ", " ").replace("\\-", "-")
+    return k.split(" ", 1)[0].rstrip("\\") in _FILE_BUILTINS or bool(_TAR_CREATE.match(k))
 
 
 # ---------------------------------------------------------------------------

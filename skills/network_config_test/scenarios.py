@@ -81,19 +81,28 @@ def phase_kind(name: str, body: dict | None = None) -> str:
 
 
 def workflow_steps(workflow: dict) -> list[WorkflowStep]:
-    """Top-level steps in execution order with their effective failure policy."""
+    """Steps in execution order with their effective failure policy; the steps of a loop
+    (``type: loop``, e.g. one pass per CIQ record) stand for each of its passes."""
     defaults = (workflow.get("defaults") or (workflow.get("globals") or {}).get("defaults") or {})
     default_policy = _policy(defaults.get("on_failure")) or "stop"
     steps: list[WorkflowStep] = []
     phases = workflow.get("phases") or {}
     items = phases.items() if isinstance(phases, dict) else enumerate(phases)
+
+    def leaves(raw_steps):
+        for raw in raw_steps or []:
+            if not isinstance(raw, dict):
+                continue
+            if isinstance(raw.get("steps"), list):
+                yield from leaves(raw["steps"])
+            else:
+                yield raw
+
     for name, body in items:
         body = body if isinstance(body, dict) else {"steps": body}
         phase_policy = _policy(body.get("on_failure")) or default_policy
         kind = phase_kind(str(name), body)
-        for raw in body.get("steps") or []:
-            if not isinstance(raw, dict):
-                continue
+        for raw in leaves(body.get("steps")):
             send = str(raw.get("send") or raw.get("cmd") or raw.get("command") or "").strip()
             steps.append(WorkflowStep(
                 index=len(steps), phase=str(name), phase_kind=kind,

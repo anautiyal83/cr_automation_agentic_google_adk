@@ -76,8 +76,10 @@ CRITICAL RULES:
 - Placeholders (only these resolve):
     ${configSequences.0.records.0.data.<Column>}  CIQ value of the node group's record
     ${<NODE>.niamID-<n>}                          NIAM ID of a CIQ node (e.g. ${RDS.niamID-1})
-    ${node} ${nodeGroup} ${crGroup} ${email} ${NODE_TYPE} ${SUB_ACTIVITY_NAME}
+    ${nodeGroup} ${crGroup} ${email} ${NODE_TYPE} ${SUB_ACTIVITY_NAME}
     ${varName}                                    registered output or `--var` value
+  Never use ${node}: it empties the whole MOP of a node group with several nodes. For a
+  per-node name, register the node's `hostname` and use that variable.
     ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
 - A CIQ column that can be empty for some rows: guard the step with
   when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
@@ -122,6 +124,13 @@ CRITICAL RULES:
     validation: {success: {criteria: {regex: 'Average:', expr: 'cpuIdle >= 90'}}}
   Named groups of the validation regex itself are not visible to expr.
 - sftp steps print nothing: give them no output regex (the transfer status decides).
+- The pipeline adds these itself — do NOT write them:
+    - a loop over all CIQ records: write each per-record step ONCE with
+      ${configSequences.0.records.0.data.<Column>}; it is run for every record of the node group
+    - sha256sum checks of every sftp transfer (both ends compared)
+    - moving the backup to the repo server: in the backup phase just create ONE archive on the
+      node, `tar -czvf /tmp/<name>.tar.gz <dir>/` (fixed name, no $(date …)); a rollback that
+      restores it extracts that same archive (tar -xzvf /tmp/<name>.tar.gz -C /)
 - `ls -l <file>` prints one line ending with the file name (no "total" line): match the
   file name. To wait for a file that appears later, give that check retries and
   retry_delay_sec (e.g. retries: 30, retry_delay_sec: 10 for "wait up to 5 minutes").

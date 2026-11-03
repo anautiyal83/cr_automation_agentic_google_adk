@@ -206,6 +206,10 @@ class RequirementGatheringSkill:
                               (self._doc_extracted or {}).get("mop_commands") or [], self._ciq_sheets,
                               read_ciq_rows(getattr(inp, "ciq_file_path", "") or "", self._ciq_sheets))
                           if q["id"] not in self._all_answers]
+        # A backup is stored on the repo server: which one (it becomes a node of the workflow)
+        ciq_questions += [q for q in questionnaire.repo_server_question(
+                              (self._doc_extracted or {}).get("mop_commands") or [])
+                          if q["id"] not in self._all_answers]
         self._store_question_texts(ciq_questions)
         # Only the CIQ questions are asked on the paths below: their answers need no new round
         self._ciq_only_round = bool(ciq_questions)
@@ -414,6 +418,11 @@ class RequirementGatheringSkill:
             self._raw_artifacts,
             self._doc_extracted.get("ssh_prompts", []),
         )
+
+        if self._all_answers.get("orch_repo_server"):
+            repo = questionnaire.parse_repo_server(self._all_answers["orch_repo_server"])
+            if repo.get("host"):
+                requirements["repo_server"] = repo
 
         # Inject schema summaries into generation_hints for Steps 3 & 4
         requirements = compiler.inject_schema_hints(

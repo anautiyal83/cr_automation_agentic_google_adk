@@ -29,6 +29,9 @@ MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 # Parameters the production framework passes to every execution (`--var NAME=value`);
 # the value is the dummy step 9 uses against the simulator
 DEFAULT_RUNTIME_PARAMS = {"ORDERNO": "TEST_ORDERNO"}
+# Server that keeps the backups a workflow takes (a node of every workflow with a backup phase)
+DEFAULT_REPO_SERVER = {"node": "REPO", "host": "repo-server", "port": "22", "user": "backup",
+                       "password_secret": "repo_password", "backup_dir": "/backup/netconfig"}
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +82,7 @@ class PipelineConfiguration(BaseModel):
     simulator_ttl_minutes: int = 60
     simulator_startup_timeout: int = 30
     runtime_params: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_PARAMS))
+    repo_server: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_REPO_SERVER))
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
     execution_report_jar: str = "./lib/execution-report-generator-1.0.2-cli.jar"
@@ -124,6 +128,22 @@ def runtime_params() -> dict[str, str]:
     cm = ConfigManager._live_instance
     config = getattr(cm, "_config", None) if cm else None
     return dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+
+
+def repo_server() -> dict[str, str]:
+    """Backup repo server (execution.repo_server) over the defaults."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    if config is None:
+        try:
+            import yaml
+            raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+            configured = (raw.get("execution") or {}).get("repo_server") or {}
+        except Exception:  # noqa: BLE001 — defaults are enough for tests / CLI
+            configured = {}
+    else:
+        configured = config.repo_server
+    return {**DEFAULT_REPO_SERVER, **{str(k): str(v) for k, v in dict(configured).items() if v not in (None, "")}}
 
 
 class ConfigManager:
@@ -196,6 +216,9 @@ class ConfigManager:
         execution = raw.get("execution", {})
         if execution.get("runtime_params"):
             flat["runtime_params"] = {str(k): str(v) for k, v in dict(execution["runtime_params"]).items()}
+        if execution.get("repo_server"):
+            flat["repo_server"] = {**DEFAULT_REPO_SERVER,
+                                   **{str(k): str(v) for k, v in dict(execution["repo_server"]).items()}}
 
         ext = raw.get("external_modules", {})
         if "ciq_processor_jar" in ext:

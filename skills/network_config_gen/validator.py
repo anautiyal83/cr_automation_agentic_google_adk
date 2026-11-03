@@ -26,6 +26,10 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     parsed = parse_yaml(yaml_text)
     if parsed is None:
         return [f"Invalid YAML syntax{_yaml_error(yaml_text)}"]
+    # Checks run on what the LLM wrote: record loops unwrapped, steps added by the pipeline
+    # (repo backups, transfer checksums — structure.py) left out
+    from .structure import flatten
+    flatten(parsed)
 
     # Must have nodes (or nodeGroups for backwards compat)
     nodes = parsed.get("nodes", parsed.get("nodeGroups", {}))
@@ -880,6 +884,10 @@ _JAR_BUILTINS = {"node", "nodeGroup", "crGroup", "email", "NODE_TYPE", "SUB_ACTI
 _DOTTED_ROOTS = {"configSequences", "ENV", "SECRET", "vars"}
 _DEAD_SYNTAX = [
     (re.compile(r"\$\{\{"), "uses '${{…}}' — write '${…}'"),
+    # cli-automation generate drops every command of a node group with several nodes
+    # when a step uses ${node} (MRF CR1: MRF1+MRF2 → empty MOP, 2026-11-03)
+    (re.compile(r"\$\{node\}"), "empties the MOP of a node group with several nodes — register the "
+                                "node's `hostname` and use that variable"),
     (re.compile(r"\$\{configData\."), "uses 'configData…' — CIQ values are "
                                        "'${configSequences.0.records.0.data.<Column>}'"),
     (re.compile(r"\$\{rec_row\."), "uses 'rec_row…' — CIQ values are "
