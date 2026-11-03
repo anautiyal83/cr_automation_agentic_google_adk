@@ -32,5 +32,5 @@ def test_guarded_command_answered_per_target(tmp_path):
     jf.write_text(json.dumps(doc), encoding="utf-8")
     cmd = "if [[ '${MRF.VER}' == '13.'* ]]; then cp /tmp/${configSequences.0.records.0.data.F} /d/; else echo SKIPPED_BY_CONDITION; fi"
     out = guarded_responses([{"cmd": cmd}], {"regex:cp \S+ \S+": {"lines": []}}, [str(jf)])
-    by_ver = {("13.0.3.7" in k): v["lines"] for k, v in out.items()}
+    by_ver = {(r"13\.0\.3\.7" in k): v["lines"] for k, v in out.items()}   # keys are regex-escaped
     assert by_ver == {True: [], False: ["SKIPPED_BY_CONDITION"]}
