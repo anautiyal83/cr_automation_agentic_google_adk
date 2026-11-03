@@ -283,6 +283,14 @@ class ProgressSection:
         self.artifacts_box.clear()
         with self.artifacts_box:
             files = _step_files(self._run_dir, self._uc_name, self._selected_step)
+            labels: dict = {}
+            if self._selected_step == 10:
+                # The run's deliverables, in order, after the final report itself
+                from skills.report_generation.deliverables import collect_deliverables
+                items = collect_deliverables(self._run_dir, self._uc_name)
+                labels = {f: ("Final Report" + (" (Excel)" if f.suffix == ".xlsx" else "")) for f in files}
+                labels.update({d.path: d.label for d in items})
+                files = files + [d.path for d in items]
             if not files:
                 _empty_state("description", "No artifacts yet",
                              "Files this step writes to the run folder appear here.")
@@ -291,8 +299,13 @@ class ProgressSection:
                 with ui.row().classes("cr-file-row items-center no-wrap"):
                     ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
                     with ui.column().classes("gap-0 flex-1 min-w-0"):
-                        ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
-                        ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
+                        if f in labels:
+                            ui.label(labels[f]).classes("cr-file-name")
+                            ui.label(f"{Path(f).relative_to(self._run_dir).as_posix()} · {_size(f.stat().st_size)}") \
+                                .classes("text-caption cr-text-dim")
+                        else:
+                            ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
+                            ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
                     ui.button("View", icon="visibility", on_click=lambda _, p=f: _open_view(p)) \
                         .props("flat dense color=primary size=sm no-caps")
                     ui.button("Download", icon="download", on_click=lambda _, p=f: ui.download(str(p))) \

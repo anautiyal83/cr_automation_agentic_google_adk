@@ -201,6 +201,7 @@ _STEP_AGENTS = {
     "6h": [("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
     "8": [("agents.network_simulator_setup_agent", "NetworkSimulatorSetupAgent")],
     "9": [("agents.network_config_qa_agent", "NetworkConfigQAAgent")],
+    "10": [("agents.report_agent", "ReportAgent")],
 }
 
 

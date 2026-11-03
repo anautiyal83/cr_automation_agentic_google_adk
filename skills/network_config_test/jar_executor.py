@@ -439,7 +439,7 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
 
 async def generate_execution_report(
     report_jar: str,
-    json_dir: str | Path,
+    json_file: str | Path,
     out_dir: str | Path,
     name: str,
     plan: dict,
@@ -449,15 +449,16 @@ async def generate_execution_report(
     timeout: int = 120,
 ) -> dict:
     """HTML report of one ``execute`` run with the execution-report-generator JAR (Settings →
-    External Modules). ``json_dir`` holds the run's EXECUTION_REPORT JSON. The JAR always writes
-    ``<name>_summary.html``; ``<name>_detail.html`` only when a node failed.
+    External Modules) from the run's EXECUTION_REPORT JSON: ``<name>_summary.html`` (MOP Summary
+    Report) and ``<name>_detail.html`` (MOP Execution Report, every command). With ``--json-dir``
+    the JAR writes the detail report only for failed nodes; with ``--json-file`` always.
     Returns ``{"files": [paths], "error": str}``."""
     if not report_jar or not Path(report_jar).exists():
         return {"files": [], "error": f"execution report JAR not found: {report_jar or '(not configured)'}"}
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     cmd = [
         _java_cmd(java_home), "-jar", _abs(report_jar),
-        "--json-dir", _abs(json_dir),
+        "--json-file", _abs(json_file),
         "--node-type", plan.get("node_type") or "N/A",
         "--activity", plan.get("activity") or "N/A",
         "--cr-group", cr_group or "N/A",

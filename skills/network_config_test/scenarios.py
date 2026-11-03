@@ -443,9 +443,12 @@ class ScenarioSuite:
         return result
 
     async def _html_report(self, sc: Scenario, out_dir: Path, result: ScenarioResult) -> None:
-        """exec_report/<uc>_<case>_<node>_summary.html (+ _detail.html when the run failed)."""
+        """exec_report/<uc>_<case>_<node>_summary.html + _detail.html (every command)."""
+        json_file = next(iter(sorted(Path(out_dir).glob("*.json"))), None)
+        if not json_file:
+            return
         name = f"{self.uc_name}_{sc.id}_{sc.node_group}"
-        rep = await generate_execution_report(self.report_jar, out_dir, self.report_dir, name, self.plan,
+        rep = await generate_execution_report(self.report_jar, json_file, self.report_dir, name, self.plan,
                                               cr_group=sc.cr_group, request_id=self.run_dir.name[:8],
                                               java_home=self.java_home)
         result.html_reports = rep["files"]
