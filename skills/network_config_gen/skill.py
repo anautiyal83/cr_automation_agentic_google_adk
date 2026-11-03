@@ -95,6 +95,29 @@ def _rank(errors: list[str]) -> float:
     return len(errors) + 1000 * sum(any(k in e for k in _INCOMPLETE) for e in errors)
 
 
+def format_real_outputs(samples: list[dict], per_sample: int = 1200, total: int = 16000) -> str:
+    """Recorded command outputs for the FIRST generation prompt (DEP-38): the LLM wrote
+    regexes from the wording of the developer answers ("Updates Rejected: 0", "Apache
+    status: running") and only saw the real layout in the correction rounds, which did not
+    always fix them. One entry per distinct command, trimmed."""
+    parts, used, seen = [], 0, set()
+    for sample in samples or []:
+        if not isinstance(sample, dict):
+            continue
+        cmd = str(sample.get("command") or "").strip()
+        out = str(sample.get("output") or "").replace("\r\n", "\n").strip()
+        if not cmd or not out or cmd in seen:
+            continue
+        seen.add(cmd)
+        text = out if len(out) <= per_sample else out[:per_sample] + "\n[…]"
+        block = f"$ {cmd}\n{text}\n"
+        if used + len(block) > total:
+            break
+        parts.append(block)
+        used += len(block)
+    return "\n".join(parts) or "None recorded"
+
+
 def _expected_coverage(requirements: dict) -> dict:
     """What the workflow must cover, from the requirements: phases and commands per node
     (LOCAL and NIAM helper entries are not nodes the workflow must log in to)."""
@@ -161,6 +184,7 @@ class NetworkConfigGenSkill:
             ciq_summary=ctx["ciq"],
             mop_text=ctx["mop"],
             ssh_summary=ctx["ssh"],
+            real_outputs=format_real_outputs(self._samples),
             xml_summary=ctx["xml"],
             developer_answers=ctx["answers"],
             developer_notes=ctx["notes"],

@@ -149,7 +149,10 @@ class PipelineAgent(BaseAgent):
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
                 cache = ArtifactCache()
-                if agent.name in CACHEABLE_AGENTS:
+                # A step an earlier agent of the same display step failed is not "passed" from
+                # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
+                step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
+                if agent.name in CACHEABLE_AGENTS and not step_failed:
                     has = cache.has_cache(uc_name, agent.name,
                                           inputs_fingerprint(ctx.session.state.get("document_set")))
                     flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
@@ -205,6 +208,11 @@ class PipelineAgent(BaseAgent):
             if cache_hit:
                 index += 1
                 continue
+            try:
+                from storage.artifact_cache import ArtifactCache
+                ArtifactCache().invalidate_after(uc_name, agent.name)
+            except Exception as e:
+                logger.debug("Cache invalidation failed for %s: %s", agent.name, e)
 
             # ----- PUBLISH step_started -----
             if display_steps:

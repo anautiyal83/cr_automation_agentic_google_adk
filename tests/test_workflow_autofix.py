@@ -226,3 +226,50 @@ def test_whole_ciq_record_placeholder_is_rejected():
     wf = {"nodes": {"LOCAL": {"type": "local"}}, "phases": {"a": {"steps": [
         {"node": "LOCAL", "send": "python r.py --ciq '${configSequences.0.records.0.data}'"}]}}}
     assert any("object Object" in e for e in check_placeholders(wf))
+
+
+def test_single_file_listing_regex_never_expects_total():
+    import re
+    from skills.network_config_gen.autofix import fix_single_file_listings
+    step = {"node": "PGW", "send": "ls -l /srv/out/${ORDERNO}.xml.res 2>&1 || true",
+            "validation": {"description": "Response file exists and is not empty",
+                           "success": {"criteria": {"regex": r"total\s+\d+\s+.*\s+.+?.xml.res"}}}}
+    wf = {"phases": {"a": {"steps": [step]}}}
+    assert fix_single_file_listings(wf) == 1
+    regex = step["validation"]["success"]["criteria"]["regex"]
+    line = "-rw-r--r-- 1 oamsys oamsys     1647 Nov 03 09:17 /srv/out/TEST_ORDERNO.xml.res"
+    assert re.search(regex, line, re.M) and not re.search(regex, line.replace(" 1647 ", " 0 "), re.M)
+    assert fix_single_file_listings(wf) == 0
+
+
+def test_helper_script_called_on_a_node_runs_on_local_with_a_download():
+    import yaml
+    from skills.network_config_gen.autofix import fix_workflow
+    wf = yaml.safe_load(fix_workflow(
+        "nodes: {PGW: {type: remote, plugin: ssh}}\nphases:\n  a:\n    steps:\n"
+        "    - {node: PGW, send: 'ls -l /out/${ORDERNO}.xml.res'}\n"
+        "    - {node: PGW, send: \"python parse_response.py --response_file '/out/${ORDERNO}.xml.res'\"}\n"
+        "    - {node: PGW, send: 'python /opt/tool/check.py'}\n"))
+    steps = wf["phases"]["a"]["steps"]
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
+    assert steps[2]["node"] == "LOCAL" and steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+    assert steps[3]["node"] == "PGW"  # the node's own tool stays
+
+
+def test_rows_without_a_column_use_the_looked_up_value():
+    from skills.network_config_gen.autofix import unify_alternative_columns
+    imsi, msisdn = "configSequences.0.records.0.data.Test IMSI", "configSequences.0.records.0.data.Test MSISDN"
+    steps = [
+        {"node": "RDS", "send": "ldapsearch imsi=${" + imsi + "}", "when": f"{imsi} != ''",
+         "register": [{"regex": "(?<pre>dn: .+)"}]},
+        {"node": "RDS", "send": "ldapsearch msisdn=${" + msisdn + "} | grep provisionedIMSI",
+         "when": f"{imsi} == '' && {msisdn} != ''", "register": [{"regex": r"provisionedIMSI: (?<resolvedImsi>\d+)"}]},
+        {"node": "RDS", "send": "ldapsearch post imsi=${" + imsi + "}", "when": f"{imsi} != ''"},
+    ]
+    wf = {"nodes": {"RDS": {}, "LOCAL": {}}, "phases": {"a": {"steps": steps}}}
+    assert unify_alternative_columns(wf) == 2
+    sends = [s["send"] for s in wf["phases"]["a"]["steps"]]
+    assert sends[0] == "echo ${" + imsi + "}" and "msisdn=" in sends[1]           # lookup moved first
+    assert sends[2] == "ldapsearch imsi=${resolvedImsi}" and "when" not in wf["phases"]["a"]["steps"][2]
+    assert sends[3] == "ldapsearch post imsi=${resolvedImsi}"
+    assert unify_alternative_columns(wf) == 0

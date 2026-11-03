@@ -423,3 +423,58 @@ def test_step6_sees_answers_with_their_questions():
     text = skill._build_prompt_context()["answers"]
     assert "Q: Each CIQ row gives either IMSI or MSISDN?\n  A: resolve IMSI via MSISDN" in text
     assert "na_q1: oamsys" in text
+
+
+def test_first_prompt_shows_recorded_outputs_once_per_command():
+    from skills.network_config_gen.skill import format_real_outputs
+    text = format_real_outputs([{"command": "ndsLoadStats", "output": "Updates Rejected\r\n  0  0"},
+                                {"command": "ndsLoadStats", "output": "again"},
+                                {"command": "uptime", "output": ""}])
+    assert text == "$ ndsLoadStats\nUpdates Rejected\n  0  0\n"
+    assert format_real_outputs([]) == "None recorded"
+
+
+def test_cache_keeps_script_contents_and_invalidates_after_a_rerun(tmp_path):
+    from storage.artifact_cache import ArtifactCache
+    script = tmp_path / "run" / "scripts" / "create_xml.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('xml')")
+    cache = ArtifactCache(str(tmp_path / "cache"))
+    cache.save_cache("UC", "helper_script_gen", {"helper_scripts": {"create_xml.py": str(script)}})
+    assert cache.load_cache("UC", "helper_script_gen")["helper_scripts"]["create_xml.py"] == "print('xml')"
+    assert cache.has_cache("UC", "helper_script_gen")
+    cache.invalidate_after("UC", "network_config_gen")  # step 6 runs again, even if it then fails
+    assert not cache.has_cache("UC", "helper_script_gen")
+
+
+def test_smoke_run_rejects_a_script_that_refuses_the_workflow_flags():
+    from skills.helper_script_gen.skill import smoke_run
+    code = ("import argparse\np = argparse.ArgumentParser()\np.add_argument('--imsi', required=True)\n"
+            "p.add_argument('--out')\np.parse_args()\nprint('ok')\n")
+    problems = smoke_run("mk.py", code, ["python mk.py --out 'x.xml'"], {})
+    assert problems and "--imsi" in problems[0]
+    assert smoke_run("mk.py", code.replace(", required=True", ""), ["python mk.py --out 'x.xml'"], {}) == []
+
+
+
+def test_smoke_run_feeds_the_sample_response_to_parsers():
+    from skills.helper_script_gen.skill import smoke_run
+    sample = '<spml:batchResponse result="success" xmlns:spml="urn:x"><response result="success"/></spml:batchResponse>'
+    wrong = ("import argparse, xml.etree.ElementTree as ET\np = argparse.ArgumentParser()\n"
+             "p.add_argument('--response_file')\na = p.parse_args()\nroot = ET.parse(a.response_file).getroot()\n"
+             "if not root.findall('spml:response', {'spml': 'urn:x'}):\n    print('FAILURE'); raise SystemExit(1)\n"
+             "print('SUCCESS')\n")
+    cmd = ["python parse.py --response_file '${ORDERNO}.xml.res'"]
+    assert smoke_run("parse.py", wrong, cmd, {"ORDERNO": "T"}, response_sample=sample)
+    right = wrong.replace("root.findall('spml:response', {'spml': 'urn:x'})", "root.findall('response')")
+    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["SUCCESS"]) == []
+    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["ALL OK"])
+
+
+def test_nested_quotes_in_script_arguments_are_rejected():
+    from skills.network_config_gen.validator import check_script_arguments
+
+    def wf(send):
+        return {"phases": {"a": {"steps": [{"node": "LOCAL", "send": send}]}}}
+    assert check_script_arguments(wf("python r.py --ciq '{'Mandatory Cap': '${x}'}' --out 'r.html'"))
+    assert check_script_arguments(wf("python r.py --cap '${configSequences.0.records.0.data.Mandatory Cap}' --flag")) == []

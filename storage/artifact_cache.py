@@ -187,6 +187,11 @@ class ArtifactCache:
                     shutil.rmtree(path, ignore_errors=True)  # no scripts left from an older version
                     path.mkdir(parents=True, exist_ok=True)
                     for fname, text in content.items():
+                        # helper_scripts artifacts are {name: path in the run dir}: cache the
+                        # script, not the path (a cached "script" was its own path; OB-14)
+                        source = Path(str(text)) if len(str(text)) < 1024 else None
+                        if source is not None and source.is_file():
+                            text = source.read_text(encoding="utf-8")
                         (path / fname).write_text(str(text), encoding="utf-8")
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,6 +243,20 @@ class ArtifactCache:
         else:
             shutil.rmtree(uc_dir, ignore_errors=True)
             logger.info("Cleared all cache for %s", uc_name)
+
+    def invalidate_after(self, uc_name: str, agent_name: str) -> None:
+        """The agent is running again (not from cache): what was cached after it was built
+        from its previous output — even when this run of it fails and saves nothing (OB-14)."""
+        if agent_name not in _AGENT_ORDER:
+            return
+        meta = self._read_meta(uc_name)
+        status = meta.get("agent_status", {})
+        later = [a for a in _AGENT_ORDER[_AGENT_ORDER.index(agent_name) + 1:] if a in status]
+        if later:
+            for a in later:
+                status.pop(a, None)
+            self._write_meta(uc_name, meta)
+            logger.info("Invalidated cache of %s: %s runs again", later, agent_name)
 
     def clear_from_step(self, uc_name: str, from_agent: str) -> None:
         """Clear cache for an agent and all downstream agents. Agents after the cached ones

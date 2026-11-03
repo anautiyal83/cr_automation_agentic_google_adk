@@ -85,6 +85,7 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_expr_vars(parsed))
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
+    errors.extend(check_script_arguments(parsed))
     errors.extend(check_completeness(parsed, expected))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
@@ -174,6 +175,35 @@ def check_empty_registers(parsed: dict) -> list[str]:
                         f"{len(users)} step(s) use ${{{var}}} (e.g. '{users[0]}') — they would run with an "
                         f"empty value. Obtain {var} for those CIQ rows from real data (another CIQ column or "
                         "a lookup command whose output registers it), or skip the steps with `when`.")
+    return problems
+
+
+def check_script_arguments(parsed: dict) -> list[str]:
+    """A LOCAL ``python <script>.py --flag value …`` call must reach the script as flag/value
+    pairs. ``--ciq_data '{'Mandatory Cap': '…'}'`` nests quotes: the shell splits the value
+    into ``{Mandatory``, ``Cap:``, … and the script got ``{Mandatory`` (DEP-42)."""
+    import shlex
+    problems = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        if str(step.get("node", "")).upper() != "LOCAL" or not re.match(r"\s*python3?\s+\S+\.py\b", send):
+            continue
+        try:
+            argv = shlex.split(_PLACEHOLDER.sub("X", send), posix=True)
+        except ValueError as e:
+            problems.append(f"LOCAL step '{send[:80]}' ({phase_name}): unbalanced quotes ({e}).")
+            continue
+        stray, prev = [], ""
+        for token in argv[2:]:
+            if not token.startswith("-") and not prev.startswith("-"):
+                stray.append(token)
+            prev = token
+        if stray:
+            flag = next((t for t in reversed(argv[:argv.index(stray[0])]) if t.startswith("-")), "an argument")
+            problems.append(
+                f"LOCAL step '{send[:80]}' ({phase_name}): the shell splits the value of {flag} into several "
+                f"words ({', '.join(repr(t) for t in stray[:3])} …) — quotes are nested inside quotes. Pass one "
+                "value per flag, each in single quotes without quotes inside (e.g. one flag per CIQ column).")
     return problems
 
 
@@ -586,7 +616,9 @@ def repair_capture_columns(parsed: dict, command_samples: list[dict]) -> int:
     return changed
 
 
-_WS_JOIN = re.compile(r"\\s[*+]")
+# Joins that may have to span lines: \s* / \s+ and an unescaped .* / .+ (with or without ?),
+# which never crosses a line break ('apache … running.*instance1… running'; DEP-43)
+_WS_JOIN = re.compile(r"\\s[*+]|(?<!\\)\.[*+]\??")
 
 
 def _relax_joins(regex: str, outputs: list[str]) -> str:

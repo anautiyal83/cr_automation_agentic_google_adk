@@ -115,12 +115,20 @@ def _test_values(requirements: dict) -> dict[str, str]:
     return values
 
 
+# A script argument that names a response file the node produced (--response_file X.xml.res)
+_RESPONSE_ARG = re.compile(r"response|\.res\b", re.IGNORECASE)
+
+
 def smoke_run(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
-              timeout: int = 20) -> list[str]:
+              timeout: int = 20, response_sample: str = "", output_regexes: list[str] | None = None
+              ) -> list[str]:
     """Run the script as the workflow does (placeholders → test values) in a temp folder.
 
     A traceback from a programming error is a problem (S9-06: NameError in create_xml.py);
-    failures for missing inputs (a response file only a real run produces) are not.
+    failures for missing inputs are not — except a response file the workflow passes the
+    script: it gets the UC's sample response, and then the script must succeed and print what
+    the step's regexes read (``output_regexes``). parse_response.py looked for a namespaced
+    ``spml:response`` the sample does not have and failed on every node (G-11).
     """
     import subprocess
     import sys
@@ -139,16 +147,41 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 continue
             argv[0] = sys.executable
             argv[1] = str(Path(tmp, Path(argv[1]).name))
+            fed = ""
+            if response_sample:
+                for flag, value in zip(argv[2:], argv[3:]):
+                    if flag.startswith("--") and _RESPONSE_ARG.search(f"{flag} {value}") and "/" not in value:
+                        Path(tmp, value).write_text(response_sample, encoding="utf-8")
+                        fed = f"{flag} {value}"
             try:
                 proc = subprocess.run(argv, cwd=tmp, capture_output=True, text=True, timeout=timeout)
             except subprocess.TimeoutExpired:
                 problems.append(f"`{resolved}` did not finish within {timeout}s")
                 continue
+            if fed and "Traceback (most recent call last)" not in (proc.stderr or ""):
+                out = (proc.stdout or "") + (proc.stderr or "")
+                if proc.returncode != 0:
+                    problems.append(f"`{resolved}` with the UC's sample response as {fed} (a successful "
+                                    f"response) exited {proc.returncode}: {out.strip()[-300:]} — parse that "
+                                    "document as it is (element names and namespaces exactly as in the sample)")
+                for rx in output_regexes or []:
+                    try:
+                        if not re.search(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), out, re.M):
+                            problems.append(f"`{resolved}` with the UC's sample response printed "
+                                            f"{out.strip()[-200:]!r}, which the workflow regex /{rx}/ does not match")
+                    except re.error:
+                        continue
             err = proc.stderr or ""
             last = next((l.strip() for l in reversed(err.strip().splitlines()) if l.strip()), "")
             exc = last.split(":", 1)[0].strip()
             if "Traceback (most recent call last)" in err and not _ENVIRONMENT_ERRORS.match(exc):
                 problems.append(f"running `{resolved}` crashed:\n" + "\n".join(err.strip().splitlines()[-6:]))
+            elif proc.returncode == 2 and re.search(r"\berror: (the following arguments are required|"
+                                                    r"unrecognized arguments|argument )", err):
+                # argparse rejected the workflow's own command line: the script must accept
+                # exactly these flags (a required --imsi the workflow never passes; G-10)
+                problems.append(f"the workflow runs `{resolved}`, which the script rejects: {last} — "
+                                "accept exactly the flags of that command line (make others optional)")
     return problems
 
 
@@ -212,6 +245,32 @@ def _workflow_steps(workflow_yaml: str) -> list[tuple[str, str]]:
     for body in bodies:
         walk(body.get("steps") if isinstance(body, dict) else body)
     return commands
+
+
+def _workflow_registers(workflow_yaml: str) -> list[tuple[str, list[str]]]:
+    """(command, register regexes) of every workflow step that registers values."""
+    from io import StringIO
+    from ruamel.yaml import YAML
+    try:
+        workflow = YAML(typ="safe").load(StringIO(workflow_yaml)) or {}
+    except Exception:
+        return []
+    phases = workflow.get("phases") if isinstance(workflow, dict) else None
+    out: list[tuple[str, list[str]]] = []
+
+    def walk(steps):
+        for step in steps or []:
+            if isinstance(step, dict):
+                cmd = step.get("send")
+                regs = [str(r.get("regex")) for r in step.get("register") or []
+                        if isinstance(r, dict) and r.get("regex")]
+                if isinstance(cmd, str) and regs:
+                    out.append((cmd.strip(), regs))
+                walk(step.get("steps"))
+
+    for body in (phases.values() if isinstance(phases, dict) else (phases or [])):
+        walk(body.get("steps") if isinstance(body, dict) else body)
+    return out
 
 
 @dataclass
@@ -293,7 +352,9 @@ class HelperScriptGenSkill:
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
                     problems = (check_script_contract(code, flags) or check_output_contract(code, regexes)
-                                or smoke_run(script_name, code, cmd_lines, test_values))
+                                or smoke_run(script_name, code, cmd_lines, test_values,
+                                             response_sample=response_xmls[0] if response_xmls else "",
+                                             output_regexes=regexes))
                     if not problems:
                         break
                     logger.warning("%s attempt %d/%d violates the CLI contract: %s",
@@ -380,15 +441,20 @@ class HelperScriptGenSkill:
 
     @staticmethod
     def _script_output_regexes(workflow_yaml: str) -> dict[str, list[str]]:
-        """{script: [success regexes]} of the workflow steps that run each script."""
+        """{script: [regexes its output must match]} of the workflow steps that run each script:
+        the success regex and the ``register`` regexes — a step that reads the script's output
+        through registered values and an ``expr`` got a script printing something else (G-9)."""
         result: dict[str, list[str]] = {}
+        registers = dict(_workflow_registers(workflow_yaml))
         for command, regex in _workflow_steps(workflow_yaml):
             m = _PY_SCRIPT.match(command)
-            if m and regex:
-                name = m.group(1).replace("\\", "/").rsplit("/", 1)[-1]
-                if regex not in result.setdefault(name, []):
-                    result[name].append(regex)
-        return result
+            if not m:
+                continue
+            name = m.group(1).replace("\\", "/").rsplit("/", 1)[-1]
+            for rx in ([regex] if regex else []) + registers.get(command, []):
+                if rx not in result.setdefault(name, []):
+                    result[name].append(rx)
+        return {k: v for k, v in result.items() if v}
 
     @staticmethod
     def _build_ciq_summary(ciq_sheets: dict) -> str:

@@ -146,6 +146,11 @@ Orchestration:
 === SSH SESSION LOGS (prompts and credentials) ===
 {ssh_summary}
 
+=== REAL COMMAND OUTPUTS (recorded on the nodes — every validation/register regex for these
+commands MUST match this output; developer answers describe WHAT to check, this shows HOW
+the output looks) ===
+{real_outputs}
+
 === XML SAMPLES ===
 {xml_summary}
 

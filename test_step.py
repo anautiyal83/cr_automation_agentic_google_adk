@@ -197,6 +197,8 @@ async def test_skill(skill_name: str, run_id: str):
 _STEP_AGENTS = {
     "6": [("agents.network_config_gen_agent", "NetworkConfigGenAgent"),
           ("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
+    # helper scripts only, for the (re-fixed) workflow of the copied run
+    "6h": [("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
     "8": [("agents.network_simulator_setup_agent", "NetworkSimulatorSetupAgent")],
     "9": [("agents.network_config_qa_agent", "NetworkConfigQAAgent")],
 }
@@ -259,7 +261,7 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
     work = Path("data/step_tests") / f"{run_id[:8]}_{time.strftime('%Y%m%d_%H%M%S')}"
     shutil.copytree(src, work, ignore=shutil.ignore_patterns(
         "simulator", "exec_output", *(f"step_{s}_error.json" for s in steps),
-        *(["scripts"] if "6" in steps else []),
+        *(["scripts"] if "6" in steps or "6h" in steps else []),
         *(["*_test-cases.json", "*_network-qa-report.html"] if "9" in steps else [])))
 
     def read(name: str) -> str:

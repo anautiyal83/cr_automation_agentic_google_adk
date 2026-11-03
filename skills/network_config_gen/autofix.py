@@ -245,6 +245,8 @@ def fix_workflow(yaml_text: str) -> str:
     fix_expression_placeholders(parsed)
     fix_missing_downloads(parsed)
     drop_session_exits(parsed)
+    fix_single_file_listings(parsed)
+    unify_alternative_columns(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -469,6 +471,13 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     for key in ("when", "skip_when"):
         if isinstance(step.get(key), str):
             step[key] = fix_condition_operators(step[key])
+    # Helper scripts (called by bare name) are generated for and live on the automation host;
+    # a node's own tools have a path. `python parse_response.py` on PGW got an invented
+    # answer from the simulator and no node has the script (DEP-40)
+    if (isinstance(step.get("send"), str) and str(step.get("node", "")).upper() not in ("", "LOCAL")
+            and _HELPER_CALL.match(step["send"])):
+        logger.info("Moved helper script call %r from %s to LOCAL", step["send"][:60], step.get("node"))
+        step["node"] = "LOCAL"
     if str(step.get("node", "")).upper() == "LOCAL" and isinstance(step.get("send"), str):
         step["send"] = single_quote_arguments(step["send"])
 
@@ -483,6 +492,7 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     return step
 
 
+_HELPER_CALL = re.compile(r"^\s*python3?\s+[\w.-]+\.py(?:\s|$)")
 _DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
@@ -882,6 +892,127 @@ def remote_file_reads(parsed: dict) -> list[dict]:
     for phase, body in items:
         walk(phase, body.get("steps") if isinstance(body, dict) else body)
     return hits
+
+
+_COND_TERM = re.compile(r"^\s*configSequences\.\d+\.records\.\d+\.data\.(.+?)\s*(==|!=)\s*''\s*$")
+
+
+def _guard_terms(when: str) -> list[tuple[str, str]]:
+    """[(column, '==' | '!=')] of a guard made only of ``<col> ==/!= ''`` terms joined by &&."""
+    terms = []
+    for part in str(when or "").split("&&"):
+        m = _COND_TERM.match(part)
+        if not m:
+            return []
+        terms.append((m.group(1).strip(), m.group(2)))
+    return terms
+
+
+def unify_alternative_columns(parsed: dict) -> int:
+    """One value for every CIQ row when rows give column A or an alternative (DEP-41).
+
+    The LLM looked the IMSI up via the MSISDN into ``resolvedImsi`` for rows without a Test
+    IMSI, but kept every IMSI step on ``${…data.Test IMSI}`` guarded by ``Test IMSI != ''``:
+    rows like EAST never ran them. When a step registers exactly one variable V only for
+    rows where A is empty, steps guarded by ``A != ''`` that use ``${…data.A}`` use ``${V}``
+    unguarded, V is registered from A for rows that give A, and the lookup runs first.
+    """
+    nodes = parsed.get("nodes") or {}
+    local = next((n for n in nodes if str(n).upper() == "LOCAL"), None)
+    changed = 0
+    for body in (parsed.get("phases") or {}).values():
+        steps = body.get("steps") if isinstance(body, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for lookup in [s for s in steps if isinstance(s, dict)]:
+            terms = _guard_terms(lookup.get("when"))
+            empty = [c for c, op in terms if op == "=="]
+            names = [n for r in lookup.get("register") or [] if isinstance(r, dict)
+                     for n in re.findall(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>", str(r.get("regex") or ""))]
+            # A lookup derives V from an alternative column B the row gives (guard B != '',
+            # command uses ${…data.B}); steps of the workflow's own branch use ${V} instead
+            given = [c for c, op in terms if op == "!=" and re.search(
+                r"\$\{configSequences\.\d+\.records\.\d+\.data\." + re.escape(c) + r"\s*\}",
+                str(lookup.get("send") or ""))]
+            if len(empty) != 1 or len(set(names)) != 1 or not given:
+                continue
+            column, var = empty[0], names[0]
+            ref = re.compile(r"\$\{configSequences\.(\d+)\.records\.(\d+)\.data\." + re.escape(column) + r"\s*\}")
+            # (a step that registers V from A itself — the one inserted below — is not a user)
+            users = [s for s in steps if isinstance(s, dict) and s is not lookup
+                     and ref.search(str(s.get("send") or "")) and (column, "!=") in _guard_terms(s.get("when"))
+                     and f"<{var}>" not in str(s.get("register") or "")]
+            # The workflow already has its own branch for the rows without A (steps guarded
+            # A == '' that use ${V}): leave it as written
+            own_branch = any(s is not lookup and isinstance(s, dict) and (column, "==") in _guard_terms(s.get("when"))
+                             and "${" + var + "}" in str(s.get("send") or "") for s in steps)
+            if not users or own_branch:
+                continue
+            for s in users:
+                s["send"] = ref.sub("${" + var + "}", str(s["send"]))
+                rest = [t for t in _guard_terms(s["when"]) if t != (column, "!=")]
+                if rest:
+                    s["when"] = " && ".join(f"configSequences.0.records.0.data.{c} {op} ''" for c, op in rest)
+                else:
+                    s.pop("when", None)
+            first = min(steps.index(s) for s in users)
+            if steps.index(lookup) > first:
+                steps.remove(lookup)
+                steps.insert(first, lookup)
+            path = f"configSequences.0.records.0.data.{column}"
+            steps.insert(steps.index(lookup), {
+                "node": local or lookup.get("node"),
+                "send": "echo ${" + path + "}",
+                "command_description": f"Use {column} as {var} when the CIQ row gives it",
+                "when": f"{path} != ''",
+                "register": [{"regex": f"(?<{var}>\\S+)"}],
+                "validation": {"description": f"{column} is given",
+                               "success": {"message": f"{var} set from {column}"},
+                               "failure": {"message": f"{column} missing"}},
+            })
+            changed += len(users)
+            logger.info("Rows without %s get %s from a lookup: %d steps now use ${%s}", column, var, len(users), var)
+    return changed
+
+
+_LS_ONE_FILE = re.compile(r"^\s*ls\s+-\w*l\w*\s+['\"]?(/\S*?/([^/\s'\"]*\.[^/\s'\"]+))['\"]?(?:\s+2>&1)?(?:\s*\|\|\s*true)?\s*$")
+
+
+def fix_single_file_listings(parsed: dict) -> int:
+    """``ls -l <one file>`` prints just the file's line, never ``total N``; the LLM kept
+    writing ``total\\s+\\d+…`` even after the validator's feedback, and the poll failed on
+    every node (DEP-39). Such a regex becomes the file's long-listing line (non-empty when
+    the step talks about an empty file)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        m = _LS_ONE_FILE.match(str(step.get("send") or ""))
+        if not m:
+            continue
+        name = re.sub(r"\\\$\\\{[^}]*\\\}", ".+?", re.escape(m.group(2)))
+        about = json_text(step.get("validation")).lower()
+        size = r"[1-9]\d*" if "empty" in about else r"\d+"
+        for criteria in _criteria_blocks(step):
+            regex = str(criteria.get("regex") or "")
+            if re.search(r"(?<![A-Za-z])total\b", regex):
+                criteria["regex"] = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
+                changed += 1
+    return changed
+
+
+def json_text(value) -> str:
+    import json
+    return json.dumps(value, default=str) if value is not None else ""
+
+
+def _walk_all_steps(phases):
+    bodies = phases.items() if isinstance(phases, dict) else enumerate(phases or [])
+    for name, body in bodies:
+        stack = list((body.get("steps") if isinstance(body, dict) else body) or [])
+        while stack:
+            step = stack.pop(0)
+            if isinstance(step, dict):
+                yield name, step
+                stack[0:0] = list(step.get("steps") or [])
 
 
 _SU = re.compile(r"^\s*(?:sudo\s+)?su\b|^\s*sudo\s+-[is]\b")
