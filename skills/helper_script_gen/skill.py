@@ -115,6 +115,22 @@ def _test_values(requirements: dict) -> dict[str, str]:
     return values
 
 
+def _xml_tags_hint(document: str) -> str:
+    """The tags as xml.etree.ElementTree reports them for the sample (namespaced root,
+    unqualified children…): the LLM kept searching `spml:response` for an unqualified
+    `<response>` through three repair rounds when only told to match the sample (G-11)."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(document.strip().encode("utf-8"))
+    except ET.ParseError:
+        return ""
+    children = list(dict.fromkeys(c.tag for c in root))[:8]
+    grand = list(dict.fromkeys(g.tag for c in root for g in c))[:8]
+    return (f". ElementTree sees the sample as: root tag {root.tag!r} with attributes "
+            f"{sorted(root.attrib)[:6]}; child tags {children}; grandchild tags {grand} — use exactly "
+            "these tags (an unqualified tag has no namespace: root.findall('response'), not 'spml:response')")
+
+
 # A script argument that names a response file the node produced (--response_file X.xml.res)
 _RESPONSE_ARG = re.compile(r"response|\.res\b", re.IGNORECASE)
 
@@ -163,7 +179,8 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 if proc.returncode != 0:
                     problems.append(f"`{resolved}` with the UC's sample response as {fed} (a successful "
                                     f"response) exited {proc.returncode}: {out.strip()[-300:]} — parse that "
-                                    "document as it is (element names and namespaces exactly as in the sample)")
+                                    "document as it is (element names and namespaces exactly as in the sample)"
+                                    + _xml_tags_hint(response_sample))
                 for rx in output_regexes or []:
                     try:
                         if not re.search(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), out, re.M):
@@ -181,7 +198,8 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 # argparse rejected the workflow's own command line: the script must accept
                 # exactly these flags (a required --imsi the workflow never passes; G-10)
                 problems.append(f"the workflow runs `{resolved}`, which the script rejects: {last} — "
-                                "accept exactly the flags of that command line (make others optional)")
+                                "accept exactly the flags of that command line (make others optional, but never default "
+                                "request data to values copied from the samples)")
     return problems
 
 

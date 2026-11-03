@@ -91,6 +91,8 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
         errors.extend(check_against_samples(parsed, command_samples))
     if ciq_sheets:
         errors.extend(check_ciq_coverage(parsed, ciq_sheets))
+        errors.extend(check_alternative_columns(parsed, ciq_sheets))
+        errors.extend(check_request_inputs(parsed, ciq_sheets, (expected or {}).get("request_columns") or {}))
         errors.extend(check_row_variables(parsed, ciq_sheets))
     return errors
 
@@ -178,6 +180,75 @@ def check_empty_registers(parsed: dict) -> list[str]:
     return problems
 
 
+def check_alternative_columns(parsed: dict, ciq_sheets: dict) -> list[str]:
+    """CIQ rows give either column A or B (step 1's either-or pairs: Test IMSI / Test
+    MSISDN). A workflow that uses A but never B makes rows that give only B skip every A
+    step: EAST "passed" without any LDAP query and built its XML without an IMSI (DEP-46)."""
+    from skills.requirement_gathering.questionnaire import ciq_alternative_columns
+    sends = " ".join(str(s.get("send") or "") for _, s in _iter_steps(parsed.get("phases") or {}))
+
+    def uses(col: str) -> bool:
+        return re.search(r"\$\{configSequences\.\d+\.records\.\d+\.data\." + re.escape(col) + r"\s*\}", sends) is not None
+
+    problems = []
+    for p in ciq_alternative_columns(ciq_sheets or {}):
+        for used, unused, rows in ((p["a"], p["b"], p["rows_b"]), (p["b"], p["a"], p["rows_a"])):
+            if uses(used) and not uses(unused):
+                problems.append(
+                    f"CIQ rows give either '{p['a']}' or '{p['b']}', but the workflow never uses '{unused}': rows "
+                    f"like {', '.join(rows[:2])} (only '{unused}') skip every step that needs '{used}'. Derive "
+                    f"'{used}' from '{unused}' for those rows into a registered variable (as the developer "
+                    f"answers describe) and use that variable for all rows.")
+    return problems
+
+
+def check_request_inputs(parsed: dict, ciq_sheets: dict, request_columns: dict[str, str]) -> list[str]:
+    """The LOCAL script that builds the request file uploaded to a node must be given every CIQ
+    value the sample request carries (``request_columns``: column → sample value), directly,
+    via its either-or alternative, or via a variable registered from one of them. create_xml.py
+    got no IMSI and defaulted to the sample's IMSI — EAST's request targeted NORTH's subscriber,
+    which the simulator cannot notice (DEP-47)."""
+    if not request_columns:
+        return []
+    steps = [s for _, s in _iter_steps(parsed.get("phases") or {})]
+    uploads = {str(s["sftp"].get("local_path") or "").rsplit("/", 1)[-1] for s in steps
+               if isinstance(s.get("sftp"), dict) and s["sftp"].get("operation") == "upload"}
+    def arg_files(send: str) -> set[str]:
+        return {t.strip("'\"").rsplit("/", 1)[-1] for t in str(send).split()}
+
+    # the script writing the uploaded file: one of its arguments IS that file name
+    builders = [s for s in steps if str(s.get("node", "")).upper() == "LOCAL"
+                and re.match(r"\s*python3?\s+\S+\.py\b", str(s.get("send") or ""))
+                and arg_files(s.get("send")) & {u for u in uploads if u}]
+    if not builders:
+        return []
+    from skills.requirement_gathering.questionnaire import ciq_alternative_columns
+    alternatives: dict[str, set[str]] = {}
+    for p in ciq_alternative_columns(ciq_sheets or {}):
+        alternatives.setdefault(p["a"], set()).add(p["b"])
+        alternatives.setdefault(p["b"], set()).add(p["a"])
+
+    def ref(col: str) -> str:
+        return r"\$\{configSequences\.\d+\.records\.\d+\.data\." + re.escape(col) + r"\s*\}"
+
+    problems = []
+    for col, value in request_columns.items():
+        cols = {col} | alternatives.get(col, set())
+        derived = {n for s in steps if any(re.search(ref(c), str(s.get("send") or "")) for c in cols)
+                   for r in s.get("register") or [] if isinstance(r, dict)
+                   for n in _NAMED_GROUP.findall(str(r.get("regex") or ""))}
+        for b in builders:
+            send = str(b.get("send"))
+            if any(re.search(ref(c), send) for c in cols) or any("${" + n + "}" in send for n in derived):
+                continue
+            via = f" (rows without it: ${{{sorted(derived)[0]}}})" if derived else ""
+            problems.append(
+                f"LOCAL step '{send[:70]}' builds the request uploaded to the node, but is not given "
+                f"'{col}' — the sample request carries it ({value}). Pass it to the script{via}; a script "
+                "must never fall back to a sample value.")
+    return problems
+
+
 def check_script_arguments(parsed: dict) -> list[str]:
     """A LOCAL ``python <script>.py --flag value …`` call must reach the script as flag/value
     pairs. ``--ciq_data '{'Mandatory Cap': '…'}'`` nests quotes: the shell splits the value
@@ -187,6 +258,11 @@ def check_script_arguments(parsed: dict) -> list[str]:
     for phase_name, step in _iter_steps(parsed.get("phases") or {}):
         send = str(step.get("send") or "")
         if str(step.get("node", "")).upper() != "LOCAL" or not re.match(r"\s*python3?\s+\S+\.py\b", send):
+            continue
+        if '"' in send:
+            problems.append(f"LOCAL step '{send[:80]}' ({phase_name}): contains a double quote — the framework "
+                            "breaks LOCAL commands at double quotes (even inside single quotes); use single "
+                            "quotes only and no quotes inside values.")
             continue
         try:
             argv = shlex.split(_PLACEHOLDER.sub("X", send), posix=True)

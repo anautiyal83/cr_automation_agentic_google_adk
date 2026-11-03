@@ -12,6 +12,7 @@ Stateful: retains context between calls.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -30,7 +31,8 @@ SELF_CORRECTION_ROUNDS = 2  # regenerate with validator errors as feedback
 EXTRA_ROUND_IF_IMPROVING = 1  # one more round while the error count still drops
 
 # Validator error kinds, so a correction round sees what to work on (most specific first)
-_INCOMPLETE = ("workflow has no", "no workflow step runs on", "looks cut short")
+_INCOMPLETE = ("workflow has no", "no workflow step runs on", "looks cut short",
+               "skip every step that needs", "builds the request uploaded to the node")
 _ERROR_KINDS = [
     ("Incomplete workflow — parts of the MOP are missing", _INCOMPLETE),
     ("Regexes / expr vs the REAL output of the command", ("real output",)),
@@ -127,7 +129,24 @@ def _expected_coverage(requirements: dict) -> dict:
         node = str(c.get("node") or "") if isinstance(c, dict) else ""
         if node and node.upper() != "LOCAL" and not node.lower().startswith("niam"):
             node_commands[node] = node_commands.get(node, 0) + 1
-    return {"phases": phases, "node_commands": node_commands}
+    return {"phases": phases, "node_commands": node_commands,
+            "request_columns": _request_columns(requirements)}
+
+
+def _request_columns(requirements: dict) -> dict[str, str]:
+    """CIQ columns whose sample value appears in a sample REQUEST document of the UC (the
+    IMSI in the SPML modify request): the script building the request must be given them."""
+    doc = requirements.get("doc_extracted") or {}
+    requests = [str(x.get("content", "") if isinstance(x, dict) else x) for x in doc.get("xml_files") or []]
+    requests = [t for t in requests if t and not re.search(r"Response\b", t)]
+    found: dict[str, str] = {}
+    for sheet in (doc.get("ciq_sheets") or {}).values():
+        for row in (sheet.get("sample_rows") or []) if isinstance(sheet, dict) else []:
+            for col, value in (row.items() if isinstance(row, dict) else []):
+                text = str(value or "").strip()
+                if len(text) >= 6 and any(ch.isdigit() for ch in text) and any(text in t for t in requests):
+                    found.setdefault(str(col), text)
+    return found
 
 
 class NetworkConfigGenSkill:

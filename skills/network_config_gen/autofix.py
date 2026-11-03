@@ -247,6 +247,7 @@ def fix_workflow(yaml_text: str) -> str:
     drop_session_exits(parsed)
     fix_single_file_listings(parsed)
     unify_alternative_columns(parsed)
+    order_absence_checks(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -479,7 +480,7 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
         logger.info("Moved helper script call %r from %s to LOCAL", step["send"][:60], step.get("node"))
         step["node"] = "LOCAL"
     if str(step.get("node", "")).upper() == "LOCAL" and isinstance(step.get("send"), str):
-        step["send"] = single_quote_arguments(step["send"])
+        step["send"] = single_quote_arguments(split_dict_arguments(step["send"]))
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -494,6 +495,25 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
 
 _HELPER_CALL = re.compile(r"^\s*python3?\s+[\w.-]+\.py(?:\s|$)")
 _DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+_DICT_ARG = re.compile(r"(--[A-Za-z][\w-]*)\s+(['\"]?)\{(.*?)\}\2(?=\s+--|\s*$)", re.DOTALL)
+_DICT_PAIR = re.compile(r"""['"]?([^'":,{}]+?)['"]?\s*:\s*(?:['"]?(\$\{[^}]*\}|[^,'"{}]*?)['"]?)\s*(?:,|$)""")
+
+
+def split_dict_arguments(command: str) -> str:
+    """``--ciq_data '{'Mandatory Cap': '${…}', 'VNI': '${…}'}'`` → ``--ciq_data_mandatory_cap
+    '${…}' --ciq_data_vni '${…}'``: one flag per field. The JAR's LOCAL runner breaks on any
+    double quote and nested single quotes are split by the shell, so a dict/JSON value can
+    never arrive in one argument (probed; DEP-44). Helper scripts are generated afterwards
+    from these flags."""
+    def expand(m: re.Match) -> str:
+        pairs = [(k.strip(), v.strip()) for k, v in _DICT_PAIR.findall(m.group(3)) if k.strip()]
+        if not pairs:
+            return m.group(0)
+        flag = m.group(1)
+        return " ".join(f"{flag}_{re.sub(r'[^a-z0-9]+', '_', k.lower()).strip('_')} '{v}'" for k, v in pairs)
+    return _DICT_ARG.sub(expand, command)
 
 
 def single_quote_arguments(command: str) -> str:
@@ -892,6 +912,38 @@ def remote_file_reads(parsed: dict) -> list[dict]:
     for phase, body in items:
         walk(phase, body.get("steps") if isinstance(body, dict) else body)
     return hits
+
+
+_ABSENT = re.compile(r"no such file", re.IGNORECASE)
+_VARS = re.compile(r"\$\{([^}]+)\}")
+
+
+def order_absence_checks(parsed: dict) -> int:
+    """A "file must not exist yet" check (``ls … || true`` expecting "No such file") on a
+    file named after an upload (``outbox/${ORDERNO}.xml.res`` after ``inbox/${ORDERNO}.xml``)
+    runs before that upload: placed after it, it raced the node that produces the file and
+    failed on every node (DEP-45)."""
+    moved = 0
+    for body in (parsed.get("phases") or {}).values():
+        steps = body.get("steps") if isinstance(body, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for check in [s for s in steps if isinstance(s, dict)]:
+            send = str(check.get("send") or "")
+            if not send.lstrip().startswith("ls") or not any(
+                    _ABSENT.search(str(c.get("regex") or "")) for c in _criteria_blocks(check)):
+                continue
+            check_vars = set(_VARS.findall(send))
+            uploads = [s for s in steps[:steps.index(check)] if isinstance(s, dict)
+                       and isinstance(s.get("sftp"), dict) and s["sftp"].get("operation") == "upload"
+                       and s.get("node") == check.get("node") and check_vars
+                       and check_vars <= set(_VARS.findall(str(s["sftp"].get("remote_path") or "")))]
+            if uploads:
+                steps.remove(check)
+                steps.insert(steps.index(uploads[0]), check)
+                moved += 1
+                logger.info("Moved absence check %r before the upload that produces the file", send[:60])
+    return moved
 
 
 _COND_TERM = re.compile(r"^\s*configSequences\.\d+\.records\.\d+\.data\.(.+?)\s*(==|!=)\s*''\s*$")

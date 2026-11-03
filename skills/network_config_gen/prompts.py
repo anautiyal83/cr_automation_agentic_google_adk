@@ -84,6 +84,8 @@ CRITICAL RULES:
 - LOCAL commands quote arguments with SINGLE quotes (--a '${x}'): the framework splits
   double-quoted arguments at spaces. Pass CIQ columns one by one, never the whole
   record ${configSequences.0.records.0.data} (it arrives as '[object Object]').
+  Never pass a dict/JSON value and never use double quotes in a LOCAL command: one flag per
+  field (--ciq_vni '${configSequences.0.records.0.data.VNI}').
   Join conditions with && and || (never `and` / `or`: the step is then always skipped):
   when: "configSequences.0.records.0.data.<ColA> == '' && configSequences.0.records.0.data.<ColB> != ''"
 - An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an

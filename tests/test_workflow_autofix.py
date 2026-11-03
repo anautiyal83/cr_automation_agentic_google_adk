@@ -273,3 +273,32 @@ def test_rows_without_a_column_use_the_looked_up_value():
     assert sends[2] == "ldapsearch imsi=${resolvedImsi}" and "when" not in wf["phases"]["a"]["steps"][2]
     assert sends[3] == "ldapsearch post imsi=${resolvedImsi}"
     assert unify_alternative_columns(wf) == 0
+
+
+def test_dict_argument_becomes_one_flag_per_field():
+    from skills.network_config_gen.autofix import split_dict_arguments
+    cmd = ("python r.py --ciq_data '{'Mandatory Cap': '${configSequences.0.records.0.data.Mandatory Cap}', "
+           "'Packet Data Network Type': '${configSequences.0.records.0.data.Packet Data Network Type}'}' --out 'r.html'")
+    assert split_dict_arguments(cmd) == (
+        "python r.py --ciq_data_mandatory_cap '${configSequences.0.records.0.data.Mandatory Cap}' "
+        "--ciq_data_packet_data_network_type '${configSequences.0.records.0.data.Packet Data Network Type}' --out 'r.html'")
+    assert split_dict_arguments("python r.py --a 'x' --b 'y'") == "python r.py --a 'x' --b 'y'"
+
+
+def test_double_quotes_in_local_commands_are_rejected():
+    from skills.network_config_gen.validator import check_script_arguments
+    wf = {"phases": {"a": {"steps": [{"node": "LOCAL", "send": "python r.py --a '{\"k\": \"v\"}'"}]}}}
+    assert any("double quote" in e for e in check_script_arguments(wf))
+
+
+def test_absence_check_runs_before_the_upload_that_produces_the_file():
+    from skills.network_config_gen.autofix import order_absence_checks
+    absent = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res 2>&1 || true",
+              "validation": {"success": {"criteria": {"regex": "No such file or directory"}}}}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
+                                      "remote_path": "/in/${ORDERNO}.xml"}}
+    present = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"}
+    wf = {"phases": {"a": {"steps": [upload, absent, present]}}}
+    assert order_absence_checks(wf) == 1
+    assert wf["phases"]["a"]["steps"] == [absent, upload, present]
+    assert order_absence_checks(wf) == 0

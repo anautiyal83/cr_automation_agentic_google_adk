@@ -327,7 +327,8 @@ def test_expected_coverage_skips_local_and_niam_entries():
     req = {"category_3_orchestration": {"phases": ["activity"]},
            "category_2_commands": {"commands": [{"node": "RDS"}, {"node": "LOCAL"}, {"node": "niam_lookup"},
                                                 {"node": "RDS"}]}}
-    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2}}
+    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2},
+                                     "request_columns": {}}
 
 
 def test_cache_is_stale_after_code_or_input_change(tmp_path, monkeypatch):
@@ -478,3 +479,34 @@ def test_nested_quotes_in_script_arguments_are_rejected():
         return {"phases": {"a": {"steps": [{"node": "LOCAL", "send": send}]}}}
     assert check_script_arguments(wf("python r.py --ciq '{'Mandatory Cap': '${x}'}' --out 'r.html'"))
     assert check_script_arguments(wf("python r.py --cap '${configSequences.0.records.0.data.Mandatory Cap}' --flag")) == []
+
+
+def test_workflow_must_use_both_columns_of_an_either_or_pair():
+    from skills.network_config_gen.validator import check_alternative_columns
+    sheets = {"P": {"columns": ["Zone", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"Zone": "EAST", "Test MSISDN": "9810217635"}, {"Zone": "NORTH", "Test IMSI": "404530000000132"}]}}
+    imsi_only = {"phases": {"a": {"steps": [{"node": "RDS", "when": "configSequences.0.records.0.data.Test IMSI != ''",
+                                             "send": "ldapsearch imsi=${configSequences.0.records.0.data.Test IMSI}"}]}}}
+    errors = check_alternative_columns(imsi_only, sheets)
+    assert len(errors) == 1 and "EAST" in errors[0] and "Test MSISDN" in errors[0]
+    imsi_only["phases"]["a"]["steps"].append(
+        {"node": "RDS", "send": "ldapsearch msisdn=${configSequences.0.records.0.data.Test MSISDN}"})
+    assert check_alternative_columns(imsi_only, sheets) == []
+
+
+def test_request_builder_must_get_the_request_identifiers():
+    from skills.network_config_gen.validator import check_request_inputs
+    sheets = {"P": {"columns": ["Zone", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"Zone": "EAST", "Test MSISDN": "9810217635"}, {"Zone": "NORTH", "Test IMSI": "404530000000132"}]}}
+    lookup = {"node": "RDS", "send": "ldapsearch msisdn=${configSequences.0.records.0.data.Test MSISDN}",
+              "register": [{"regex": r"provisionedIMSI: (?<resolvedImsi>\d+)"}]}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml", "remote_path": "/in/${ORDERNO}.xml"}}
+    parse = {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"}
+
+    def wf(build):
+        return {"phases": {"a": {"steps": [lookup, {"node": "LOCAL", "send": build}, upload, parse]}}}
+    columns = {"Test IMSI": "404530000000132"}
+    missing = check_request_inputs(wf("python create_xml.py --vni '6' --output_file '${ORDERNO}.xml'"), sheets, columns)
+    assert len(missing) == 1 and "create_xml.py" in missing[0] and "${resolvedImsi}" in missing[0]
+    given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDERNO}.xml'"
+    assert check_request_inputs(wf(given), sheets, columns) == []
