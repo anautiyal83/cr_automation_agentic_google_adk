@@ -105,7 +105,7 @@ class ProgressSection:
                             .props("outline color=negative size=sm no-caps")
                     self.action_btns.set_visibility(False)
                 with ui.row().classes("items-center gap-3 no-wrap mt-3"):
-                    self.status_icon = ui.icon("hourglass_empty", size="22px") \
+                    self.status_icon = ui.icon("hourglass_empty", size="20px") \
                         .classes("cr-text-dim")
                     with ui.column().classes("gap-0 min-w-0"):
                         self.status_label = ui.label("No active pipeline run").classes("cr-run-title")
@@ -233,7 +233,7 @@ class ProgressSection:
             icon_container = ui.element("div").classes("cr-step-node")
             with icon_container:
                 num = ui.label(f"{step_num:02d}").classes("cr-step-node-num")
-                step_icon = ui.icon("check", size="14px")
+                step_icon = ui.icon("check", size="12px")
                 step_icon.set_visibility(False)
             with ui.column().classes("gap-0 min-w-0 flex-1"):
                 name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-row-name")
