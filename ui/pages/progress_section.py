@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from pathlib import Path
 from uuid import UUID
@@ -78,19 +79,20 @@ class ProgressSection:
         self._step_started: dict[int, float] = {}
         self._run_dir = ""
         self._uc_name = ""
+        self._run_state = "idle"
+        self._run_t0: float | None = None     # monotonic start of the tracked run (live runs)
+        self._run_elapsed = ""                # fixed elapsed text (finished runs)
+        self._run_since = ""                  # local start time of the run: its log lines only
+        self._tick_n = 0
         with ui.column().classes("w-full gap-3"):
-            # Run header: status, actions, progress
-            self.banner = ui.element("div").classes("w-full cr-run-banner")
+            # Run header: state badge + run id, status, actions, KPI strip, step segments
+            self.banner = ui.element("div").classes("w-full cr-run-banner is-idle")
             with self.banner:
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
-                    with ui.row().classes("items-center gap-3 no-wrap"):
-                        self.status_icon = ui.icon("hourglass_empty", size="26px") \
-                            .classes("cr-text-dim")
-                        with ui.column().classes("gap-0"):
-                            self.status_label = ui.label("No active pipeline run") \
-                                .classes("text-subtitle1 font-semibold")
-                            self.status_detail = ui.label("Start a new run from New Run") \
-                                .classes("text-caption cr-text-dim")
+                    with ui.row().classes("items-center gap-2 no-wrap min-w-0"):
+                        self.state_badge = ui.html("").classes("cr-run-state")
+                        self.run_chip = ui.label("").classes("cr-run-chip")
+                        self.uc_chip = ui.label("").classes("cr-run-uc")
                     with ui.row().classes("gap-2 no-wrap") as self.action_btns:
                         self.restart_btn = ui.button("Restart", icon="restart_alt",
                             on_click=self._restart) \
@@ -102,7 +104,25 @@ class ProgressSection:
                             on_click=self._cancel) \
                             .props("outline color=negative size=sm no-caps")
                     self.action_btns.set_visibility(False)
-                # Progress bar
+                with ui.row().classes("items-center gap-3 no-wrap mt-3"):
+                    self.status_icon = ui.icon("hourglass_empty", size="22px") \
+                        .classes("cr-text-dim")
+                    with ui.column().classes("gap-0 min-w-0"):
+                        self.status_label = ui.label("No active pipeline run").classes("cr-run-title")
+                        self.status_detail = ui.label("Start a new run from New Run") \
+                            .classes("cr-run-sub")
+                # One segment per step, coloured by its status
+                with ui.element("div").classes("cr-seg-bar"):
+                    self.segments = {i: ui.element("div").classes("cr-seg").tooltip(
+                        f"{i:02d} {_SHORT_NAMES.get(i, '')}") for i in range(1, TOTAL_STEPS + 1)}
+                with ui.element("div").classes("cr-kpis"):
+                    self.kpi = {}
+                    for key, label in (("elapsed", "Elapsed"), ("progress", "Steps passed"),
+                                       ("current", "Current step"), ("tests", "Test cases")):
+                        with ui.element("div").classes("cr-kpi"):
+                            ui.label(label).classes("cr-kpi-label")
+                            self.kpi[key] = ui.label("—").classes("cr-kpi-value")
+                # Overall progress (kept for the event handlers; the segments above show it)
                 self.progress_bar = ui.linear_progress(value=0, show_value=False) \
                     .props("color=primary rounded size=6px").classes("mt-3")
                 self.progress_bar.set_visibility(False)
@@ -110,15 +130,18 @@ class ProgressSection:
             # Run page: step list (left) + selected step detail (right)
             with ui.element("div").classes("cr-run-layout"):
                 with ui.element("div").classes("cr-run-steps"):
-                    ui.label("Pipeline steps").classes("cr-run-steps-title")
+                    with ui.row().classes("items-center justify-between w-full no-wrap cr-run-steps-head"):
+                        ui.label("Pipeline").classes("cr-run-steps-title")
+                        self.steps_count = ui.label("0/10").classes("cr-run-steps-count")
                     for i in range(1, 11):
                         self._step_widget(i)
 
                 with ui.element("div").classes("cr-run-detail"):
-                    with ui.row().classes("items-center justify-between w-full no-wrap cr-run-detail-head"):
+                    with ui.row().classes("items-start justify-between w-full no-wrap cr-run-detail-head"):
                         with ui.column().classes("gap-0 min-w-0"):
-                            self.sel_title = ui.label("").classes("text-subtitle1 font-semibold")
-                            self.sel_meta = ui.label("").classes("text-caption cr-text-dim")
+                            self.sel_eyebrow = ui.label("").classes("cr-eyebrow")
+                            self.sel_title = ui.label("").classes("cr-detail-title")
+                            self.sel_meta = ui.label("").classes("cr-detail-meta")
                         self.sel_status = ui.html("")
                     with ui.tabs().props("dense no-caps align=left active-color=primary "
                                          "indicator-color=primary").classes("cr-tabs") as self.tabs:
@@ -149,6 +172,8 @@ class ProgressSection:
                 )
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
         self._select_step(1, user=False)
+        self._set_run_state("idle")
+        ui.timer(1.0, self._tick)
 
     def _build_overview_actions(self):
         """Milestone review, error details and completion actions (Overview tab)."""
@@ -205,19 +230,21 @@ class ProgressSection:
     def _step_widget(self, step_num: int):
         with ui.element("div").classes("cr-step-row") as box:
             box.on("click", lambda _, n=step_num: self._select_step(n, user=True))
-            icon_container = ui.element("div").classes("cr-step-circle")
+            icon_container = ui.element("div").classes("cr-step-node")
             with icon_container:
-                step_icon = ui.icon(STEP_ICONS.get(step_num, "circle"), size="13px").classes("cr-text-dim")
+                num = ui.label(f"{step_num:02d}").classes("cr-step-node-num")
+                step_icon = ui.icon("check", size="14px")
+                step_icon.set_visibility(False)
             with ui.column().classes("gap-0 min-w-0 flex-1"):
-                label = ui.label(f"Step {step_num}").classes("cr-step-num")
                 name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-row-name")
-            with ui.column().classes("items-end gap-0"):
-                status_label = ui.label("Pending").classes("cr-step-status")
+                label = ui.label(_STEP_AGENTS.get(step_num, "")).classes("cr-step-agent")
+            with ui.column().classes("items-end gap-0 cr-step-right"):
+                status_label = ui.label("Pending").classes("cr-step-chip")
                 duration = ui.label("").classes("cr-step-duration")
 
         self.step_widgets[step_num] = {
             "col": box, "box": box, "icon_container": icon_container, "step_icon": step_icon,
-            "label": label, "name": name, "status": status_label, "duration": duration,
+            "num": num, "label": label, "name": name, "status": status_label, "duration": duration,
             "raw_status": "pending",
         }
 
@@ -240,14 +267,82 @@ class ProgressSection:
         n = self._selected_step
         w = self.step_widgets.get(n, {})
         raw = w.get("raw_status", "pending")
-        self.sel_title.text = f"Step {n} · {_SHORT_NAMES.get(n, '')}"
-        meta = [f"Duration {w['duration'].text}" if w.get("duration") and w["duration"].text else ""]
-        if self._uc_name:
-            meta.append(self._uc_name)
-        self.sel_meta.text = " · ".join(m for m in meta if m)
+        self.sel_eyebrow.text = f"STEP {n:02d} / {TOTAL_STEPS:02d}"
+        self.sel_title.text = _SHORT_NAMES.get(n, "")
+        meta = [_STEP_AGENTS.get(n, ""),
+                f"⏱ {w['duration'].text}" if w.get("duration") and w["duration"].text else ""]
+        self.sel_meta.text = "  ·  ".join(m for m in meta if m)
         base = raw.split("(")[0].strip()
         self.sel_status.content = (f"<span class='cr-status cr-status-{base.replace('_', '-')}'>"
                                    f"{_humanize(raw)}</span>")
+
+    # ------------------------------------------------------------------
+    # Run header: state badge, KPIs, live ticker
+    # ------------------------------------------------------------------
+
+    _STATE_BADGES = {
+        "running": ("LIVE", "is-running"), "review": ("REVIEW", "is-review"),
+        "completed": ("DONE", "is-completed"), "failed": ("FAILED", "is-failed"),
+        "idle": ("IDLE", "is-idle"), "history": ("RUN", "is-idle"),
+    }
+
+    def _set_run_state(self, state: str) -> None:
+        """running | review | completed | failed | idle | history — badge, header accent, ticker."""
+        self._run_state = state
+        text, cls = self._STATE_BADGES.get(state, ("RUN", "is-idle"))
+        self.state_badge.content = f"<span class='cr-state {cls}'><i></i>{text}</span>"
+        self.banner.classes(replace=f"w-full cr-run-banner {cls}")
+        rid = str(self.active_run_id or "")
+        self.run_chip.text = f"RUN {rid[:8]}" if rid else ""
+        self.uc_chip.text = self._uc_name or ""
+        self._refresh_kpis()
+
+    def _stop_clock(self) -> None:
+        if self._run_t0 is not None:
+            self._run_elapsed = _fmt_clock(time.monotonic() - self._run_t0)
+            self._run_t0 = None
+
+    def _refresh_kpis(self) -> None:
+        if not hasattr(self, "kpi"):
+            return
+        statuses = {n: str(w.get("raw_status", "pending")).split("(")[0].strip()
+                    for n, w in self.step_widgets.items()}
+        passed = sum(1 for s in statuses.values() if s in ("passed", "completed"))
+        self.kpi["progress"].text = f"{passed} / {TOTAL_STEPS}"
+        if hasattr(self, "steps_count"):
+            self.steps_count.text = f"{passed}/{TOTAL_STEPS}"
+        running = next((n for n, s in statuses.items() if s in ("in_progress", "retrying")), None)
+        failed = next((n for n, s in statuses.items() if s == "failed"), None)
+        cur = running or failed
+        self.kpi["current"].text = f"{cur:02d} · {_SHORT_NAMES.get(cur, '')}" if cur else (
+            "—" if self._run_state != "completed" else "All steps done")
+        if self._run_t0 is not None:
+            self.kpi["elapsed"].text = _fmt_clock(time.monotonic() - self._run_t0)
+        else:
+            self.kpi["elapsed"].text = self._run_elapsed or "—"
+        self.kpi["tests"].text = _test_summary(self._run_dir, self._uc_name) or "—"
+        self.uc_chip.text = self._uc_name or ""
+
+    async def _tick(self) -> None:
+        """Once a second while a run is live: elapsed clock, running step's duration, live logs."""
+        if self._run_t0 is not None:
+            self.kpi["elapsed"].text = _fmt_clock(time.monotonic() - self._run_t0)
+        if self._run_state != "running":
+            return
+        self._tick_n += 1
+        for n, t0 in list(self._step_started.items()):
+            w = self.step_widgets.get(n)
+            if w and str(w.get("raw_status", "")).startswith(("in_progress", "retrying")):
+                w["duration"].text = _fmt_duration(time.monotonic() - t0)
+        if self._tick_n % 3 == 0:
+            sel = self.step_widgets.get(self._selected_step, {})
+            if str(sel.get("raw_status", "")).startswith(("in_progress", "retrying")):
+                tab = self.tabs.value
+                if tab == "logs":
+                    self._render_logs()
+                elif tab == "overview":
+                    self._render_activity()
+            self._refresh_kpis()
 
     def _refresh_tab(self):
         tab = self.tabs.value if hasattr(self, "tabs") else "overview"
@@ -270,14 +365,32 @@ class ProgressSection:
                 _empty_state("play_circle_outline", "No run selected",
                              "Start a run from New Run, or re-run one from Run History.")
                 return
-            with ui.element("div").classes("cr-kv"):
-                for k, v in (("Step", f"{n} — {_SHORT_NAMES.get(n, '')}"),
-                             ("Status", _humanize(raw)),
-                             ("Duration", w["duration"].text if w.get("duration") and w["duration"].text else "—"),
+            with ui.element("div").classes("cr-spec"):
+                for k, v in (("Status", _humanize(raw)),
+                             ("Duration", w["duration"].text if w.get("duration") and w["duration"].text
+                              else "running…" if str(raw).startswith(("in_progress", "retrying")) else "—"),
                              ("Agent", _STEP_AGENTS.get(n, "—")),
                              ("Produces", _STEP_OUTPUTS.get(n, "—"))):
-                    ui.label(k).classes("cr-kv-key")
-                    ui.label(v).classes("cr-kv-value")
+                    with ui.element("div").classes("cr-spec-cell"):
+                        ui.label(k).classes("cr-spec-key")
+                        ui.label(v).classes("cr-spec-value")
+            self.activity_box = ui.column().classes("w-full gap-0")
+        self._render_activity()
+
+    def _render_activity(self):
+        """Last log lines of the selected step, as a small live console (Overview tab)."""
+        box = getattr(self, "activity_box", None)
+        if box is None or not self.active_run_id:
+            return
+        box.clear()
+        lines = _step_log_lines(self._selected_step, self._run_since)[-14:]
+        if not lines:
+            return
+        raw = str(self.step_widgets.get(self._selected_step, {}).get("raw_status", ""))
+        live = raw.startswith(("in_progress", "retrying"))
+        with box:
+            ui.html(_console(lines, f"activity · step {self._selected_step:02d}", live, compact=True)) \
+                .classes("w-full mt-3")
 
     def _render_artifacts(self):
         self.artifacts_box.clear()
@@ -300,9 +413,9 @@ class ProgressSection:
                     ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
                     with ui.column().classes("gap-0 flex-1 min-w-0"):
                         if f in labels:
-                            ui.label(labels[f]).classes("cr-file-name")
+                            ui.label(labels[f]).classes("cr-file-label")
                             ui.label(f"{Path(f).relative_to(self._run_dir).as_posix()} · {_size(f.stat().st_size)}") \
-                                .classes("text-caption cr-text-dim")
+                                .classes("cr-file-path")
                         else:
                             ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
                             ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
@@ -347,11 +460,13 @@ class ProgressSection:
     def _render_logs(self):
         self.logs_box.clear()
         with self.logs_box:
-            lines = _step_log_lines(self._selected_step)
+            lines = _step_log_lines(self._selected_step, self._run_since)
             if not lines:
                 _empty_state("subject", "No log lines", "Agent log lines for this step appear here.")
                 return
-            ui.html("<pre class='cr-log'>" + "\n".join(_esc(l) for l in lines[-300:]) + "</pre>")
+            raw = str(self.step_widgets.get(self._selected_step, {}).get("raw_status", ""))
+            ui.html(_console(lines[-300:], f"flow.log · step {self._selected_step:02d}",
+                             raw.startswith(("in_progress", "retrying")))).classes("w-full")
 
     async def _load_run_info(self):
         if not (self.runner and self.active_run_id):
@@ -378,6 +493,7 @@ class ProgressSection:
                           / str(self.active_run_id)),
                       str(Path(__file__).resolve().parents[2] / "data" / "runs" / str(self.active_run_id))]
         self._run_dir = next((c for c in candidates if c and Path(c).is_dir()), self._run_dir)
+        self._refresh_kpis()
         self._refresh_selected_header()
         self._refresh_tab()
 
@@ -452,6 +568,8 @@ class ProgressSection:
             self.active_run_id = run_id
             self.action_btns.set_visibility(True)
             self.progress_bar.set_visibility(True)
+            self._run_t0, self._run_elapsed = await self._clock_start(run_id), ""
+            self._set_run_state("running" if status == "running" else "review")
             await self._load_run_info()
 
             # Restore step visuals from live session state first, then DB
@@ -576,8 +694,23 @@ class ProgressSection:
         except Exception as exc:
             logger.error("_restore_active_run failed: %s", exc, exc_info=True)
 
+    async def _clock_start(self, run_id) -> float:
+        """Monotonic start of a run that was already going when the page loaded (DB started_at)."""
+        try:
+            rows = await self.runner._db.execute("SELECT started_at FROM pipeline_runs WHERE id = ?", (str(run_id),))
+            started = datetime.fromisoformat(str(rows[0]["started_at"]).replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            self._run_since = _local_since(rows[0]["started_at"])
+            return time.monotonic() - max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+        except Exception:
+            return time.monotonic()
+
     async def start_tracking(self, run_id: UUID):
         self.active_run_id = run_id
+        self._run_t0, self._run_elapsed = time.monotonic(), ""
+        self._run_since = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._set_run_state("running")
         self.action_btns.set_visibility(True)
         self.completion_row.set_visibility(False)
         self.milestone_row.set_visibility(False)
@@ -626,6 +759,7 @@ class ProgressSection:
         self.active_run_id = UUID(str(run_id))
         self._run_dir, self._uc_name, self._follow_live = "", "", False
         self._step_started.clear()
+        self._run_t0, self._run_elapsed = None, ""
         self.action_btns.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.completion_row.set_visibility(True)
@@ -633,10 +767,13 @@ class ProgressSection:
         if self.runner and self.runner._db:
             try:
                 rows = await self.runner._db.execute(
-                    "SELECT status, error_summary, current_step FROM pipeline_runs WHERE id = ?", (str(run_id),))
+                    "SELECT status, error_summary, current_step, started_at, completed_at FROM pipeline_runs "
+                    "WHERE id = ?", (str(run_id),))
                 if rows:
                     status = str(rows[0].get("status") or "").replace("PipelineStatus.", "").lower()
                     error = rows[0].get("error_summary") or ""
+                    self._run_elapsed = _elapsed_between(rows[0].get("started_at"), rows[0].get("completed_at"))
+                    self._run_since = _local_since(rows[0].get("started_at"))
                 for sr in await self.runner._db.execute(
                         "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY rowid",
                         (str(run_id),)):
@@ -654,6 +791,7 @@ class ProgressSection:
         self.status_label.text = f"Run {str(run_id)[:8]} — {_humanize(status)}"
         self.status_detail.text = error or f"{done}/{TOTAL_STEPS} steps passed"
         self.banner.style(replace="")
+        self._set_run_state("completed" if ok else "failed" if status == "failed" else "history")
         self.progress_bar.set_visibility(True)
         self.progress_bar.props(remove="indeterminate")
         self.progress_bar.value = done / TOTAL_STEPS
@@ -689,6 +827,7 @@ class ProgressSection:
 
     async def _handle_event(self, event: PipelineEvent):
         if event.event_type == "step_started":
+            self._set_run_state("running")
             self._update_step_visual(event.step_number, "in_progress")
             self.status_icon.name = "sync"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
@@ -709,6 +848,7 @@ class ProgressSection:
                 if sn in self.step_widgets:
                     self._update_step_visual(sn, "pending")
             self._update_step_visual(event.step_number, "retrying")
+            self._set_run_state("running")
             self.status_detail.text = f"Retrying from step {event.step_number} (attempt {n})..."
             self.milestone_row.set_visibility(False)
             self.action_btns.set_visibility(True)
@@ -727,6 +867,7 @@ class ProgressSection:
             # Determine failure type
             has_failures = test_status == "failed"
             is_test_step = event.step_number in (5, 7, 9)
+            self._set_run_state("failed" if has_failures else "review")
 
             if has_failures and is_test_step:
                 # Test step failure — tests ran and failed
@@ -804,6 +945,8 @@ class ProgressSection:
             self.status_icon.name = "check_circle"
             self.status_icon.classes(replace="cr-text-success")
             self.status_label.text = "Pipeline Completed"
+            self._stop_clock()
+            self._set_run_state("completed")
             dur = event.payload.get("duration", 0)
             self.status_detail.text = f"All 10 steps completed in {dur:.0f}s"
             self.banner.style(replace=(
@@ -817,6 +960,8 @@ class ProgressSection:
             self.status_icon.name = "error"
             self.status_icon.classes(replace="cr-text-error")
             self.status_label.text = "Pipeline Failed"
+            self._stop_clock()
+            self._set_run_state("failed")
             self.status_detail.text = event.payload.get("error", "Unknown error")
             self.banner.style(replace=(
                 "background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3)"
@@ -841,14 +986,18 @@ class ProgressSection:
         cfg = STATUS_CONFIG.get(base, STATUS_CONFIG["pending"])
 
         w = self.step_widgets[step_num]
-        active_cls = "cr-step-circle-active" if base == "in_progress" else ""
-        w["icon_container"].classes(replace=f"cr-step-circle {active_cls}")
-        w["icon_container"].style(replace=f"border-color: {cfg['color']}")
-        w["step_icon"].name = cfg["icon"]
-        w["step_icon"].classes(replace=f"text-[{cfg['text']}]")
+        # Node: the step number while pending, the state icon after (spinning while it runs)
+        shows_icon = base in ("in_progress", "passed", "failed", "retrying")
+        w["num"].set_visibility(not shows_icon)
+        w["step_icon"].set_visibility(shows_icon)
+        w["step_icon"].name = {"passed": "check", "failed": "close", "in_progress": "sync",
+                               "retrying": "replay"}.get(base, cfg["icon"])
+        w["step_icon"].classes(replace="cr-spin" if base in ("in_progress", "retrying") else "")
         w["raw_status"] = status
-        w["status"].text = _humanize(status)
-        w["status"].style(replace=f"color: {cfg['text']}")
+        w["status"].text = {"in_progress": "Running", "passed": "Passed", "failed": "Failed",
+                            "retrying": "Retrying", "skipped": "Skipped"}.get(base, _humanize(status))
+        if step_num in getattr(self, "segments", {}):
+            self.segments[step_num].classes(replace=f"cr-seg is-{base.replace('_', '-')}")
 
         # Step timing from the live events (restored runs have no start time)
         if base == "in_progress":
@@ -860,9 +1009,10 @@ class ProgressSection:
             w["duration"].text = ""
 
         # Row state: same size in every state; only colours change (CSS .cr-step-row.is-*)
-        state = base if base in ("in_progress", "passed", "failed", "retrying") else ""
+        state = base if base in ("in_progress", "passed", "failed", "retrying", "skipped") else ""
         selected = " is-selected" if step_num == getattr(self, "_selected_step", 0) else ""
         w["box"].classes(replace=f"cr-step-row {('is-' + state.replace('_', '-')) if state else ''}{selected}")
+        self._refresh_kpis()
 
         # The page follows the running step until the user picks another one
         if base == "in_progress" and getattr(self, "_follow_live", False) and step_num != self._selected_step:
@@ -1425,8 +1575,10 @@ class ProgressSection:
         self.status_label.text = "No active pipeline run"
         self.status_detail.text = "Start a new run from New Run"
         self.banner.style(replace="")
+        self._run_t0, self._run_elapsed = None, ""
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
+        self._set_run_state("idle")
 
     async def _restart(self):
         """Cancel current run and notify user to start new run."""
@@ -1594,7 +1746,8 @@ def _esc(text: str) -> str:
     return _html.escape(text)
 
 
-def _step_log_lines(step: int) -> list[str]:
+def _step_log_lines(step: int, since: str = "") -> list[str]:
+    """flow.log lines of a step; with ``since`` ('YYYY-MM-DD HH:MM:SS', local time) only this run's."""
     from core.logging_config import LOG_DIR
     log = Path(LOG_DIR) / "flow.log"
     if not log.exists():
@@ -1608,9 +1761,73 @@ def _step_log_lines(step: int) -> list[str]:
     except Exception:
         return []
     keys = _STEP_LOG_KEYS.get(step, ())
-    return [l for l in text.splitlines() if any(k.lower() in l.lower() for k in keys)]
+    return [l for l in text.splitlines() if any(k.lower() in l.lower() for k in keys)
+            and (not since or l[:19] >= since)]
 
 
 def _fmt_duration(seconds: float) -> str:
     seconds = int(round(seconds))
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def _fmt_clock(seconds: float) -> str:
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    return f"{h:d}:{rem // 60:02d}:{rem % 60:02d}" if h else f"{rem // 60:02d}:{rem % 60:02d}"
+
+
+def _test_summary(run_dir: str, uc_name: str) -> str:
+    """'2 / 2 passed' from step 9's test-case results, '' before step 9 ran."""
+    import json as _json
+    if not run_dir or not uc_name:
+        return ""
+    path = Path(run_dir) / f"{uc_name}_test-cases.json"
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return f"{data.get('passed', 0)} / {data.get('total', 0)} passed"
+
+
+_LOG_LINE = re.compile(r"^(\S+ \S+) \[(\w+)\s*\] (\S+): (.*)$")
+
+
+def _console(lines: list[str], title: str, live: bool, compact: bool = False) -> str:
+    """Terminal-style log view: time, level (coloured), logger, message."""
+    rows = []
+    for line in lines:
+        m = _LOG_LINE.match(line)
+        if not m:
+            rows.append(f"<div class='ln'><span class='msg'>{_esc(line)}</span></div>")
+            continue
+        ts, level, src, msg = m.groups()
+        rows.append(f"<div class='ln'><span class='ts'>{_esc(ts.split(' ')[-1][:8])}</span>"
+                    f"<span class='lv lv-{_esc(level.lower())}'>{_esc(level[:5])}</span>"
+                    f"<span class='src'>{_esc(src.rsplit('.', 1)[-1])}</span>"
+                    f"<span class='msg'>{_esc(msg)}</span></div>")
+    tag = "<span class='cr-console-live'><i></i>LIVE</span>" if live else ""
+    return (f"<div class='cr-console{' is-compact' if compact else ''}'>"
+            f"<div class='cr-console-bar'><span class='dots'><i></i><i></i><i></i></span>"
+            f"<span class='title'>{_esc(title)}</span>{tag}</div>"
+            f"<div class='cr-console-body'>{''.join(reversed(rows))}</div></div>")
+
+
+def _elapsed_between(started, completed) -> str:
+    """Run duration from the DB timestamps (ISO strings), '' when unknown."""
+    try:
+        a = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(completed).replace("Z", "+00:00"))
+        return _fmt_clock((b - a).total_seconds()) if b >= a else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _local_since(started) -> str:
+    """DB started_at (UTC ISO) → local 'YYYY-MM-DD HH:MM:SS' as flow.log writes it, a few seconds early."""
+    try:
+        t = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (t.astimezone() - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
