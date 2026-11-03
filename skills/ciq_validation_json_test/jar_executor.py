@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,12 @@ async def run_ciq_processor(
         "--format", "JSON",
     ]
     if json_output_path:
-        cmd += ["--json-output-config-file", str(json_output_path)]
+        # The CIQ JSON the json-output template produces is a step 5 artifact (and the data steps
+        # 7-9 read): without --json-output-dir it was never written anywhere visible
+        json_dir = Path(output_dir) / "json_data"
+        shutil.rmtree(json_dir, ignore_errors=True)
+        json_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["--json-output-config-file", str(json_output_path), "--json-output-dir", str(json_dir)]
 
     logger.info("Running ciq-processor: %s", " ".join(cmd[:8]) + " ...")
 

@@ -505,6 +505,10 @@ class PipelineAgent(BaseAgent):
                 for f in scripts_dir.glob("*.py"):
                     extra_paths.append(str(f))
 
+        # For step 5: the CIQ JSON the json-output template produced
+        if step_num == 5:
+            extra_paths += [str(f) for f in sorted((rd / "json_data").glob("*.json"))]
+
         # For step 9: the execution-report-generator HTML of every executed case
         if step_num == 9:
             extra_paths += [str(f) for f in sorted((rd / "exec_report").glob("*.html"))]

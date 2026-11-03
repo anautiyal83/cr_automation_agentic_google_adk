@@ -1682,7 +1682,7 @@ _STEP_OUTPUTS = {
 _STEP_FILE_RULES = {
     1: ("requirements.json",), 2: ("requirements-summary", "requirements.json"),
     3: ("validation-rules",), 4: ("json-output", "json_data/"),
-    5: ("ciq-qa-report", "ciq_validation/", "qa/"), 6: ("{uc}.yaml", "scripts/"),
+    5: ("ciq-qa-report", "json_data/", "ciq_validation/", "qa/"), 6: ("{uc}.yaml", "scripts/"),
     7: ("mop-qa-report", "mop_output/"), 8: ("simulator-report", "simulator-config", "simulator/manifest"),
     9: ("network-qa-report", "test-cases.json", "exec_report/"), 10: ("{uc}_report.",),
 }

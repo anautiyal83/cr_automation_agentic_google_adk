@@ -117,7 +117,12 @@ def generate_qa_report(
   .coverage-cell {{ font-weight: 600; }}
 
   /* Results table */
-  .results-table {{ width: 100%; border-collapse: collapse; font-size: 0.8rem; }}
+  /* Fixed column widths + wrapping: long descriptions and JAR messages pushed the Actual column
+     out of the card (cut off); the wrapper scrolls on narrow screens */
+  .results-wrap {{ width: 100%; overflow-x: auto; }}
+  .results-table {{ width: 100%; min-width: 900px; border-collapse: collapse; font-size: 0.8rem; table-layout: fixed; }}
+  .results-table td {{ overflow-wrap: anywhere; }}
+  .results-table .badge {{ white-space: nowrap; }}
   .results-table th {{ background: #f1f5f9; padding: 10px 12px; text-align: left; font-weight: 600; color: #475569; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }}
   .results-table td {{ padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }}
   .results-table tr:hover {{ background: #fafbfd; }}
@@ -233,7 +238,12 @@ def generate_qa_report(
   <!-- 4. Test Results -->
   <div class="card">
     <h2>4. Test Results</h2>
+    <div class="results-wrap">
     <table class="results-table">
+      <colgroup>
+        <col style="width:7%"><col style="width:6%"><col style="width:9%"><col style="width:10%">
+        <col style="width:20%"><col style="width:13%"><col style="width:14%"><col style="width:21%">
+      </colgroup>
       <tr>
         <th>ID</th>
         <th>Status</th>
@@ -246,6 +256,7 @@ def generate_qa_report(
       </tr>
       {_result_rows(test_results)}
     </table>
+    </div>
   </div>
 
   <!-- 5. Failure Analysis -->

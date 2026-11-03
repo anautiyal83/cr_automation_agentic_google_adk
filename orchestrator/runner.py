@@ -515,6 +515,9 @@ class PipelineRunner:
             if ep.exists() and str(ep) != primary:
                 extra.append(str(ep))
 
+        # Step 5: the CIQ JSON the json-output template produced
+        if step_num == 5:
+            extra += [str(f) for f in sorted((Path(run_dir) / "json_data").glob("*.json"))]
         # Step 9: the execution-report-generator HTML of every executed case
         if step_num == 9:
             extra += [str(f) for f in sorted((Path(run_dir) / "exec_report").glob("*.html"))]
