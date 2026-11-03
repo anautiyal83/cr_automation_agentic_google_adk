@@ -14,10 +14,20 @@ STATUS_CELL_SLOT = r'''
 '''
 
 
+# Sidebar group of each page, shown as the header eyebrow ("RESULTS / RUN HISTORY")
+_PAGE_GROUPS = {
+    "Dashboard": "Workspace", "New Run": "Workspace", "Live Run": "Workspace",
+    "Output Documents": "Results", "Run History": "Results",
+    "LLM Usage": "Admin", "Artifact Cleanup": "Admin", "Settings": "Admin",
+}
+
+
 def page_header(title: str, subtitle: str = "") -> ui.row:
-    """Title + subtitle on the left; returns the right-hand slot for page actions."""
+    """Eyebrow, title + subtitle on the left; returns the right-hand slot for page actions."""
     with ui.row().classes("cr-page-header"):
         with ui.column().classes("gap-0"):
+            group = _PAGE_GROUPS.get(title)
+            ui.label(f"{group} / {title}" if group else title).classes("cr-page-eyebrow")
             ui.label(title).classes("cr-page-title")
             if subtitle:
                 ui.label(subtitle).classes("cr-page-subtitle")
@@ -39,8 +49,8 @@ def stat_card(title: str, value: str, icon: str, color: str) -> ui.label:
         with ui.element("div").classes("cr-stat-icon-wrap").style(f"color: {color}; background: {color}1A"):
             ui.icon(icon, size="18px")
         with ui.column().classes("gap-0 min-w-0"):
-            value_label = ui.label(value).classes("cr-stat-value-text")
             ui.label(title).classes("cr-stat-title-text")
+            value_label = ui.label(value).classes("cr-stat-value-text")
     return value_label
 
 

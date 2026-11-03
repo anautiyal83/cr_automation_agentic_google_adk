@@ -634,6 +634,74 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-summary { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
 /* Settings tabs + sub-tabs share one look */
 .cr-settings-tab { min-height: 30px !important; font-size: 12px !important; padding: 2px 12px !important; }
+/* --- Technical theme for every page (same language as the Live Run page) --- */
+/* Page header: mono eyebrow, compact title */
+.cr-page-header { padding-bottom: 2px; }
+.cr-page-eyebrow { font: 700 10px/1.5 var(--cr-mono); letter-spacing: 0.12em; text-transform: uppercase;
+                   color: var(--cr-primary); }
+.cr-page-title { font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -0.01em; }
+.cr-page-subtitle { font-size: 12px; line-height: 16px; margin-top: 1px; }
+/* Cards: flat, bordered, one radius */
+.cr-section, .cr-content .q-card {
+    box-shadow: none !important; border-radius: 12px !important; border: 1px solid var(--cr-border) !important;
+}
+.cr-section .q-card { border-radius: 10px !important; }
+.cr-card-title {
+    width: 100%; font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--cr-text-dim); padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--cr-border);
+}
+.cr-card-title .q-icon { font-size: 14px !important; }
+/* KPI tiles: mono label over mono value */
+.cr-stat-grid { gap: 8px; }
+.cr-stat-card { height: 62px; padding: 10px 14px; border-radius: 10px; box-shadow: none; }
+.cr-stat-card:hover { box-shadow: none; }
+.cr-stat-icon-wrap { width: 30px; height: 30px; border-radius: 8px; }
+.cr-stat-icon-wrap .q-icon { font-size: 16px !important; }
+.cr-stat-title-text { font: 600 9px/1.5 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase;
+                      color: var(--cr-text-dim); }
+.cr-stat-value-text { font: 600 16px/1.35 var(--cr-mono); }
+/* Tables: mono uppercase headers, quiet rows */
+.cr-content .q-table__container { box-shadow: none !important; }
+.cr-content .q-table thead th {
+    font: 700 9.5px/1.4 var(--cr-mono) !important; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--cr-text-dim) !important; background: var(--cr-surface-light) !important;
+}
+.cr-content .q-table tbody td { font-size: 12px !important; }
+.cr-content .q-table:not(.q-table--dense) tbody td { padding: 8px 12px; height: 40px; }
+.cr-content .q-table:not(.q-table--dense) thead th { padding: 8px 12px; height: 34px; }
+.cr-content .q-table tbody tr:hover td { background: var(--cr-surface-hover); }
+.cr-content .q-table__bottom--nodata { font-size: 12px; color: var(--cr-text-dim); }
+.cr-content .q-table__bottom--nodata .q-icon { font-size: 16px !important; color: var(--cr-text-dim); }
+.cr-content .q-table__bottom { font-size: 11px; }
+/* Status pills: the same chip as the step list */
+.cr-status {
+    font: 700 9px/1 var(--cr-mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 8px;
+    border: 1px solid var(--cr-border);
+}
+.cr-status-completed, .cr-status-passed, .cr-status-success { border-color: rgba(3,152,85,0.3); }
+.cr-status-failed, .cr-status-error { border-color: rgba(217,45,32,0.3); }
+.cr-status-running, .cr-status-in-progress, .cr-status-started { border-color: rgba(11,95,255,0.35); }
+.cr-status-paused, .cr-status-waiting, .cr-status-retrying, .cr-status-awaiting-review { border-color: rgba(220,104,3,0.3); }
+/* Header + sidebar */
+.cr-nav-group { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; padding: 14px 16px 6px; }
+.cr-sidebar-item { font-size: 12px; padding: 7px 14px 7px 13px; }
+.cr-breadcrumb { font-size: 12px; }
+.cr-breadcrumb > div:first-child { font: 600 10px/1 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+/* Buttons, inputs, tabs, expansions */
+.cr-content .q-btn { font-size: 12px; }
+.cr-content .q-field__native, .cr-content .q-field__input, .cr-content .q-select__dropdown-icon { font-size: 12.5px; }
+.cr-content .q-field__label { font-size: 12px; }
+.cr-settings-tab { font-size: 12px !important; border-radius: 8px !important; }
+.cr-content .q-tab__label { font-size: 12px; font-weight: 500; }
+.cr-content .q-expansion-item .q-item__label { font-size: 12px; font-weight: 600; }
+.cr-content .q-expansion-item .q-item { min-height: 38px; }
+/* New Run wizard */
+.cr-wizard .q-stepper__title { font-size: 12px; }
+.cr-wizard .q-stepper__caption { font-size: 10.5px; font-family: var(--cr-mono); }
+/* Empty states */
+.cr-empty .q-icon { opacity: 0.6; }
+/* Log blocks anywhere: the run page console look */
+.cr-log { background: #0B0F17; border: 1px solid #1F2937; color: #D1D5DB; font: 11px/1.6 var(--cr-mono); }
 </style>
 """
 
@@ -714,7 +782,7 @@ async def _ensure_initialized():
 def create_app() -> None:
 
     @ui.page("/")
-    async def main_page():
+    async def main_page(page: str = ""):
         await _ensure_initialized()
 
         ui.add_head_html(CUSTOM_CSS)
@@ -774,7 +842,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
                 ui.label("NetConfig").classes("font-bold").style("font-size: 15px")
                 ui.element("div").style("width:1px;height:20px;background:var(--cr-border);margin:0 4px")
                 with ui.row().classes("cr-breadcrumb items-center gap-1 no-wrap"):
-                    ui.label("Workspace")
+                    breadcrumb_group = ui.label("Workspace")
                     ui.icon("chevron_right", size="16px")
                     breadcrumb = ui.label("Dashboard").classes("font-semibold").style("color: var(--cr-text)")
             with ui.row().classes("items-center gap-2"):
@@ -828,7 +896,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
                 sidebar_items[prev].classes(remove="active")
             if section in sidebar_items:
                 sidebar_items[section].classes(add="active")
-            breadcrumb.text = section_labels.get(section, ("", section))[1]
+            breadcrumb_group.text, breadcrumb.text = section_labels.get(section, ("Workspace", section))
             # Fire refresh hooks for the target section
             for hook in on_navigate_hooks.get(section, []):
                 try:
@@ -1243,6 +1311,11 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
                     vendor_panel.set_visibility(False)
                     with ui.card().classes("cr-section w-full p-4"):
                         vendor_section = VendorSection(db=_db)
+
+            # Deep link: /?page=history opens that section (before the first await, so the page is
+            # sent already showing it)
+            if page in content_panels:
+                navigate(page)
 
             # Load saved settings
             await settings_section.load_saved_settings()
