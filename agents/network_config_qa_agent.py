@@ -85,6 +85,7 @@ class NetworkConfigQAAgent(BaseAgent):
             java_home=config.get("java_home"),
             execution_workflow_path=str(overlay) if overlay and overlay.exists() else "",
             mockwire_jar=config.get("mockwire_jar", "lib/mockwire/mockwire-simulator/mockwire.jar"),
+            execution_report_jar=config.get("execution_report_jar") or SkillInput.execution_report_jar,
             simulator_control=_SimulatorControl(run_id),
         )
 

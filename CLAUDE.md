@@ -188,5 +188,7 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
 - Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
   `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
+- Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (summary; detail only
+  when a node failed); JAR from Settings → External Modules (`execution_report_jar`)
 - Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
 - Running simulators are registered in `shared.state.simulator_processes` and stopped on every exit path

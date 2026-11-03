@@ -1519,7 +1519,7 @@ _STEP_FILE_RULES = {
     3: ("validation-rules",), 4: ("json-output", "json_data/"),
     5: ("ciq-qa-report", "ciq_validation/", "qa/"), 6: ("{uc}.yaml", "scripts/"),
     7: ("mop-qa-report", "mop_output/"), 8: ("simulator-report", "simulator-config", "simulator/manifest"),
-    9: ("network-qa-report", "test-cases.json"), 10: ("{uc}_report.",),
+    9: ("network-qa-report", "test-cases.json", "exec_report/"), 10: ("{uc}_report.",),
 }
 _STEP_LOG_KEYS = {
     1: ("requirements",), 2: ("requirements",), 3: ("ciq_validation_json_gen", "CIQ_GEN"),

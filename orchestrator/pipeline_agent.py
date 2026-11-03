@@ -490,6 +490,10 @@ class PipelineAgent(BaseAgent):
                 for f in scripts_dir.glob("*.py"):
                     extra_paths.append(str(f))
 
+        # For step 9: the execution-report-generator HTML of every executed case
+        if step_num == 9:
+            extra_paths += [str(f) for f in sorted((rd / "exec_report").glob("*.html"))]
+
         # For step 7: also include MOP output HTML from mop_output/ subdir
         if step_num == 7:
             mop_dir = rd / "mop_output"

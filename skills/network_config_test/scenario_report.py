@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
+from pathlib import Path
 
 from .scenarios import ScenarioResult, SuiteResult
 
@@ -89,6 +90,9 @@ def _details(r: ScenarioResult) -> str:
             out.append("<pre class='mono'>" + escape("\n".join(s.fault.lines)) + "</pre>")
     if r.error:
         out.append("<p><b>Error:</b></p><pre class='mono'>" + escape(r.error) + "</pre>")
+    if r.html_reports:
+        out.append("<p><b>Execution report:</b> " + ", ".join(
+            f"<span class='mono'>exec_report/{escape(Path(f).name)}</span>" for f in r.html_reports) + "</p>")
     out.append("<table><tr><th>Check</th><th>Result</th><th>Detail</th></tr>")
     for c in r.checks:
         out.append(f"<tr><td>{escape(c.description)}</td><td><span class='pill {'ok' if c.ok else 'bad'}'>"

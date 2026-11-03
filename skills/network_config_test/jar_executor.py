@@ -437,6 +437,48 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
         return rules_path
 
 
+async def generate_execution_report(
+    report_jar: str,
+    json_dir: str | Path,
+    out_dir: str | Path,
+    name: str,
+    plan: dict,
+    cr_group: str = "",
+    request_id: str = "",
+    java_home: str | None = None,
+    timeout: int = 120,
+) -> dict:
+    """HTML report of one ``execute`` run with the execution-report-generator JAR (Settings →
+    External Modules). ``json_dir`` holds the run's EXECUTION_REPORT JSON. The JAR always writes
+    ``<name>_summary.html``; ``<name>_detail.html`` only when a node failed.
+    Returns ``{"files": [paths], "error": str}``."""
+    if not report_jar or not Path(report_jar).exists():
+        return {"files": [], "error": f"execution report JAR not found: {report_jar or '(not configured)'}"}
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    cmd = [
+        _java_cmd(java_home), "-jar", _abs(report_jar),
+        "--json-dir", _abs(json_dir),
+        "--node-type", plan.get("node_type") or "N/A",
+        "--activity", plan.get("activity") or "N/A",
+        "--cr-group", cr_group or "N/A",
+        "--output-html-path", _abs(out_dir),
+        "--output-html-name", f"{name}_detail.html",
+        "--output-summary-name", f"{name}_summary.html",
+        "--generate-summary", "true",
+    ]
+    if request_id:
+        cmd += ["--request-id", request_id]
+    result = await _run_jar(cmd, java_home, timeout, f"execution report ({name})")
+    out = result.get("stdout", "")
+    files = [str(Path(out_dir) / line.split("=", 1)[1].strip()) for line in out.splitlines()
+             if line.startswith(("SUMMARY_REPORT_FILENAME=", "DETAIL_REPORT_FILENAME="))]
+    files = [f for f in files if Path(f).is_file()]
+    error = "" if result["success"] and files else next(
+        (line.split("=", 1)[1] for line in out.splitlines() if line.startswith("ERROR=")),
+        result.get("stderr", "")[-300:] or "no report written")
+    return {"files": files, "error": error}
+
+
 def _parse_uc_name(uc_name: str) -> tuple[str, str]:
     """Extract node_type and activity from UC name.
 

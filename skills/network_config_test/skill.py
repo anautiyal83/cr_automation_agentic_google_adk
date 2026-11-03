@@ -51,6 +51,8 @@ class SkillInput:
     cli_automation_jar: str = "lib/cli-automation-standalone.jar"
     ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar"
     mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
+    # Settings → External Modules: HTML report per executed case (step 9)
+    execution_report_jar: str = "lib/execution-report-generator-1.0.2-cli.jar"
     html_template_path: str = ""
     java_home: str | None = None
     # Step 8's copy of the workflow pointed at the simulator; execution never uses the
@@ -234,7 +236,7 @@ class NetworkConfigTestSkill:
             plan=plan, cli_jar=cli_jar, mockwire_jar=inp.mockwire_jar, control=inp.simulator_control,
             llm_fn=self._llm_fn, java_home=inp.java_home,
             samples=(inp.requirements.get("doc_extracted") or {}).get("command_samples") or [],
-            include_negatives=inp.include_negatives,
+            include_negatives=inp.include_negatives, report_jar=inp.execution_report_jar,
         ).run()
         duration = time.monotonic() - t0
         # Commands of failing sunny-day cases feed the step 6 / step 8 retry

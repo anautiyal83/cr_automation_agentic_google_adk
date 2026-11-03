@@ -30,7 +30,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .jar_executor import execute_target
+from .jar_executor import execute_target, generate_execution_report
 from .result_parser import CommandResult, classify_failures
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,7 @@ class ScenarioResult:
     out_dir: str = ""
     error: str = ""
     classification: str = ""  # workflow | simulator (when FAIL)
+    html_reports: list[str] = field(default_factory=list)  # execution-report-generator output
 
     def to_dict(self) -> dict:
         s = self.scenario
@@ -216,6 +217,7 @@ class ScenarioResult:
             "status": self.status, "actual": self.actual, "overall_status": self.overall_status,
             "classification": self.classification, "error": self.error,
             "duration_sec": round(self.duration_sec, 1), "out_dir": self.out_dir,
+            "html_reports": self.html_reports,
             "checks": [{"check": c.description, "ok": c.ok, "detail": c.detail} for c in self.checks],
             "commands": [{"node": c.node, "phase": c.phase, "command": c.command, "success": c.success,
                           "validation": c.validation_status, "output": c.output[:300]}
@@ -320,7 +322,7 @@ class ScenarioSuite:
                  cli_jar: str, mockwire_jar: str, control: SimulatorControl,
                  llm_fn: LlmFn | None = None, java_home: str | None = None,
                  samples: list[dict] | None = None, runtime_vars: dict[str, str] | None = None,
-                 host: str = "localhost", include_negatives: bool = False):
+                 host: str = "localhost", include_negatives: bool = False, report_jar: str = ""):
         self.run_dir = Path(run_dir)
         self.sim_dir = self.run_dir / "simulator"
         self.uc_name = uc_name
@@ -335,6 +337,9 @@ class ScenarioSuite:
         self.runtime_vars = runtime_vars
         self.host = host
         self.out_root = self.run_dir / "exec_output" / "scenarios"
+        # One HTML report per executed case, by the configured report JAR
+        self.report_jar = report_jar
+        self.report_dir = self.run_dir / "exec_report"
         # Sunny day only for now; negative cases (spec 005) are switched on later
         self.include_negatives = include_negatives
 
@@ -352,8 +357,9 @@ class ScenarioSuite:
         node_instance = {n: i["name"] for i in instances for n in (i.get("nodes") or [i["name"]])}
         base = {i["name"]: (self.sim_dir / "config" / f"{i['name']}.yaml").read_text(encoding="utf-8")
                 for i in instances}
-        if self.out_root.exists():
-            shutil.rmtree(self.out_root, ignore_errors=True)
+        for old in (self.out_root, self.report_dir):
+            if old.exists():
+                shutil.rmtree(old, ignore_errors=True)
 
         suite = SuiteResult()
         try:
@@ -426,6 +432,8 @@ class ScenarioSuite:
             evaluate(result, steps, node_instance)
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
+            if report and self.report_jar:
+                await self._html_report(sc, out_dir, result)
         except Exception as e:
             logger.error("Scenario %s failed to run: %s", sc.id, e, exc_info=True)
             result.status, result.error, result.classification = "FAIL", str(e), "simulator"
@@ -433,6 +441,16 @@ class ScenarioSuite:
         result.duration_sec = time.monotonic() - t0
         logger.info("Scenario %s %s — %s", sc.id, result.status, result.actual)
         return result
+
+    async def _html_report(self, sc: Scenario, out_dir: Path, result: ScenarioResult) -> None:
+        """exec_report/<uc>_<case>_<node>_summary.html (+ _detail.html when the run failed)."""
+        name = f"{self.uc_name}_{sc.id}_{sc.node_group}"
+        rep = await generate_execution_report(self.report_jar, out_dir, self.report_dir, name, self.plan,
+                                              cr_group=sc.cr_group, request_id=self.run_dir.name[:8],
+                                              java_home=self.java_home)
+        result.html_reports = rep["files"]
+        if rep["error"]:
+            logger.warning("Execution report for %s not generated: %s", sc.id, rep["error"])
 
     async def _restart(self, instances: list[dict], configs: dict[str, str]) -> None:
         from skills.network_simulator_setup.simulator_runner import SimulatorInstance, start_simulator

@@ -467,7 +467,7 @@ class PipelineRunner:
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-qa-report.html",
             8: f"{uc_name}_simulator-report.html",
-            9: f"exec_report/{uc_name}_execution-report.html",
+            9: f"{uc_name}_network-qa-report.html",
         }
 
         # Also check artifacts stored in session state
@@ -509,6 +509,9 @@ class PipelineRunner:
             if ep.exists() and str(ep) != primary:
                 extra.append(str(ep))
 
+        # Step 9: the execution-report-generator HTML of every executed case
+        if step_num == 9:
+            extra += [str(f) for f in sorted((Path(run_dir) / "exec_report").glob("*.html"))]
         # Step 7: include MOP output HTMLs from mop_output/ subdir
         if step_num == 7:
             mop_dir = Path(run_dir) / "mop_output"

@@ -498,3 +498,10 @@ def test_jar_success_status_is_a_passing_run():
         assert run_passed(status)
     for status in ("FAIL", "FAILED", "", None):
         assert not run_passed(status)
+
+
+def test_execution_report_needs_the_configured_jar(tmp_path):
+    from skills.network_config_test.jar_executor import generate_execution_report
+    rep = asyncio.run(generate_execution_report(str(tmp_path / "missing.jar"), tmp_path, tmp_path / "out",
+                                                "UC_TC-P01_EAST", {"node_type": "PGW_RDS", "activity": "X"}))
+    assert rep["files"] == [] and "not found" in rep["error"]

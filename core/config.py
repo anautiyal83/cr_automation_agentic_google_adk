@@ -81,7 +81,7 @@ class PipelineConfiguration(BaseModel):
     runtime_params: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_PARAMS))
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
-    execution_report_jar: str = "./lib/execution-report-generator.jar"
+    execution_report_jar: str = "./lib/execution-report-generator-1.0.2-cli.jar"
     mop_template: str = "./lib/templates/mop_summary_report_template_v2.html"
     exec_summary_template: str = "./lib/templates/mop_execution_summary_report_template.html"
     exec_failure_template: str = "./lib/templates/execution_failure_template.html"

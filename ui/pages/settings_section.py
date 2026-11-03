@@ -233,7 +233,7 @@ class SettingsSection:
                             "CLI Automation", placeholder="./lib/cli-automation-standalone.jar",
                         ).classes("flex-1").props("outlined dense")
                         self.exec_report_jar = ui.input(
-                            "Report Generator", placeholder="./lib/execution-report-generator.jar",
+                            "Report Generator", placeholder="./lib/execution-report-generator-1.0.2-cli.jar",
                         ).classes("flex-1").props("outlined dense")
 
                     ui.label("HTML Templates").classes("text-caption font-semibold mt-2")
