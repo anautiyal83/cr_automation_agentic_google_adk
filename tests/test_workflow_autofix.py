@@ -389,3 +389,18 @@ def test_backslash_quote_in_single_quoted_scalar_repaired():
     from skills.network_config_gen.autofix import sanitize_yaml
     bad = "a:\n  regex: 'tar: Removing leading `/" + "\\" + "''\n"
     assert yaml.safe_load(sanitize_yaml(bad))["a"]["regex"] == "tar: Removing leading `/'"
+
+
+def test_ciq_path_column_replaces_mop_example_directory():
+    # G-15: the CIQ gives the destination per file; the MOP's example directory is swapped for it
+    from skills.network_config_gen.autofix import use_path_columns
+    base = "/var/opt/swms/clips/persistent/provisioned/audioclips"
+    rc = {"filled": ["DEST"], "samples": {"DEST": [base + "/RAJ/POSTPAID", base + "/RAJ/POSTPAID-0"]}}
+    wf = {"phases": {"a": {"steps": [
+        {"node": "MRF", "send": "cp /tmp/f " + base + "/${MRF.Circle}/PREPAID/"},
+        {"node": "MRF", "send": "chmod 777 " + base + "/${MRF.Circle}/PREPAID/${x}"},
+        {"node": "MRF", "send": "tar -czf /tmp/b.tgz /var/opt/swms/backup/a/b/c"}]}}}
+    assert use_path_columns(wf, rc) == 2
+    s = [st["send"] for st in wf["phases"]["a"]["steps"]]
+    ref = "${configSequences.0.records.0.data.DEST}"
+    assert s == ["cp /tmp/f " + ref + "/", "chmod 777 " + ref + "/${x}", "tar -czf /tmp/b.tgz /var/opt/swms/backup/a/b/c"]

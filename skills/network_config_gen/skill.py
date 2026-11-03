@@ -252,7 +252,7 @@ class NetworkConfigGenSkill:
         try:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
-            yaml_text = fix_workflow(yaml_text)
+            yaml_text = self._ciq_fixes(fix_workflow(yaml_text))
             errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets, self._expected)
             self._last_yaml = yaml_text
         except Exception as e:
@@ -298,7 +298,7 @@ class NetworkConfigGenSkill:
         try:
             raw = await self._llm_fn(prompts.WORKFLOW_GEN_SYSTEM, user_prompt)
             yaml_text = clean_yaml_response(raw)
-            yaml_text = fix_workflow(yaml_text)
+            yaml_text = self._ciq_fixes(fix_workflow(yaml_text))
             errors = validate_workflow(yaml_text, self._samples, self._ciq_sheets, self._expected)
             self._last_yaml = yaml_text
         except Exception as e:
@@ -313,6 +313,14 @@ class NetworkConfigGenSkill:
             validation_errors=errors,
             status=status,
         )
+
+    def _ciq_fixes(self, yaml_text: str) -> str:
+        """Autofix steps that need the CIQ: the MOP's example directory → the CIQ path column."""
+        from .autofix import dump_yaml, parse_yaml, use_path_columns
+        parsed = parse_yaml(yaml_text)
+        if parsed and use_path_columns(parsed, (self._expected or {}).get("record_columns")):
+            return dump_yaml(parsed)
+        return yaml_text
 
     def _repair_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:
         """Deterministic repairs against recorded real output (no LLM): widen line joins

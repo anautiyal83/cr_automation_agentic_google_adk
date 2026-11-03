@@ -857,6 +857,73 @@ def _fix_criteria_expr(cmd: dict) -> None:
 _EXPRESSION_PLACEHOLDER = re.compile(r"\$\{([^{}]*(?:\?|!=|==|\|\||&&)[^{}]*)\}")
 
 
+_PATH_TOKEN = re.compile(r"/[^\s'\";|&<>()]+")
+
+
+def use_path_columns(parsed: dict, record_columns: dict | None) -> int:
+    """A CIQ record column that gives a directory for every row (MRF_DESTINATION_PATH) replaces
+    the directory the workflow builds from the MOP's example (``…/audioclips/${MRF.Circle}/PREPAID``):
+    paths sharing the CIQ values' leading directories have that many segments swapped for the
+    column. The LLM kept the MOP path through every correction round (G-15)."""
+    rc = record_columns or {}
+    samples = rc.get("samples") or {}
+    text = "\n".join(_all_strings(parsed.get("phases") or {}))
+    changed = 0
+    for col in rc.get("filled") or []:
+        vals = [v.rstrip("/") for v in samples.get(col, []) if v]
+        if not vals or not all(v.startswith("/") for v in vals) or f"data.{col}" in text:
+            continue
+        segs = [v.split("/")[1:] for v in vals]
+        depth = min(len(s) for s in segs)
+        shared = 0
+        while shared < depth and len({s[shared] for s in segs}) == 1:
+            shared += 1
+        if shared < 4:
+            continue
+        lead = segs[0][:shared]
+        ref = "${configSequences.0.records.0.data." + col + "}"
+
+        def swap(m):
+            nonlocal changed
+            parts = m.group(0).split("/")[1:]
+            k = 0
+            while k < min(len(parts), shared) and parts[k] == lead[k]:
+                k += 1
+            # Same leading directories up to where the workflow puts its own placeholder
+            # (RAJ ↔ ${MRF.Circle}) or all of them; never a different branch of the tree
+            if len(parts) < depth or k < 4 or (k < shared and "${" not in parts[k]):
+                return m.group(0)
+            changed += 1
+            rest = "/".join(parts[depth:])
+            return ref + ("/" + rest if rest or m.group(0).endswith("/") else "")
+
+        def walk(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in ("send", "remote_path", "local_path") and isinstance(v, str):
+                        node[k] = _PATH_TOKEN.sub(swap, v)
+                    else:
+                        walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+        walk(parsed.get("phases") or {})
+    if changed:
+        logger.info("Replaced %d MOP example path(s) with the CIQ's path column", changed)
+    return changed
+
+
+def _all_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _all_strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _all_strings(v)
+
+
 SKIPPED_BY_CONDITION = "SKIPPED_BY_CONDITION"
 _COND_OPERAND = r"\$\{[^{}]+\}|[A-Za-z_][\w.\-]*"
 _COND_METHOD = re.compile(rf"({_COND_OPERAND})\.(endsWith|startsWith|contains|matches)\(\s*'([^']*)'\s*\)")
