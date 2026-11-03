@@ -652,8 +652,14 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-card-title .q-icon { font-size: 14px !important; }
 /* KPI tiles: mono label over mono value */
-.cr-stat-grid { gap: 8px; }
-.cr-stat-card { height: 62px; padding: 10px 14px; border-radius: 10px; box-shadow: none; }
+/* All tiles on one line, equal columns (two per row on phones) */
+.cr-stat-grid { gap: 8px; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+    .cr-stat-grid { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 1250px) { .cr-stat-icon-wrap { display: none !important; } }
+.cr-stat-card { height: 58px; padding: 8px 12px; gap: 10px; border-radius: 10px; box-shadow: none; min-width: 0; }
+.cr-stat-title-text { overflow: hidden; text-overflow: ellipsis; }
 .cr-stat-card:hover { box-shadow: none; }
 .cr-stat-icon-wrap { width: 30px; height: 30px; border-radius: 8px; }
 .cr-stat-icon-wrap .q-icon { font-size: 16px !important; }
