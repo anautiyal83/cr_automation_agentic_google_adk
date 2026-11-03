@@ -261,6 +261,7 @@ class HistorySection:
         with self.detail_content:
             # --- Input Documents ---
             doc_set_id = None
+            doc = None
             try:
                 run_row = await db.get_by_id("pipeline_runs", run_id)
                 doc_set_id = run_row.get("document_set_id") if run_row else None
@@ -323,6 +324,23 @@ class HistorySection:
                         err = step.get("error_message")
                         if err:
                             ui.label(f"  Error: {err[:120]}").classes("text-caption cr-text-error ml-8")
+
+            # --- Final Documents (the run's deliverables, as on step 10 / Output Documents) ---
+            from ui.pages.output_viewer_section import OutputViewerSection, _final_documents
+            uc_name = (doc or {}).get("uc_name") or row.get("uc_name") or ""
+            final = _final_documents(Path("data/runs") / str(run_id), uc_name)
+            if final:
+                with ui.expansion("Final Documents", icon="verified")                         .classes("w-full").props("dense default-opened"):
+                    for label, fpath in final:
+                        with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
+                            ui.icon("description", size="14px").classes("cr-text-accent")
+                            with ui.column().classes("gap-0 flex-1 min-w-0"):
+                                ui.label(label).classes("text-caption font-semibold")
+                                ui.label(fpath.name).classes("text-caption cr-text-dim font-mono")
+                            ui.button("View", icon="visibility",
+                                      on_click=lambda _, f=fpath: OutputViewerSection._view_dialog(f))                                 .props("flat dense size=xs color=primary no-caps")
+                            ui.button("Download", icon="download",
+                                      on_click=lambda _, f=fpath: ui.download(str(f)))                                 .props("flat dense size=xs color=primary no-caps")
 
             # --- Output Artifacts ---
             try:
