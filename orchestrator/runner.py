@@ -64,8 +64,9 @@ class PipelineRunner:
     def event_bus(self) -> EventBus:
         return event_bus
 
-    async def start(self, document_set: dict[str, Any]) -> str:
-        """Start a new pipeline run. Returns run_id."""
+    async def start(self, document_set: dict[str, Any], review_milestones: bool = True) -> str:
+        """Start a new pipeline run. Returns run_id. ``review_milestones=False`` (New Run →
+        "Pause for review at milestones" unchecked) pauses only at milestones of failed steps."""
         run_id = str(uuid4())
         flow.flow("RUN START — run_id=%s, uc=%s", run_id[:8], document_set.get("uc_name", "?"))
         user_id = "pipeline_user"
@@ -75,6 +76,7 @@ class PipelineRunner:
 
         # Build initial state
         initial_state = self._build_initial_state(run_id, document_set)
+        initial_state["review_milestones"] = review_milestones
 
         # Create ADK session
         session = await self._session_service.create_session(

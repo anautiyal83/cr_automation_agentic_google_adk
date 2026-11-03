@@ -446,23 +446,23 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 @media (max-width: 900px) { .cr-run-layout { grid-template-columns: minmax(0, 1fr); } }
 .cr-run-steps {
     background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
-    padding: 8px; display: flex; flex-direction: column; gap: 2px;
+    padding: 6px; display: flex; flex-direction: column; gap: 1px;
 }
-.cr-run-steps-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
-                      color: var(--cr-text-dim); padding: 6px 8px 8px; }
+.cr-run-steps-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+                      color: var(--cr-text-dim); padding: 4px 8px 6px; }
 .cr-step-row {
-    display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px;
     cursor: pointer; border: 1px solid transparent; transition: background .15s, border-color .15s;
 }
 .cr-step-row:hover { background: var(--cr-surface-hover); }
 .cr-step-row.is-selected { background: var(--cr-primary-soft); border-color: var(--cr-primary); }
-.cr-step-row .cr-step-circle { width: 26px; height: 26px; flex-shrink: 0; }
+.cr-step-row .cr-step-circle { width: 22px; height: 22px; flex-shrink: 0; border-width: 1.5px; }
 .cr-step-row.is-in-progress .cr-step-circle { background: var(--cr-primary-soft); }
-.cr-step-row-name { font-size: 13px; color: var(--cr-text); white-space: nowrap; overflow: hidden;
+.cr-step-row-name { font-size: 14px; line-height: 18px; font-weight: 500; color: var(--cr-text); white-space: nowrap; overflow: hidden;
                     text-overflow: ellipsis; }
-.cr-step-row .cr-step-num { font-size: 11px; color: var(--cr-text-dim); font-weight: 500; }
-.cr-step-row .cr-step-status { font-size: 11px; margin-top: 0; }
-.cr-step-duration { font-size: 11px; color: var(--cr-text-dim); }
+.cr-step-row .cr-step-num { font-size: 12px; line-height: 14px; color: var(--cr-text-dim); font-weight: 500; }
+.cr-step-row .cr-step-status { font-size: 12px; line-height: 16px; margin-top: 0; }
+.cr-step-duration { font-size: 12px; line-height: 14px; color: var(--cr-text-dim); }
 .cr-run-detail {
     background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
     padding: 14px 16px; min-height: 420px;
@@ -716,7 +716,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px !important;
                 # PipelineRunner.start() takes a dict, not a UCDocumentSet
                 doc_dict = doc_set.model_dump() if hasattr(doc_set, 'model_dump') else doc_set
                 doc_dict["document_set_id"] = str(doc_dict.get("id", doc_dict.get("document_set_id", "")))
-                run_id = await _runner.start(doc_dict)
+                run_id = await _runner.start(doc_dict, review_milestones=review_milestones)
                 if progress:
                     from uuid import UUID
                     await progress.start_tracking(UUID(run_id))

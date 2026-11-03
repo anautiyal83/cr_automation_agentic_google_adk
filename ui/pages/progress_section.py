@@ -207,7 +207,7 @@ class ProgressSection:
             box.on("click", lambda _, n=step_num: self._select_step(n, user=True))
             icon_container = ui.element("div").classes("cr-step-circle")
             with icon_container:
-                step_icon = ui.icon(STEP_ICONS.get(step_num, "circle"), size="14px").classes("cr-text-dim")
+                step_icon = ui.icon(STEP_ICONS.get(step_num, "circle"), size="13px").classes("cr-text-dim")
             with ui.column().classes("gap-0 min-w-0 flex-1"):
                 label = ui.label(f"Step {step_num}").classes("cr-step-num")
                 name = ui.label(_SHORT_NAMES.get(step_num, "")).classes("cr-step-row-name")

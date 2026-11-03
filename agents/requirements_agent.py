@@ -169,6 +169,9 @@ class RequirementsGathererNode(BaseAgent):
             flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
 
         # ── Phase 6: Milestone pause — developer reviews summary ──
+        if not ctx.session.state.get("review_milestones", True):
+            flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
+            return
         flow.flow("REQUIREMENTS: Pausing for developer review of summary")
         milestone_step = 2
         milestone_waiting[milestone_step] = {

@@ -402,6 +402,10 @@ class PipelineAgent(BaseAgent):
                 status = "failed"
                 break
 
+        if status == "passed" and not ctx.session.state.get("review_milestones", True):
+            flow.flow("MILESTONE Step %d (%s): passed — review off, continuing", step_num, name)
+            return "continue"
+
         flow.flow("MILESTONE Step %d (%s): status=%s — awaiting review", step_num, name, status)
 
         # Signal to UI
