@@ -83,6 +83,16 @@ def _first_agent_of_step(step_num: int) -> str:
     return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
 
 
+def _write_requirements_summary(run_dir: str, uc_name: str, requirements: dict) -> None:
+    """Steps 1-2 from cache: the requirements document as the agent would have written it (OB-16)."""
+    try:
+        from skills.requirement_gathering.html_report import summary_html_from_requirements
+        (Path(run_dir) / f"{uc_name}_requirements-summary.html").write_text(
+            summary_html_from_requirements(uc_name, requirements), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Requirements summary not written from cache: %s", e)
+
+
 # Retry target step → agent index
 _RETRY_STEP_TO_INDEX: dict[int, int] = {
     3: 1,   # retry CiqValidationJsonGen
@@ -174,6 +184,7 @@ class PipelineAgent(BaseAgent):
                                     (Path(run_dir) / "requirements.json").write_text(
                                         value if isinstance(value, str) else _json.dumps(value, indent=2),
                                         encoding="utf-8")
+                                    _write_requirements_summary(run_dir, uc_name, requirements_store[run_id_str])
                             elif key == "helper_scripts" and isinstance(value, dict):
                                 # Write scripts to run dir
                                 if run_dir:

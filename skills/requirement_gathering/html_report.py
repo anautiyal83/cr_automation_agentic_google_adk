@@ -523,3 +523,14 @@ def generate_questionnaire_html(
     )
     lines.append("</body></html>")
     return "\n".join(lines)
+
+
+def summary_html_from_requirements(uc_name: str, requirements: dict) -> str:
+    """The requirements summary rebuilt from a compiled requirements package (requirements.json):
+    steps 1-2 restored from the artifact cache wrote only the JSON, so runs had no requirements
+    document (step 2 / step 10)."""
+    doc = requirements.get("doc_extracted") or {}
+    return generate_summary_html(
+        uc_name, doc.get("ciq_sheets") or {}, requirements.get("analysis") or {}, requirements,
+        requirements.get("developer_notes") or "", requirements.get("developer_answers") or {}, doc,
+        question_texts=requirements.get("developer_questions") or {})

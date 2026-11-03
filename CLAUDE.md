@@ -191,6 +191,6 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
 - Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
-- Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): validation rules,
+- Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): requirements document, validation rules,
   JSON output, execution YAML, MOP, QA-Validation, QA-Execution, execution summary + success/failure reports
 - Running simulators are registered in `shared.state.simulator_processes` and stopped on every exit path

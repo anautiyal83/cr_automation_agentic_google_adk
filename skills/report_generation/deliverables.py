@@ -16,9 +16,9 @@ class Deliverable:
 
 
 def collect_deliverables(run_dir: str | Path, uc_name: str) -> list[Deliverable]:
-    """Validation rules, JSON output, execution workflow, generated MOP, QA-Validation report,
-    QA-Execution report, then per executed case the execution-report-generator JAR's summary
-    and execution (detail) report. Missing files are left out."""
+    """Requirements document, validation rules, JSON output, execution workflow, generated MOP,
+    QA-Validation report, QA-Execution report, then per executed case the execution-report-generator
+    JAR's summary and execution (detail) report. Missing files are left out."""
     rd = Path(run_dir)
     if not rd.is_dir():
         return []
@@ -28,6 +28,7 @@ def collect_deliverables(run_dir: str | Path, uc_name: str) -> list[Deliverable]
         if path.is_file():
             out.append(Deliverable(label, path))
 
+    add("Requirements Document", rd / f"{uc_name}_requirements-summary.html")
     add("Validation Rules YAML", rd / f"{uc_name}_validation-rules.yaml")
     add("JSON Output YAML", rd / f"{uc_name}_json-output.yaml")
     add("Execution YAML", rd / f"{uc_name}.yaml")
