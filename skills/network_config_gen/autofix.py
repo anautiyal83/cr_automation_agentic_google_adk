@@ -288,6 +288,7 @@ def fix_workflow(yaml_text: str) -> str:
     fix_single_file_listings(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
+    single_token_condition_vars(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -1411,3 +1412,58 @@ def is_placeholder(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return bool(re.search(r"\$\{.+?\}", value) or (value.startswith("$") and not value.startswith("${")))
+
+
+def _group_body(regex: str, name: str) -> tuple[int, int] | None:
+    """(start, end) of the body of the named group ``(?<name>…)`` in ``regex``."""
+    m = re.search(r"\(\?P?<" + re.escape(name) + r">", regex)
+    if not m:
+        return None
+    depth, i, in_class = 1, m.end(), False
+    while i < len(regex):
+        ch = regex[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return m.end(), i
+        i += 1
+    return None
+
+
+# a group body that can capture a space: unescaped ".", \s, [\s\S], a negated class, a space
+_SPACE_CAPABLE = re.compile(r"(?<!\\)\.|\\s|\[\^[^\]]*\]| ")
+
+
+def single_token_condition_vars(parsed: dict) -> int:
+    r"""A registered value holding a space makes every `when` that reads it false (cli-automation,
+    probed 2026-11-03: `spaced != ''` and `'${spaced}' != ''` both skip) — MRF's backup gate
+    `announcementFiles` captured `(.*)` ("total 16K") and the backup never ran. A variable a
+    condition reads registers one token: its group body becomes ``\S+``."""
+    phases = parsed.get("phases") or {}
+    steps = [s for _, s in _walk_all_steps(phases)]
+    in_when = set()
+    for s in steps:
+        if isinstance(s.get("when"), str):
+            in_when |= set(re.findall(r"(?<![\w.$'{])([A-Za-z][A-Za-z0-9]*)(?![\w.(])", s["when"]))
+            in_when |= set(re.findall(r"\$\{([A-Za-z][A-Za-z0-9]*)\}", s["when"]))
+    changed = 0
+    for s in steps:
+        for reg in s.get("register") or []:
+            if not isinstance(reg, dict) or not isinstance(reg.get("regex"), str):
+                continue
+            for name in in_when:
+                span = _group_body(reg["regex"], name)
+                if span and _SPACE_CAPABLE.search(reg["regex"][span[0]:span[1]]):
+                    reg["regex"] = reg["regex"][:span[0]] + r"\S+" + reg["regex"][span[1]:]
+                    changed += 1
+                    logger.info("Register %s read by a condition: one token (\\S+)", name)
+    return changed

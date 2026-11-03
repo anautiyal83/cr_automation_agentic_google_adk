@@ -107,7 +107,7 @@ def test_instance_config_deterministic_parts_win(ciq_json):
            "config": {"prompt": "wrong"}}
     cfg = parse_yaml(build_instance_config(rds, llm))
     assert cfg["config"]["prompt"] == "[oamsys@rdsggn01 ~]$ "          # login prompt
-    assert cfg["ctrl+p+e"] == {"pushPrompt": "rdsggn01:~ # "}            # NIAM root elevation
+    assert cfg["ctrl+p+e"] == {"pushPrompt": "rdsggn01:\w # "}  # NIAM root elevation (cwd shown, S8-33)
     # su is MockWire's builtin over auth.users; su/exit entries from the LLM are dropped
     assert {"username": "sdfrun", "password": "netconf-sim", "prompt": "rdsggn01:~ $ "} in cfg["auth"]["users"]
     assert "su - sdfrun" not in cfg and "exit" not in cfg

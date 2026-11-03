@@ -166,3 +166,28 @@ def test_guard_that_holds_for_a_later_record_is_answered():
     assert _inner_response("org -c x | grep -i 40453", listing, step) == ["a,TRG1,40453"]
     built = _inner_response("org -c x | grep -i 40453", {}, step)[0]
     assert "40453" in built and built.count(",") >= 2
+
+
+def test_simulator_prompt_follows_cd():
+    from skills.network_simulator_setup.overlay import extend_prompt_regex
+    from skills.network_simulator_setup.topology import NodeSpec, _set_prompts, build_instance_config, cwd_prompt
+    assert cwd_prompt("[root@rjjvrmr03 ]# ") == ("[root@rjjvrmr03 ~]# ", "[root@rjjvrmr03 \W]# ")
+    assert cwd_prompt("rds:/tmp # ") == ("rds:~ # ", "rds:\w # ")
+    spec = NodeSpec(name="MRF", instance="MRF", prompt="", user="swmsuser", elevate_to_root=True,
+                    prompt_regex=r"(?m)\[(swmsuser|root)@rjjvrmr03 (.*?)\][#$]\s*$")
+    _set_prompts(spec, {"root_prompt": "[root@rjjvrmr03 ]#", "prompt_pattern": "[swmsuser@rjjvrmr03 ~]$"})
+    assert spec.root_prompt == "[root@rjjvrmr03 ~]# "  # what the sanity check sees after login
+    assert "pushPrompt: '[root@rjjvrmr03 \W]# '" in build_instance_config(spec)
+    import re
+    alt = extend_prompt_regex("x", ["[root@h ~]# "], {"[root@h ~]# ": "[root@h \W]# "})
+    assert re.search(alt, "[root@h tmp]#")
+
+
+def test_condition_variables_register_one_token():
+    from skills.network_config_gen.autofix import single_token_condition_vars
+    parsed = {"phases": {"b": {"steps": [
+        {"node": "MRF", "send": "ls", "register": [{"regex": "(?<files>.*)"}, {"regex": "x(?<other>.*)"}]},
+        {"node": "MRF", "send": "tar", "when": "files != ''"}]}}}
+    assert single_token_condition_vars(parsed) == 1  # "total 16K" in a when is always false (JAR)
+    regs = parsed["phases"]["b"]["steps"][0]["register"]
+    assert regs == [{"regex": "(?<files>\S+)"}, {"regex": "x(?<other>.*)"}]

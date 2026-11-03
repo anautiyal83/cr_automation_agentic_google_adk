@@ -36,7 +36,8 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         port = ports.get(spec.name)
         if not isinstance(node, dict) or port is None:
             continue
-        node["prompt_regex"] = extend_prompt_regex(str(node.get("prompt_regex") or ""), spec.all_prompts())
+        node["prompt_regex"] = extend_prompt_regex(str(node.get("prompt_regex") or ""), spec.all_prompts(),
+                                                   spec.prompt_templates)
         ssh = node.get("ssh")
         if not isinstance(ssh, dict):
             ssh = node["ssh"] = {}
@@ -78,14 +79,20 @@ def _shorten_polls(phases) -> None:
         walk(body.get("steps") if isinstance(body, dict) else body)
 
 
-def extend_prompt_regex(regex: str, prompts: list[str]) -> str:
-    """Append an escaped alternative for every prompt the regex does not already match."""
+def extend_prompt_regex(regex: str, prompts: list[str], templates: dict[str, str] | None = None) -> str:
+    r"""Append an escaped alternative for every prompt the regex does not already match; a
+    prompt that shows the working directory (MockWire template with \W / \w) matches any one."""
     parts = [regex] if regex else []
     for prompt in prompts:
         text = prompt.rstrip()
         if not text or _matches(regex, text):
             continue
-        parts.append(_REGEX_META.sub(r"\\\1", text))
+        template = (templates or {}).get(prompt, "").rstrip()
+        if template:
+            escaped = _REGEX_META.sub(r"\\\1", template)
+            parts.append(escaped.replace("\\\\W", r"[^\]\s]*").replace("\\\\w", r"\S*"))
+        else:
+            parts.append(_REGEX_META.sub(r"\\\1", text))
     return "|".join(parts)
 
 

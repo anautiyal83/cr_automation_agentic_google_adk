@@ -428,7 +428,9 @@ def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row:
 
 
 # Answered by MockWire itself (shell builtins / prompt changes); everything else needs a response
-_SIM_BUILTINS = {"echo", "true", "false", ":", "pwd", "whoami", "id", "hostname", "cd", "stty", "su",
+# (not `cd`: the builtin refuses a directory the sandbox lacks; a YAML `cd` answers exit 0 and
+# MockWire still moves the working directory the prompt shows, S8-33)
+_SIM_BUILTINS = {"echo", "true", "false", ":", "pwd", "whoami", "id", "hostname", "stty", "su",
                  "exit", "logout", "sleep"}
 
 

@@ -48,6 +48,7 @@ class NodeSpec:
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
     vfs: dict | None = None      # sandbox dirs + triggers for file flows (file_flows.py, S8-16)
+    prompt_templates: dict[str, str] = field(default_factory=dict)  # prompt → with \W (cwd, S8-33)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -140,15 +141,16 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
     ``command_entries`` (UC command → response, e.g. from the LLM). ``su``/``exit``/``stty``
     and the ``__CMD_DONE__`` marker are MockWire builtins and are never mapped.
     """
-    users = [{"username": spec.user, "password": spec.password, "prompt": spec.login_prompt}]
+    tpl = lambda p: spec.prompt_templates.get(p, p)  # noqa: E731
+    users = [{"username": spec.user, "password": spec.password, "prompt": tpl(spec.login_prompt)}]
     users += [{"username": u, "password": spec.password, "prompt": p} for u, p in spec.service_users.items()]
     cfg: dict = {
-        "config": {"prompt": spec.login_prompt, "hostname": spec.hostname, "loginDelayMs": 0,
+        "config": {"prompt": tpl(spec.login_prompt), "hostname": spec.hostname, "loginDelayMs": 0,
                    "delayMs": 20, "jitterMs": 0, "idleTimeoutSec": 600},
         "auth": {"enabled": True, "users": users},
     }
     if spec.root_prompt:
-        cfg["ctrl+p+e"] = {"pushPrompt": spec.root_prompt}
+        cfg["ctrl+p+e"] = {"pushPrompt": tpl(spec.root_prompt)}
     if spec.ne_ids:
         cfg["niam"] = {
             "enabled": True,
@@ -223,6 +225,32 @@ def _set_prompts(spec: NodeSpec, req_ssh: dict) -> None:
             spec.warnings.append(f"no prompt satisfies prompt_regex {spec.prompt_regex!r}; using {login!r}")
         spec.login_prompt = spec.prompt = _with_space(login, spec.prompt_regex)
     spec.hostname = _hostname(spec.login_prompt) or _hostname(spec.root_prompt) or spec.name.lower()
+    # Prompts that show the working directory follow `cd` like the real node's (MockWire `\W`)
+    for attr in ("login_prompt", "root_prompt"):
+        found = cwd_prompt(getattr(spec, attr))
+        if found and _first_matching([found[0]], spec.prompt_regex):
+            spec.prompt_templates[found[0]] = found[1]
+            if spec.prompt == getattr(spec, attr):
+                spec.prompt = found[0]
+            setattr(spec, attr, found[0])
+
+
+_BRACKET_PROMPT = re.compile(r"^(\[[^\s@\]]+@[^\s\]]+) ?([^\]\s]*)(\][#$>]\s*)$")
+_COLON_PROMPT = re.compile(r"^([^\s:\[\]@]+(?:@[^\s:]+)?:)(~|/\S*)(\s*[#$>]\s*)$")
+
+
+def cwd_prompt(prompt: str) -> tuple[str, str] | None:
+    r"""(prompt in the login directory, MockWire template) for a prompt that shows the working
+    directory: "[root@host ]# " → ("[root@host ~]# ", "[root@host \W]# "); "rds:/tmp # " →
+    ("rds:~ # ", "rds:\w # "). The MRF workflow's `cd /tmp` waited for "[root@rjjvrmr03 tmp]#"
+    while the simulator kept a fixed prompt (S8-33)."""
+    m = _BRACKET_PROMPT.match(prompt or "")
+    if m:
+        return f"{m.group(1)} ~{m.group(3)}", m.group(1) + r" \W" + m.group(3)
+    m = _COLON_PROMPT.match(prompt or "")
+    if m:
+        return f"{m.group(1)}~{m.group(3)}", m.group(1) + r"\w" + m.group(3)
+    return None
 
 
 def _hostname(prompt: str) -> str:
