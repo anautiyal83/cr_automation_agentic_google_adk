@@ -497,9 +497,12 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     .cr-kpi:nth-child(2) { border-right: none; }
     .cr-kpi:nth-child(-n+2) { border-bottom: 1px solid var(--cr-border); }
 }
-.cr-run-layout { display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 12px; width: 100%;
+.cr-run-layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 12px; width: 100%;
                  align-items: start; }
-@media (max-width: 900px) { .cr-run-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) {
+    .cr-run-layout { grid-template-columns: minmax(0, 1fr); }
+    .cr-run-detail { contain: none !important; max-height: none; }
+}
 .cr-run-steps {
     background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
     padding: 8px 6px; display: flex; flex-direction: column; gap: 2px;
@@ -532,7 +535,7 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     background: var(--cr-primary-soft); border-color: var(--cr-primary); color: var(--cr-primary);
     animation: cr-ring 1.6s ease-out infinite;
 }
-.cr-step-row-name { font-size: 12.5px; line-height: 16px; font-weight: 500; color: var(--cr-text);
+.cr-step-row-name { font-size: 11.5px; line-height: 15px; font-weight: 500; color: var(--cr-text);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cr-step-agent { font: 400 10px/13px var(--cr-mono); color: var(--cr-text-dim); white-space: nowrap; overflow: hidden;
                  text-overflow: ellipsis; }
@@ -550,9 +553,11 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-file-label { font-size: 12px; font-weight: 600; line-height: 16px; color: var(--cr-text); }
 .cr-file-path { font: 400 10px/14px var(--cr-mono); color: var(--cr-text-dim); word-break: break-all; }
 .cr-run-banner .q-btn { font-size: 11px; }
+/* Same height as the step list: the step list sets the row height (contain: size keeps the detail's
+   content out of it), the detail scrolls inside */
 .cr-run-detail {
     background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
-    padding: 16px 18px; min-height: 460px;
+    padding: 16px 18px; contain: size; overflow-y: auto; align-self: stretch;
 }
 .cr-run-detail-head { padding-bottom: 12px; }
 .cr-eyebrow { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; color: var(--cr-primary); }
