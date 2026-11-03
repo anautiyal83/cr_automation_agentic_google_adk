@@ -44,6 +44,8 @@ class SkillInput:
     """Input documents for requirement gathering."""
     uc_name: str
     ciq_file_path: str = ""
+    # Questions a later step could not settle (shared.clarifications): asked on every path
+    extra_questions: list = field(default_factory=list)
     ciq_data: dict | None = None
     mop_file_path: str = ""
     ssh_log_path: str = ""
@@ -198,6 +200,8 @@ class RequirementGatheringSkill:
                          if q["id"] not in self._all_answers]
         # MOP conditions whose other branch the MOP never describes (G-16): a question, not a guess
         from skills.ciq_validation_json_gen.rules_baseline import read_ciq_rows
+        ciq_questions = [q for q in (inp.extra_questions or []) if isinstance(q, dict) and q.get("id")
+                         and q["id"] not in self._all_answers] + ciq_questions
         ciq_questions += [q for q in questionnaire.mop_branch_questions(
                               (self._doc_extracted or {}).get("mop_commands") or [], self._ciq_sheets,
                               read_ciq_rows(getattr(inp, "ciq_file_path", "") or "", self._ciq_sheets))

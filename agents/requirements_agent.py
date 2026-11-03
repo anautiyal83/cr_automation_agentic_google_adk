@@ -72,6 +72,7 @@ class RequirementsGathererNode(BaseAgent):
             transcript_paths=_text_document_paths(doc_set.get("additional_documents")),
             developer_notes=developer_notes,
             vendor_profile=vendor_profile,
+            extra_questions=_open_clarifications(run_dir),
         )
 
         # ── Create skill with local LLM wrapper ──
@@ -160,6 +161,10 @@ class RequirementsGathererNode(BaseAgent):
         if run_dir:
             req_file = Path(run_dir) / "requirements.json"
             req_file.write_text(output.requirements_json, encoding="utf-8")
+
+        # The open questions of later steps are answered now
+        from shared import clarifications
+        clarifications.clear(run_dir)
 
         # ── Phase 5: Write summary HTML ──
         flow.flow("REQUIREMENTS Phase 5: Writing summary document")
@@ -312,3 +317,12 @@ def _text_document_paths(additional_documents) -> list[str]:
         if path.lower().endswith((".txt", ".log")):
             paths.append(path)
     return paths
+
+
+def _open_clarifications(run_dir: str) -> list[dict]:
+    """Questions a later step recorded before the user sent the run back to step 1."""
+    from shared import clarifications
+    questions = clarifications.load(run_dir).get("questions") or []
+    if questions:
+        flow.flow("REQUIREMENTS: %d open question(s) from a later step", len(questions))
+    return questions

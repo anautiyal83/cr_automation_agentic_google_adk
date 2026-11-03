@@ -212,6 +212,15 @@ class ProgressSection:
                 self.ms_cancel_btn = ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps")
+            with ui.row().classes("w-full gap-2"):
+                self.ms_clarify_btn = ui.button("Clarify in requirements", icon="quiz",
+                    on_click=lambda: self._milestone_respond("clarify")) \
+                    .props("unelevated color=primary size=sm no-caps") \
+                    .tooltip("Answer the open questions in step 1; the later steps run again with the answers")
+            self.ms_clarify_btn.set_visibility(False)
+            # Open questions this step could not settle (shared.clarifications)
+            self.ms_clarify_info = ui.column().classes("w-full gap-1")
+            self.ms_clarify_info.set_visibility(False)
             # Container for questionnaire-specific button (cleared on each call)
             self.ms_questionnaire_row = ui.row().classes("w-full gap-3")
             self.ms_questionnaire_row.set_visibility(False)
@@ -1026,6 +1035,22 @@ class ProgressSection:
             if w.get("raw_status", "pending") == "pending":
                 self._update_step_visual(sn, "skipped")
 
+    def _show_clarifications(self):
+        """Offer step 1 for what this step could not settle from the documents."""
+        from shared import clarifications
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        questions = clarifications.load(run_dir).get("questions") or []
+        self.ms_clarify_btn.set_visibility(bool(questions))
+        self.ms_clarify_btn.text = f"Clarify in requirements ({len(questions)})"
+        self.ms_clarify_info.clear()
+        self.ms_clarify_info.set_visibility(bool(questions))
+        with self.ms_clarify_info:
+            if questions:
+                ui.label("Open questions — answer them in step 1, or re-run / cancel:") \
+                    .classes("text-caption cr-text-dim")
+                for q in questions[:5]:
+                    ui.label("• " + str(q.get("question", ""))[:220]).classes("text-caption")
+
     def _show_milestone_review(self, step_num: int, milestone: str, artifact_file: str,
                                has_failures: bool = False,
                                extra_artifact_files: list[str] | None = None):
@@ -1066,6 +1091,7 @@ class ProgressSection:
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
         self.ms_rerun_btn.set_visibility(True)
+        self._show_clarifications()
 
         # On failure: block Continue for all step types
         if has_failures:
@@ -1501,6 +1527,14 @@ class ProgressSection:
                 "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
             ))
             self.progress_bar.props("stripe animate")
+            self.action_btns.set_visibility(True)
+        elif decision == "clarify":
+            self.status_icon.name = "quiz"
+            self.status_icon.classes(replace="cr-text-accent")
+            self.status_label.text = "Back to Step 1 — clarifying requirements"
+            self.status_detail.text = "Answer the open questions; the later steps then run again with them"
+            for s in range(1, TOTAL_STEPS + 1):
+                self._update_step_visual(s, "pending")
             self.action_btns.set_visibility(True)
         elif decision == "rerun":
             self.status_icon.name = "replay"

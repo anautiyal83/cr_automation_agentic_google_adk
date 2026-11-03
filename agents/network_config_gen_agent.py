@@ -86,6 +86,11 @@ class NetworkConfigGenAgent(BaseAgent):
                 err_file.write_text(json.dumps({"error": state["step_6_error"],
                                                 "failed_agents": ["network_config_gen"]}, indent=2))
 
+        # What the correction rounds could not fix: offered as step 1 questions at the milestone
+        from shared import clarifications
+        clarifications.save(run_dir, 6, clarifications.from_errors(6, output.validation_errors)
+                            if output.status == "failed" else [])
+
         flow.flow("NETWORK_CONFIG_GEN DONE — status=%s, errors=%d",
                    output.status, len(output.validation_errors))
 

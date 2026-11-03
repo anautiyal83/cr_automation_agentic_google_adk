@@ -303,6 +303,19 @@ class PipelineAgent(BaseAgent):
                     ctx.session.state["pipeline_cancelled"] = True
                     pipeline_actions[run_id_str] = {"action": "cancel"}
                     break
+                elif decision == "clarify":
+                    # The user answers this step's open questions in step 1: requirements are
+                    # gathered again (clarifications.json is asked there) and every later step
+                    # regenerates from them
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        ArtifactCache().clear_from_step(uc_name, self._agents_list[0].name)
+                    except Exception as e:
+                        logger.debug("Cache clear failed on clarify: %s", e)
+                    flow.flow("CLARIFY — step %d sent the run back to step 1", ms_step)
+                    await self._publish(run_id_str, "retry_started", 1)
+                    index = 0
+                    continue
                 elif decision == "rerun":
                     # Determine retry target from the agent's output
                     retry_target = ctx.session.state.pop("_retry_target", None)
