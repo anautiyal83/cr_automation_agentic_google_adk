@@ -27,7 +27,8 @@ RULES:
 ${...} placeholders.
 - When the command contains ${...} placeholders, use a "regex:" key: escape regex \
 metacharacters in the literal parts and replace each placeholder with \\S+ (or .* \
-inside quotes).
+inside quotes). A shell substitution such as $(date +%Y%m%d) contains spaces: replace it \
+with .+? (never \\S+).
 - Output must look like the real tool's output (e.g. real `sar` prints %user %nice \
 %system %iowait %steal %idle) AND satisfy the step's success validation.
 - Commands that print nothing on success get `lines: []`.

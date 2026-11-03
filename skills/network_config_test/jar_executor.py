@@ -234,7 +234,9 @@ async def prepare_execution(
         "schema_path": sanitized_rules or validation_rules_path or json_output_path,
         "node_type": node_type,
         "activity": activity,
-        "local_cwd": str(scripts_dir.resolve()) if scripts_dir.is_dir() else None,
+        # LOCAL steps and relative sftp upload sources resolve here; a UC without helper scripts
+        # gets its own folder (test inputs are staged there, never in the project root)
+        "local_cwd": str((scripts_dir if scripts_dir.is_dir() else _mkdir(Path(output_dir) / "exec_inputs")).resolve()),
     }
 
 
@@ -476,6 +478,62 @@ async def generate_execution_report(
         (line.split("=", 1)[1] for line in out.splitlines() if line.startswith("ERROR=")),
         result.get("stderr", "")[-300:] or "no report written")
     return {"files": files, "error": error}
+
+
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str) -> list[str]:
+    """Placeholder files for sftp uploads of the activity's INPUTS: a relative local_path no
+    LOCAL step produces (MRF uploads each CIQ ``INPUT_FILE``; nothing in a test run provides it,
+    so the upload failed with FileNotFoundException, S9-09). Values come from the target's first
+    CIQ record, as the JAR resolves them. Returns the files created."""
+    import re
+    from tools.ciq_json import node_groups
+    try:
+        doc = json.loads(Path(json_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    record = {}
+    for cr, group in node_groups(doc):
+        if (not cr_group or cr == cr_group) and node in [str(n.get("node")) for n in group.get("nodes") or []]:
+            seqs = group.get("configSequences") or [{}]
+            recs = (seqs[0] or {}).get("records") or [{}]
+            record = (recs[0] or {}).get("data") or {}
+            break
+    local_text, uploads = [], []
+
+    def walk(steps):
+        for s in steps or []:
+            if not isinstance(s, dict):
+                continue
+            if str(s.get("node", "")).upper() == "LOCAL" and isinstance(s.get("send"), str):
+                local_text.append(s["send"])
+            sftp = s.get("sftp")
+            if isinstance(sftp, dict) and sftp.get("operation") == "upload" and sftp.get("local_path"):
+                uploads.append(str(sftp["local_path"]))
+            walk(s.get("steps"))
+    for body in (workflow.get("phases") or {}).values():
+        walk(body.get("steps") if isinstance(body, dict) else body)
+
+    def resolve(text):
+        return re.sub(r"\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}",
+                      lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
+    created = []
+    for raw in uploads:
+        path = resolve(raw)
+        if not path or "${" in path or Path(path).is_absolute():
+            continue
+        produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
+        target = Path(cwd) / path
+        if produced or target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"test input staged by step 9 for {path}\n", encoding="utf-8")
+        created.append(str(target))
+    return created
 
 
 def _parse_uc_name(uc_name: str) -> tuple[str, str]:

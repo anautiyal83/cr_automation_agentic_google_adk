@@ -30,7 +30,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .jar_executor import execute_target, generate_execution_report
+from .jar_executor import execute_target, generate_execution_report, stage_upload_inputs
 from .result_parser import CommandResult, classify_failures
 
 logger = logging.getLogger(__name__)
@@ -422,6 +422,14 @@ class ScenarioSuite:
         result = ScenarioResult(scenario=sc, out_dir=str(out_dir))
         try:
             await self._restart(instances, self._configs_for(sc, base, node_instance))
+            if self.plan.get("local_cwd"):
+                from ruamel.yaml import YAML
+                staged = stage_upload_inputs(
+                    YAML(typ="safe").load(Path(self.workflow_path).read_text(encoding="utf-8")) or {},
+                    sc.target[0], sc.target[1], sc.target[2], self.plan["local_cwd"])
+                if staged:
+                    logger.info("Scenario %s: staged %d upload input(s): %s", sc.id, len(staged),
+                                ", ".join(Path(s).name for s in staged))
             exec_result = await execute_target(self.plan, self.cli_jar, self.workflow_path, sc.target,
                                                out_dir, self.java_home, runtime_vars=self.runtime_vars)
             report = _read_report(out_dir)

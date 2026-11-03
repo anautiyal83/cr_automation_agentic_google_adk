@@ -184,8 +184,11 @@ class NetworkSimulatorSetupSkill:
             if recorded[node.name]:
                 logger.info("Phase 2: %s — %d responses from recorded real output",
                             node.name, len(recorded[node.name]))
-            instance_configs[node.instance] = build_instance_config(
-                node, merge_responses(recorded[node.name], result, node.commands, covered[node.name], row))
+            merged = merge_responses(recorded[node.name], result, node.commands, covered[node.name], row)
+            # Bash-guarded commands: evaluated per CIQ target, ahead of the generic keys (S8-29)
+            from .guards import guarded_responses
+            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files), **merged}
+            instance_configs[node.instance] = build_instance_config(node, merged)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
 
@@ -293,6 +296,7 @@ class NetworkSimulatorSetupSkill:
             if len(regexes) > 1 and cmd not in recorded:
                 node.warnings.append(f"{cmd!r} is checked with {len(regexes)} different expectations "
                                      "(state changes during the run) — a static response cannot pass all (S8-16)")
+        entries = rekey_unanswered(node, entries, recorded, row)
         bad = synthetic_mismatches(node, entries, recorded, row)
         missing = unanswered_commands(node, entries, recorded, row)
         if not bad and not missing:
@@ -324,6 +328,9 @@ class NetworkSimulatorSetupSkill:
                 new = {**new, "lines": new["lines"].splitlines()}
             if isinstance(new, dict) and isinstance(new.get("lines"), list):
                 entries[key] = new
+        entries = rekey_unanswered(node, entries, recorded, row)
+        entries = fill_unanswered(node, entries, recorded, row)
+        entries = repair_literal_mismatches(node, entries, recorded, row)
         for b in synthetic_mismatches(node, entries, recorded, row):
             node.warnings.append(f"invented response for {b['cmd']!r} still fails /{b['regex']}/")
         for m in unanswered_commands(node, entries, recorded, row):
@@ -416,6 +423,92 @@ def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row:
 # Answered by MockWire itself (shell builtins / prompt changes); everything else needs a response
 _SIM_BUILTINS = {"echo", "true", "false", ":", "pwd", "whoami", "id", "hostname", "cd", "stty", "su",
                  "exit", "logout", "sleep"}
+
+
+def command_key_regex(cmd: str) -> str:
+    """A ``regex:`` key body for a workflow command: literal parts escaped, ``${…}`` → ``\\S+``,
+    shell substitutions ``$(…)`` → ``.+?`` (``$(date +%Y%m%d%H%M%S)`` holds a space: the LLM's
+    ``\\S+`` never matched and every MRF test case got "tar: command not found", S8-26)."""
+    out = []
+    for part in re.split(r"(\$\{[^{}]+\}|\$\([^()]*\))", cmd):
+        if part.startswith("${"):
+            out.append(r"\S+")
+        elif part.startswith("$("):
+            out.append(r".+?")
+        else:
+            out.append(re.sub(r"([\\.^$|?*+()\[\]{}])", r"\\\1", part))
+    return "".join(out)
+
+
+def rekey_unanswered(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> dict:
+    """Give an unanswered command the response the LLM meant for it: an LLM ``regex:`` key whose
+    literal start the command begins with is replaced by a key built from the command."""
+    entries = dict(entries)
+    for m in unanswered_commands(node, entries, recorded, row):
+        body = command_key_regex(m["cmd"])
+        try:
+            if not re.fullmatch(body, m["resolved"]):
+                continue
+        except re.error:
+            continue
+        for key in list(entries):
+            if not str(key).startswith("regex:"):
+                continue
+            head = re.split(r"\\[SdwsDWb]|\.\*|\.\+|\[|\(|\|", str(key)[6:])[0]
+            head = re.sub(r"\\(.)", r"\1", head)
+            if len(head) >= 8 and m["resolved"].startswith(head):
+                entries["regex:" + body] = entries.pop(key)
+                logger.info("Phase 2: %s — response key rebuilt from the command: %s", node.name, m["cmd"][:80])
+                break
+    return entries
+
+
+def _regex_literal(regex: str) -> str | None:
+    """The text a regex made only of literal characters matches (``\\'`` → ``'``); None when it
+    has classes, quantifiers, groups or anchors."""
+    if re.search(r"\\[dDsSwWbBAZzQEpPn]|(?<!\\)[\^$*+?()\[\]{}|]", regex):
+        return None
+    return re.sub(r"\\(.)", r"\1", regex)
+
+
+def repair_literal_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> dict:
+    """An invented response the LLM could not make satisfy a plain-text success regex gets that
+    text as its line: the MRF backup answered ``…`/\\' from member names`` (a literal backslash)
+    where tar prints ``…`/' …`` and the step checks for it, three regenerations in a row (S8-27)."""
+    import difflib
+    entries = dict(entries)
+    for b in synthetic_mismatches(node, entries, recorded, row):
+        text = _regex_literal(str(b.get("regex") or ""))
+        entry = entries.get(b.get("key"))
+        if not text or not isinstance(entry, dict) or not isinstance(entry.get("lines"), list):
+            continue
+        lines = [str(x) for x in entry["lines"]]
+        scores = [difflib.SequenceMatcher(None, x, text).ratio() for x in lines]
+        if scores and max(scores) >= 0.8:
+            lines[scores.index(max(scores))] = text
+        else:
+            lines.insert(0, text)
+        entries[b["key"]] = {**entry, "lines": lines}
+        logger.info("Phase 2: %s — response for %r set to its success text", node.name, str(b.get("cmd"))[:60])
+    return entries
+
+
+def fill_unanswered(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> dict:
+    """Commands still without a response after the LLM rounds get one built from the workflow:
+    key from the command, output = the step's plain-text success text (or nothing). The MRF LLM
+    returned invalid YAML, then left 6 of 14 commands unanswered — every case failed on
+    "command not found" (S8-28)."""
+    entries = dict(entries)
+    for m in unanswered_commands(node, entries, recorded, row):
+        body = command_key_regex(m["cmd"])
+        try:
+            key = "regex:" + body if re.fullmatch(body, m["resolved"]) else m["cmd"]
+        except re.error:
+            key = m["cmd"]
+        text = _regex_literal(str(m.get("regex") or "")) if m.get("regex") else None
+        entries[key] = {"lines": [text] if text else []}
+        logger.info("Phase 2: %s — no response from the LLM for %r: built from the workflow", node.name, m["cmd"][:70])
+    return entries
 
 
 def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: dict) -> list[dict]:
