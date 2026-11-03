@@ -121,6 +121,82 @@ def ciq_alternative_questions(ciq_sheets: dict) -> list[dict]:
     return questions
 
 
+_MOP_IF = re.compile(r"^\s*(?:if|when)\b\s*(.+?)\s*:?\s*$", re.I)
+_MOP_IF_YES = re.compile(r"^\s*if\s+yes\b", re.I)
+_MOP_ELSE = re.compile(r"^\s*(?:else|otherwise|if\s+not\b|if\s+no\b|else\s+if\b)", re.I)
+_MOP_COND_VAR = re.compile(r"([A-Za-z][\w ]*?)\s*(==|!=|=)\s*([\w.\-*]+)")
+
+
+def _ciq_column_for(var: str, ciq_sheets: dict) -> tuple[str, str]:
+    """(sheet, column) a MOP variable refers to: MRF_VERSION → Node_Details.VER (a column token
+    is a 3+ char prefix of a variable token, or equal)."""
+    vtoks = [t for t in re.split(r"[\s_\-]+", var.lower()) if t]
+    for sheet, sd in (ciq_sheets or {}).items():
+        for col in (sd.get("columns") or []) if isinstance(sd, dict) else []:
+            ctoks = [t for t in re.split(r"[\s_\-]+", str(col).lower()) if t]
+            if ctoks and all(any(v == c or (len(c) >= 3 and v.startswith(c)) for v in vtoks) for c in ctoks):
+                return sheet, col
+    return "", ""
+
+
+def mop_branch_questions(mop_commands: list[dict], ciq_sheets: dict, ciq_rows: dict | None = None) -> list[dict]:
+    """One question per MOP condition whose other branch the MOP never describes ("If MRF_VERSION ==
+    13.X.X.X" + copy/chmod/untar lines, no else): which steps run when it holds and which when it
+    does not cannot be read from a flattened MOP — step 6 guessed and the 13.x + .tar files of
+    MRF1/MRF2 matched no branch (G-16). Lists the CIQ rows outside the condition when the
+    variable maps to a CIQ column."""
+    lines = [c for c in mop_commands or [] if isinstance(c, dict) and c.get("command")]
+    questions = []
+    for i, c in enumerate(lines):
+        text, phase = str(c["command"]).strip(), c.get("phase", "")
+        if _MOP_IF_YES.match(text):
+            cond = (str(lines[i - 1]["command"]).strip() if i else "the check") + " — YES"
+        else:
+            m = _MOP_IF.match(text)
+            if not m or re.match(r"^\s*if\s+(?:required|needed|necessary)\b", text, re.I):
+                continue
+            cond = m.group(1)
+        rest = [x for x in lines[i + 1:] if x.get("phase", "") == phase]
+        if any(_MOP_ELSE.match(str(x["command"])) for x in rest):
+            continue
+        following = []
+        for x in rest:
+            if _MOP_IF.match(str(x["command"])) or _MOP_IF_YES.match(str(x["command"])):
+                break
+            following.append(str(x["command"]).strip())
+        if not following:
+            continue
+        outside = ""
+        vm = _MOP_COND_VAR.search(cond)
+        if vm and ciq_rows:
+            sheet, col = _ciq_column_for(vm.group(1), ciq_sheets)
+            if col:
+                mask = re.compile("^" + re.escape(vm.group(3)).replace("X", ".*").replace(r"\*", ".*") + "$")
+                rows = [r for r in ciq_rows.get(sheet, []) if r.get(col)]
+                holds = vm.group(2) != "!="
+                off = [r for r in rows if bool(mask.match(str(r[col]))) != holds]
+                if off:
+                    name_col = next((k for k in off[0] if "name" in k.lower() or k.lower() == "node"), col)
+                    outside = (f" The CIQ has rows where it does not hold ({sheet}.{col}): "
+                               + ", ".join(f"{r.get(name_col, '?')} = {r[col]}" for r in off[:4]) + ".")
+        slug = re.sub(r"[^a-z0-9]+", "_", f"{phase}_{cond}".lower()).strip("_")[:60]
+        steps = "; ".join(f"'{s[:70]}'" for s in following[:5])
+        questions.append({
+            "id": f"orch_mop_branch_{slug}",
+            "category": "orchestration",
+            "question": (f"The MOP says '{text}' ({phase}) and then lists: {steps}. It never says what happens "
+                         f"when this does not hold.{outside} Which of these steps run when it holds, which run when "
+                         "it does not, and do any run in both cases?"),
+            "importance": "critical",
+            "input_type": "text",
+            "default_value": "",
+            "context": ("The MOP is read as a flat list, so the steps after a condition could belong to it, to an "
+                        "implied 'otherwise', or to every case. The workflow cannot guess this."),
+            "helper_text": "e.g. When it holds: copy + chmod. Otherwise: untar + chmod. Steps X, Y: always.",
+        })
+    return questions
+
+
 def build_available_data_summary(
     ciq_sheets: dict[str, dict],
     raw_artifacts: dict,

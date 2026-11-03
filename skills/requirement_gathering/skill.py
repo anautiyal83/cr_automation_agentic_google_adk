@@ -196,6 +196,12 @@ class RequirementGatheringSkill:
         # gaps: the documents cannot say how one column's value is derived from the other
         ciq_questions = [q for q in questionnaire.ciq_alternative_questions(self._ciq_sheets)
                          if q["id"] not in self._all_answers]
+        # MOP conditions whose other branch the MOP never describes (G-16): a question, not a guess
+        from skills.ciq_validation_json_gen.rules_baseline import read_ciq_rows
+        ciq_questions += [q for q in questionnaire.mop_branch_questions(
+                              (self._doc_extracted or {}).get("mop_commands") or [], self._ciq_sheets,
+                              read_ciq_rows(getattr(inp, "ciq_file_path", "") or "", self._ciq_sheets))
+                          if q["id"] not in self._all_answers]
         self._store_question_texts(ciq_questions)
         # Only the CIQ questions are asked on the paths below: their answers need no new round
         self._ciq_only_round = bool(ciq_questions)

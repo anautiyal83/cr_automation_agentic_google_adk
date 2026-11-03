@@ -34,3 +34,17 @@ def test_unasked_gap_kept_and_answers_sent_with_questions():
     assert s._analysis["overall_readiness"] == "PARTIAL"
     assert s._answers_text() == ("Q: How should files be transferred to the /tmp directory on the MRF node?\n"
                                  "A: sftp plugin in the framework")
+
+
+def test_mop_condition_without_other_branch_becomes_a_question():
+    # G-16: "If MRF_VERSION == 13.X.X.X" + copy/untar lines, no else — asked in step 1, not guessed in step 6
+    from skills.requirement_gathering.questionnaire import mop_branch_questions
+    mop = [{"phase": "Activity", "command": c} for c in (
+        "For each file:", "If MRF_VERSION == 13.X.X.X", "copy each file to the directory", "Untar the tar file")]
+    mop += [{"phase": "Rollback", "command": c} for c in ("Check backup", "IF YES: restore it", "IF NO: remove files")]
+    sheets = {"Node_Details": {"columns": ["NODE_NAME", "VER"]}}
+    rows = {"Node_Details": [{"NODE_NAME": "MRF1", "VER": "13.0.3.7"}, {"NODE_NAME": "MRF3", "VER": "17.0.3.7"}]}
+    qs = mop_branch_questions(mop, sheets, rows)
+    assert len(qs) == 1                                  # the rollback IF YES has its IF NO
+    assert "MRF3 = 17.0.3.7" in qs[0]["question"] and "'Untar the tar file'" in qs[0]["question"]
+    assert mop_branch_questions([{"phase": "A", "command": "change permission to 777 if required"}], sheets, rows) == []
