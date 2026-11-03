@@ -124,13 +124,48 @@ def _expected_coverage(requirements: dict) -> dict:
     """What the workflow must cover, from the requirements: phases and commands per node
     (LOCAL and NIAM helper entries are not nodes the workflow must log in to)."""
     phases = list((requirements.get("category_3_orchestration") or {}).get("phases") or [])
+    # Nodes the workflow logs in to: the declared ones. A command step 1 could not attribute
+    # ("unknown", MRF_ANNOUNCEMENT_LOADING) belongs to the only declared node, or to none —
+    # a node named "unknown" can never have steps (G-15)
+    declared = {str(n.get("name")) for n in (requirements.get("category_1_node_activity") or {}).get("nodes") or []
+                if isinstance(n, dict) and n.get("name") and str(n.get("name")).upper() != "LOCAL"
+                and not str(n.get("name")).lower().startswith("niam")}
     node_commands: dict[str, int] = {}
     for c in (requirements.get("category_2_commands") or {}).get("commands") or []:
         node = str(c.get("node") or "") if isinstance(c, dict) else ""
-        if node and node.upper() != "LOCAL" and not node.lower().startswith("niam"):
-            node_commands[node] = node_commands.get(node, 0) + 1
+        if not node or node.upper() == "LOCAL" or node.lower().startswith("niam"):
+            continue
+        if declared and node not in declared:
+            if len(declared) != 1:
+                continue
+            node = next(iter(declared))
+        node_commands[node] = node_commands.get(node, 0) + 1
     return {"phases": phases, "node_commands": node_commands,
-            "request_columns": _request_columns(requirements)}
+            "request_columns": _request_columns(requirements),
+            "record_columns": _record_columns(requirements)}
+
+
+def _record_columns(requirements: dict) -> dict:
+    """{"sheet", "columns", "node_fields"} of the CIQ JSON as step 3's json-output builder writes
+    it: record columns (``configSequences.N.records.M.data``) and node fields
+    (``${<TYPE>.<field>}``, e.g. MRF.VER); {} when the CIQ layout is not recognised."""
+    from skills.ciq_validation_json_gen.json_output_builder import build_json_output, node_fields
+    from skills.ciq_validation_json_gen.rules_baseline import read_ciq_rows
+    sheets = (requirements.get("doc_extracted") or {}).get("ciq_sheets") or {}
+    try:
+        tpl = build_json_output(sheets, read_ciq_rows("", sheets), requirements.get("uc_name") or "UC")
+        recs = tpl["data"]["crGroups"]["nodeGroups"]["configSequences"]["records"]
+    except (ValueError, KeyError, TypeError):
+        return {}
+    each = str(recs.get("_each", ""))
+    sheet = each.split(" WHERE ")[0]
+    link = each.split(" WHERE ", 1)[1].split("=")[0].strip() if " WHERE " in each else ""
+    rows = read_ciq_rows("", sheets).get(sheet) or []
+    # Columns every CIQ row fills: data the activity needs, so the workflow must use them
+    filled = [c for c in (recs.get("data") or {}) if c != link and rows and all(r.get(c) for r in rows)]
+    return {"sheet": sheet, "columns": list(recs.get("data") or {}), "link": link, "filled": filled,
+            "samples": {c: [r.get(c, "") for r in rows] for c in (recs.get("data") or {})},
+            "node_fields": node_fields(tpl)}
 
 
 def _request_columns(requirements: dict) -> dict[str, str]:
@@ -393,6 +428,15 @@ class NetworkConfigGenSkill:
         for sname, sdata in ciq_sheets.items():
             cols = sdata.get("columns", sdata.get("headers", []))
             ciq_lines.append(f'  Sheet "{sname}": [{", ".join(cols[:15])}]')
+        rec = _record_columns(req)
+        if rec.get("columns"):
+            ciq_lines.append(f'  CIQ JSON records (${{configSequences.0.records.0.data.<Col>}}) come from sheet '
+                             f'"{rec["sheet"]}" and hold ONLY: {", ".join(rec["columns"])} — use these per-row '
+                             'values (paths, file names, parameters) instead of fixed values from the MOP')
+        for ntype, fields in (rec.get("node_fields") or {}).items():
+            ciq_lines.append(f'  Node values of the current {ntype} node: '
+                             + ", ".join(f"${{{ntype}.{f}}}" for f in fields)
+                             + " (use them for node-specific decisions, e.g. by version inside a case)")
 
         # Raw MOP (truncated)
         mop_text = wf_hints.get("raw_mop_text", "")

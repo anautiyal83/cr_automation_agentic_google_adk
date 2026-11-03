@@ -27,7 +27,12 @@ def test_node_targets_mrf_layout():
     assert ng["_each"] == "DISTINCT INDEX.GROUP WHERE INDEX.CRGROUP = $cr AS $group"
     assert ng["email"] == "INDEX.EMAIL WHERE INDEX.GROUP = $group"
     assert ng["nodes"] == {"_each": "INDEX WHERE GROUP = $group", "node": "NODE",
-                           "MRF": {"niamID-1": "Node_Details.'NIAM NAME' WHERE Node_Details.NODE_NAME = NODE"}}
+                           "MRF": {"niamID-1": "Node_Details.'NIAM NAME' WHERE Node_Details.NODE_NAME = NODE",
+                                   # node values as ${MRF.<field>} (G-15)
+                                   "NODE_TYPE": "Node_Details.'NODE TYPE' WHERE Node_Details.NODE_NAME = NODE",
+                                   "NODE_NAME": "Node_Details.NODE_NAME WHERE Node_Details.NODE_NAME = NODE"}}
+    from skills.ciq_validation_json_gen.json_output_builder import node_fields
+    assert node_fields(t) == {"MRF": ["NODE_TYPE", "NODE_NAME"]}
     assert ng["configSequences"]["records"]["_each"] == "ANNOUNCEMENT_FILES WHERE GROUP = $group"
 
 

@@ -31,6 +31,27 @@ def split_uc_name(uc_name: str) -> tuple[str, str]:
     return (m.group(1), m.group(2)) if m else (uc_name, uc_name)
 
 
+def node_field_key(col: str) -> str:
+    """JSON key of a node-sheet column on the node entry: ``NODE TYPE`` → ``NODE_TYPE``."""
+    return re.sub(r"\s+", "_", col.strip())
+
+
+def node_fields(template: dict) -> dict[str, list[str]]:
+    """{node type key: [field keys other than niamID-n]} of a built template (step 6 uses them as
+    ``${<TYPE>.<field>}``)."""
+    try:
+        nodes = template["data"]["crGroups"]["nodeGroups"]["nodes"]
+    except (KeyError, TypeError):
+        return {}
+    entries = [nodes] if isinstance(nodes, dict) else list(nodes or [])
+    out: dict[str, list[str]] = {}
+    for e in entries:
+        for k, v in e.items():
+            if isinstance(v, dict) and not k.startswith("_"):
+                out.setdefault(k, []).extend(f for f in v if not f.startswith("niamID-") and f not in out.get(k, []))
+    return {k: v for k, v in out.items() if v}
+
+
 def _q(col: str) -> str:
     """Column reference in a lookup expression: quoted when it has a space ('NIAM NAME')."""
     return f"'{col}'" if " " in col else col
@@ -105,11 +126,17 @@ def build_json_output(ciq_sheets: dict, rows: dict, uc_name: str, hints: dict | 
         key = types[0] if len(types) == 1 else node_type
         if len(types) == 1:
             node_type = key
+        entry = {f"niamID-{i}": f"{node}.{_q(nc)} WHERE {node}.{_q(node_name_col)} = {index_node_col}"
+                 for i, nc in enumerate(niam_cols, 1)}
+        # The node's other CIQ values (VER, Circle, …) as ${<TYPE>.<field>} — the records hold only
+        # the data sheet, so an MRF version check had nothing to compare (G-15, JAR-verified)
+        for c in ncols:
+            if c not in niam_cols:
+                entry[node_field_key(c)] = f"{node}.{_q(c)} WHERE {node}.{_q(node_name_col)} = {index_node_col}"
         nodes = {
             "_each": f"{index} WHERE {group_col} = {var}",
             "node": index_node_col,
-            key: {f"niamID-{i}": f"{node}.{_q(nc)} WHERE {node}.{_q(node_name_col)} = {index_node_col}"
-                  for i, nc in enumerate(niam_cols, 1)},
+            key: entry,
         }
     else:
         # One target per group; each node type of the node sheet (its type column) is a sub-key

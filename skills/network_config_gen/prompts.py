@@ -88,6 +88,11 @@ CRITICAL RULES:
   field (--ciq_vni '${configSequences.0.records.0.data.VNI}').
   Join conditions with && and || (never `and` / `or`: the step is then always skipped):
   when: "configSequences.0.records.0.data.<ColA> == '' && configSequences.0.records.0.data.<ColB> != ''"
+  Conditions only COMPARE values (==, !=, <, >): no method calls (.endsWith(), .matches()) and no
+  `!` — such a condition is always false. Decide inside the command instead:
+  case "${configSequences.0.records.0.data.<Col>}" in *.tar) tar -xf …;; *) cp …;; esac
+- ${configSequences.0.records.0.data.<Col>} exists only for the CIQ JSON RECORD columns listed in
+  the CIQ section; columns of other sheets (node details, index) resolve to empty.
 - An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an
   identifier given directly or a second identifier it must be looked up from): resolve it
   ONCE into a registered variable, then use only that variable in every later command:

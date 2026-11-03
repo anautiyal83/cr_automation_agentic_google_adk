@@ -127,6 +127,11 @@ def clean_yaml_response(text: str) -> str:
     return sanitize_yaml(cleaned)
 
 
+# `key: 'text \' more'` — YAML single quotes escape a quote as '' (a backslash is literal), so
+# `regex: 'tar: Removing leading `/\''` broke the whole workflow (G-15)
+_SQ_BACKSLASH_QUOTE = re.compile(r"(?m)^(\s*(?:- )?[\w.-]+:[ \t]*)'((?:[^'\n]|\\'|'')*\\'(?:[^'\n]|\\'|'')*)'[ \t]*$")
+
+
 _PLAIN_KEY_LINE = re.compile(r"^(\s*(?:- )?)[\w.-]+\s*:\s+(?![\"'\[{|>&*!#])\S")
 
 
@@ -161,6 +166,7 @@ def sanitize_yaml(text: str) -> str:
     text = _REC_ROW.sub(_rec_row_column, text)
     text = _SUBSCRIPT_COLUMN.sub(_dot_column, text)
     text = _QUOTED_COLUMN.sub(_unquote_column, text)
+    text = _SQ_BACKSLASH_QUOTE.sub(lambda m: m.group(1) + "'" + m.group(2).replace("\\'", "''") + "'", text)
     fixed_lines = []
     for line in _fold_plain_continuations(text.split("\n")):
         stripped = line.lstrip()
@@ -275,6 +281,7 @@ def fix_workflow(yaml_text: str) -> str:
     rename_expr_vars(parsed.get("phases", {}), renames)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
+    shell_guard_conditions(parsed)
     fix_expression_placeholders(parsed)
     fix_missing_downloads(parsed)
     drop_session_exits(parsed)
@@ -848,6 +855,98 @@ def _fix_criteria_expr(cmd: dict) -> None:
 
 
 _EXPRESSION_PLACEHOLDER = re.compile(r"\$\{([^{}]*(?:\?|!=|==|\|\||&&)[^{}]*)\}")
+
+
+SKIPPED_BY_CONDITION = "SKIPPED_BY_CONDITION"
+_COND_OPERAND = r"\$\{[^{}]+\}|[A-Za-z_][\w.\-]*"
+_COND_METHOD = re.compile(rf"({_COND_OPERAND})\.(endsWith|startsWith|contains|matches)\(\s*'([^']*)'\s*\)")
+_COND_COMPARE = re.compile(rf"({_COND_OPERAND})\s*(==|!=)\s*('[^']*'|null)")
+_COND_EXPR_PLACEHOLDER = re.compile(r"\$\{([^{}]*(?:==|!=|\.\w+\()[^{}]*)\}")
+
+
+def _cond_operand(op: str) -> str:
+    op = op.strip()
+    return op if op.startswith("${") else "${" + op + "}"
+
+
+def _glob(lit: str) -> str:
+    """Bash pattern text: literal parts quoted, version-mask segments (13.X.X.X) as *."""
+    parts = re.split(r"(?<![A-Za-z0-9])X(?![A-Za-z0-9])", lit)
+    return "*".join(f"'{p}'" if p else "" for p in parts)
+
+
+def condition_to_bash(cond: str) -> str:
+    """``x.endsWith('.tar') && VER == '13.X.X.X'`` → ``[[ "${x}" == *".tar" && "${VER}" == "13."* ]]``;
+    '' when the condition holds something this translation does not cover."""
+    c = _COND_EXPR_PLACEHOLDER.sub(lambda m: m.group(1), cond.strip())
+    # x.endsWith('.tar') == false → !x.endsWith('.tar'); == true / != false → the call itself
+    call = rf"(?:{_COND_OPERAND})\.(?:endsWith|startsWith|contains|matches)\(\s*'[^']*'\s*\)"
+    c = re.sub(rf"({call})\s*(==|!=)\s*(true|false)\b",
+               lambda m: m.group(1) if (m.group(2) == "==") == (m.group(3) == "true") else "!" + m.group(1), c)
+
+    def method(m):
+        op, name, lit = _cond_operand(m.group(1)), m.group(2), m.group(3)
+        if name == "matches":
+            # bash ERE has no \d \w \s
+            ere = lit.replace("\\d", "[0-9]").replace("\\w", "[A-Za-z0-9_]").replace("\\s", "[[:space:]]")
+            return f"'{op}' =~ ^({ere})$"
+        pat = {"endsWith": f"*'{lit}'", "startsWith": f"'{lit}'*", "contains": f"*'{lit}'*"}[name]
+        return f"'{op}' == {pat}"
+
+    def compare(m):
+        op, oper, lit = _cond_operand(m.group(1)), m.group(2), m.group(3)
+        lit = "" if lit == "null" else lit[1:-1]
+        return f"'{op}' {oper} {_glob(lit) or chr(39) * 2}"
+
+    c = _COND_METHOD.sub(method, c)
+    c = _COND_COMPARE.sub(compare, c)
+    c = re.sub(r"!(?!=)\s*", "! ", c)  # [[ ! 'a' == b ]] negates; !'a' is the string "!a"
+    # Everything left must be bash test syntax: quoted operands, operators, ! ( ) && ||
+    # Single quotes throughout: LOCAL commands break on any double quote (DEP-44)
+    leftover = re.sub(r"'[^']*'|\$\{[^}]*\}|=~ \^\([^)]*\)\$|==|!=|&&|\|\||[!()*\s]", "", c)
+    return f"[[ {c} ]]" if not leftover else ""
+
+
+def shell_guard_conditions(parsed: dict) -> int:
+    """A ``when`` / ``skip_when`` with a method call (``.endsWith('.tar')``), ``!`` or a version
+    mask is always false in the framework — both branches of MRF_ANNOUNCEMENT_LOADING's
+    copy-or-untar were skipped (G-15, JAR-verified). Such a condition becomes a bash test around
+    the command; the not-taken branch prints SKIPPED_BY_CONDITION, which its success regex accepts."""
+    from .validator import _CONDITION_CALL
+    changed = 0
+
+    def walk(steps):
+        nonlocal changed
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            walk(step.get("steps"))
+            for key in ("when", "skip_when"):
+                cond = str(step.get(key) or "")
+                if not cond or not isinstance(step.get("send"), str):
+                    continue
+                plain = re.sub(r"'[^']*'", "''", cond)
+                if not (_CONDITION_CALL.search(plain) or re.search(r"'[^']*(?<![A-Za-z0-9])X(?![A-Za-z0-9])", cond)):
+                    continue
+                test = condition_to_bash(cond)
+                if not test:
+                    continue
+                if key == "skip_when":
+                    test = f"! {test}"
+                body = step["send"].strip()
+                step["send"] = (f"if {test}; then\n{body}\nelse echo {SKIPPED_BY_CONDITION}; fi" if "\n" in body
+                                else f"if {test}; then {body}; else echo {SKIPPED_BY_CONDITION}; fi")
+                del step[key]
+                for crit in _criteria_blocks(step):
+                    if isinstance(crit.get("regex"), str) and crit["regex"]:
+                        crit["regex"] = f"(?:{crit['regex']})|{SKIPPED_BY_CONDITION}"
+                changed += 1
+
+    for body in (parsed.get("phases") or {}).values():
+        walk(body.get("steps") if isinstance(body, dict) else body)
+    if changed:
+        logger.info("Moved %d condition(s) with method calls / version masks into bash tests", changed)
+    return changed
 
 
 def fix_expression_placeholders(parsed: dict) -> int:

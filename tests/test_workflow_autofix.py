@@ -339,3 +339,53 @@ def test_absence_check_runs_before_the_upload_that_produces_the_file():
     assert order_absence_checks(wf) == 1
     assert wf["phases"]["a"]["steps"] == [absent, upload, present]
     assert order_absence_checks(wf) == 0
+
+
+def test_condition_with_method_call_or_negation_rejected():
+    # G-15: x.endsWith('.tar') and !x.endsWith('.tar') were both skipped by the JAR
+    from skills.network_config_gen.validator import check_condition_syntax
+    d = "configSequences.0.records.0.data."
+    wf = {"phases": {"a": {"steps": [
+        {"node": "MRF", "send": "tar -xf f", "when": d + "INPUT_FILE.endsWith('.tar')"},
+        {"node": "MRF", "send": "cp f", "when": "!" + d + "INPUT_FILE.endsWith('.tar')"},
+        {"node": "MRF", "send": "ok", "when": d + "IFC != 'UNCHANGED' && " + d + "IFC != ''"}]}}}
+    assert len(check_condition_syntax(wf)) == 2
+
+
+def test_record_columns_only():
+    from skills.network_config_gen.validator import check_record_columns
+    wf = {"phases": {"a": {"steps": [
+        {"node": "MRF", "send": "cp /tmp/${configSequences.0.records.0.data.INPUT_FILE} /a/${configSequences.0.records.0.data.Circle}/",
+         "when": "configSequences.0.records.0.data.VER == '13'"}]}}}
+    errs = check_record_columns(wf, {"sheet": "ANNOUNCEMENT_FILES", "columns": ["GROUP", "INPUT_FILE"]})
+    assert sorted(e.split("'")[1] for e in errs) == ["Circle", "VER"]
+
+
+def test_unattributed_commands_count_for_the_only_node():
+    from skills.network_config_gen.skill import _expected_coverage
+    req = {"category_1_node_activity": {"nodes": [{"name": "MRF"}]},
+           "category_2_commands": {"commands": [{"cmd": "a", "node": "MRF"}, {"cmd": "b", "node": "unknown"}]}}
+    assert _expected_coverage(req)["node_commands"] == {"MRF": 2}
+
+
+def test_method_conditions_become_bash_tests():
+    # G-15: method calls / ! / version masks in `when` are always false in the JAR
+    from skills.network_config_gen.autofix import condition_to_bash, shell_guard_conditions
+    d = "configSequences.0.records.0.data."
+    assert condition_to_bash(d + "INPUT_FILE.endsWith('.tar') == false && MRF.VER == '13.X.X.X'") == \
+        "[[ ! '${" + d + "INPUT_FILE}' == *'.tar' && '${MRF.VER}' == '13.'*'.'*'.'* ]]"
+    assert condition_to_bash(d + "IFC.matches('" + "\\" + "d+')") == "[[ '${" + d + "IFC}' =~ ^([0-9]+)$ ]]"
+    assert condition_to_bash("foo(bar) > 3") == ""          # not translatable: left for the validator
+    wf = {"phases": {"a": {"steps": [{"node": "MRF", "send": "tar -xf f", "when": d + "INPUT_FILE.endsWith('.tar')",
+                                      "validation": {"success": {"criteria": {"regex": "ok"}}}}]}}}
+    assert shell_guard_conditions(wf) == 1
+    step = wf["phases"]["a"]["steps"][0]
+    assert "when" not in step and step["send"].startswith("if [[ '${" + d + "INPUT_FILE}' == *'.tar' ]]; then tar -xf f;")
+    assert '"' not in step["send"]                           # LOCAL commands break on double quotes
+    assert step["validation"]["success"]["criteria"]["regex"] == "(?:ok)|SKIPPED_BY_CONDITION"
+
+
+def test_backslash_quote_in_single_quoted_scalar_repaired():
+    from skills.network_config_gen.autofix import sanitize_yaml
+    bad = "a:\n  regex: 'tar: Removing leading `/" + "\\" + "''\n"
+    assert yaml.safe_load(sanitize_yaml(bad))["a"]["regex"] == "tar: Removing leading `/'"

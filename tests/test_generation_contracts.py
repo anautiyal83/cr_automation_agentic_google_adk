@@ -328,7 +328,7 @@ def test_expected_coverage_skips_local_and_niam_entries():
            "category_2_commands": {"commands": [{"node": "RDS"}, {"node": "LOCAL"}, {"node": "niam_lookup"},
                                                 {"node": "RDS"}]}}
     assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2},
-                                     "request_columns": {}}
+                                     "request_columns": {}, "record_columns": {}}
 
 
 def test_cache_is_stale_after_code_or_input_change(tmp_path, monkeypatch):

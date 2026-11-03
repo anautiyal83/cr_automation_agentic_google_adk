@@ -80,13 +80,16 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
                     step_errors = _validate_step(step, j, phase_name, known_nodes, known_registers)
                     errors.extend(step_errors)
 
-    errors.extend(check_placeholders(parsed))
+    errors.extend(check_placeholders(parsed, node_fields=((expected or {}).get("record_columns") or {}).get("node_fields")))
     errors.extend(check_file_flows(parsed))
     errors.extend(check_expr_vars(parsed))
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
     errors.extend(check_unbalanced_quotes(parsed))
+    errors.extend(check_condition_syntax(parsed))
+    errors.extend(check_record_columns(parsed, (expected or {}).get("record_columns")))
+    errors.extend(check_unused_record_columns(parsed, (expected or {}).get("record_columns")))
     errors.extend(check_completeness(parsed, expected))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
@@ -247,6 +250,77 @@ def check_request_inputs(parsed: dict, ciq_sheets: dict, request_columns: dict[s
                 f"LOCAL step '{send[:70]}' builds the request uploaded to the node, but is not given "
                 f"'{col}' — the sample request carries it ({value}). Pass it to the script{via}; a script "
                 "must never fall back to a sample value.")
+    return problems
+
+
+_RECORD_REF = re.compile(r"configSequences\.\d+\.records\.\d+\.data\.([^}=!<>&|'\"\n]+?)\s*(?=\}|==|!=|>=|<=|[<>]|&&|\|\||$)")
+
+
+def check_record_columns(parsed: dict, record_columns: dict | None) -> list[str]:
+    """``configSequences…records…data.<Col>`` must be a column of the CIQ JSON records (the
+    data sheet). MRF_ANNOUNCEMENT_LOADING used Circle/VER from Node_Details: empty, so every
+    path became ``…/audioclips//PREPAID/`` (G-15, JAR-verified)."""
+    cols = list((record_columns or {}).get("columns") or [])
+    if not cols:
+        return []
+    sheet = (record_columns or {}).get("sheet") or "the data sheet"
+    bad: dict[str, str] = {}
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        for key in ("send", "when", "skip_when"):
+            for m in _RECORD_REF.finditer(str(step.get(key) or "")):
+                col = m.group(1).strip()
+                if col not in cols:
+                    bad.setdefault(col, f"{phase_name}: {str(step.get('send') or step.get('command_description'))[:60]}")
+    return [f"CIQ column '{c}' (step {where}) is not in the CIQ JSON records — they hold only {sheet} columns "
+            f"{cols}; any other column resolves to empty. Use those columns (or a value registered from the node)."
+            for c, where in bad.items()]
+
+
+_CONDITION_CALL = re.compile(r"\.\w+\s*\(|(?<![!=<>])!(?!=)")
+
+
+def check_unused_record_columns(parsed: dict, record_columns: dict | None) -> list[str]:
+    """A record column every CIQ row fills is data the activity needs: MRF_ANNOUNCEMENT_LOADING
+    ignored MRF_DESTINATION_PATH and wrote files to a path built from GROUP (G-15)."""
+    filled = list((record_columns or {}).get("filled") or [])
+    if not filled:
+        return []
+    text = "\n".join(_iter_strings(parsed.get("phases") or {}))
+    unused = [c for c in filled if f"data.{c}" not in text]
+    sheet = (record_columns or {}).get("sheet") or "the data sheet"
+    samples = (record_columns or {}).get("samples") or {}
+    problems = []
+    for c in unused:
+        msg = (f"CIQ column '{c}' ({sheet}) is filled for every CIQ row but the workflow never uses it — use "
+               f"${{configSequences.0.records.0.data.{c}}} where the MOP needs that value instead of a fixed or "
+               "derived one")
+        vals = [v for v in samples.get(c, []) if v][:3]
+        if vals:
+            msg += f". CIQ values: {', '.join(vals)}"
+            # A path column next to the paths the workflow builds itself (the MOP's example path)
+            if all(v.startswith("/") for v in vals):
+                prefix = "/".join(vals[0].split("/")[:4])
+                built = sorted({p.rstrip("/") for p in re.findall(r"/[^\s'\";|&]+", text) if p.startswith(prefix)})
+                if built:
+                    msg += f" — the workflow builds {', '.join(built[:2])} instead"
+        problems.append(msg)
+    return problems
+
+
+def check_condition_syntax(parsed: dict) -> list[str]:
+    """``when``/``skip_when`` compare operands with ==, !=, <, >, <=, >= joined by && / ||.
+    A method call (``x.endsWith('.tar')``) or ``!`` makes the condition false — with
+    ``x.endsWith(…)`` and ``!x.endsWith(…)`` both branches were skipped (G-15, JAR-verified)."""
+    problems = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        for key in ("when", "skip_when"):
+            cond = str(step.get(key) or "")
+            if cond and _CONDITION_CALL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", cond)):
+                problems.append(
+                    f"Step '{str(step.get('send') or step.get('command_description'))[:60]}' ({phase_name}): {key} "
+                    f"'{cond[:90]}' uses a method call or '!' — the framework only compares values (==, !=, <, >) "
+                    "joined by && / ||, so this is always false. Decide inside the command instead "
+                    "(e.g. case \"$f\" in *.tar) tar -xf …;; *) cp …;; esac) or compare whole values.")
     return problems
 
 
@@ -824,7 +898,8 @@ _PLACEHOLDER = re.compile(r"\$\{([^{}]+)\}")
 _NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")
 
 
-def check_placeholders(parsed: dict, runtime_params: list[str] | None = None) -> list[str]:
+def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
+                       node_fields: dict[str, list[str]] | None = None) -> list[str]:
     """Report ``${…}`` placeholders the cli-automation JAR cannot resolve.
 
     ``runtime_params`` (default: config ``execution.runtime_params``) are passed by the
@@ -856,6 +931,9 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None) ->
             if "." in expr:
                 if root in _DOTTED_ROOTS or (root in node_names and re.match(
                         rf"^{re.escape(root)}\.niamID-\d+$", expr)):
+                    continue
+                # Node values the CIQ JSON carries on the node entry (${MRF.VER})
+                if expr.split(".", 1)[1] in ((node_fields or {}).get(root) or []):
                     continue
                 problems.setdefault(m.group(0), "unknown placeholder root "
                                     f"'{root}' (not a node NIAM ID, configSequences, ENV, SECRET or vars)")
