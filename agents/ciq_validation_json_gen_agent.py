@@ -63,6 +63,7 @@ class CiqValidationJsonGenAgent(BaseAgent):
                 uc_name=uc_name,
                 requirements=requirements,
                 generation_hints=requirements.get("generation_hints", {}),
+                ciq_file_path=state.get("ciq_file_path", ""),
             )
             output = await skill.generate(inp)
             # Store skill instance for potential regenerate()

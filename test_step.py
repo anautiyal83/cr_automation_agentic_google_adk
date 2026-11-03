@@ -149,11 +149,17 @@ async def test_skill(skill_name: str, run_id: str):
     if req_file.exists():
         requirements = json.loads(req_file.read_text(encoding="utf-8"))
 
-    uc_name = "UC"
+    uc_name, ciq_file_path = "UC", ""
     for f in run_dir.glob("*.yaml"):
         if "validation" not in f.name and "json-output" not in f.name and "simulator" not in f.name:
             uc_name = f.stem
             break
+    from storage.db import init_database
+    rows = await (await init_database("data/pipeline.db")).execute(
+        "SELECT d.uc_name, d.ciq_file_path FROM pipeline_runs r "
+        "JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?", (run_id,))
+    if rows:
+        uc_name, ciq_file_path = rows[0]["uc_name"] or uc_name, rows[0]["ciq_file_path"] or ""
 
     llm_fn = get_llm_fn(config)
     print(f"\nTesting skill: {skill_name}")
@@ -171,11 +177,17 @@ async def test_skill(skill_name: str, run_id: str):
             uc_name=uc_name,
             requirements=requirements,
             generation_hints=requirements.get("generation_hints", {}),
+            ciq_file_path=ciq_file_path,
         ))
         elapsed = time.monotonic() - t0
         print(f"Status: {output.status} ({elapsed:.1f}s)")
         print(f"Validation rules: {len(output.validation_rules_yaml)} chars, {len(output.validation_errors)} errors")
         print(f"JSON output: {len(output.json_output_yaml)} chars, {len(output.json_output_errors)} errors")
+        out = Path("data/step_tests") / f"{run_id[:8]}_{time.strftime('%Y%m%d_%H%M%S')}_ciq"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{uc_name}_validation-rules.yaml").write_text(output.validation_rules_yaml, encoding="utf-8")
+        (out / f"{uc_name}_json-output.yaml").write_text(output.json_output_yaml, encoding="utf-8")
+        print(f"Written to {out} (CIQ: {ciq_file_path or 'none'})")
 
     elif skill_name == "network_config_gen":
         from skills.network_config_gen import NetworkConfigGenSkill, SkillInput
