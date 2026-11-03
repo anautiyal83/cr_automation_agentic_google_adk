@@ -86,6 +86,7 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
+    errors.extend(check_unbalanced_quotes(parsed))
     errors.extend(check_completeness(parsed, expected))
     if command_samples:
         errors.extend(check_against_samples(parsed, command_samples))
@@ -247,6 +248,16 @@ def check_request_inputs(parsed: dict, ciq_sheets: dict, request_columns: dict[s
                 f"'{col}' — the sample request carries it ({value}). Pass it to the script{via}; a script "
                 "must never fall back to a sample value.")
     return problems
+
+
+def check_unbalanced_quotes(parsed: dict) -> list[str]:
+    """A command whose quotes don't close makes the shell wait for more input: the step never
+    gets its prompt back and times out (DEP-50)."""
+    from .autofix import unbalanced_quotes
+    return [f"Step '{str(step.get('send'))[:80]}' ({phase_name}): its quotes are not balanced — the shell "
+            "would wait for the closing quote and the step hangs. Close or remove the stray quote."
+            for phase_name, step in _iter_steps(parsed.get("phases") or {})
+            if isinstance(step.get("send"), str) and unbalanced_quotes(step["send"])]
 
 
 def check_script_arguments(parsed: dict) -> list[str]:

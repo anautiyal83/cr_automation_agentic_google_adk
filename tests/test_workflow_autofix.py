@@ -63,6 +63,43 @@ def test_placeholder_rewrites():
     assert fix_placeholders("${node_row.PGW.NIAM_NAME2}") == "${PGW.niamID-2}"
     assert fix_placeholders("${register.a} ${env.b}") == "${a} ${b}"
     assert fix_placeholders({"k": ["${{x}}"]}, {"x": "y"}) == {"k": ["${y}"]}
+    # DEP-48: subscript form, in placeholders and bare `when` paths
+    assert fix_placeholders("echo ${configSequences.0.records.0.data['Test IMSI']}") == \
+        "echo ${configSequences.0.records.0.data.Test IMSI}"
+    assert fix_placeholders("configSequences.0.records.0.data[\"Test MSISDN\"] != ''") == \
+        "configSequences.0.records.0.data.Test MSISDN != ''"
+
+
+def test_wrapped_plain_value_with_colon_parses():
+    # DEP-49: continuation line of a plain scalar holds " : " → unparsable before folding
+    text = ("phases:\n  a:\n    steps:\n    - node: LOCAL\n"
+            "      send: python create_xml.py --vni '${configSequences.0.records.0.data.VNI}'\n"
+            "        --imsi '${resolvedImsi != null ? resolvedImsi : configSequences.0.records.0.data.Test IMSI}'\n"
+            "      command_description: 'Activity: build'\n")
+    step = yaml.safe_load(fix_workflow(text))["phases"]["a"]["steps"][0]
+    assert step["send"].startswith("python create_xml.py --vni '${configSequences.0.records.0.data.VNI}' --imsi '")
+    assert step["command_description"] == "Activity: build"
+
+
+def test_stray_trailing_quote_is_dropped():
+    # DEP-50: the shell waited for the closing quote and the step timed out
+    from skills.network_config_gen.autofix import drop_stray_quote
+    from skills.network_config_gen.validator import check_unbalanced_quotes
+    cmd = "ldapsearch -D 'cn=x' -b \"imsi=${resolvedImsi},dc=IMSI\" -s sub objectclass=*"
+    assert drop_stray_quote(cmd + '"') == cmd
+    assert drop_stray_quote(cmd) == cmd
+    assert drop_stray_quote("echo \"a 'b\"") == "echo \"a 'b\""
+    bad = {"phases": {"a": {"steps": [{"node": "RDS", "send": "grep \"x y"}, {"node": "RDS", "send": cmd}]}}}
+    assert len(check_unbalanced_quotes(bad)) == 1
+
+
+def test_subscript_column_in_single_quoted_scalar():
+    text = ("phases:\n  a:\n    steps:\n    - node: RDS\n"
+            "      when: 'configSequences.0.records.0.data[''Test IMSI''] != '''''\n"
+            "      send: echo ${configSequences.0.records.0.data['Test IMSI']}\n")
+    step = yaml.safe_load(fix_workflow(text))["phases"]["a"]["steps"][0]
+    assert step["when"] == "configSequences.0.records.0.data.Test IMSI != ''"
+    assert step["send"] == "echo ${configSequences.0.records.0.data.Test IMSI}"
 
 
 def test_nodes_use_niam_id_placeholders():

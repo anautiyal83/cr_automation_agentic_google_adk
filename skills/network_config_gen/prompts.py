@@ -65,7 +65,7 @@ CRITICAL RULES:
 - Never put ${...} placeholders inside a validation or register regex: regexes are not
   interpolated (only send is). Match the shape of the value instead (digits, a word).
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
-  quoted (quoted names resolve to empty) — in `when` expressions too:
+  quoted or subscripted (data['Col'] / data.'Col' resolve to empty) — in `when` expressions too:
   when: "configSequences.0.records.0.data.Test Column != ''"   (a quoted name is always false)
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)

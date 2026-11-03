@@ -139,7 +139,7 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   field (autofix expands `--x '{'K': '${…}'}'` into `--x_k '${…}'`)
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
-- CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty); no `${…}` inside regexes (not interpolated)
+- CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)
 - Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
   step 9 passes their test values as `--var`
 - Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
