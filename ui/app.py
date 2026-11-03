@@ -1013,7 +1013,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                         ).props("dense flat bordered").classes("w-full")
 
                     with ui.card().classes("cr-card-inner p-3"):
-                        card_title("LLM Usage (current session)", "analytics")
+                        card_title("LLM Usage by Step", "analytics")
                         llm_table = ui.table(
                             columns=[
                                 {"name": "step", "label": "Step", "field": "step", "align": "left", "sortable": True},

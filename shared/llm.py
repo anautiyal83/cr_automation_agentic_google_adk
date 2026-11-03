@@ -6,15 +6,45 @@ that the pipeline already depends on.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Track LLM usage for the usage stats page
-_usage_log: list[dict] = []
+# Track LLM usage for the usage stats page. Kept in data/llm_usage.jsonl as well: the in-memory
+# list alone was empty after every server restart (LLM Usage page / dashboard showed nothing)
+_USAGE_FILE = Path(__file__).resolve().parent.parent / "data" / "llm_usage.jsonl"
+
+
+def _load_usage() -> list[dict]:
+    try:
+        lines = _USAGE_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+_usage_log: list[dict] = _load_usage()
+
+
+def _record_usage(entry: dict) -> None:
+    _usage_log.append(entry)
+    try:
+        _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_USAGE_FILE, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        logger.debug("LLM usage not persisted: %s", e)
 
 # Current context — set by the pipeline before each agent runs
 _current_context: dict[str, str] = {"run_id": "", "uc_name": "", "step": ""}
@@ -151,7 +181,7 @@ async def call_llm(
     total_tok = getattr(usage, "total_tokens", 0)
     cost = _estimate_cost(model, prompt_tok, comp_tok)
 
-    _usage_log.append({
+    entry = {
         "model": model,
         "prompt_tokens": prompt_tok,
         "completion_tokens": comp_tok,
@@ -162,7 +192,8 @@ async def call_llm(
         "run_id": _current_context.get("run_id", ""),
         "uc_name": _current_context.get("uc_name", ""),
         "step": _current_context.get("step", ""),
-    })
+    }
+    _record_usage(entry)
 
     if attempt > 0:
         logger.info("LLM call succeeded after %d retries (%.1fs total)", attempt, elapsed)
@@ -192,5 +223,9 @@ def get_usage_stats() -> list[dict]:
 
 
 def clear_usage_stats():
-    """Clear the usage log."""
+    """Clear the usage log (memory and data/llm_usage.jsonl)."""
     _usage_log.clear()
+    try:
+        _USAGE_FILE.unlink(missing_ok=True)
+    except OSError as e:
+        logger.debug("LLM usage file not removed: %s", e)
