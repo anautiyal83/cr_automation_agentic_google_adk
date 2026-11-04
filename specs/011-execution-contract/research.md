@@ -12,7 +12,6 @@ execution report JSON + console log. Script: scratchpad `probe_contract.py` (cas
 | E004b rollback phase naming | after a stop: `name: RollbackConfiguration` / `Restore previous state` (key `rollbackConfiguration`) / both without "rollback" | Runs only with "rollback" in `name` (N1 ✔, N2 ✘, N3 ✘) — the phase **name** must contain "Rollback" |
 | E005 `--var ROLLBACK_ONLY=true` | all phases `when: ROLLBACK_ONLY != 'true'`, rollback `when: ROLLBACK_REQUIRED == 'true' \|\| ROLLBACK_ONLY == 'true'` | Only the rollback phase ran; overall SUCCESS ✔ |
 | E006 "every item" | `register: [{regex: '(?m)^NODE \d+', loop: true, count_var: TOTAL}, {regex: '(?m)^NODE \d+.*Link UP', loop: true, count_var: OKN}]`, `expr: OKN == TOTAL && TOTAL > 0` | All UP → success; one DOWN → validation failed ✔ |
-
 | E007 parentheses in `when` | phase `when: "(A == 'true' \|\| B == 'true') && C != ''"` | **Not supported**: the phase never runs, whatever the values ✘ |
 | E008 precedence | `A == 'true' && C != '' \|\| B == 'true' && C != ''` | `&&` binds tighter than `\|\|` (all four value combinations as expected) ✔ |
 | E009 JAR acceptance | PGW control workflow + `structure.apply` (contract) → `generate` | MOP generated; validator errors unchanged (flat form) ✔ |
