@@ -35,4 +35,4 @@
 
 ## Shared by both UCs
 
-- P009-06 "every item" checks (MRF M-6, PGW G-6); P009-03 failure → stop/rollback flags (MRF M-1/M-2, PGW G-1)
+- P009-03 / P009-06 / P009-12 / P009-18 (regex questions) → **[spec 011 execution contract](../011-execution-contract/spec.md)** (user rules 2026-11-04)

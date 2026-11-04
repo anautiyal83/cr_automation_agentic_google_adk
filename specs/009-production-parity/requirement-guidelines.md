@@ -33,6 +33,10 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 
 ## 3. MOP
 
+> **Default rules** ([spec 011](../011-execution-contract/spec.md)) apply unless the MOP says otherwise: health checks run
+> completely; a failed pre-health check or backup aborts everything after it; a failed activity step stops the activity
+> and starts rollback if the node was changed; `ROLLBACK_ONLY=true` runs only the rollback. State only the exceptions.
+
 - **Phases, in this order and with these names**: Pre-health check · Backup · Activity · Activity post-check ·
   Post-health check · Rollback · Rollback post-check. Do not list rollback steps under another phase heading (M-1).
 - **Every step**: the exact command (no prose like "copy each file"), the node and the user it runs as, the
@@ -57,6 +61,7 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - **Report**: what the report contains and who receives it (M-11).
 
 ## 4. Command output transcripts
+- **Describe checks as text, never as regexes** — "the line shows `Link UP`, for every remote node"; the pipeline builds the pattern.
 - **Never write regexes for the pipeline** — give the real output; the pipeline derives patterns (a hand-written `Updates Rejected:\s*0…` did not match the real table, PGW Q-2).
 
 - One transcript per node and user, **prompts included**, for every command in the MOP: health checks, listings,
