@@ -15,3 +15,6 @@
 - ana (analyst role stored before spec 008): sidebar Dashboard, Live Run, Pipeline Queue | Run Artifacts, Run History | LLM Usage, Artifact Cleanup — queue level derived from Live Run (Update): Remove on her waiting job; Cancel keeps it, confirm removes it; `/?page=cache` refused (recorded)
 - admin: Artifact Cache under Run Artifacts; Clear All Cache and LLM Usage Clear ask first; LLM Usage: use case → steps in pipeline order → calls (date + time, 25 per page), headers with calls / tokens / cost / time
 - Mark as finished (preview, ana owns the latest completed MRF run): button beside View full details / Browse outputs on step 10; click → "marked as finished — it stays in Run History", Live Run idle, still idle after reload
+
+## Bugs
+- U-B1 (user, 2026-11-04): Mark as finished left the Final Report step details (overview, artifacts, test-case count) on Live Run — `_reset_to_default` reset the banner and step badges but kept the run folder, UC, step durations and the open step panel (Cancel had the same gap). Fixed: the reset forgets the run's folder/UC/durations and re-selects step 1 on Overview → "No run selected"; Artifacts / Test cases empty, KPIs "—" (preview-checked)

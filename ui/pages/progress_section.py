@@ -1724,9 +1724,18 @@ class ProgressSection:
         self.status_detail.text = "Start a new run from New Run"
         self.banner.style(replace="")
         self._run_t0, self._run_elapsed = None, ""
+        # Forget the run: its folder (artifacts, test cases, KPIs), UC and step durations
+        self._run_dir, self._uc_name, self._follow_live = "", "", False
+        self._step_started.clear()
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
+            if self.step_widgets.get(i, {}).get("duration") is not None:
+                self.step_widgets[i]["duration"].text = ""
         self._set_run_state("idle")
+        # The step panel shows "No run selected" instead of the last run's step (e.g. Final Report)
+        if hasattr(self, "tabs"):
+            self.tabs.value = "overview"
+        self._select_step(1)
 
     @requires("progress", "run.finish")
     @_own_run("run.finish")
@@ -1742,7 +1751,6 @@ class ProgressSection:
         await record("run.finish", target_type="run", target_id=run_id, run_id=run_id, uc_name=self._uc_name or "")
         ui.notify(f"{self._uc_name or 'Run'} marked as finished — it stays in Run History", type="positive")
         self._reset_to_default()
-        self.uc_chip.text = ""
 
     @requires("progress", "run.restart")
     @_own_run("run.restart")
