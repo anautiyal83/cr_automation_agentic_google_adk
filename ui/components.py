@@ -19,6 +19,7 @@ _PAGE_GROUPS = {
     "Dashboard": "Workspace", "New Run": "Workspace", "Live Run": "Workspace",
     "Output Documents": "Results", "Run History": "Results",
     "LLM Usage": "Admin", "Artifact Cleanup": "Admin", "Settings": "Admin",
+    "Users & Roles": "Admin", "Audit Trail": "Admin",
 }
 
 

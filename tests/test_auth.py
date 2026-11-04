@@ -184,3 +184,11 @@ def test_forced_change_must_differ(service):
         run(service.set_new_password(user.id, "Same-pass1"))
     run(service.set_new_password(user.id, "Other-pass2"))
     assert not run(service.current_user(user.id)).must_change_password
+
+
+def test_users_screen_helpers():
+    from ui.pages.users_section import _generated_password, _levels_text
+    for _ in range(20):
+        auth.check_password_policy(_generated_password())  # generated passwords pass the policy
+    assert _levels_text({"history": VIEW, "outputs": UPDATE}) == "Run History: View · Output Documents: Update"
+    assert _levels_text({}) == "No screens"

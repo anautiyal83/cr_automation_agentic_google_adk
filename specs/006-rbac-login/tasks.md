@@ -33,10 +33,10 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T013 `ui/access.py` `RunScope` (SQL filter, `owns`, `check` with notice + trail) used in Dashboard (runs + LLM totals), Live Run (restore of the active run, DB fallback, opening a run, restart/stop/cancel/milestone/questionnaire via `@_own_run`), Output Documents (run list, selection, jump from other screens), Run History (list with status filter, details, open, outputs, re-run, cleanup), LLM Usage (view and clear only own runs: `load_usage_stats/clear_usage_stats(owner=)`), Artifact Cleanup (list, delete, bulk). One pipeline at a time: `may_start_run` refuses a start while another user's run is active (spec)
 - [X] T014 Preview (DB copy, 10 ownerless runs; Ana owns 2, Bob 1): admin sees 10 on Dashboard/Run History/Output Documents/Artifact Cleanup, Ana 2, Bob 1. `tests/test_access.py`: scope filter/owns/check (refusal recorded), ownerless runs admin-only, usage by owner, one pipeline at a time
 
-## Step 5: Users & Roles screen
-- [ ] T015 Users tab (add, role, enable/disable, reset password, delete)
-- [ ] T016 Roles tab (None/View/Update per screen, delete rules)
-- [ ] T017 Check SC-003 end to end
+## Step 5: Users & Roles screen — done 2026-11-04
+- [X] T015 `ui/pages/users_section.py` Users tab: table (email, name, role, Active/Disabled, "Must set password", last login); Add user (email login, name, role, initial password with Generate; the user sets their own at first login), Edit (name, role, active; default administrator locked), Reset password (forced change at next login), Delete (not self, not the default administrator); every change and failure in the trail with before/after
+- [X] T016 Roles tab: table (role, description, screens summary, users); Add/Edit role with None/View/Update per screen grouped like the sidebar; Delete (not admin, not in use); built-in admin row read-only. Admin-only screen in the sidebar (Admin group), all handlers `@requires_admin`
+- [X] T017 Preview (DB copy): admin creates role "auditor" (Run History View, Output Documents Update) and user carol@example.com (weak password refused); Carol forced to set her password, sees Output Documents + Run History only, Users & Roles link refused; admin adds Dashboard → Carol has it on reload; admin disables Carol → her session ends; default admin Delete disabled; trail: role.create, user.create (failed + done), screen.open refused, role.update (before/after), user.update (before/after)
 
 ## Step 6: Activity trail
 - [ ] T019 Recording points: sessions, users/roles, runs, milestone decisions, step 1 answers, documents, settings/vendors/cleanup/cache/usage, refused attempts

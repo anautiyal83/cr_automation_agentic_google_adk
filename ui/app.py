@@ -48,6 +48,7 @@ from ui.pages.settings_section import SettingsSection
 from ui.pages.vendor_section import VendorSection
 from ui.pages.output_viewer_section import OutputViewerSection
 from ui.pages import login_page
+from ui.pages.users_section import UsersSection
 from core.audit import AuditTrail
 from core.auth import SCREENS, ADMIN_SCREENS, AuthService, storage_secret
 from ui import access as ui_access
@@ -975,6 +976,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 ("usage", "LLM Usage", "insights"),
                 ("cleanup", "Artifact Cleanup", "cleaning_services"),
                 ("settings", "Settings", "settings"),
+                ("users", "Users & Roles", "manage_accounts"),
             ]),
         ]
         section_labels = {key: (group, label) for group, items in menu_groups for key, label, _ in items}
@@ -1432,6 +1434,17 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                         vendor_panel.set_visibility(False)
                         with ui.card().classes("cr-section w-full p-4"):
                             vendor_section = VendorSection(db=_db)
+
+            # Users & Roles (administrator only, spec 006)
+            if user.can_view("users"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["users"] = panel
+                    panel.set_visibility(False)
+                    page_header("Users & Roles", "Who can log in, their role, and which screens each role "
+                                                 "may view or update")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        users_section = UsersSection(_auth, _audit, user)
+                        on_navigate_hooks.setdefault("users", []).append(users_section.refresh)
 
             # Deep link: /?page=history opens that section (before the first await, so the page is
             # sent already showing it)
