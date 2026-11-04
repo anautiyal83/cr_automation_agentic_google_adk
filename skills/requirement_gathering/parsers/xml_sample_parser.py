@@ -1,6 +1,7 @@
 """XML sample file parser — deterministic extraction of SPML fields."""
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -34,5 +35,16 @@ def parse_xml_samples(xml_text: str) -> list[dict[str, Any]]:
             entry["fields"] = {k: v for k, v in mods}
 
         results.append(entry)
+
+    # Deduplicate samples with identical fields dicts
+    seen_keys: set[str] = set()
+    unique_results: list[dict[str, Any]] = []
+    for entry in results:
+        fields = entry.get("fields", {})
+        dedup_key = json.dumps(fields, sort_keys=True)
+        if dedup_key not in seen_keys:
+            seen_keys.add(dedup_key)
+            unique_results.append(entry)
+    results = unique_results
 
     return results

@@ -59,20 +59,21 @@ def generate_excel_report(
 
         # Sheet 2: Artifacts
         ws2 = wb.add_worksheet("Artifacts")
-        ws2.set_column("A:A", 50)
-        ws2.set_column("B:B", 15)
+        ws2.set_column("A:A", 18)
+        ws2.set_column("B:B", 50)
+        ws2.set_column("C:C", 15)
+        ws2.set_column("D:D", 70)
+        ws2.write(0, 0, "Category", header_fmt)
+        ws2.write(0, 1, "Artifact", header_fmt)
+        ws2.write(0, 2, "Size", header_fmt)
+        ws2.write(0, 3, "File", header_fmt)
 
-        ws2.write(0, 0, "Artifact", header_fmt)
-        ws2.write(0, 1, "Size", header_fmt)
-
-        if run_dir:
-            rd = Path(run_dir)
-            row = 1
-            for f in sorted(rd.iterdir()):
-                if f.is_file() and f.suffix in (".yaml", ".html", ".json", ".xlsx", ".txt"):
-                    ws2.write(row, 0, f.name, cell_fmt)
-                    ws2.write(row, 1, f.stat().st_size, cell_fmt)
-                    row += 1
+        from .deliverables import collect_deliverables
+        for row, d in enumerate(collect_deliverables(run_dir, uc_name, include_final=False), 1):
+            ws2.write(row, 0, d.category, cell_fmt)
+            ws2.write(row, 1, d.label, cell_fmt)
+            ws2.write(row, 2, d.path.stat().st_size, cell_fmt)
+            ws2.write(row, 3, d.rel(run_dir), cell_fmt)
 
         # Sheet 3: Requirements Summary
         req = requirements or {}

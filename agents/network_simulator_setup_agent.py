@@ -5,15 +5,62 @@ the simulator, and runs sanity checks (Step 8).
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from google.adk.agents import BaseAgent
 
+from core.config import PROJECT_ROOT
 from core.logging_config import get_flow_logger
+from shared.state import simulator_processes, stop_simulator
 
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
+
+_DEFAULT_MOCKWIRE_JAR = "lib/mockwire/mockwire-simulator/mockwire.jar"
+
+
+def _resolve_path(path: str) -> str:
+    """Resolve a config path relative to the project root, not the CWD."""
+    p = Path(path)
+    return str(p if p.is_absolute() else (PROJECT_ROOT / p).resolve())
+
+
+def _ciq_json_files(run_dir: str) -> list[str]:
+    """CIQ JSON data written by the ciq-processor in steps 5/7 (source of NIAM IDs)."""
+    json_dir = Path(run_dir) / "json_data" if run_dir else None
+    if not json_dir or not json_dir.exists():
+        return []
+    return [str(f) for f in sorted(json_dir.glob("*.json"))
+            if "VALIDATION_REPORT" not in f.name.upper()]
+
+
+def _simulator_feedback(run_dir: str) -> str:
+    """Failed step 9 commands when step 9 classified the failure as a simulator issue."""
+    if not run_dir:
+        return ""
+    err_file = Path(run_dir) / "step_9_error.json"
+    try:
+        err = json.loads(err_file.read_text(encoding="utf-8")) if err_file.exists() else {}
+    except Exception:
+        err = {}
+    if err.get("retry_target") != 8:
+        return ""
+
+    from skills.network_config_test.result_parser import parse_execution_results
+    failed = [
+        {"node": c.node, "phase": c.phase, "command": c.command, "output": c.output[:300],
+         "validation": c.validation_criteria, "conclusion": c.validation_conclusion}
+        for c in parse_execution_results(run_dir)
+        if not c.success or c.validation_status == "failed"
+    ]
+    return json.dumps({
+        "classification": err.get("classification"),
+        # Exact command text the simulator had no response for — add a response for each
+        "commands_without_simulator_response": err.get("unmatched_commands", [])[:40],
+        "failed_commands": failed[:40],
+    }, indent=2)[:6000]
 
 
 class NetworkSimulatorSetupAgent(BaseAgent):
@@ -40,37 +87,34 @@ class NetworkSimulatorSetupAgent(BaseAgent):
 
         flow.flow("SIMULATOR_SETUP START — uc=%s", uc_name)
 
+        # A re-run must not collide with this run's previous simulator ports
+        await stop_simulator(run_id)
+
         skill = NetworkSimulatorSetupSkill(llm_fn=get_llm_fn(config))
 
-        # Check for retry
-        retry_count = state.get("retry_count_8", 0)
-        if retry_count > 0 and state.get("_simulator_setup_skill"):
-            skill = state["_simulator_setup_skill"]
-            feedback_data = state.get("exec_feedback", [])
-            reviewer_analysis = state.get("_reviewer_analysis_9", "")
+        # On a step 9 → 8 retry, feed the failed commands back (read from disk:
+        # ADK session state is unreliable across agents)
+        feedback = _simulator_feedback(run_dir)
+        if feedback:
+            flow.flow("SIMULATOR_SETUP: Regenerating with step 9 feedback (%d chars)", len(feedback))
 
-            from skills.network_simulator_setup import RegenerateFeedback
-            feedback = RegenerateFeedback(
-                test_results=feedback_data,
-                reviewer_analysis=reviewer_analysis,
-                attempt_number=retry_count + 1,
-            )
-            flow.flow("SIMULATOR_SETUP: Regenerating (attempt %d)", retry_count + 1)
-            output = await skill.regenerate(feedback)
-        else:
-            inp = SkillInput(
-                uc_name=uc_name,
-                workflow_yaml=artifacts.get("workflow_yaml", ""),
-                requirements=requirements,
-                generation_hints=requirements.get("generation_hints", {}),
-                run_dir=run_dir,
-                mockwire_jar=config.get("mockwire_jar",
-                    "lib/mockwire/mockwire-simulator/mockwire.jar"),
-                java_home=config.get("java_home"),
-                auto_start=True,
-            )
-            output = await skill.setup(inp)
-            state["_simulator_setup_skill"] = skill
+        inp = SkillInput(
+            uc_name=uc_name,
+            workflow_yaml=artifacts.get("workflow_yaml", ""),
+            requirements=requirements,
+            generation_hints=requirements.get("generation_hints", {}),
+            ciq_json_files=_ciq_json_files(run_dir),
+            feedback=feedback,
+            run_dir=run_dir,
+            mockwire_jar=_resolve_path(config.get("mockwire_jar") or _DEFAULT_MOCKWIRE_JAR),
+            java_home=config.get("java_home"),
+            auto_start=True,
+            host=config.get("simulator_endpoint") or "localhost",
+            base_port=int(config.get("simulator_base_port") or 22200),
+            ttl_minutes=int(config.get("simulator_ttl_minutes") or 60),
+            startup_timeout=int(config.get("simulator_startup_timeout") or 30),
+        )
+        output = await skill.setup(inp)
 
         # Save artifacts
         if output.simulator_config_yaml:
@@ -79,11 +123,14 @@ class NetworkSimulatorSetupAgent(BaseAgent):
                 p = Path(run_dir) / f"{uc_name}_simulator-config.yaml"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(output.simulator_config_yaml, encoding="utf-8")
+        if output.report_html and run_dir:
+            (Path(run_dir) / f"{uc_name}_simulator-report.html").write_text(
+                output.report_html, encoding="utf-8")
         state["artifacts"] = artifacts
 
-        # Store simulator process handle and ports for execution test agent
+        # Register the running simulator so every exit path can stop it
         if output.simulator:
-            state["_simulator_process"] = output.simulator
+            simulator_processes[run_id] = output.simulator
             state["_simulator_ports"] = output.ports
 
         state["step_8_status"] = output.status
@@ -93,7 +140,11 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             if run_dir:
                 import json
                 err_file = Path(run_dir) / "step_8_error.json"
-                err_file.write_text(json.dumps({"error": state["step_8_error"]}, indent=2))
+                err_file.write_text(json.dumps({
+                    "error": state["step_8_error"],
+                    "validation_errors": output.validation_errors,
+                    "simulator_dir": output.config_dir,
+                }, indent=2), encoding="utf-8")
 
         # Log sanity results
         if output.sanity:

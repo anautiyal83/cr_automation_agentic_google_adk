@@ -166,13 +166,26 @@ def _extract_errors_from_report(data: dict, source_file: str = "") -> list[dict]
         if isinstance(err, dict):
             errors.append(err)
 
-    # Format 2: {"sheets": {"SheetName": {"errors": [...]}}}
-    for sheet_name, sheet_data in data.get("sheets", {}).items():
+    # Format 2: {"sheets": {"SheetName": {"errors": [...]}}}, or — what ciq-processor 1.0.3 writes —
+    # {"sheets": [{"sheetName", "errors": [{"rowNumber", "column", "value", "message"}]}]}.
+    # The list form raised on .items() and the whole report was skipped: step 5 never saw a
+    # single JAR error (G-13)
+    sheets = data.get("sheets") or {}
+    entries = sheets.items() if isinstance(sheets, dict) else \
+        [(s.get("sheetName") or s.get("sheet", ""), s) for s in sheets if isinstance(s, dict)]
+    for sheet_name, sheet_data in entries:
         if isinstance(sheet_data, dict):
             for err in sheet_data.get("errors", []):
                 if isinstance(err, dict):
+                    err = dict(err)
                     err.setdefault("sheet", sheet_name)
+                    err.setdefault("row", err.get("rowNumber", 0))
                     errors.append(err)
+
+    # Workbook-level errors (cross-sheet rules, missing sheets)
+    for g in data.get("globalErrors") or []:
+        errors.append(dict(g, sheet=g.get("sheet") or g.get("sheetName") or "workbook") if isinstance(g, dict)
+                      else {"sheet": "workbook", "row": 0, "column": "", "message": str(g)})
 
     # Format 3: {"validationResults": [{"sheet", "column", "row", "message", "status"}]}
     for vr in data.get("validationResults", []):

@@ -5,7 +5,7 @@ import logging
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import clean_yaml_response, fix_json_output, parse_yaml, _ciq_prompt_summary
+from .autofix import clean_yaml_response, fix_json_output, parse_yaml, dump_yaml, _ciq_prompt_summary
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ async def generate_json_output(
     ciq_sheets: dict,
     requirements: dict,
     schema_summary: str,
+    ciq_file_path: str = "",
 ) -> tuple[str, list[str]]:
     """Generate json-output.yaml via LLM and auto-fix.
 
@@ -30,8 +31,12 @@ async def generate_json_output(
     requirements_summary = _build_requirements_summary(requirements)
     ciq_summary = _ciq_prompt_summary(ciq_sheets)
 
+    node_type, activity = _parse_uc_name(uc_name)
+
     user_prompt = prompts.JSON_OUTPUT_USER.format(
         uc_name=uc_name,
+        node_type=node_type,
+        activity=activity,
         ciq_summary=ciq_summary,
         requirements_summary=requirements_summary,
         schema_summary=schema_summary,
@@ -41,7 +46,7 @@ async def generate_json_output(
     raw_response = await llm_fn(prompts.JSON_OUTPUT_SYSTEM, user_prompt)
     yaml_text = clean_yaml_response(raw_response)
 
-    yaml_text = fix_json_output(yaml_text, ciq_sheets)
+    yaml_text = _from_ciq(yaml_text, ciq_sheets, uc_name, ciq_file_path, requirements)
     errors = _validate_structure(yaml_text)
 
     logger.info("JSON output generated: %d chars, %d errors", len(yaml_text), len(errors))
@@ -55,8 +60,12 @@ async def regenerate_json_output(
     test_failures: str,
     reviewer_analysis: str,
     schema_summary: str,
+    uc_name: str = "",
+    ciq_file_path: str = "",
+    requirements: dict | None = None,
 ) -> tuple[str, list[str]]:
-    """Regenerate json-output.yaml using test feedback."""
+    """Regenerate json-output.yaml using test feedback (``uc_name`` was used but not a parameter:
+    every regeneration raised NameError)."""
     ciq_summary = _ciq_prompt_summary(ciq_sheets)
 
     user_prompt = prompts.JSON_OUTPUT_REGENERATE.format(
@@ -71,7 +80,7 @@ async def regenerate_json_output(
     raw_response = await llm_fn(prompts.JSON_OUTPUT_SYSTEM, user_prompt)
     yaml_text = clean_yaml_response(raw_response)
 
-    yaml_text = fix_json_output(yaml_text, ciq_sheets)
+    yaml_text = _from_ciq(yaml_text, ciq_sheets, uc_name, ciq_file_path, requirements or {})
     errors = _validate_structure(yaml_text)
 
     logger.info("JSON output regenerated: %d chars, %d errors", len(yaml_text), len(errors))
@@ -110,7 +119,7 @@ def _build_requirements_summary(requirements: dict) -> str:
     if phases:
         parts.append(f"Phases: {', '.join(phases)}")
 
-    xml = requirements.get("xml_templates", {})
+    xml = requirements.get("xml_templates") or {}
     mappings = xml.get("ciq_to_xml_mapping", [])
     if mappings:
         cols = [m.get("ciq_column", "?") for m in mappings if isinstance(m, dict)]
@@ -121,6 +130,26 @@ def _build_requirements_summary(requirements: dict) -> str:
         parts.append(f"Developer answers: {len(answers)} responses")
 
     return "\n".join(parts) if parts else "No requirements available"
+
+
+def _parse_uc_name(uc_name: str) -> tuple[str, str]:
+    """Extract node_type and activity from UC name."""
+    from .json_output_builder import split_uc_name
+    return split_uc_name(uc_name)
+
+
+def _from_ciq(yaml_text: str, ciq_sheets: dict, uc_name: str, ciq_file_path: str, requirements: dict) -> str:
+    """The template from the CIQ's layout (json_output_builder); the old PGW-shaped builder only
+    when the CIQ has no INDEX sheet."""
+    from .json_output_builder import build_json_output
+    from .rules_baseline import read_ciq_rows
+    hints = {"grouping": (requirements.get("category_3_orchestration") or {}).get("grouping"),
+             "data_sheet": (requirements.get("category_1_node_activity") or {}).get("data_sheet")}
+    try:
+        return dump_yaml(build_json_output(ciq_sheets, read_ciq_rows(ciq_file_path, ciq_sheets), uc_name, hints))
+    except ValueError as e:
+        logger.warning("json-output from the CIQ layout failed (%s): PGW-shaped template", e)
+        return fix_json_output(yaml_text, ciq_sheets, uc_name=uc_name)
 
 
 def _validate_structure(yaml_text: str) -> list[str]:

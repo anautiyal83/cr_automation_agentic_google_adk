@@ -16,17 +16,21 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from .test_case_gen import TestCase, generate_test_cases
 from .jar_executor import run_mop_test, run_execution_test, write_yaml_to_file
 from .result_parser import (
     TestCaseResult, MopScenario, CommandResult,
     parse_mop_results, parse_execution_results,
-    evaluate_test_cases, classify_failures,
+    evaluate_test_cases, classify_failures, read_simulator_events,
 )
 from .report import generate_qa_report
+from .scenario_report import generate_scenario_report
+from .scenarios import ScenarioSuite
+from .jar_executor import prepare_execution
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +44,24 @@ class SkillInput:
     workflow_yaml: str = ""
     simulator_config_yaml: str = ""
     json_output_yaml: str = ""
+    validation_rules_yaml: str = ""
     ciq_file_path: str = ""
     requirements: dict = field(default_factory=dict)
     run_dir: str = ""
     cli_automation_jar: str = "lib/cli-automation-standalone.jar"
+    ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar"
     mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
+    # Settings → External Modules: HTML report per executed case (step 9)
+    execution_report_jar: str = "lib/execution-report-generator-1.0.2-cli.jar"
+    html_template_path: str = ""
     java_home: str | None = None
-    simulator_host: str = "localhost"
-    simulator_port: int = 2222
+    # Step 8's copy of the workflow pointed at the simulator; execution never uses the
+    # production workflow (its hosts are real network elements)
+    execution_workflow_path: str = ""
+    # Restart/registration of MockWire for scenario runs (spec 005); without it the old
+    # single-run execution test is used
+    simulator_control: Any = None
+    include_negatives: bool = False  # sunny day only until negative cases are enabled
 
 
 @dataclass
@@ -63,6 +77,8 @@ class SkillOutput:
     report_html: str = ""
     status: str = "pending"  # "passed" | "failed" | "pending" | "error"
     error: str = ""
+    scenario_results: list[dict] = field(default_factory=list)  # test-case report data (JSON)
+    notes: list[str] = field(default_factory=list)
 
 
 class NetworkConfigTestSkill:
@@ -96,9 +112,12 @@ class NetworkConfigTestSkill:
         if inp.json_output_yaml:
             json_path = write_yaml_to_file(inp.json_output_yaml, inp.run_dir, f"{inp.uc_name}_json-output.yaml")
 
-        # Phase 1: Generate test cases
+        no_simulator = not (inp.execution_workflow_path and Path(inp.execution_workflow_path).exists())
+        scenario_mode = inp.simulator_control is not None and not no_simulator
+
+        # Phase 1: Generate test cases (scenario mode derives them from the workflow instead)
         test_cases: list[TestCase] = []
-        if self._llm_fn:
+        if self._llm_fn and not scenario_mode:
             try:
                 test_cases = await generate_test_cases(
                     self._llm_fn, inp.uc_name,
@@ -109,24 +128,40 @@ class NetworkConfigTestSkill:
             except Exception as e:
                 logger.error("TC generation failed: %s", e, exc_info=True)
 
+        # Write validation-rules if provided
+        rules_path = ""
+        if inp.validation_rules_yaml:
+            rules_path = write_yaml_to_file(inp.validation_rules_yaml, inp.run_dir,
+                                            f"{inp.uc_name}_validation-rules.yaml")
+
         # Phase 2: MOP generation test
         mop_scenarios: list[MopScenario] = []
         if wf_path and json_path and inp.ciq_file_path:
             mop_result = await run_mop_test(
                 cli_jar, wf_path, json_path, inp.ciq_file_path,
                 inp.run_dir, inp.java_home,
+                ciq_processor_jar=inp.ciq_processor_jar,
+                validation_rules_path=rules_path,
+                html_template_path=inp.html_template_path,
             )
             mop_scenarios = parse_mop_results(inp.run_dir, inp.uc_name)
             logger.info("Phase 2: MOP test — %d scenarios, jar_success=%s",
                          len(mop_scenarios), mop_result["success"])
 
-        # Phase 3: Execution test
+        if scenario_mode and json_path:
+            return await self._run_scenarios(inp, cli_jar, json_path, rules_path, mop_scenarios, t0)
+
+        # Phase 3: Execution test — only against the simulator overlay, never production hosts
         command_results: list[CommandResult] = []
-        if wf_path and json_path and inp.ciq_file_path:
+        if no_simulator:
+            logger.error("Phase 3: no simulator overlay workflow (%r) — execution test skipped",
+                         inp.execution_workflow_path)
+        elif json_path and inp.ciq_file_path:
             exec_result = await run_execution_test(
-                cli_jar, wf_path, json_path, inp.ciq_file_path,
-                inp.run_dir, inp.simulator_host, inp.simulator_port,
-                inp.java_home,
+                cli_jar, inp.execution_workflow_path, json_path, inp.ciq_file_path,
+                inp.run_dir, inp.java_home,
+                ciq_processor_jar=inp.ciq_processor_jar,
+                validation_rules_path=rules_path,
             )
             command_results = parse_execution_results(inp.run_dir)
             logger.info("Phase 3: Execution test — %d commands, jar_success=%s",
@@ -139,9 +174,17 @@ class NetworkConfigTestSkill:
             # No generated TCs — create summary results from JAR output
             results = self._build_default_results(mop_scenarios, command_results)
 
-        # Phase 5: Classify failures
+        # Phase 5: Classify failures (MockWire's event log tells simulator gaps apart)
         failed_cmds = [c for c in command_results if not c.success or c.validation_status == "failed"]
-        classification = classify_failures(command_results) if failed_cmds else {}
+        events = read_simulator_events(inp.run_dir)
+        if no_simulator:
+            classification = {"classification": "simulator", "retry_target": 8, "workflow_issues": [],
+                              "simulator_issues": ["simulator not running (no overlay workflow from step 8)"],
+                              "unmatched_commands": []}
+        elif failed_cmds or any(e.get("source") == "unmatched" for e in events):
+            classification = classify_failures(command_results, events)
+        else:
+            classification = {}
 
         total = len(results)
         passed = sum(1 for r in results if r.status == "PASS")
@@ -160,7 +203,7 @@ class NetworkConfigTestSkill:
             duration_sec=duration,
         )
 
-        status = "passed" if failed_count == 0 else "failed"
+        status = "passed" if failed_count == 0 and not no_simulator else "failed"
         logger.info("QA complete: %d/%d passed, classification=%s (%.1fs)",
                      passed, total, classification.get("classification", "n/a"), duration)
 
@@ -174,6 +217,52 @@ class NetworkConfigTestSkill:
             failure_classification=classification,
             report_html=report_html,
             status=status,
+        )
+
+    async def _run_scenarios(self, inp: SkillInput, cli_jar: str, json_path: str, rules_path: str,
+                             mop_scenarios: list[MopScenario], t0: float) -> SkillOutput:
+        """Scenario test cases on the simulator → test-case report (spec 005)."""
+        plan = await prepare_execution(inp.execution_workflow_path, json_path, inp.ciq_file_path,
+                                       inp.run_dir, inp.java_home,
+                                       ciq_processor_jar=inp.ciq_processor_jar,
+                                       validation_rules_path=rules_path)
+        if plan.get("error"):
+            return SkillOutput(status="failed", error=plan["error"], mop_scenarios=mop_scenarios,
+                               failure_classification={"classification": "workflow", "retry_target": 6,
+                                                       "workflow_issues": [plan["error"]],
+                                                       "simulator_issues": [], "unmatched_commands": []})
+        suite = await ScenarioSuite(
+            run_dir=inp.run_dir, uc_name=inp.uc_name, workflow_path=inp.execution_workflow_path,
+            plan=plan, cli_jar=cli_jar, mockwire_jar=inp.mockwire_jar, control=inp.simulator_control,
+            llm_fn=self._llm_fn, java_home=inp.java_home,
+            samples=(inp.requirements.get("doc_extracted") or {}).get("command_samples") or [],
+            include_negatives=inp.include_negatives, report_jar=inp.execution_report_jar,
+        ).run()
+        duration = time.monotonic() - t0
+        # Commands of failing sunny-day cases feed the step 6 / step 8 retry
+        failing_cmds = [c for r in suite.results if r.status == "FAIL" and r.scenario.kind == "positive"
+                        for c in r.commands]
+        status = "passed" if suite.results and suite.failed == 0 else "failed"
+        logger.info("Scenario tests: %d/%d passed (%.1fs)", suite.passed, len(suite.results), duration)
+        return SkillOutput(
+            total=len(suite.results), passed=suite.passed, failed=suite.failed,
+            test_cases=[TestCaseResult(id=r.scenario.id, description=r.scenario.title,
+                                       category=r.scenario.category, test_type="execution_test",
+                                       target_node=f"{r.scenario.cr_group}/{r.scenario.node_group}",
+                                       expected_outcome=r.scenario.expected, actual_outcome=r.actual,
+                                       status=r.status,
+                                       errors=[c.description + (f": {c.detail}" if c.detail else "")
+                                               for c in r.checks if not c.ok],
+                                       command_results=r.commands)
+                        for r in suite.results],
+            mop_scenarios=mop_scenarios,
+            command_results=failing_cmds,
+            failure_classification=suite.classification,
+            report_html=generate_scenario_report(inp.uc_name, suite, duration),
+            status=status,
+            error="" if suite.results else "; ".join(suite.notes) or "no test cases ran",
+            scenario_results=[r.to_dict() for r in suite.results],
+            notes=suite.notes,
         )
 
     async def test_mop_only(self, inp: SkillInput) -> SkillOutput:
@@ -190,9 +279,18 @@ class NetworkConfigTestSkill:
         if not wf_path or not json_path or not inp.ciq_file_path:
             return SkillOutput(status="error", error="workflow_yaml, json_output_yaml, and ciq_file_path are required")
 
+        # Write validation-rules.yaml if provided
+        rules_path = ""
+        if inp.validation_rules_yaml:
+            rules_path = write_yaml_to_file(inp.validation_rules_yaml, inp.run_dir,
+                                            f"{inp.uc_name}_validation-rules.yaml")
+
         mop_result = await run_mop_test(
             cli_jar, wf_path, json_path, inp.ciq_file_path,
             inp.run_dir, inp.java_home,
+            ciq_processor_jar=inp.ciq_processor_jar,
+            validation_rules_path=rules_path,
+            html_template_path=inp.html_template_path,
         )
         mop_scenarios = parse_mop_results(inp.run_dir, inp.uc_name)
 
@@ -212,6 +310,7 @@ class NetworkConfigTestSkill:
         ]
 
         if not results:
+            error_detail = mop_result.get("stderr", "") or f"exit {mop_result['exit_code']}"
             results = [TestCaseResult(
                 id="MOP_BASE",
                 description="MOP generation JAR execution",
@@ -219,8 +318,9 @@ class NetworkConfigTestSkill:
                 severity="critical",
                 test_type="mop_test",
                 expected_outcome="JAR exits successfully",
-                actual_outcome="Success" if mop_result["success"] else f"Failed: exit {mop_result['exit_code']}",
+                actual_outcome="Success" if mop_result["success"] else f"Failed: {error_detail[:120]}",
                 status="PASS" if mop_result["success"] else "FAIL",
+                errors=[error_detail[:300]] if not mop_result["success"] else [],
             )]
 
         total = len(results)

@@ -98,6 +98,8 @@ shared/                            # Shared state + LLM wrapper
 
 core/                              # Infrastructure
   config.py, events.py, logging_config.py, retry.py
+  auth.py                          # users, roles, View/Update levels, set-password CLI (spec 006)
+  audit.py                         # append-only activity trail (audit_log)
 
 models/                            # Domain models
   domain.py, validation.py
@@ -109,8 +111,10 @@ tools/                             # Shared tools
   yaml_tools.py, report_tools.py, ciq_tools.py
 
 ui/                                # NiceGUI frontend
-  app.py                           # Entry point + CSS + layout
+  app.py                           # Entry point + CSS + layout + login middleware + screen gating
+  access.py                        # action() marking, @requires/@requires_admin, RunScope, trail helpers
   pages/                           # upload, progress, settings, history, etc.
+                                   # + login_page, users_section, audit_section (spec 006)
 
 schemas/                           # Authoritative YAML schemas (consumed by JARs)
 knowledge/                         # OKF-ready knowledge directory
@@ -119,14 +123,46 @@ data/                              # Runtime (runs, uploads, DB, logs)
 lib/                               # JARs + MockWire
 ```
 
-## Workflow Variable Patterns
+## Workflow Variable Patterns (verified against cli-automation JAR, spec 004)
 ```
-${nodeGroups.<Node>.<field>}       — node properties from JSON output
-${configData.tables.<Sheet>.<Col>} — CIQ data values
-${register.<varName>}              — captured command outputs
-${env.<key>}                       — runtime environment variables
-$<segregateVar>                    — segregate_by variable from JSON output
+${configSequences.0.records.0.data.<Column>}  — CIQ value (first record of the node group; spaces OK)
+${<NODE>.niamID-<n>}                          — NIAM ID of a CIQ node, e.g. ${RDS.niamID-1}
+${nodeGroup} ${crGroup} ${email}              — current node group / CR group (${node}: never — it
+                                              empties the MOP of a node group with several nodes)
+${NODE_TYPE} ${SUB_ACTIVITY_NAME}             — provided by the JAR at runtime
+${varName}                                    — registered (?<varName>…) output or --var value
+${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environment
 ```
+- NOT supported (empty at execute): `configData.*`, `nodeGroups.*`, `node_row.*`, `register.*`, `env.*`, `${{…}}`
+- Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
+- `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
+- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
+- `when` joins conditions with `&&`/`||` — with `and`/`or` the step is always skipped (autofix rewrites)
+- LOCAL steps: the JAR splits double-quoted arguments at spaces (`--a "x y"` → `['--a','x']`); single quotes
+  arrive intact (autofix rewrites); `${configSequences.0.records.0.data}` (whole record) is `[object Object]`
+- LOCAL steps break on a double quote anywhere, even inside single quotes: no JSON/dict values — one flag per
+  field (autofix expands `--x '{'K': '${…}'}'` into `--x_k '${…}'`)
+- Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
+  sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
+- CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)
+- Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
+  step 9 passes their test values as `--var`
+- Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
+- `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
+  don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
+- Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- `criteria.expr` compares REGISTERED variables only (`cpuIdle >= 90`): no `Float()`/`Int()`, a literal `True` always
+  fails, named groups of the validation regex are invisible to expr → `register:` the value on the step (autofix)
+- A non-zero exit fails a step before its regex (`use_exit_code: false` does not help): "must be absent" checks are
+  `ls -l <file> 2>&1 || true` (autofix adds it)
+- Files move with step `sftp: {operation: upload|download, local_path, remote_path}` on the node, never `put`/`get` in a
+  shell (autofix rewrites); a node's file must be downloaded before a LOCAL step reads it (validator)
+- Step 6 `structure.py` (after the LLM, idempotent; validator + regenerate see the flat form): record steps run in a
+  `type: loop` over `${configSequences.0.records}` (`${rec.data.<Col>}`, `reverse_order: false` — null NPEs); a
+  backup phase's `tar -c` archive goes node → LOCAL → `REPO` (`execution.repo_server`, step 1 `orch_repo_server`) and
+  back on rollback; every sftp transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps: `id: nc_*`
+- Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
+  upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 
 ## Running
 ```powershell
@@ -143,6 +179,21 @@ python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICA
 python test_step.py --skill ciq_validation_json_gen --run-id <id>
 ```
 
+## Login & Access (spec 006 — `specs/006-rbac-login/`)
+- Email + password login (`ui/pages/login_page.py`, `AuthMiddleware`): every route except `/login`, `/logout`
+  and NiceGUI assets needs a session (12 h) — media files too. Default admin `admin@netconfig.local`/`admin`
+  (forced change) or `NETCONFIG_ADMIN_EMAIL`/`NETCONFIG_ADMIN_PASSWORD`; `python -m core.auth set-password <email>`
+- A role gives each screen `view` or `update` (`core.auth.SCREENS`); `users` and `audit` are admin-only
+  (`ADMIN_SCREENS`). Screens without permission are not built; navigation/deep links refuse them
+- New action buttons: wrap in `action(btn[, screen])` (disabled on View screens) AND guard the handler with
+  `@requires(screen, "<action>")` (server check); admin-only things `@requires_admin`
+- Runs: `pipeline_runs.started_by`; sections take `scope()` at build time and use `RunScope.where()` in queries,
+  `RunScope.check()` before acting on a run id (admin: all runs, others own runs). Starts go through
+  `ui/pages/queue_panel.submit_run()` (run queue, spec 007)
+- Trail: `await record(...)` in async handlers after success, `record_later(...)` in sync code (takes the
+  user now); user actions only — the pipeline/system writes no entries (D11). Never record secrets
+- Session data: `.nicegui/` (git-ignored); cookie secret `NETCONFIG_STORAGE_SECRET` or `data/.storage_secret`
+
 ## Step Names (UI)
 1. DOC Parser, 2. DOC Analyzer, 3. CIQ Config Generation,
 4. Generate CIQ JSON Config, 5. QA-Validation, 6. Generate Execution Config,
@@ -150,6 +201,31 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 
 ## External Dependencies
 - **JARs**: lib/ciq-processor-1.0.3-cli.jar, lib/cli-automation-standalone.jar, lib/execution-report-generator-1.0.2-cli.jar
-- **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar
+- **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar (embedded clone of the MockWire repo,
+  branch `feature/netconfig-testing-gaps`; source at D:\Nokia\workspace\mockwire)
 - **Templates**: lib/templates/*.html
 - **Schemas**: schemas/*.yaml
+
+## Simulator (steps 8 + 9) — spec 004
+- CIQ JSON (step 4): one `<UC>.json` with `crGroups[].nodeGroups[].nodes[]` (`json_output_builder`, from the CIQ layout);
+  read it with `tools.ciq_json.node_groups` (also handles the older per-CR files with `nodeGroups` at the root)
+- How a UC simulator must behave for cli-automation: `lib/mockwire/AGENTS.md` (read before changing step 8)
+- Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
+  login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
+- Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
+  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
+- Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
+  + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
+- Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
+- Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): requirements document, validation rules,
+  JSON output, execution YAML, MOP, QA-Validation, QA-Execution, execution summary + success/failure reports
+- Running simulators are registered in `shared.state.simulator_processes` and stopped on every exit path
+
+## Run Queue + Restart Recovery — spec 007
+- `PipelineRunner.submit()` (= `start()`) queues every run (`pipeline_runs.status = 'queued'`); `dispatch()` starts the
+  oldest (`resuming` first) when `active_run()` is None — after a submit, at every run end and at server start
+- Queue view: `orchestrator/run_queue.snapshot()` + `ui/pages/queue_panel.py` (Pipeline Queue page, screen `queue`); start paths use `submit_run()`
+- UI (spec 008): Run Artifacts = screen `outputs`; Artifact Cache page = admin screen `cache`; destructive buttons go through `ui.components.confirm`
+- Checkpoints (`orchestrator/checkpoints.py`, table `run_checkpoints`): before every agent and at review pauses;
+  `resume_queue()` at startup; step 9 resumes at step 8; `MAX_RESUME_ATTEMPTS = 2`
+- Audit trail: user actions only (`ui/access.record`) — the runner writes no trail entries

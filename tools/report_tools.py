@@ -16,7 +16,7 @@ def read_exec_report(run_dir: str) -> dict:
         return {"total": 0, "passed": 0, "failed": 0, "commands": []}
 
     all_commands = []
-    for jf in exec_dir.glob("*.json"):
+    for jf in exec_dir.rglob("*.json"):
         try:
             data = json.loads(jf.read_text(encoding="utf-8"))
             for cmd_key, cmd_info in data.get("data", {}).items():

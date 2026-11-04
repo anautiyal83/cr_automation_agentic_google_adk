@@ -78,6 +78,7 @@ class UCDocumentSet(BaseModel):
     validation_errors: list[dict[str, Any]] | None = None
     selected_sheets: list[str] | None = None  # None = all sheets
     developer_notes: str | None = None  # Free-form domain guidance for LLM agents
+    vendor_profile: dict[str, Any] | None = None  # Pre-filled from vendor profile selection
 
 
 class PipelineRun(BaseModel):
@@ -172,7 +173,7 @@ class PipelineConfiguration(BaseModel):
     simulator_port: int = 8080
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
-    execution_report_jar: str = "./lib/execution-report-generator.jar"
+    execution_report_jar: str = "./lib/execution-report-generator-1.0.2-cli.jar"
     output_directory: str = "./data/runs"
     database_path: str = "./data/pipeline.db"
     knowledge_base_directory: str = "./data/knowledge"

@@ -6,19 +6,27 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
+from ui.access import action, record, requires
+
 AVAILABLE_MODELS = [
     # Tier 1: Best value (paid)
     {"id": "openrouter/google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier": "Best Value", "cost": "$0.15/$0.60"},
-    {"id": "openrouter/deepseek/deepseek-chat", "label": "DeepSeek V3", "tier": "Best Value", "cost": "$0.14/$0.28"},
     {"id": "openrouter/google/gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite", "tier": "Best Value", "cost": "$0.075/$0.30"},
+    {"id": "openrouter/deepseek/deepseek-chat", "label": "DeepSeek V3 0324", "tier": "Best Value", "cost": "$0.14/$0.28"},
+    {"id": "openrouter/deepseek/deepseek-r1", "label": "DeepSeek R1", "tier": "Best Value", "cost": "$0.55/$2.19"},
+    {"id": "openrouter/qwen/qwen3-235b-a22b", "label": "Qwen3 235B", "tier": "Best Value", "cost": "$0.20/$0.60"},
     # Tier 2: Premium
     {"id": "openrouter/anthropic/claude-sonnet-4", "label": "Claude Sonnet 4", "tier": "Premium", "cost": "$3/$15"},
+    {"id": "openrouter/anthropic/claude-haiku-4", "label": "Claude Haiku 4", "tier": "Premium", "cost": "$0.80/$4"},
     {"id": "openrouter/google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "tier": "Premium", "cost": "$1.25/$10"},
     {"id": "openrouter/openai/gpt-4o", "label": "GPT-4o", "tier": "Premium", "cost": "$2.50/$10"},
+    {"id": "openrouter/openai/gpt-4.1-mini", "label": "GPT-4.1 Mini", "tier": "Premium", "cost": "$0.40/$1.60"},
     # Tier 3: Free (rate limited)
     {"id": "openrouter/google/gemini-2.5-flash:free", "label": "Gemini 2.5 Flash (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/meta-llama/llama-3.3-70b-instruct:free", "label": "Llama 3.3 70B (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/deepseek/deepseek-chat:free", "label": "DeepSeek V3 (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/google/gemini-2.5-flash-lite:free", "label": "Gemini 2.5 Flash Lite (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/meta-llama/llama-4-maverick:free", "label": "Llama 4 Maverick (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/qwen/qwen3-235b-a22b:free", "label": "Qwen3 235B (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/deepseek/deepseek-r1:free", "label": "DeepSeek R1 (Free)", "tier": "Free", "cost": "Free"},
 ]
 
 MODEL_OPTIONS = {m["id"]: f'{m["label"]}  —  {m["cost"]}' for m in AVAILABLE_MODELS}
@@ -160,9 +168,9 @@ class SettingsSection:
                             placeholder="sk-or-...",
                             password=True, password_toggle_button=True,
                         ).classes("flex-1").props("outlined dense")
-                        ui.button("Save Key", icon="vpn_key",
+                        action(ui.button("Save Key", icon="vpn_key",
                                   on_click=self._save_key) \
-                            .props("unelevated color=deep-purple-6 size=sm")
+                            .props("unelevated color=primary size=sm"), "settings")
 
                 with ui.card().classes("w-full p-3 cr-card-inner"):
                     ui.label("Default LLM Model").classes("text-caption font-semibold")
@@ -201,7 +209,7 @@ class SettingsSection:
                     with ui.card().classes("flex-1 p-3 cr-card-inner"):
                         ui.label("Test Failure Retries").classes("text-caption font-semibold")
                         self.test_retry = ui.slider(min=1, max=10, value=3, step=1) \
-                            .props("label-always color=deep-purple-6")
+                            .props("label-always color=primary")
 
                     with ui.card().classes("flex-1 p-3 cr-card-inner"):
                         ui.label("Infrastructure Retries").classes("text-caption font-semibold")
@@ -227,7 +235,7 @@ class SettingsSection:
                             "CLI Automation", placeholder="./lib/cli-automation-standalone.jar",
                         ).classes("flex-1").props("outlined dense")
                         self.exec_report_jar = ui.input(
-                            "Report Generator", placeholder="./lib/execution-report-generator.jar",
+                            "Report Generator", placeholder="./lib/execution-report-generator-1.0.2-cli.jar",
                         ).classes("flex-1").props("outlined dense")
 
                     ui.label("HTML Templates").classes("text-caption font-semibold mt-2")
@@ -256,9 +264,9 @@ class SettingsSection:
 
             # Save all button — always visible
             with ui.row().classes("w-full justify-end"):
-                ui.button("Save All Settings", icon="save",
+                action(ui.button("Save All Settings", icon="save",
                           on_click=self._save_all) \
-                    .props("unelevated color=deep-purple-6 size=sm")
+                    .props("unelevated color=primary size=sm"), "settings")
 
     @staticmethod
     def _card_header(title: str, icon: str, desc: str):
@@ -267,12 +275,15 @@ class SettingsSection:
             ui.label(title).classes("text-subtitle2 font-semibold")
         ui.label(desc).classes("text-caption cr-text-dim ml-7 -mt-1 mb-1")
 
+    @requires("settings", "settings.save_key")
     async def _save_key(self):
         await self._save_setting("api_key", self.api_key_input.value or "")
         if self.config_manager and self.api_key_input.value:
             await self.config_manager.update_config({"openrouter_api_key": self.api_key_input.value})
         ui.notify("API key saved", type="positive")
+        await record("settings.save", target_type="setting", target_id="api_key", details={"api_key": "changed"})
 
+    @requires("settings", "settings.save")
     async def _save_all(self):
         await self._save_setting("default_model", self.model_select.value or "")
         await self._save_setting("test_retry_limit", str(int(self.test_retry.value)))
@@ -309,3 +320,11 @@ class SettingsSection:
                 "exec_failure_template": self.exec_failure_template.value,
             })
         ui.notify("All settings saved", type="positive")
+        await record("settings.save", target_type="setting", target_id="all", details={
+            "default_model": self.model_select.value, "test_retry_limit": self.test_retry.value,
+            "infra_retry_limit": self.infra_retry.value, "backoff_multiplier": self.backoff.value,
+            "ciq_processor_jar": self.ciq_jar.value, "cli_automation_jar": self.cli_jar.value,
+            "execution_report_jar": self.exec_report_jar.value, "mop_template": self.mop_template.value,
+            "exec_summary_template": self.exec_summary_template.value,
+            "exec_failure_template": self.exec_failure_template.value, "step_models": step_data,
+            "api_key": "unchanged" if not self.api_key_input.value else "set"})

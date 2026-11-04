@@ -1,10 +1,12 @@
-"""Output document viewer — browse and view all pipeline artifacts (input + output)."""
+"""Run Artifacts viewer — browse and view all pipeline artifacts (input + output)."""
 from __future__ import annotations
 
 from pathlib import Path
 from uuid import UUID
 
 from nicegui import ui
+
+from ui.access import download, record_document, scope
 
 from storage.artifact_store import ArtifactStore
 
@@ -27,6 +29,7 @@ class OutputViewerSection:
     def __init__(self, artifact_store: ArtifactStore | None = None, runner=None):
         self.artifact_store = artifact_store
         self.runner = runner
+        self._scope = scope()  # the admin sees every run, others only their own
         self._current_file: Path | None = None
         self._build_ui()
         # Auto-load runs on init
@@ -43,7 +46,7 @@ class OutputViewerSection:
 
         with ui.column().classes("w-full gap-4"):
             # Filter row
-            with ui.row().classes("w-full items-end gap-3"):
+            with ui.row().classes("cr-toolbar"):
                 self.node_filter = ui.select(
                     {"": "All Nodes"}, value="", label="Node Type",
                     on_change=self._apply_filters,
@@ -57,7 +60,7 @@ class OutputViewerSection:
                     on_change=self._on_run_selected,
                 ).classes("flex-1").props("outlined dense")
                 ui.button("Refresh", icon="refresh", on_click=self._load_runs) \
-                    .props("flat color=deep-purple-6 size=sm")
+                    .props("flat color=primary size=sm no-caps")
 
             # File list area (hidden until a run is selected)
             with ui.column().classes("w-full gap-2") as self.viewer_row:
@@ -69,8 +72,9 @@ class OutputViewerSection:
             with self.empty_state:
                 ui.icon("folder_open", size="48px").classes("cr-text-dim")
                 ui.label("No pipeline runs yet").classes("text-body2 cr-text-dim")
-                ui.label("Complete a pipeline run to browse output documents") \
+                ui.label("Complete a pipeline run to browse its artifacts") \
                     .classes("text-caption cr-text-dim")
+
 
     async def _load_runs(self):
         try:
@@ -87,8 +91,9 @@ class OutputViewerSection:
                 "SELECT r.id, r.status, r.started_at, d.uc_name "
                 "FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                f"WHERE {self._scope.where('r')[0]} "
                 "ORDER BY r.started_at DESC",
-                (),
+                self._scope.where('r')[1],
             )
         except Exception:
             self._all_runs = []
@@ -159,6 +164,8 @@ class OutputViewerSection:
         run_id = self.run_select.value
         if not run_id or not self.artifact_store:
             return
+        if not await self._scope.check(self.runner._db, run_id, "run.outputs", "outputs"):
+            return
         self.viewer_row.set_visibility(True)
         self.empty_state.set_visibility(False)
         self._load_file_tree(run_id)
@@ -188,6 +195,13 @@ class OutputViewerSection:
             groups.setdefault(group, []).append(f)
 
         with self.file_list:
+            final = _final_documents(run_root, self._uc_name(run_id))
+            if final:
+                with ui.expansion("Final Documents", icon="verified", value=True)                         .classes("w-full").props("dense header-class='text-body2 font-semibold'"):
+                    for category, docs in final:
+                        with _category_box(category, len(docs)):
+                            for label, fpath in docs:
+                                self._file_row(fpath, label)
             for group_name in sorted(groups.keys()):
                 group_files = groups[group_name]
                 label = group_name.replace("_", " ").title()
@@ -196,7 +210,10 @@ class OutputViewerSection:
                     for fpath in sorted(group_files, key=lambda p: p.name):
                         self._file_row(fpath)
 
-    def _file_row(self, fpath: Path):
+    def _uc_name(self, run_id: str) -> str:
+        return next((str(r.get("uc_name") or "") for r in self._all_runs if str(r.get("id")) == str(run_id)), "")
+
+    def _file_row(self, fpath: Path, label: str = ""):
         suffix = fpath.suffix.lower()
         icon = ICON_MAP.get(suffix, "insert_drive_file")
         size = fpath.stat().st_size if fpath.exists() else 0
@@ -205,17 +222,23 @@ class OutputViewerSection:
             "border-bottom: 1px solid var(--cr-border)"
         ):
             ui.icon(icon, size="16px").classes("cr-text-accent")
-            ui.label(fpath.name).classes("text-xs font-mono flex-1")
+            if label:
+                with ui.column().classes("gap-0 flex-1 min-w-0"):
+                    ui.label(label).classes("text-xs font-semibold")
+                    ui.label(fpath.name).classes("text-caption font-mono cr-text-dim")
+            else:
+                ui.label(fpath.name).classes("text-xs font-mono flex-1")
             ui.label(_format_size(size)).classes("text-caption cr-text-dim")
             ui.button("View", icon="visibility",
                       on_click=lambda _, p=fpath: self._view_dialog(p)) \
-                .props("flat dense size=xs color=deep-purple-6 no-caps")
+                .props("flat dense size=xs color=primary no-caps")
             ui.button("Download", icon="download",
-                      on_click=lambda _, p=fpath: ui.download(str(p))) \
-                .props("flat dense size=xs color=teal-6 no-caps")
+                      on_click=lambda _, p=fpath: download(p)) \
+                .props("flat dense size=xs color=primary no-caps")
 
     @staticmethod
     def _view_dialog(fpath: Path):
+        record_document("document.view", fpath)  # activity trail (spec 006)
         import html as html_mod
         content = ""
         is_binary = fpath.suffix.lower() in (".xlsx", ".xls", ".pdf", ".zip", ".jar", ".docx")
@@ -228,7 +251,7 @@ class OutputViewerSection:
 
         dialog = ui.dialog().props("maximized")
         with dialog, ui.card().classes("w-full h-full p-0").style(
-            "display: flex; flex-direction: column"
+            "display: flex; flex-direction: column; max-height: 100vh"
         ):
             with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
                 "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
@@ -236,10 +259,17 @@ class OutputViewerSection:
                 ui.label(fpath.name).classes("text-subtitle2 font-bold font-mono")
                 with ui.row().classes("gap-1"):
                     ui.button("Download", icon="download",
-                              on_click=lambda: ui.download(str(fpath))) \
-                        .props("flat size=sm color=teal-6 no-caps")
+                              on_click=lambda: download(fpath)) \
+                        .props("flat size=sm color=primary no-caps")
                     ui.button(icon="close", on_click=dialog.close) \
                         .props("flat round size=sm color=grey-6")
+            if fpath.suffix.lower() in (".html", ".htm") and fpath.exists():
+                # Reports render as pages (shown as escaped source before: raw tags on screen)
+                from nicegui import app
+                ui.element("iframe").props(f'src="{app.add_media_file(local_file=fpath)}"').style(
+                    "width: 100%; flex: 1; border: none; min-height: 0")
+                dialog.open()
+                return
             with ui.scroll_area().classes("flex-1"):
                 if is_binary:
                     with ui.column().classes("items-center justify-center p-8 gap-2"):
@@ -259,11 +289,39 @@ class OutputViewerSection:
 
     async def refresh_for_run(self, run_id: UUID):
         """Called externally to show outputs for a specific completed run."""
+        if not await self._scope.check(self.runner._db, str(run_id), "run.outputs", "outputs"):
+            return
         await self._load_runs()
         self.run_select.value = str(run_id)
         self.viewer_row.set_visibility(True)
         self.empty_state.set_visibility(False)
         self._load_file_tree(str(run_id))
+
+
+def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, list[tuple[str, Path]]]]:
+    """[(category, [(label, file)])]: Requirement, CIQ Validation, Execution, General — each in
+    the order the pipeline produced its documents (deliverables.py)."""
+    if not uc_name or not run_root.is_dir():
+        return []
+    from skills.report_generation.deliverables import collect_deliverables, group_deliverables
+    return [(cat, [(d.label, d.path) for d in docs])
+            for cat, docs in group_deliverables(collect_deliverables(run_root, uc_name))]
+
+
+_CATEGORY_ICONS = {"Requirement": "assignment", "CIQ Validation": "fact_check",
+                   "Execution": "terminal", "General": "summarize"}
+
+
+def _category_box(category: str, count: int):
+    """A bordered box for one final-documents category (Requirement, CIQ Validation, …): header
+    with the category and its document count; use ``with`` on the result to add the rows."""
+    with ui.element("div").classes("cr-doc-group"):
+        with ui.row().classes("cr-doc-group-head items-center no-wrap"):
+            ui.icon(_CATEGORY_ICONS.get(category, "folder"), size="16px").classes("cr-text-accent")
+            ui.label(category).classes("cr-doc-group-title")
+            ui.label(f"{count} document{'s' if count != 1 else ''}").classes("cr-doc-group-count")
+        body = ui.element("div").classes("cr-doc-group-body")
+    return body
 
 
 def _format_size(size: int) -> str:

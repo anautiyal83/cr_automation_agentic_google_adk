@@ -16,6 +16,43 @@ pip install -r requirements.txt
 python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICATION
 ```
 
+## Login & Access
+
+The web UI needs a login (email + password). Spec: [specs/006-rbac-login](specs/006-rbac-login/spec.md).
+
+- **First start**: the administrator account `admin@netconfig.local` with password `admin` is created; at the
+  first login it must be changed. To choose them up front, set before the first start:
+  `NETCONFIG_ADMIN_EMAIL` and `NETCONFIG_ADMIN_PASSWORD`.
+- **Forgotten password** (any user, run on the server): `python -m core.auth set-password <email>`
+- **Users & Roles** (admin): create users (they set their own password at first login), give each one a role;
+  a role grants each screen **None**, **View** (data only, action buttons disabled) or **Update**.
+- **Runs**: everyone sees and acts on the runs they started; the administrator sees all runs (runs from
+  before the login belong to the administrator).
+- **Artifact Cache** (admin, below Run Artifacts): cached steps per use case; Clear one or all.
+  Every delete / clear / remove asks for confirmation first.
+- **Audit Trail** (admin): every user action and refused attempt (no system entries) — filter, details, CSV export.
+
+## Run Queue & Restart Recovery
+
+Spec: [specs/007-run-queue](specs/007-run-queue/spec.md).
+
+- **One pipeline runs at a time**; every other start (New Run, Run History → Re-run, CLI) waits in a FIFO queue
+  and starts by itself when the pipeline is free. One job per use case; at most
+  `execution.max_queued_per_user` (default 3) waiting jobs per user — beyond that a start is refused.
+- **Pipeline Queue** page (sidebar, below Live Run; compact view on Dashboard and New Run): the job in the pipeline, the waiting jobs
+  with their position and estimated start, and jobs finished in the last 24 h. Estimates use working time (run time
+  without review pauses) of the use case's past runs; while a run waits for a review, the next jobs start
+  "after the review". Owners remove their own waiting jobs (the administrator any); a run paused for review
+  is not cancelled automatically — the administrator can cancel it.
+- **Server restart**: the pipeline saves a checkpoint before every agent and at every review pause
+  (`run_checkpoints`). At start, interrupted runs resume first: the interrupted step runs again; a review pause comes
+  back as the same pause; step 9 resumes at step 8 (its simulator is gone). After 2 failed resumes at the same point,
+  or without a checkpoint or run folder, the run is marked failed with the reason.
+- Sessions last 12 h; 5 failed logins lock an email for 5 minutes. The session cookie is signed with
+  `NETCONFIG_STORAGE_SECRET`, else a secret generated once into `data/.storage_secret` (do not share `data/`).
+  Run behind HTTPS (reverse proxy) in production.
+- The CLI (`main.py`, `test_run.py`, `test_step.py`) needs no login; its runs are visible to the administrator.
+
 ## Architecture
 
 ```

@@ -1,84 +1,77 @@
-"""LLM prompt templates for MockWire simulator configuration generation."""
+"""LLM prompt templates for MockWire command → response generation.
+
+The LLM only writes command responses for one node at a time. Prompts, users,
+NIAM, escalation (`su`/`exit`) and runtime entries are built deterministically
+(see topology.py).
+"""
 from __future__ import annotations
 
-SIMULATOR_GEN_SYSTEM = """\
-You are a network simulator configuration expert. You generate MockWire SSH \
-simulator YAML configurations that mock telecom network nodes for automated \
-testing of execution workflows.
+NODE_RESPONSES_SYSTEM = """\
+You write realistic command outputs for a MockWire SSH simulator that stands in for \
+a telecom network node during automated workflow testing.
 
-Each simulated node needs SSH server config, command-response mappings, \
-prompt patterns, and file transfer stubs that match the workflow expectations.
+Output ONLY a YAML map — no markdown fences, no explanations. Each key is a command \
+the workflow sends; each value has a "lines:" list with the exact output lines.
 
-Your output must be valid YAML — no markdown fencing, no explanations, just YAML.
+FORMAT:
+"<exact command string>":
+  lines:
+  - '<output line 1>'
+  - '<output line 2>'
+"regex:<java regex matching the command>":
+  lines:
+  - '<output line>'
+
+RULES:
+- One entry per command listed. Use the exact command text as the key when it has no \
+${...} placeholders.
+- When the command contains ${...} placeholders, use a "regex:" key: escape regex \
+metacharacters in the literal parts and replace each placeholder with \\S+ (or .* \
+inside quotes). A shell substitution such as $(date +%Y%m%d) contains spaces: replace it \
+with .+? (never \\S+).
+- Output must look like the real tool's output (e.g. real `sar` prints %user %nice \
+%system %iowait %steal %idle) AND satisfy the step's success validation.
+- Commands that print nothing on success get `lines: []`.
+- Do NOT emit config, auth, niam, su, exit or stty entries.
+- Use SINGLE quotes for every key and every output line (never double quotes: \
+regex backslashes like \\S are invalid escapes in double-quoted YAML). Double any \
+single quote inside a value.
+- Keep outputs short and realistic (at most ~20 lines per command); never pad \
+lines with whitespace.
 """
 
-SIMULATOR_GEN_USER = """\
-Generate MockWire simulator configuration YAML for the workflow below.
+NODE_RESPONSES_USER = """\
+UC: {uc_name}
+Node: {node} (prompt after login: {prompt!r})
 
-=== UC NAME ===
-{uc_name}
+=== COMMANDS SENT TO THIS NODE (phase | command | success validation) ===
+{commands}
 
-=== WORKFLOW YAML (nodes and commands to simulate) ===
-{workflow_summary}
-
-=== NODE DEFINITIONS ===
-{nodes_summary}
-
-=== REQUIREMENTS ===
-{requirements_summary}
-
-=== SIMULATOR SCHEMA REFERENCE ===
-{schema_summary}
-
-=== INSTRUCTIONS ===
-For each node referenced in the workflow:
-
-1. Define an SSH server entry:
-   - host: localhost (all nodes simulated locally)
-   - port: unique per node (starting at 2222)
-   - users: matching the workflow's SSH user + escalation users
-   - auth: accept any password (simulator mode)
-   - prompt: matching the workflow's prompt_regex patterns
-
-2. Define command-response mappings for every command in the workflow:
-   - Match the exact command string or a regex pattern
-   - Return realistic output that satisfies the workflow's validation criteria
-   - For health checks (sar, ss, ndsLoadStats): return output with passing values
-   - For LDAP commands: return realistic search results
-   - For file operations (sftp, scp): acknowledge success
-
-3. Define escalation responses:
-   - su/sudo: return the expected root/user prompt
-   - ctrl+p+e: return privilege escalation prompt
-
-4. Define file transfer stubs:
-   - SFTP/SCP directories that the workflow expects
-   - Response files for XML/SPML operations
-
-Output ONLY valid YAML. No markdown, no code fences, no explanations.
+=== SIMULATOR HINTS FROM REQUIREMENTS ===
+{hints}
+{feedback}
+Write the YAML map of command responses for node {node}.
 """
 
-SIMULATOR_REGENERATE = """\
-The simulator configuration below caused test failures. Fix the issues.
+FEEDBACK_SECTION = """
+=== PREVIOUS EXECUTION TEST FAILURES (fix these responses) ===
+{feedback}
+"""
 
-=== CURRENT SIMULATOR CONFIG YAML ===
-{current_yaml}
+INVALID_YAML_RETRY = """
+Your previous answer was not valid YAML. Answer again with ONLY the YAML map, single-quoted keys and lines, no prose.
+"""
 
-=== TEST FAILURES ===
-{test_failures}
+CONFORM_USER = """\
+UC: {uc_name}
+Node: {node}
 
-=== REVIEWER ANALYSIS ===
-{reviewer_analysis}
+These simulator responses are for a HEALTHY node on a normal day, but the workflow's own
+success check rejects them. For each key below, return the output a healthy node prints that
+the regex matches (realistic text, same command; for an existence pre-check this usually means
+the "not found" output).
 
-=== WORKFLOW NODES AND COMMANDS ===
-{workflow_summary}
+{listing}
 
-=== INSTRUCTIONS ===
-1. Fix ONLY the issues identified in the test failures and reviewer analysis.
-2. Ensure every command in the workflow has a matching simulator response.
-3. Ensure prompt patterns match between workflow and simulator.
-4. Ensure SSH ports and users are consistent.
-5. Output the COMPLETE corrected YAML — not a diff, the full file.
-
-Output ONLY valid YAML. No markdown, no code fences, no explanations.
+Answer with ONLY the YAML map: the same keys, each with a 'lines' list.
 """

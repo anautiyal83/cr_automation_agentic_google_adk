@@ -44,6 +44,7 @@ class ReportGenerationSkill:
         t0 = time.monotonic()
         duration = t0 - inp.pipeline_start_time if inp.pipeline_start_time else 0
 
+        _ensure_requirements_summary(inp)
         try:
             html = generate_pipeline_report(
                 uc_name=inp.uc_name,
@@ -84,3 +85,18 @@ class ReportGenerationSkill:
             excel_path=excel_path,
             status="passed",
         )
+
+
+def _ensure_requirements_summary(inp: SkillInput) -> None:
+    """The requirements document is a deliverable: rebuild it from the requirements package when
+    the run has none (steps 1-2 restored from the artifact cache before OB-16)."""
+    if not inp.run_dir or not inp.requirements:
+        return
+    path = Path(inp.run_dir) / f"{inp.uc_name}_requirements-summary.html"
+    if path.exists():
+        return
+    try:
+        from skills.requirement_gathering.html_report import summary_html_from_requirements
+        path.write_text(summary_html_from_requirements(inp.uc_name, inp.requirements), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Requirements summary not rebuilt: %s", e)

@@ -1,25 +1,30 @@
-"""Sanity testing for the running MockWire simulator.
+"""SSH sanity testing for the running MockWire simulator (step 8, phase 4).
 
-Quick smoke tests per node to verify the simulator is correctly configured
-before the full execution test runs. Catches config issues early.
+Drives each node's instance the way the cli-automation JAR will, before step 9:
+1. SSH login with the simulator credentials
+2. NIAM neId prompt answered (when the node is NIAM-fronted)
+3. Login prompt shown
+4. Root elevation: Ctrl+P, Ctrl+E shows the root prompt (``elevate_to_root`` nodes)
+5. Command round trip: ``stty -echo`` and the ``__CMD_DONE__`` marker
+6. Every ``su`` escalation pushes its prompt and ``exit`` returns to the working prompt
+7. First UC command (without placeholders) gets a response, not "command not found"
 
-Checks per node:
-1. SSH connection on configured port
-2. Login prompt matches expected pattern
-3. Basic command gets a response
-4. Escalation returns expected prompt (if configured)
-5. One UC-specific command returns realistic output
+Uses paramiko (blocking) in worker threads; nodes are checked concurrently.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-SANITY_TIMEOUT = 10  # seconds per check
+LOGIN_TIMEOUT = 10   # MockWire adds ~2 s login delay (+ NIAM)
+COMMAND_TIMEOUT = 5
+DONE_MARKER = "__CMD_DONE__:"
+NOT_FOUND = "command not found"
 
 
 @dataclass
@@ -28,15 +33,19 @@ class NodeSanityResult:
     node: str = ""
     port: int = 0
     ssh_connect: str = "SKIP"       # PASS | FAIL | SKIP
+    niam: str = "SKIP"
     prompt_match: str = "SKIP"
+    elevation: str = "SKIP"         # Ctrl+P,Ctrl+E → root prompt
     basic_command: str = "SKIP"
     escalation: str = "SKIP"
     uc_command: str = "SKIP"
     errors: list[str] = field(default_factory=list)
+    transcript: str = ""            # session output (truncated) for the report
 
     @property
     def passed(self) -> bool:
-        checks = [self.ssh_connect, self.prompt_match, self.basic_command]
+        checks = [self.ssh_connect, self.niam, self.prompt_match, self.elevation, self.basic_command,
+                  self.escalation, self.uc_command]
         return all(c in ("PASS", "SKIP") for c in checks)
 
 
@@ -55,189 +64,173 @@ class SanityResult:
         return self.nodes_failed == 0 and self.total_nodes > 0
 
 
-async def run_sanity_checks(
-    ports: list[int],
-    node_configs: list[dict],
-    workflow_commands: list[dict] | None = None,
-) -> SanityResult:
-    """Run sanity checks against the running simulator.
+async def run_sanity_checks(nodes: list, simulator, host: str = "localhost") -> SanityResult:
+    """Check every node (``topology.NodeSpec``) against its running instance."""
+    tasks = []
+    for spec in nodes:
+        port = simulator.port_for(spec.name)
+        if port is None:
+            tasks.append(_missing_instance(spec.name))
+        else:
+            tasks.append(asyncio.to_thread(_check_node, spec, host, port))
+    node_results = list(await asyncio.gather(*tasks))
 
-    Args:
-        ports: List of simulator ports (one per node).
-        node_configs: Node definitions from requirements with name, prompt_regex, escalation.
-        workflow_commands: Optional commands from workflow for UC-specific check.
-
-    Returns:
-        SanityResult with per-node breakdown.
-    """
-    result = SanityResult()
-
-    # Build port → node mapping
-    node_port_map = _build_node_port_map(ports, node_configs)
-
-    for node_name, port in node_port_map.items():
-        node_config = _find_node_config(node_name, node_configs)
-        node_cmds = [c for c in (workflow_commands or []) if c.get("node") == node_name]
-
-        nr = await _check_node(node_name, port, node_config, node_cmds)
-        result.node_results.append(nr)
-
-    result.total_nodes = len(result.node_results)
-    result.nodes_passed = sum(1 for nr in result.node_results if nr.passed)
+    result = SanityResult(node_results=node_results, total_nodes=len(node_results))
+    result.nodes_passed = sum(1 for nr in node_results if nr.passed)
     result.nodes_failed = result.total_nodes - result.nodes_passed
     result.status = "passed" if result.all_passed else "failed"
-
-    passed_names = [nr.node for nr in result.node_results if nr.passed]
-    failed_names = [nr.node for nr in result.node_results if not nr.passed]
-    result.summary = (
-        f"Sanity: {result.nodes_passed}/{result.total_nodes} nodes OK"
-        + (f" | Failed: {', '.join(failed_names)}" if failed_names else "")
-    )
-
+    failed = [f"{nr.node} ({'; '.join(nr.errors)[:200]})" for nr in node_results if not nr.passed]
+    result.summary = (f"Sanity: {result.nodes_passed}/{result.total_nodes} nodes OK"
+                      + (f" | Failed: {', '.join(failed)}" if failed else ""))
     logger.info("Sanity check: %s", result.summary)
     return result
 
 
-async def _check_node(
-    node_name: str,
-    port: int,
-    node_config: dict,
-    workflow_commands: list[dict],
-) -> NodeSanityResult:
-    """Run all sanity checks for a single node."""
-    nr = NodeSanityResult(node=node_name, port=port)
+async def _missing_instance(node: str) -> NodeSanityResult:
+    return NodeSanityResult(node=node, ssh_connect="FAIL", errors=["no simulator instance for node"])
 
-    # 1. SSH connection
+
+def _check_node(spec, host: str, port: int) -> NodeSanityResult:
+    import paramiko
+
+    nr = NodeSanityResult(node=spec.name, port=port)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    session = _Session()
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("localhost", port), timeout=SANITY_TIMEOUT
-        )
-        nr.ssh_connect = "PASS"
-
-        # 2. Read initial prompt/banner
+        # 1. SSH login
         try:
-            banner = await asyncio.wait_for(reader.read(4096), timeout=3)
-            banner_text = banner.decode("utf-8", errors="replace")
+            client.connect(host, port=port, username=spec.user, password=spec.password,
+                           look_for_keys=False, allow_agent=False, timeout=LOGIN_TIMEOUT,
+                           banner_timeout=LOGIN_TIMEOUT, auth_timeout=LOGIN_TIMEOUT)
+            session.channel = client.invoke_shell()
+            nr.ssh_connect = "PASS"
+        except Exception as e:
+            nr.ssh_connect = "FAIL"
+            nr.errors.append(f"SSH login failed on port {port}: {e}")
+            return nr
 
-            expected_prompt = node_config.get("ssh", {}).get("prompt_regex", "")
-            if not expected_prompt:
-                expected_prompt = node_config.get("prompt_regex", "")
+        login_prompt = (spec.login_prompt or spec.prompt).rstrip()
+        work_prompt = spec.prompt.rstrip()  # root prompt when elevated
 
-            if expected_prompt:
-                if re.search(expected_prompt, banner_text):
-                    nr.prompt_match = "PASS"
-                else:
-                    nr.prompt_match = "FAIL"
-                    nr.errors.append(
-                        f"Prompt mismatch: expected /{expected_prompt}/ "
-                        f"got: {banner_text[:100]!r}"
-                    )
+        # 2. NIAM neId
+        if spec.ne_ids:
+            if "neId" in session.read_until("neId", LOGIN_TIMEOUT):
+                session.send(spec.ne_ids[0])
+                nr.niam = "PASS"
             else:
-                nr.prompt_match = "SKIP"  # no expected prompt to check
+                nr.niam = "FAIL"
+                nr.errors.append("NIAM neId prompt not shown")
 
-        except asyncio.TimeoutError:
+        # 3. Prompt after login
+        out = session.read_until(login_prompt, LOGIN_TIMEOUT)
+        if login_prompt in out:
+            nr.prompt_match = "PASS"
+        else:
             nr.prompt_match = "FAIL"
-            nr.errors.append("No prompt received within 3s")
+            nr.errors.append(f"login prompt {login_prompt!r} not shown")
+            return nr
 
-        # 3. Basic command
-        try:
-            writer.write(b"echo sanity_test\n")
-            await writer.drain()
-            response = await asyncio.wait_for(reader.read(4096), timeout=3)
-            response_text = response.decode("utf-8", errors="replace")
-            if "sanity_test" in response_text or response_text.strip():
-                nr.basic_command = "PASS"
+        # 4. Root elevation (NIAM Ctrl+P, Ctrl+E) as cli-automation does for elevate_to_root
+        session.send("stty -echo")
+        session.read_until(login_prompt, COMMAND_TIMEOUT)
+        if spec.root_prompt:
+            session.send_raw("\x10\x05")
+            if work_prompt in session.read_until(work_prompt, COMMAND_TIMEOUT):
+                nr.elevation = "PASS"
             else:
-                nr.basic_command = "FAIL"
-                nr.errors.append("No response to 'echo sanity_test'")
-        except asyncio.TimeoutError:
+                nr.elevation = "FAIL"
+                nr.errors.append(f"Ctrl+P,Ctrl+E did not show root prompt {work_prompt!r}")
+                return nr
+
+        # 5. Command round trip as the JAR does it
+        out = session.run(":", COMMAND_TIMEOUT)
+        if DONE_MARKER in out:
+            nr.basic_command = "PASS"
+        else:
             nr.basic_command = "FAIL"
-            nr.errors.append("Basic command timed out")
+            nr.errors.append("no __CMD_DONE__ marker after command")
 
-        # 4. Escalation check (if configured)
-        escalation = node_config.get("escalation", node_config.get("root_escalation", {}))
-        if isinstance(escalation, dict) and escalation.get("method"):
-            method = escalation["method"]
-            try:
-                if method == "su":
-                    writer.write(b"su -\n")
-                elif method == "ctrl_p_e":
-                    writer.write(b"\x10\x05")  # Ctrl+P, Ctrl+E
-                else:
-                    writer.write(f"{method}\n".encode())
-                await writer.drain()
-                esc_resp = await asyncio.wait_for(reader.read(4096), timeout=3)
-                esc_text = esc_resp.decode("utf-8", errors="replace")
-                if esc_text.strip():
-                    nr.escalation = "PASS"
-                else:
+        # 6. Escalations (su pushes the service user's prompt, exit returns)
+        if spec.escalations:
+            nr.escalation = "PASS"
+            for su_cmd, pushed in spec.escalations.items():
+                out = session.run(su_cmd, COMMAND_TIMEOUT, until=pushed.rstrip())
+                if pushed.rstrip() not in out:
                     nr.escalation = "FAIL"
-                    nr.errors.append(f"Escalation ({method}) returned empty response")
-            except asyncio.TimeoutError:
-                nr.escalation = "FAIL"
-                nr.errors.append(f"Escalation ({method}) timed out")
-        else:
-            nr.escalation = "SKIP"
+                    nr.errors.append(f"{su_cmd!r} did not push prompt {pushed.rstrip()!r}")
+                    continue
+                out = session.run("exit", COMMAND_TIMEOUT, until=work_prompt)
+                if not out.rstrip().endswith(work_prompt):
+                    nr.escalation = "FAIL"
+                    nr.errors.append(f"'exit' after {su_cmd!r} did not return to {work_prompt!r}")
 
-        # 5. UC-specific command (first workflow command for this node)
-        if workflow_commands:
-            first_cmd = workflow_commands[0]
-            cmd_text = first_cmd.get("cmd", first_cmd.get("command", ""))
-            if cmd_text:
-                try:
-                    writer.write(f"{cmd_text}\n".encode())
-                    await writer.drain()
-                    cmd_resp = await asyncio.wait_for(reader.read(8192), timeout=5)
-                    cmd_text_resp = cmd_resp.decode("utf-8", errors="replace")
-                    if cmd_text_resp.strip():
-                        nr.uc_command = "PASS"
-                    else:
-                        nr.uc_command = "FAIL"
-                        nr.errors.append(f"UC command '{cmd_text[:40]}' returned empty")
-                except asyncio.TimeoutError:
-                    nr.uc_command = "FAIL"
-                    nr.errors.append(f"UC command '{cmd_text[:40]}' timed out")
-        else:
-            nr.uc_command = "SKIP"
-
-        writer.close()
+        # 6. First UC command without placeholders
+        uc_cmd = next((c["cmd"] for c in spec.commands if _plain_uc_command(str(c.get("cmd", "")))), "")
+        if uc_cmd:
+            out = session.run(uc_cmd, COMMAND_TIMEOUT)
+            body = out.split(DONE_MARKER)[0]
+            if DONE_MARKER not in out:
+                nr.uc_command = "FAIL"
+                nr.errors.append(f"UC command {uc_cmd[:50]!r} did not complete")
+            elif NOT_FOUND in body:
+                nr.uc_command = "FAIL"
+                nr.errors.append(f"no simulator response for {uc_cmd[:50]!r}")
+            else:
+                nr.uc_command = "PASS"
+    except Exception as e:
+        nr.errors.append(f"sanity session error: {e}")
+        if nr.ssh_connect == "SKIP":
+            nr.ssh_connect = "FAIL"
+    finally:
+        nr.transcript = session.transcript[-3000:]
         try:
-            await writer.wait_closed()
+            client.close()
         except Exception:
             pass
-
-    except (ConnectionRefusedError, OSError) as e:
-        nr.ssh_connect = "FAIL"
-        nr.errors.append(f"SSH connection failed on port {port}: {e}")
-    except asyncio.TimeoutError:
-        nr.ssh_connect = "FAIL"
-        nr.errors.append(f"SSH connection timed out on port {port}")
-
-    status = "PASS" if nr.passed else "FAIL"
-    logger.info("Sanity [%s] %s (port %d): ssh=%s prompt=%s cmd=%s esc=%s uc=%s",
-                 status, node_name, port,
-                 nr.ssh_connect, nr.prompt_match, nr.basic_command,
-                 nr.escalation, nr.uc_command)
+        logger.info("Sanity [%s] %s (port %d): ssh=%s niam=%s prompt=%s elev=%s cmd=%s esc=%s uc=%s",
+                    "PASS" if nr.passed else "FAIL", spec.name, port, nr.ssh_connect, nr.niam,
+                    nr.prompt_match, nr.elevation, nr.basic_command, nr.escalation, nr.uc_command)
     return nr
 
 
-def _build_node_port_map(ports: list[int], node_configs: list[dict]) -> dict[str, int]:
-    """Map node names to ports. Best-effort matching by index."""
-    node_names = [n.get("name", f"node_{i}") for i, n in enumerate(node_configs) if isinstance(n, dict)]
+class _Session:
+    """Minimal interactive shell driver over a paramiko channel."""
 
-    mapping = {}
-    for i, port in enumerate(ports):
-        if i < len(node_names):
-            mapping[node_names[i]] = port
-        else:
-            mapping[f"unknown_{i}"] = port
+    def __init__(self):
+        self.channel = None
+        self.transcript = ""
 
-    return mapping
+    def send(self, line: str) -> None:
+        self.channel.send(line + "\n")
+        self.transcript += f"\n>>> {line}\n"
+
+    def send_raw(self, data: str) -> None:
+        """Send control bytes without Enter (e.g. Ctrl+P, Ctrl+E)."""
+        self.channel.send(data)
+        self.transcript += "\n>>> " + "".join(f"^{chr(ord(c) + 64)}" if ord(c) < 32 else c for c in data) + "\n"
+
+    def read_until(self, expected: str, timeout: float) -> str:
+        end, out = time.time() + timeout, ""
+        while time.time() < end and expected not in out:
+            if self.channel.recv_ready():
+                out += self.channel.recv(65535).decode("utf-8", errors="replace")
+            elif self.channel.closed:
+                break
+            else:
+                time.sleep(0.05)
+        self.transcript += out
+        return out
+
+    def run(self, command: str, timeout: float, until: str = "") -> str:
+        """Send ``<command>; echo __CMD_DONE__:$?`` like the JAR; read to marker or ``until``."""
+        if command in ("exit",) or until:
+            self.send(command)
+            return self.read_until(until or DONE_MARKER, timeout)
+        self.send(f"{command}; echo {DONE_MARKER}$?")
+        return self.read_until(DONE_MARKER, timeout) + self.read_until("\n", 0.5)
 
 
-def _find_node_config(node_name: str, node_configs: list[dict]) -> dict:
-    """Find node config by name."""
-    for n in node_configs:
-        if isinstance(n, dict) and n.get("name", "").lower() == node_name.lower():
-            return n
-    return {}
+def _plain_uc_command(cmd: str) -> bool:
+    cmd = cmd.strip()
+    return bool(cmd) and "${" not in cmd and not re.match(r"^(su\b|exit$|stty\b)", cmd)

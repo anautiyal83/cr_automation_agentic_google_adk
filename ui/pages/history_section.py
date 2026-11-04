@@ -1,17 +1,29 @@
-"""Run history section — filterable table with re-run, view, and detail support."""
+"""Run history section — filterable, paginated table with re-run, view, cleanup, and detail support."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from uuid import UUID
 
 from nicegui import ui
 
+from ui.access import action, download, record, requires, scope
+
+from ui.components import status_cells
+
+PAGE_SIZE = 10
+
 
 class HistorySection:
-    def __init__(self, runner=None, on_rerun=None, on_view_outputs=None):
+    def __init__(self, runner=None, on_rerun=None, on_view_outputs=None, on_open_run=None):
         self.runner = runner
+        self.on_open_run = on_open_run  # callback(run_id) -> run page
         self.on_rerun = on_rerun  # callback(run) -> navigate to progress
         self.on_view_outputs = on_view_outputs  # callback(run_id) -> navigate to outputs
+        self._current_page = 1
+        self._total_pages = 1
+        self._all_filtered_runs: list[dict] = []
+        self._scope = scope()  # the admin sees every run, others only their own (spec 006)
         self._build_ui()
         # Auto-load on init
         if runner:
@@ -26,22 +38,27 @@ class HistorySection:
     def _build_ui(self):
         with ui.column().classes("w-full gap-4"):
             # Filter bar
-            with ui.card().classes("w-full p-3 cr-card-inner"):
-                with ui.row().classes("w-full items-end gap-3"):
+            with ui.element("div").classes("w-full"):
+                with ui.row().classes("cr-toolbar"):
                     self.node_filter = ui.select(
                         {"": "All Nodes"}, value="", label="Node Type",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
                     self.activity_filter = ui.select(
                         {"": "All Activities"}, value="", label="Activity",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
                     self.status_filter = ui.select(
                         {"all": "All Statuses", "completed": "Completed",
-                         "failed": "Failed", "cancelled": "Cancelled", "running": "Running"},
+                         "failed": "Failed", "cancelled": "Cancelled", "running": "Running",
+                         "queued": "Waiting", "removed": "Removed"},
                         value="all", label="Status",
-                        on_change=lambda _: self._refresh(),
+                        on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
+                    ui.space()
+                    action(ui.button("Cleanup Old Runs", icon="delete_sweep",
+                              on_click=self._confirm_cleanup) \
+                        .props("flat dense no-caps color=red-6 size=sm"), "history")
 
             # Results table
             self.table = ui.table(
@@ -64,8 +81,10 @@ class HistorySection:
             ).classes("w-full").props(
                 'flat bordered separator=cell dense '
                 'table-header-class="cr-bg-surface-light cr-text-dim" '
-                'no-data-label="No pipeline runs found"'
+                'no-data-label="No pipeline runs found" '
+                'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
             )
+            status_cells(self.table)
             # Custom body slot for error column — show clickable "Details" link
             self.table.add_slot('body-cell-error', '''
                 <q-td :props="props">
@@ -79,13 +98,16 @@ class HistorySection:
             # Custom body slot for action buttons
             self.table.add_slot('body-cell-actions', '''
                 <q-td :props="props">
+                    <q-btn flat dense icon="open_in_new" color="primary" size="sm"
+                           @click="$parent.$emit('open_run', props.row)"
+                           label="Open" no-caps class="q-mr-xs" />
                     <q-btn flat dense icon="info_outline" color="grey-7" size="sm"
                            @click="$parent.$emit('details', props.row)"
                            label="Details" no-caps class="q-mr-xs" />
-                    <q-btn flat dense icon="source" color="teal-6" size="sm"
+                    <q-btn flat dense icon="source" color="primary" size="sm"
                            @click="$parent.$emit('view', props.row)"
                            label="Outputs" no-caps class="q-mr-xs" />
-                    <q-btn flat dense icon="replay" color="deep-purple-6" size="sm"
+                    <q-btn class="cr-action" flat dense icon="replay" color="primary" size="sm"
                            @click="$parent.$emit('rerun', props.row)"
                            label="Re-run" no-caps />
                 </q-td>
@@ -94,6 +116,18 @@ class HistorySection:
             self.table.on('rerun', self._on_rerun)
             self.table.on('view', self._on_view)
             self.table.on('details', self._on_details)
+            self.table.on('open_run', self._on_open_run)
+
+            # Pagination row
+            with ui.row().classes("w-full items-center justify-center gap-2 py-1"):
+                self.btn_prev = ui.button(icon="chevron_left",
+                                          on_click=lambda: self._go_page(self._current_page - 1)) \
+                    .props("flat dense round size=sm disable")
+                self.page_label = ui.label("Page 1 / 1").classes("text-caption cr-text-dim")
+                self.btn_next = ui.button(icon="chevron_right",
+                                          on_click=lambda: self._go_page(self._current_page + 1)) \
+                    .props("flat dense round size=sm disable")
+                self.total_label = ui.label("").classes("text-caption cr-text-dim ml-4")
 
             # Detail panel (shown below table when a run is selected)
             self.detail_panel = ui.card().classes("w-full p-4 cr-card-inner")
@@ -126,19 +160,21 @@ class HistorySection:
         db = self.runner._db
         filters = {}
         status_val = self.status_filter.value
-        where_clause = ""
-        params = ()
+        owner_sql, owner_params = self._scope.where("r")
+        where_clause = f"WHERE {owner_sql}"
+        params = owner_params
         if status_val and status_val != "all":
-            where_clause = "WHERE r.status = ? OR r.status = ?"
-            params = (status_val, f"PipelineStatus.{status_val.upper()}")
+            where_clause += " AND (r.status = ? OR r.status = ?)"
+            params = (*owner_params, status_val, f"PipelineStatus.{status_val.upper()}")
 
         try:
             runs = await db.execute(
-                f"SELECT r.id, r.status, r.started_at, r.duration_seconds, r.error_summary, d.uc_name "
+                f"SELECT r.id, r.status, COALESCE(r.started_at, r.queued_at) AS started_at, r.duration_seconds, "
+                f"r.error_summary, d.uc_name "
                 f"FROM pipeline_runs r "
                 f"LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
                 f"{where_clause} "
-                f"ORDER BY r.started_at DESC",
+                f"ORDER BY COALESCE(r.started_at, r.queued_at) DESC",
                 params,
             )
         except Exception:
@@ -187,13 +223,43 @@ class HistorySection:
             r["status"] = str(r.get("status") or "").replace("PipelineStatus.", "")
             r["has_error"] = bool(r.get("error_summary"))
             r["error_summary"] = r.get("error_summary") or ""
-        self.table.rows = runs
-        self.empty_state.set_visibility(len(runs) == 0)
+
+        # Paginate
+        self._all_filtered_runs = runs
+        total = len(runs)
+        self._total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        self._current_page = min(self._current_page, self._total_pages)
+        start = (self._current_page - 1) * PAGE_SIZE
+        page_runs = runs[start:start + PAGE_SIZE]
+
+        self.table.rows = page_runs
+        self.empty_state.set_visibility(total == 0)
+
+        # Update pagination controls
+        self.page_label.text = f"Page {self._current_page} / {self._total_pages}"
+        self.total_label.text = f"({total} runs)"
+        if self._current_page <= 1:
+            self.btn_prev.props("disable")
+        else:
+            self.btn_prev.props(remove="disable")
+        if self._current_page >= self._total_pages:
+            self.btn_next.props("disable")
+        else:
+            self.btn_next.props(remove="disable")
+
+    async def _on_open_run(self, e):
+        row = e.args if isinstance(e.args, dict) else {}
+        if self.on_open_run and row.get("id"):
+            if not await self._scope.check(self.runner._db, row["id"], "run.open", "history"):
+                return
+            await self.on_open_run(row["id"])
 
     async def _on_details(self, e):
         row = e.args
         run_id = row.get("id")
         if not run_id or not self.runner or not self.runner._db:
+            return
+        if not await self._scope.check(self.runner._db, run_id, "run.details", "history"):
             return
 
         self.detail_title.text = f"Run Details — {row.get('uc_name') or ''} ({row.get('status') or ''})"
@@ -205,6 +271,7 @@ class HistorySection:
         with self.detail_content:
             # --- Input Documents ---
             doc_set_id = None
+            doc = None
             try:
                 run_row = await db.get_by_id("pipeline_runs", run_id)
                 doc_set_id = run_row.get("document_set_id") if run_row else None
@@ -267,6 +334,47 @@ class HistorySection:
                         err = step.get("error_message")
                         if err:
                             ui.label(f"  Error: {err[:120]}").classes("text-caption cr-text-error ml-8")
+
+            # --- LLM usage of this run (table llm_usage) ---
+            try:
+                usage = await db.execute(
+                    "SELECT step, COUNT(*) AS calls, SUM(total_tokens) AS tokens, SUM(cost_usd) AS cost, "
+                    "SUM(elapsed_sec) AS secs FROM llm_usage WHERE run_id = ? GROUP BY step ORDER BY MIN(id)",
+                    (str(run_id),))
+            except Exception:
+                usage = []
+            if usage:
+                calls = sum(u["calls"] for u in usage)
+                tokens = sum(u["tokens"] or 0 for u in usage)
+                cost = sum(u["cost"] or 0 for u in usage)
+                with ui.expansion(f"LLM Usage — {calls} calls · {tokens:,} tokens · ${cost:.4f}",
+                                  icon="analytics").classes("w-full").props("dense"):
+                    for u in usage:
+                        with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
+                            ui.label(u["step"] or "—").classes("text-caption font-semibold flex-1 font-mono")
+                            ui.label(f"{u['calls']} calls").classes("text-caption cr-text-dim")
+                            ui.label(f"{(u['tokens'] or 0):,} tokens").classes("text-caption cr-text-dim")
+                            ui.label(f"{(u['secs'] or 0):.0f}s").classes("text-caption cr-text-dim")
+                            ui.label(f"${(u['cost'] or 0):.4f}").classes("text-caption font-mono")
+
+            # --- Final Documents (the run's deliverables, as on step 10 / Output Documents) ---
+            from ui.pages.output_viewer_section import OutputViewerSection, _category_box, _final_documents
+            uc_name = (doc or {}).get("uc_name") or row.get("uc_name") or ""
+            final = _final_documents(Path("data/runs") / str(run_id), uc_name)
+            if final:
+                with ui.expansion("Final Documents", icon="verified")                         .classes("w-full").props("dense default-opened"):
+                    for category, docs in final:
+                        with _category_box(category, len(docs)):
+                            for label, fpath in docs:
+                                with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
+                                    ui.icon("description", size="14px").classes("cr-text-accent")
+                                    with ui.column().classes("gap-0 flex-1 min-w-0"):
+                                        ui.label(label).classes("text-caption font-semibold")
+                                        ui.label(fpath.name).classes("text-caption cr-text-dim font-mono")
+                                    ui.button("View", icon="visibility",
+                                              on_click=lambda _, f=fpath: OutputViewerSection._view_dialog(f))                                 .props("flat dense size=xs color=primary no-caps")
+                                    ui.button("Download", icon="download",
+                                              on_click=lambda _, f=fpath: download(f))                                 .props("flat dense size=xs color=primary no-caps")
 
             # --- Output Artifacts ---
             try:
@@ -342,30 +450,131 @@ class HistorySection:
         row = e.args
         run_id = row.get("id")
         if run_id and self.on_view_outputs:
+            if not await self._scope.check(self.runner._db, run_id, "run.outputs", "history"):
+                return
             await self.on_view_outputs(run_id)
 
+    @requires("history", "run.rerun")
     async def _on_rerun(self, e):
         row = e.args
         run_id = row.get("id")
         if not run_id or not self.runner:
             return
+        if not await self._scope.check(self.runner._db, run_id, "run.rerun", "history"):
+            return
+
+        uc_name = row.get("uc_name", "UC")
+
         try:
-            doc = await self._find_document_set(run_id, row.get("uc_name", ""))
+            doc = await self._find_document_set(run_id, uc_name)
             if not doc:
                 ui.notify("Could not find original documents for re-run", type="warning")
                 return
 
-            # Create a NEW copy — don't reference the old document_set_id
-            # This ensures the new run is independent and survives cleanup
             from uuid import uuid4
             doc["document_set_id"] = str(uuid4())
 
-            new_run_id = await self.runner.start(doc)
-            ui.notify(f"Re-running {row.get('uc_name', 'UC')}...", type="positive")
-            if self.on_rerun:
-                await self.on_rerun(new_run_id)
+            from ui.pages.queue_panel import submit_run
+            result = await submit_run(self.runner, doc, True, "run.rerun", details={"from_run": run_id})
+            if result and self.on_rerun:
+                await self.on_rerun(result["run_id"])
         except Exception as exc:
             ui.notify(f"Re-run failed: {exc}", type="negative")
+
+    async def _go_page(self, page: int):
+        """Navigate to a specific page and refresh."""
+        self._current_page = max(1, page)
+        await self._refresh()
+
+    @requires("history", "runs.cleanup")
+    async def _confirm_cleanup(self):
+        """Show confirmation dialog for artifact cleanup."""
+        if not self.runner or not self.runner._db:
+            ui.notify("No database available", type="warning")
+            return
+
+        db = self.runner._db
+        try:
+            rows = await db.execute(
+                "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                f"AND {self._scope.where('r')[0]}", self._scope.where('r')[1]
+            )
+            total = rows[0]["cnt"] if rows else 0
+        except Exception:
+            total = 0
+
+        dialog = ui.dialog()
+        with dialog, ui.card().classes("p-4").style("min-width: 400px"):
+            ui.label("Cleanup Old Runs").classes("text-subtitle1 font-bold")
+            ui.separator()
+            ui.label(f"Found {total} completed/failed/cancelled runs.").classes("text-body2 my-2")
+            keep_input = ui.number("Keep last N runs:", value=5, min=0, max=100, step=1) \
+                .props("outlined dense").classes("w-full")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+
+                async def do_cleanup():
+                    keep = int(keep_input.value or 5)
+                    dialog.close()
+                    await self._cleanup_runs(keep)
+
+                ui.button("Delete", icon="delete", on_click=do_cleanup) \
+                    .props("unelevated no-caps color=negative")
+        dialog.open()
+
+    async def _cleanup_runs(self, keep: int = 5):
+        """Delete old runs from DB and disk, keeping the last N."""
+        if not self.runner or not self.runner._db:
+            return
+
+        db = self.runner._db
+        try:
+            # Get runs to delete (keep the most recent N)
+            runs = await db.execute(
+                "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r "
+                "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                f"AND {self._scope.where('r')[0]} "
+                "ORDER BY r.started_at DESC", self._scope.where('r')[1]
+            )
+        except Exception:
+            ui.notify("Failed to query runs", type="negative")
+            return
+
+        if len(runs) <= keep:
+            ui.notify(f"Only {len(runs)} runs found — nothing to clean up", type="info")
+            return
+
+        to_delete = runs[keep:]
+        deleted_count = 0
+        disk_cleaned = 0
+
+        for run in to_delete:
+            run_id = run["id"]
+            try:
+                # Delete disk artifacts
+                run_dir = Path("data/runs") / run_id
+                if run_dir.exists():
+                    shutil.rmtree(run_dir, ignore_errors=True)
+                    disk_cleaned += 1
+
+                # Delete from DB tables
+                for table in ("step_results", "generated_configs", "llm_usage"):
+                    try:
+                        await db.execute_insert(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+                    except Exception:
+                        pass
+                await db.execute_insert("DELETE FROM pipeline_runs WHERE id = ?", (run_id,))
+                deleted_count += 1
+            except Exception:
+                pass
+
+        ui.notify(f"Cleaned up {deleted_count} runs ({disk_cleaned} disk directories removed)", type="positive")
+        await record("runs.cleanup", details={"kept": keep, "deleted": deleted_count})
+        self._current_page = 1
+        await self._refresh()
 
     async def _find_document_set(self, run_id: str, uc_name: str) -> dict | None:
         """Find the original document set for a run, with multiple fallbacks."""
@@ -411,7 +620,7 @@ class HistorySection:
         import json as _json
         doc = dict(row)
         # Parse JSON-encoded fields back to Python objects
-        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets"):
+        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets", "vendor_profile"):
             val = doc.get(json_field)
             if isinstance(val, str):
                 try:

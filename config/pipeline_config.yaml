@@ -23,8 +23,30 @@ external_modules:
   subprocess_timeout: 300
 
 simulator:
-  endpoint: "localhost"
-  port: 8080
+  endpoint: "localhost"          # host step 8 health-checks and step 9 connects to
+  mockwire_jar: "./lib/mockwire/mockwire-simulator/mockwire.jar"  # copied into each run_dir/simulator/
+  base_port: 22200               # first port probed; one free port per simulator instance
+  ttl_minutes: 60                # MockWire exits on its own after this, if never stopped
+  startup_timeout_sec: 30
+
+execution:
+  # Passed by the production framework to every execution as `--var NAME=value`.
+  # Step 6 may use them as ${NAME} without registering them; step 9 passes these
+  # dummy values when executing against the simulator.
+  runtime_params:
+    ORDERNO: "TEST_ORDERNO"
+  # Run queue (spec 007): one pipeline runs at a time, the others wait; jobs one user may have waiting
+  max_queued_per_user: 3
+  # Backups are taken on this server (step 6 adds it as node REPO to every workflow with a
+  # backup phase: node archive -> LOCAL -> REPO, each hop checked with sha256sum).
+  # The password is the workflow secret ${SECRET.<password_secret>}.
+  repo_server:
+    node: "REPO"
+    host: "repo-server"
+    port: "22"
+    user: "backup"
+    password_secret: "repo_password"
+    backup_dir: "/backup/netconfig"
 
 storage:
   database_path: "./data/pipeline.db"

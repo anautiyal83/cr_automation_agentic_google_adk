@@ -43,7 +43,7 @@ async def generate_questions(
     )
 
     try:
-        response = await llm_fn(prompt, SYSTEM_PROMPT)
+        response = await llm_fn(SYSTEM_PROMPT, prompt)
         response = response.strip()
         if response.startswith("```"):
             m = re.search(r'```(?:json)?\s*\n(.*?)```', response, re.DOTALL)
@@ -55,16 +55,214 @@ async def generate_questions(
         return []
 
 
+def _given(row: dict, col: str) -> bool:
+    value = row.get(col)
+    return value is not None and str(value).strip() != ""
+
+
+def _kind(value) -> str:
+    text = str(value).strip()
+    return "number" if text.replace("+", "").isdigit() else "text"
+
+
+def _alike(x, y) -> bool:
+    """Same kind of value and similar length: a 15-digit IMSI and a 10-digit MSISDN are
+    alternatives, a 15-digit IMSI and VNI "6" (given in the other sample row) are not."""
+    x, y = str(x).strip(), str(y).strip()
+    return _kind(x) == _kind(y) and min(len(x), len(y)) >= 0.5 * max(len(x), len(y))
+
+
+def ciq_alternative_columns(ciq_sheets: dict) -> list[dict]:
+    """CIQ column pairs where every sample row gives exactly one of the two (Test IMSI in
+    NORTH, Test MSISDN in EAST) and both hold the same kind of value: the commands need one
+    of them, so the developer must say how to get it from the other (OB-13)."""
+    pairs = []
+    for sheet, data in (ciq_sheets or {}).items():
+        if not isinstance(data, dict):
+            continue
+        rows = [r for r in data.get("sample_rows") or [] if isinstance(r, dict)]
+        cols = [str(c) for c in data.get("columns") or []]
+        if len(rows) < 2:
+            continue
+        for i, a in enumerate(cols):
+            for b in cols[i + 1:]:
+                if not all(_given(r, a) != _given(r, b) for r in rows):
+                    continue
+                with_a = [r for r in rows if _given(r, a)]
+                with_b = [r for r in rows if _given(r, b)]
+                if not with_a or not with_b or not _alike(with_a[0][a], with_b[0][b]):
+                    continue
+                label = cols[0] if cols else ""
+                pairs.append({"sheet": sheet, "a": a, "b": b,
+                              "rows_a": [str(r.get(label, "")) for r in with_a],
+                              "rows_b": [str(r.get(label, "")) for r in with_b]})
+    return pairs
+
+
+def ciq_alternative_questions(ciq_sheets: dict) -> list[dict]:
+    """One question per :func:`ciq_alternative_columns` pair, in the questionnaire format."""
+    questions = []
+    for p in ciq_alternative_columns(ciq_sheets):
+        a, b = p["a"], p["b"]
+        slug = re.sub(r"[^a-z0-9]+", "_", f"{a}_{b}".lower()).strip("_")
+        questions.append({
+            "id": f"cmd_ciq_alt_{slug}",
+            "category": "commands",
+            "question": (f"Each CIQ row gives either '{a}' or '{b}' (e.g. {', '.join(p['rows_a'][:2])}: only "
+                         f"'{a}'; {', '.join(p['rows_b'][:2])}: only '{b}'). How do the commands get the "
+                         f"value they need when only one of them is given?"),
+            "importance": "critical",
+            "input_type": "text",
+            "default_value": "",
+            "context": (f"The workflow runs for every CIQ row. Without a way to derive '{a}' from '{b}' "
+                        f"(or the other way round), rows that leave one empty send an empty value to the node."),
+            "helper_text": f"e.g. When only {b} is given, look up {a} with: <command using <{b}>>",
+        })
+    return questions
+
+
+_MOP_IF = re.compile(r"^\s*(?:if|when)\b\s*(.+?)\s*:?\s*$", re.I)
+_MOP_IF_YES = re.compile(r"^\s*if\s+yes\b", re.I)
+_MOP_ELSE = re.compile(r"^\s*(?:else|otherwise|if\s+not\b|if\s+no\b|else\s+if\b)", re.I)
+_MOP_COND_VAR = re.compile(r"([A-Za-z][\w ]*?)\s*(==|!=|=)\s*([\w.\-*]+)")
+
+
+def _ciq_column_for(var: str, ciq_sheets: dict) -> tuple[str, str]:
+    """(sheet, column) a MOP variable refers to: MRF_VERSION → Node_Details.VER (a column token
+    is a 3+ char prefix of a variable token, or equal)."""
+    vtoks = [t for t in re.split(r"[\s_\-]+", var.lower()) if t]
+    for sheet, sd in (ciq_sheets or {}).items():
+        for col in (sd.get("columns") or []) if isinstance(sd, dict) else []:
+            ctoks = [t for t in re.split(r"[\s_\-]+", str(col).lower()) if t]
+            if ctoks and all(any(v == c or (len(c) >= 3 and v.startswith(c)) for v in vtoks) for c in ctoks):
+                return sheet, col
+    return "", ""
+
+
+def mop_branch_questions(mop_commands: list[dict], ciq_sheets: dict, ciq_rows: dict | None = None) -> list[dict]:
+    """One question per MOP condition whose other branch the MOP never describes ("If MRF_VERSION ==
+    13.X.X.X" + copy/chmod/untar lines, no else): which steps run when it holds and which when it
+    does not cannot be read from a flattened MOP — step 6 guessed and the 13.x + .tar files of
+    MRF1/MRF2 matched no branch (G-16). Lists the CIQ rows outside the condition when the
+    variable maps to a CIQ column."""
+    lines = [c for c in mop_commands or [] if isinstance(c, dict) and c.get("command")]
+    questions = []
+    for i, c in enumerate(lines):
+        text, phase = str(c["command"]).strip(), c.get("phase", "")
+        if _MOP_IF_YES.match(text):
+            cond = (str(lines[i - 1]["command"]).strip() if i else "the check") + " — YES"
+        else:
+            m = _MOP_IF.match(text)
+            if not m or re.match(r"^\s*if\s+(?:required|needed|necessary)\b", text, re.I):
+                continue
+            cond = m.group(1)
+        rest = [x for x in lines[i + 1:] if x.get("phase", "") == phase]
+        if any(_MOP_ELSE.match(str(x["command"])) for x in rest):
+            continue
+        following = []
+        for x in rest:
+            if _MOP_IF.match(str(x["command"])) or _MOP_IF_YES.match(str(x["command"])):
+                break
+            following.append(str(x["command"]).strip())
+        if not following:
+            continue
+        outside = ""
+        vm = _MOP_COND_VAR.search(cond)
+        if vm and ciq_rows:
+            sheet, col = _ciq_column_for(vm.group(1), ciq_sheets)
+            if col:
+                mask = re.compile("^" + re.escape(vm.group(3)).replace("X", ".*").replace(r"\*", ".*") + "$")
+                rows = [r for r in ciq_rows.get(sheet, []) if r.get(col)]
+                holds = vm.group(2) != "!="
+                off = [r for r in rows if bool(mask.match(str(r[col]))) != holds]
+                if off:
+                    name_col = next((k for k in off[0] if "name" in k.lower() or k.lower() == "node"), col)
+                    outside = (f" The CIQ has rows where it does not hold ({sheet}.{col}): "
+                               + ", ".join(f"{r.get(name_col, '?')} = {r[col]}" for r in off[:4]) + ".")
+        slug = re.sub(r"[^a-z0-9]+", "_", f"{phase}_{cond}".lower()).strip("_")[:60]
+        steps = "; ".join(f"'{s[:70]}'" for s in following[:5])
+        questions.append({
+            "id": f"orch_mop_branch_{slug}",
+            "category": "orchestration",
+            "question": (f"The MOP says '{text}' ({phase}) and then lists: {steps}. It never says what happens "
+                         f"when this does not hold.{outside} Which of these steps run when it holds, which run when "
+                         "it does not, and do any run in both cases?"),
+            "importance": "critical",
+            "input_type": "text",
+            "default_value": "",
+            "context": ("The MOP is read as a flat list, so the steps after a condition could belong to it, to an "
+                        "implied 'otherwise', or to every case. The workflow cannot guess this."),
+            "helper_text": "e.g. When it holds: copy + chmod. Otherwise: untar + chmod. Steps X, Y: always.",
+        })
+    return questions
+
+
 def build_available_data_summary(
     ciq_sheets: dict[str, dict],
     raw_artifacts: dict,
     ssh_parsed: dict,
+    vendor_profile: dict | None = None,
 ) -> str:
     """Build a text summary of already-known data so LLM doesn't re-ask.
 
-    Summarizes CIQ columns, SSH prompts/credentials, XML samples, and MOP.
+    Summarizes CIQ columns, SSH prompts/credentials, XML samples, MOP,
+    and vendor profile (SSH/PAM/escalation details).
     """
     parts: list[str] = []
+
+    # --- Vendor profile (highest priority — pre-configured by user) ---
+    if vendor_profile:
+        parts.append("VENDOR PROFILE (pre-configured — DO NOT ask about these):")
+        vendor_info = vendor_profile.get("vendor", {})
+        if vendor_info.get("name"):
+            parts.append(f"  Vendor: {vendor_info['name']}")
+
+        gw = vendor_info.get("access_gateway", {})
+        if gw.get("enabled"):
+            parts.append(f"  Access Gateway: {gw.get('name', 'PAM')} — ENABLED")
+            parts.append(f"    Host: {gw.get('host', '?')}:{gw.get('port', 22)}")
+            parts.append(f"    Username: {gw.get('username', '?')}")
+            parts.append(f"    Auth: {gw.get('auth_method', 'key')}")
+            if gw.get("prompt_pattern"):
+                parts.append(f"    Prompt: {gw['prompt_pattern']}")
+            parts.append("    ** All nodes connect via this gateway — DO NOT ask for direct SSH host/port/password **")
+
+        ssh_defaults = vendor_info.get("ssh_defaults", {})
+        if ssh_defaults:
+            parts.append(f"  SSH Defaults: user={ssh_defaults.get('user', '?')}, port={ssh_defaults.get('port', 22)}")
+            if ssh_defaults.get("kex_algorithms"):
+                parts.append(f"    KEX: {ssh_defaults['kex_algorithms']}")
+            if ssh_defaults.get("host_key_algorithms"):
+                parts.append(f"    Host Key: {ssh_defaults['host_key_algorithms']}")
+
+        nodes = vendor_profile.get("category_1_node_activity", {}).get("nodes", [])
+        if nodes:
+            parts.append("  Node types (pre-configured — DO NOT ask about SSH, prompts, or escalation for these):")
+            for n in nodes:
+                node_ssh = n.get("ssh", {})
+                node_esc = n.get("escalation", {})
+                via_pam = node_ssh.get("login_via_pam", False)
+                access = "via PAM gateway" if via_pam else "direct SSH"
+                parts.append(f"    {n.get('name', '?')}: access={access}")
+                if node_ssh.get("prompt_pattern"):
+                    parts.append(f"      Prompt: {node_ssh['prompt_pattern']}")
+                if node_esc.get("method") and node_esc["method"] != "none":
+                    parts.append(f"      Escalation: {node_esc['method']} → {node_esc.get('target_user', '?')}")
+                    if node_esc.get("prompt_pattern"):
+                        parts.append(f"      Escalated prompt: {node_esc['prompt_pattern']}")
+                if via_pam:
+                    parts.append(f"      ** Connects via gateway — DO NOT ask SSH host/port/user/password for {n.get('name', '?')} **")
+
+        if vendor_profile.get("node_id_config"):
+            nc = vendor_profile["node_id_config"]
+            parts.append(f"  Node ID column: {nc.get('node_column', '?')}")
+            if nc.get("gateway_id_column"):
+                parts.append(f"  Gateway ID column: {nc['gateway_id_column']}")
+
+        if vendor_profile.get("ciq_field_mappings"):
+            parts.append(f"  CIQ field mappings: {len(vendor_profile['ciq_field_mappings'])} fields pre-mapped")
+
+        parts.append("")
 
     if ciq_sheets:
         parts.append("CIQ SHEETS AND COLUMNS (already known — do not ask):")
@@ -131,3 +329,166 @@ def filter_answered_questions(questions: list[dict], all_answers: dict) -> list[
             unanswered.append(q)
 
     return unanswered
+
+
+# Words/prefixes that indicate connection/access topics
+# Uses startswith matching so "escalation" matches "escalat"
+_CONNECTION_PREFIXES = (
+    "ssh", "port", "username", "password", "hostname",
+    "credential", "login", "logging", "connect",
+    "authenticat", "keypair", "key-based",
+    "kex", "host_key", "hostkey",
+    "timeout",
+    "prompt", "shell", "escalat", "privileg", "sudo",
+    "niam", "gateway", "pam", "jumpbox", "bastion",
+)
+
+
+def filter_vendor_profile_questions(
+    questions: list[dict],
+    vendor_profile: dict | None,
+) -> list[dict]:
+    """Deterministically remove questions about SSH/PAM/connection/escalation
+    when a vendor profile already provides them.
+
+    Uses aggressive word-level matching — if ANY connection-related word appears
+    in a question AND a vendor profile covers that topic, the question is dropped.
+    """
+    if not vendor_profile:
+        return questions
+
+    vendor = vendor_profile.get("vendor", {})
+    gw = vendor.get("access_gateway", {})
+    ssh = vendor.get("ssh_defaults", {})
+    nodes = vendor_profile.get("category_1_node_activity", {}).get("nodes", [])
+
+    has_gateway = bool(gw.get("enabled"))
+    has_ssh_defaults = bool(ssh.get("user"))
+    has_any_node_config = bool(nodes)
+
+    if not (has_gateway or has_ssh_defaults or has_any_node_config):
+        return questions
+
+    # Build set of known names to detect in questions
+    known_names = set()
+    if gw.get("name"):
+        known_names.add(gw["name"].lower())
+    for n in nodes:
+        if n.get("name"):
+            known_names.add(n["name"].lower())
+
+    filtered = []
+    for q in questions:
+        if not isinstance(q, dict):
+            filtered.append(q)
+            continue
+
+        text = q.get("question", "").lower()
+        words = text.replace("?", " ").replace(",", " ").replace(".", " ").split()
+
+        # Check if question contains any connection-related word (prefix match)
+        has_connection_word = any(
+            w.startswith(pfx) for w in words for pfx in _CONNECTION_PREFIXES
+        )
+
+        # Also check for known names (NIAM, PGW, RDS etc.) mentioned with
+        # connection context words like "for the", "to the", "of the"
+        mentions_known_entity = any(name in text for name in known_names)
+
+        should_drop = False
+
+        if has_connection_word:
+            # If gateway is configured, drop ANY question about gateway/access/login
+            if has_gateway and (
+                mentions_known_entity
+                or any(w.startswith(p) for w in words for p in ("niam", "gateway", "pam", "jumpbox", "bastion"))
+            ):
+                should_drop = True
+
+            # If SSH defaults configured, drop ANY ssh/port/user/pass question
+            if has_ssh_defaults and any(
+                w.startswith(p) for w in words for p in ("ssh", "port", "username", "password", "kex", "hostkey", "timeout")
+            ):
+                should_drop = True
+
+            # If nodes configured, drop connection questions mentioning those nodes
+            if has_any_node_config and mentions_known_entity:
+                should_drop = True
+
+            # Drop any question about prompt/escalation when nodes have those configured
+            if any(w.startswith(p) for w in words for p in ("prompt", "escalat", "privileg", "sudo")):
+                for n in nodes:
+                    n_ssh = n.get("ssh", {})
+                    n_esc = n.get("escalation", {})
+                    name = n.get("name", "").lower()
+                    if name and name in text:
+                        if n_ssh.get("prompt_pattern") or (
+                            n_esc.get("method") and n_esc["method"] != "none"
+                        ):
+                            should_drop = True
+                            break
+                # If gateway covers all access, also drop generic prompt/escalation questions
+                if has_gateway and not should_drop:
+                    should_drop = True
+
+        if should_drop:
+            logger.debug("Filtered vendor-profile question: %s", q.get("question", "")[:80])
+        else:
+            filtered.append(q)
+
+    if len(filtered) < len(questions):
+        logger.info(
+            "Vendor profile filter: dropped %d/%d connection questions",
+            len(questions) - len(filtered), len(questions),
+        )
+
+    return filtered
+
+
+_BACKUP = re.compile(r"\bback\s?-?up\b", re.I)
+_REPO_ANSWER = re.compile(r"(?:(?P<user>[\w.-]+)@)?(?P<host>\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][\w.-]*)(?::(?P<port>\d+))?")
+
+
+def repo_server_question(mop_commands: list[dict]) -> list[dict]:
+    """Where backups go: a MOP with a backup step stores it on a repo server, a node of the
+    execution YAML (step 6, structure.py). Proposed from execution.repo_server."""
+    texts = [f"{c.get('phase', '')} {c.get('command', '')}" for c in mop_commands or [] if isinstance(c, dict)]
+    if not any(_BACKUP.search(t) for t in texts):
+        return []
+    from core.config import repo_server
+    cfg = repo_server()
+    return [{
+        "id": "orch_repo_server",
+        "category": "orchestration",
+        "question": ("The MOP takes a backup. It is stored on a repo server (every transfer checked with "
+                     "sha256sum). Which server: user@host[:port] and the backup directory?"),
+        "importance": "critical",
+        "input_type": "text",
+        "default_value": f"{cfg['user']}@{cfg['host']}:{cfg['port']} {cfg['backup_dir']}",
+        "context": ("The backup archive is copied from the node to the automation server and from there to "
+                    "the repo server; a rollback fetches it back the same way. The server becomes the node "
+                    f"{cfg['node']} of the execution YAML (password: secret {cfg['password_secret']})."),
+        "helper_text": "e.g. backup@10.20.30.40:22 /backup/netconfig",
+    }]
+
+
+def parse_repo_server(answer: str) -> dict:
+    """``user@host[:port] /backup/dir`` (any order, extra words ignored) → repo_server fields."""
+    text = str(answer or "")
+    out: dict = {}
+    path = re.search(r"(?<![\w:])(/[^\s,;]*)", text)
+    if path:
+        out["backup_dir"] = path.group(1).rstrip("/") or "/"
+        text = text.replace(path.group(1), " ")
+    for m in _REPO_ANSWER.finditer(text):
+        token = m.group(0)
+        if m.group("user") or m.group("port") or "." in m.group("host") or m.group("host").startswith("["):
+            out["host"] = m.group("host").strip("[]")
+            if m.group("user"):
+                out["user"] = m.group("user")
+            if m.group("port"):
+                out["port"] = m.group("port")
+            break
+        if token.lower() not in {"user", "host", "port", "dir", "directory", "backup", "and", "the", "on"}:
+            out.setdefault("host", m.group("host"))
+    return out

@@ -5,7 +5,7 @@ import logging
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import clean_yaml_response, fix_validation_rules, parse_yaml, _ciq_prompt_summary
+from .autofix import clean_yaml_response, fix_validation_rules, parse_yaml, dump_yaml, _ciq_prompt_summary
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ async def generate_validation_rules(
     ciq_sheets: dict,
     requirements: dict,
     schema_summary: str,
+    ciq_file_path: str = "",
 ) -> tuple[str, list[str]]:
     """Generate validation-rules.yaml via LLM and auto-fix.
 
@@ -42,6 +43,8 @@ async def generate_validation_rules(
     yaml_text = clean_yaml_response(raw_response)
 
     yaml_text = fix_validation_rules(yaml_text, ciq_sheets)
+    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path)
+
     errors = _validate_structure(yaml_text)
 
     logger.info("Validation rules generated: %d chars, %d errors", len(yaml_text), len(errors))
@@ -55,6 +58,7 @@ async def regenerate_validation_rules(
     test_failures: str,
     reviewer_analysis: str,
     schema_summary: str,
+    ciq_file_path: str = "",
 ) -> tuple[str, list[str]]:
     """Regenerate validation-rules.yaml using test feedback."""
     ciq_summary = _ciq_prompt_summary(ciq_sheets)
@@ -72,10 +76,23 @@ async def regenerate_validation_rules(
     yaml_text = clean_yaml_response(raw_response)
 
     yaml_text = fix_validation_rules(yaml_text, ciq_sheets)
+    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path)
     errors = _validate_structure(yaml_text)
 
     logger.info("Validation rules regenerated: %d chars, %d errors", len(yaml_text), len(errors))
     return yaml_text, errors
+
+
+def _with_ciq_baseline(yaml_text: str, ciq_sheets: dict, ciq_file_path: str) -> str:
+    """Rules the CIQ's own rows prove (types, e-mail lists, cross-sheet references, required),
+    plus the LLM's additions that those rows pass (rules_baseline)."""
+    from .rules_baseline import baseline_rules, merge_llm_rules, read_ciq_rows
+    rows = read_ciq_rows(ciq_file_path, ciq_sheets)
+    rules = merge_llm_rules(baseline_rules(ciq_sheets, rows), parse_yaml(yaml_text), rows)
+    refs = sum(1 for s in rules["sheets"].values() for c in s["columns"].values() if "crossRef" in c)
+    logger.info("Validation rules from the CIQ (%d rows): %d sheets, %d cross-sheet references",
+                sum(len(r) for r in rows.values()), len(rules["sheets"]), refs)
+    return dump_yaml(rules)
 
 
 def _build_requirements_summary(requirements: dict) -> str:

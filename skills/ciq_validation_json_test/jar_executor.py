@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ async def run_ciq_processor(
     output_dir: str,
     java_home: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    uc_name: str = "",
 ) -> dict:
     """Run the ciq-processor JAR and return execution metadata.
 
@@ -31,6 +33,7 @@ async def run_ciq_processor(
         output_dir: Directory for JAR output (qa/ subdirectory)
         java_home: Optional JAVA_HOME override
         timeout: Subprocess timeout in seconds
+        uc_name: Use case name for deriving node_type and activity
 
     Returns:
         dict with keys: success, exit_code, stdout, stderr, output_dir
@@ -42,16 +45,27 @@ async def run_ciq_processor(
     qa_dir = Path(output_dir) / "qa"
     qa_dir.mkdir(parents=True, exist_ok=True)
 
+    # Derive node_type and activity from UC name
+    node_type, activity = _parse_uc_name(uc_name)
+
     cmd = [
         java, "-jar", str(jar_path),
         "--ciq", str(ciq_file_path),
-        "--validation-rules", str(validation_rules_path),
-        "--json-output-config-file", str(json_output_path),
-        "--output-dir", str(qa_dir),
-        "--report-format", "JSON",
+        "--node-type", node_type,
+        "--activity", activity,
+        "--rules", str(validation_rules_path),
+        "--output", str(qa_dir),
+        "--format", "JSON",
     ]
+    if json_output_path:
+        # The CIQ JSON the json-output template produces is a step 5 artifact (and the data steps
+        # 7-9 read): without --json-output-dir it was never written anywhere visible
+        json_dir = Path(output_dir) / "json_data"
+        shutil.rmtree(json_dir, ignore_errors=True)
+        json_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["--json-output-config-file", str(json_output_path), "--json-output-dir", str(json_dir)]
 
-    logger.info("Running ciq-processor: %s", " ".join(cmd[:6]) + " ...")
+    logger.info("Running ciq-processor: %s", " ".join(cmd[:8]) + " ...")
 
     env = dict(os.environ)
     if java_home:
@@ -108,3 +122,19 @@ def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return str(path)
+
+
+def _parse_uc_name(uc_name: str) -> tuple[str, str]:
+    """Extract node_type and activity from UC name.
+
+    Convention: <NODE_TYPE>_<NUMBER>_<ACTIVITY>
+    Example: PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION → ("PGW_RDS", "1058_IFC_CAPABILITY_MODIFICATION")
+    """
+    import re
+    m = re.match(r"^([A-Za-z_]+?)_(\d+_.+)$", uc_name)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r"^([A-Za-z]+)_(.+)$", uc_name)  # MRF_ANNOUNCEMENT_LOADING → MRF, ANNOUNCEMENT_LOADING
+    if m:
+        return m.group(1), m.group(2)
+    return uc_name, uc_name

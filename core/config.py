@@ -26,6 +26,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent  # cr_automation_agentic_g
 PIPELINE_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 
+# Parameters the production framework passes to every execution (`--var NAME=value`);
+# the value is the dummy step 9 uses against the simulator
+DEFAULT_RUNTIME_PARAMS = {"ORDERNO": "TEST_ORDERNO"}
+# Server that keeps the backups a workflow takes (a node of every workflow with a backup phase)
+DEFAULT_REPO_SERVER = {"node": "REPO", "host": "repo-server", "port": "22", "user": "backup",
+                       "password_secret": "repo_password", "backup_dir": "/backup/netconfig"}
+
 
 # ---------------------------------------------------------------------------
 # Utility: API key masking
@@ -70,10 +77,16 @@ class PipelineConfiguration(BaseModel):
     infra_retry_limit: int = Field(default=3, ge=1, le=10)
     infra_retry_backoff: float = Field(default=2.0)
     simulator_endpoint: str = "localhost"
-    simulator_port: int = 8080
+    mockwire_jar: str = "./lib/mockwire/mockwire-simulator/mockwire.jar"
+    simulator_base_port: int = 22200
+    simulator_ttl_minutes: int = 60
+    simulator_startup_timeout: int = 30
+    runtime_params: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_PARAMS))
+    repo_server: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_REPO_SERVER))
+    max_queued_per_user: int = Field(default=3, ge=1, le=100)  # waiting jobs per user (spec 007)
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
-    execution_report_jar: str = "./lib/execution-report-generator.jar"
+    execution_report_jar: str = "./lib/execution-report-generator-1.0.2-cli.jar"
     mop_template: str = "./lib/templates/mop_summary_report_template_v2.html"
     exec_summary_template: str = "./lib/templates/mop_execution_summary_report_template.html"
     exec_failure_template: str = "./lib/templates/execution_failure_template.html"
@@ -111,6 +124,36 @@ class PipelineConfiguration(BaseModel):
 # ConfigManager
 # ---------------------------------------------------------------------------
 
+def runtime_params() -> dict[str, str]:
+    """Framework runtime parameters ({name: test value}) from the live config, else defaults."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    return dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+
+
+def max_queued_per_user() -> int:
+    """Waiting jobs one user may have in the run queue (execution.max_queued_per_user, spec 007)."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    return int(config.max_queued_per_user) if config else 3
+
+
+def repo_server() -> dict[str, str]:
+    """Backup repo server (execution.repo_server) over the defaults."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    if config is None:
+        try:
+            import yaml
+            raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+            configured = (raw.get("execution") or {}).get("repo_server") or {}
+        except Exception:  # noqa: BLE001 — defaults are enough for tests / CLI
+            configured = {}
+    else:
+        configured = config.repo_server
+    return {**DEFAULT_REPO_SERVER, **{str(k): str(v) for k, v in dict(configured).items() if v not in (None, "")}}
+
+
 class ConfigManager:
     """Async configuration manager.
 
@@ -119,6 +162,8 @@ class ConfigManager:
     * Overlays DB-stored overrides (when a DB accessor is provided)
     * Never logs or displays raw API keys
     """
+
+    _live_instance: "ConfigManager | None" = None  # singleton for live config access
 
     def __init__(
         self,
@@ -132,6 +177,7 @@ class ConfigManager:
         self._yaml = YAML()
         self._yaml.preserve_quotes = True
         self._config: PipelineConfiguration | None = None
+        ConfigManager._live_instance = self  # register as live instance
 
     # -- internal helpers ----------------------------------------------------
 
@@ -166,8 +212,23 @@ class ConfigManager:
         sim = raw.get("simulator", {})
         if "endpoint" in sim:
             flat["simulator_endpoint"] = sim["endpoint"]
-        if "port" in sim:
-            flat["simulator_port"] = sim["port"]
+        if "mockwire_jar" in sim:
+            flat["mockwire_jar"] = sim["mockwire_jar"]
+        if "base_port" in sim:
+            flat["simulator_base_port"] = sim["base_port"]
+        if "ttl_minutes" in sim:
+            flat["simulator_ttl_minutes"] = sim["ttl_minutes"]
+        if "startup_timeout_sec" in sim:
+            flat["simulator_startup_timeout"] = sim["startup_timeout_sec"]
+
+        execution = raw.get("execution", {})
+        if execution.get("runtime_params"):
+            flat["runtime_params"] = {str(k): str(v) for k, v in dict(execution["runtime_params"]).items()}
+        if execution.get("max_queued_per_user"):
+            flat["max_queued_per_user"] = int(execution["max_queued_per_user"])
+        if execution.get("repo_server"):
+            flat["repo_server"] = {**DEFAULT_REPO_SERVER,
+                                   **{str(k): str(v) for k, v in dict(execution["repo_server"]).items()}}
 
         ext = raw.get("external_modules", {})
         if "ciq_processor_jar" in ext:

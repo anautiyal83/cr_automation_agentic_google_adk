@@ -40,17 +40,61 @@ def clean_yaml_response(text: str) -> str:
             yaml_start = i
             break
 
-    return "\n".join(lines[yaml_start:]).rstrip()
+    cleaned = "\n".join(lines[yaml_start:]).rstrip()
+    return sanitize_yaml(cleaned)
+
+
+def sanitize_yaml(text: str) -> str:
+    """Fix common LLM YAML mistakes before parsing.
+
+    Handles:
+    - Unquoted values containing colons (e.g., ``type: _col: $X`` → ``type: '_col: $X'``)
+    - List items with colons in values
+    """
+    fixed_lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if ":" in stripped and not stripped.startswith("#"):
+            indent = len(line) - len(stripped)
+            # Handle list items: "- key: value"
+            list_prefix = ""
+            content = stripped
+            if content.startswith("- "):
+                list_prefix = "- "
+                content = content[2:]
+            match = re.match(r'^([\w_.-]+)\s*:\s*(.+)$', content)
+            if match:
+                key, val = match.group(1), match.group(2)
+                if ":" in val and not val.startswith(('"', "'", "[", "{", "|", ">")):
+                    val = val.replace("'", "''")
+                    val = f"'{val}'"
+                    line = " " * indent + f"{list_prefix}{key}: {val}"
+        fixed_lines.append(line)
+    return "\n".join(fixed_lines)
 
 
 def parse_yaml(text: str) -> dict | None:
-    """Parse YAML text, returning dict or None on failure."""
+    """Parse YAML text, returning dict or None on failure.
+
+    Tries raw parse first, then sanitized parse if raw fails.
+    """
+    from ruamel.yaml import YAML
+    # Try raw first
     try:
-        from ruamel.yaml import YAML
         parsed = YAML().load(StringIO(text))
         return dict(parsed) if parsed else None
     except Exception:
-        return None
+        pass
+    # Try after sanitizing
+    try:
+        sanitized = sanitize_yaml(text)
+        parsed = YAML().load(StringIO(sanitized))
+        if parsed:
+            logger.info("YAML parsed after sanitizing (fixed quoting issues)")
+            return dict(parsed)
+    except Exception:
+        pass
+    return None
 
 
 def dump_yaml(data: dict) -> str:
@@ -97,6 +141,33 @@ def _find_closest_sheet(target: str, sheet_names: list[str]) -> str | None:
     return None
 
 
+def _strip_broken_sections(yaml_text: str) -> str:
+    """Strip non-essential top-level sections that often cause YAML parse errors.
+
+    Keeps only 'sheets:' and 'settings:' sections from the raw text.
+    """
+    import re
+    lines = yaml_text.split("\n")
+    result = []
+    in_safe_section = False
+    # Top-level keys we want to keep
+    safe_keys = {"sheets", "settings"}
+
+    for line in lines:
+        # Detect top-level key (no leading whitespace, ends with colon)
+        m = re.match(r"^(\w[\w_]*):", line)
+        if m:
+            key = m.group(1)
+            in_safe_section = key in safe_keys
+        if in_safe_section:
+            result.append(line)
+
+    stripped = "\n".join(result)
+    if stripped != yaml_text:
+        logger.info("Stripped broken sections from validation-rules, kept: sheets + settings")
+    return stripped
+
+
 def _get_sheet_names(ciq_sheets: dict) -> list[str]:
     return list(ciq_sheets.keys())
 
@@ -140,7 +211,11 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
     yaml_text = clean_yaml_response(yaml_text)
     parsed = parse_yaml(yaml_text)
     if not parsed:
-        return yaml_text
+        # Try stripping problematic top-level sections that LLM often breaks
+        yaml_text = _strip_broken_sections(yaml_text)
+        parsed = parse_yaml(yaml_text)
+        if not parsed:
+            return yaml_text
 
     sheet_names = _get_sheet_names(ciq_sheets)
 
@@ -161,9 +236,14 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
 
     parsed["sheets"] = fixed_sheets
 
-    wb_rules = parsed.get("workbook_rules", [])
-    if isinstance(wb_rules, list):
-        parsed["workbook_rules"] = _fix_workbook_rule_refs(wb_rules, ciq_sheets)
+    # Remove workbook_rules — LLM generates broken structures that cause
+    # both YAML parse failures and JAR deserialization errors
+    parsed.pop("workbook_rules", None)
+
+    # Remove other non-essential LLM-generated sections
+    for key in list(parsed.keys()):
+        if key not in ("sheets", "settings"):
+            parsed.pop(key)
 
     return dump_yaml(parsed)
 
@@ -172,39 +252,131 @@ def fix_validation_rules(yaml_text: str, ciq_sheets: dict) -> str:
 # JSON output auto-fix
 # ---------------------------------------------------------------------------
 
-def fix_json_output(yaml_text: str, ciq_sheets: dict) -> str:
-    """Auto-fix json-output YAML against actual CIQ structure.
+def fix_json_output(yaml_text: str, ciq_sheets: dict, uc_name: str = "") -> str:
+    """Build deterministic json-output YAML from CIQ structure.
 
-    Args:
-        yaml_text: LLM-generated YAML string.
-        ciq_sheets: CIQ structure from requirements.doc_extracted.ciq_sheets.
+    The json-output template is too complex for reliable LLM generation.
+    We build it programmatically from the CIQ sheet structure:
+    - Index sheet → segregate_by CRGroup, nodeGroup per ZONE
+    - IP sheet → node niamIDs per Node_Name
+    - Data sheet (Profile Modification etc.) → configSequences records
     """
-    yaml_text = clean_yaml_response(yaml_text)
-    parsed = parse_yaml(yaml_text)
-    if not parsed:
-        return yaml_text
+    # Derive nodeType and activity from UC name
+    import re
+    node_type, activity = uc_name, uc_name
+    m = re.match(r"^([A-Za-z_]+?)_(\d+_.+)$", uc_name)
+    if m:
+        node_type, activity = m.group(1), m.group(2)
 
     sheet_names = _get_sheet_names(ciq_sheets)
 
-    seg = parsed.get("segregate_by", {})
-    if isinstance(seg, dict):
-        seg_sheet = seg.get("sheet", "")
-        if seg_sheet:
-            actual = _find_closest_sheet(seg_sheet, sheet_names)
-            if actual:
-                seg["sheet"] = actual
-                seg_col = seg.get("column", "")
-                if seg_col:
-                    actual_col = find_closest_column(seg_col, _get_columns(ciq_sheets, actual))
-                    if actual_col:
-                        seg["column"] = actual_col
-        parsed["segregate_by"] = seg
+    # Find key sheets
+    index_sheet = _find_closest_sheet("Index", sheet_names) or "Index"
+    ip_sheet = _find_closest_sheet("IP", sheet_names) or "IP"
+    index_cols = _get_columns(ciq_sheets, index_sheet)
+    ip_cols = _get_columns(ciq_sheets, ip_sheet)
 
-    data = parsed.get("data", {})
-    if isinstance(data, dict):
-        parsed["data"] = _fix_dotted_refs(data, ciq_sheets)
+    # Find the data sheet (not Index, not IP — the one with subscriber data)
+    data_sheet = ""
+    data_cols = []
+    for sn in sheet_names:
+        if sn.lower() not in ("index", "ip", "node_id", "node_details"):
+            data_sheet = sn
+            data_cols = _get_columns(ciq_sheets, sn)
+            break
 
-    return dump_yaml(parsed)
+    # Determine zone column in Index
+    zone_col = "ZONE"
+    for c in index_cols:
+        if c.upper() in ("ZONE", "ZONE_NAME", "NODE_GROUP"):
+            zone_col = c
+            break
+
+    # Determine grouping column in data sheet
+    data_zone_col = "Zone"
+    for c in data_cols:
+        if c.lower() in ("zone", "zone_name"):
+            data_zone_col = c
+            break
+
+    # Find node names from IP sheet
+    node_names = []
+    ip_data = ciq_sheets.get(ip_sheet, {})
+    sample_rows = ip_data.get("sample_rows", [])
+    node_col = "Node_Name"
+    for c in ip_cols:
+        if "node" in c.lower() and "name" in c.lower():
+            node_col = c
+            break
+    for row in sample_rows:
+        if isinstance(row, dict):
+            nn = row.get(node_col, "")
+            if nn and nn not in node_names:
+                node_names.append(str(nn))
+
+    # Find NIAM columns from IP sheet
+    niam_cols = [c for c in ip_cols if c.upper().startswith("NIAM_NAME") or c.upper().startswith("NIAM_ID")]
+    if not niam_cols:
+        niam_cols = [c for c in ip_cols if "niam" in c.lower()]
+
+    # Build nodes block — single entry per zone, each node type as a subkey
+    # Production JSON: nodes[0].PGW = {niamID-1,...}, nodes[0].RDS = {niamID-1,...}
+    single_node = {"node": "$zone"}
+    for nn in node_names:
+        node_niam = {}
+        for i, nc in enumerate(niam_cols, 1):
+            node_niam[f"niamID-{i}"] = f"{ip_sheet}.{nc} WHERE {ip_sheet}.{node_col} = {nn} AND {ip_sheet}.{zone_col} = $zone"
+        single_node[nn] = node_niam
+
+    # Build records data block — all columns from data sheet
+    records_data = {}
+    for col in data_cols:
+        records_data[col] = col  # Inside _each row iteration, plain column name
+
+    # Build the complete template
+    template = {
+        "output_mode": "individual",
+        "segregate_by": {
+            "sheet": index_sheet,
+            "column": "CRGroup" if "CRGroup" in index_cols else index_cols[0] if index_cols else "CRGroup",
+            "as": "$cr",
+        },
+        "data": {
+            "schemaVersion": "2",
+            "meta": {
+                "nodeType": node_type,
+                "activity": activity,
+            },
+            "nodeGroups": {
+                "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.CRGroup = $cr AS $zone"
+                         if "CRGroup" in index_cols
+                         else f"DISTINCT {index_sheet}.{zone_col} AS $zone",
+                "nodeGroup": "$zone",
+                "crGroup": "$cr",
+                "email": f"{index_sheet}.Email WHERE {index_sheet}.{zone_col} = $zone"
+                         if "Email" in index_cols else "",
+                "nodes": [single_node],
+                "configSequences": {
+                    "_each": f"DISTINCT {index_sheet}.{zone_col} WHERE {index_sheet}.{zone_col} = $zone AS $seq",
+                    "configSeq": "Step1",
+                    "records": {
+                        "_each": f"{data_sheet} WHERE {data_zone_col} = $zone" if data_sheet else "Data",
+                        "data": records_data,
+                    },
+                },
+            },
+        },
+    }
+
+    # Remove empty email if not available
+    ng = template["data"]["nodeGroups"]
+    if not ng.get("email"):
+        ng.pop("email", None)
+
+    result = dump_yaml(template)
+    logger.info("Built deterministic json-output template: %d chars, %d data columns, %d nodes",
+                len(result), len(data_cols), len(node_names))
+    return result
 
 
 # ---------------------------------------------------------------------------

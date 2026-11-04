@@ -38,68 +38,96 @@ if _env_file.exists():
 from orchestrator.runner import PipelineRunner
 from storage.artifact_store import ArtifactStore
 from storage.db import Database, init_database
+from ui.components import card_title, page_header, stat_card, status_cells
 from ui.pages.upload_section import UploadSection
 from ui.pages.progress_section import ProgressSection
 from ui.pages.history_section import HistorySection
 from ui.pages.cleanup_section import CleanupSection
 from ui.pages.usage_section import UsageSection
 from ui.pages.settings_section import SettingsSection
+from ui.pages.vendor_section import VendorSection
 from ui.pages.output_viewer_section import OutputViewerSection
+from ui.pages import login_page
+from ui.pages.users_section import UsersSection
+from ui.pages.audit_section import AuditSection
+from ui.pages.cache_section import CacheSection
+from ui.pages.queue_panel import QueuePanel, submit_run
+from core.audit import AuditTrail
+from core.auth import SCREENS, ADMIN_SCREENS, AuthService, storage_secret
+from ui import access as ui_access
 
 _db: Database | None = None
 _runner: PipelineRunner | None = None
 _artifact_store: ArtifactStore | None = None
 _config_manager = None
+_auth: AuthService | None = None
+_audit: AuditTrail | None = None
 
 CUSTOM_CSS = """
 <style>
-/* --- Dark theme (default) --- */
-body.body--dark {
-    --cr-primary: #6C63FF;
-    --cr-primary-dark: #5A52D5;
-    --cr-accent: #00D9FF;
-    --cr-surface: #1E1E2E;
-    --cr-surface-light: #2A2A3E;
-    --cr-surface-hover: #33334A;
-    --cr-text: #E8E8F0;
-    --cr-text-dim: #9090A8;
-    --cr-success: #4ADE80;
-    --cr-error: #F87171;
-    --cr-warning: #FBBF24;
-    --cr-border: #3A3A50;
-    --cr-header-bg: linear-gradient(90deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    --cr-body-bg: linear-gradient(135deg, #0F0F1A 0%, #1A1A2E 50%, #16213E 100%);
-    --cr-hero-bg: linear-gradient(135deg, rgba(108,99,255,0.1) 0%, rgba(0,217,255,0.05) 100%);
-    --cr-shadow: rgba(0,0,0,0.3);
-    --cr-card-value: #E8E8F0;
+/* --- Theme A "Enterprise light": one blue primary, neutral greys, no gradients --- */
+body.body--light {
+    --cr-primary: #0B5FFF;
+    --cr-primary-dark: #0047D6;
+    --cr-primary-soft: #EAF1FF;
+    --cr-accent: #0B5FFF;
+    --cr-surface: #FFFFFF;
+    --cr-surface-light: #F9FAFB;
+    --cr-surface-hover: #F2F4F7;
+    --cr-text: #101828;
+    --cr-text-dim: #667085;
+    --cr-success: #039855;
+    --cr-error: #D92D20;
+    --cr-warning: #DC6803;
+    --cr-info: #1570EF;
+    --cr-border: #E4E7EC;
+    --cr-header-bg: #FFFFFF;
+    --cr-header-text: #101828;
+    --cr-body-bg: #F7F8FA;
+    --cr-hero-bg: #FFFFFF;
+    --cr-shadow: rgba(16,24,40,0.06);
+    --cr-card-value: #101828;
     background: var(--cr-body-bg) !important;
 }
-/* --- Light theme --- */
-body.body--light {
-    --cr-primary: #4F46E5;
-    --cr-primary-dark: #4338CA;
-    --cr-accent: #0891B2;
-    --cr-surface: #FFFFFF;
-    --cr-surface-light: #F8FAFC;
-    --cr-surface-hover: #F1F5F9;
-    --cr-text: #1E293B;
-    --cr-text-dim: #64748B;
-    --cr-success: #16A34A;
-    --cr-error: #DC2626;
-    --cr-warning: #D97706;
-    --cr-border: #E2E8F0;
-    --cr-header-bg: linear-gradient(90deg, #1E293B 0%, #334155 50%, #1E293B 100%);
-    --cr-body-bg: #F1F5F9;
-    --cr-hero-bg: linear-gradient(135deg, rgba(79,70,229,0.06) 0%, rgba(8,145,178,0.03) 100%);
-    --cr-shadow: rgba(0,0,0,0.08);
-    --cr-card-value: #1E293B;
+body.body--dark {
+    --cr-primary: #4C8DFF;
+    --cr-primary-dark: #2F74F5;
+    --cr-primary-soft: rgba(76,141,255,0.14);
+    --cr-accent: #4C8DFF;
+    --cr-surface: #161B26;
+    --cr-surface-light: #1D2433;
+    --cr-surface-hover: #242C3D;
+    --cr-text: #F2F4F7;
+    --cr-text-dim: #98A2B3;
+    --cr-success: #32D583;
+    --cr-error: #F97066;
+    --cr-warning: #FDB022;
+    --cr-info: #53B1FD;
+    --cr-border: #2B3446;
+    --cr-header-bg: #161B26;
+    --cr-header-text: #F2F4F7;
+    --cr-body-bg: #0F131C;
+    --cr-hero-bg: #161B26;
+    --cr-shadow: rgba(0,0,0,0.35);
+    --cr-card-value: #F2F4F7;
     background: var(--cr-body-bg) !important;
 }
 .cr-header {
     background: var(--cr-header-bg) !important;
+    color: var(--cr-header-text) !important;
     border-bottom: 1px solid var(--cr-border);
-    box-shadow: 0 2px 12px var(--cr-shadow);
+    box-shadow: none;
     z-index: 1000;
+}
+.cr-logo {
+    width: 28px; height: 28px; border-radius: 7px; background: var(--cr-primary); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+}
+.cr-breadcrumb { font-size: 13px; color: var(--cr-text-dim); }
+.cr-breadcrumb b { color: var(--cr-text); font-weight: 600; }
+.cr-nav-group {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--cr-text-dim); padding: 14px 16px 4px;
 }
 .cr-header .q-btn {
     z-index: 1001;
@@ -111,36 +139,30 @@ body.body--light {
     border-radius: 10px;
     padding: 14px 18px;
 }
+/* KPI tiles: equal width, fill the row (ui/components.stat_card) */
+.cr-stat-grid {
+    display: grid; width: 100%; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
 .cr-stat-card {
-    background: var(--cr-surface) !important;
-    border: 1px solid var(--cr-border) !important;
-    border-radius: 12px !important;
-    transition: all 0.2s ease;
-    width: 90px !important;
-    height: 90px !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    text-align: center;
+    background: var(--cr-surface);
+    border: 1px solid var(--cr-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    height: 68px;
+    display: flex; align-items: center; gap: 12px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.cr-stat-card .q-card__section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 12px !important;
+.cr-stat-card:hover { border-color: var(--cr-primary); box-shadow: 0 4px 14px var(--cr-shadow); }
+.cr-stat-icon-wrap {
+    width: 36px; height: 36px; border-radius: 9px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
 }
-.cr-stat-card:hover {
-    border-color: var(--cr-primary) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(108,99,255,0.15);
+.cr-stat-value-text {
+    font-size: 18px; font-weight: 700; line-height: 1.2; color: var(--cr-card-value);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cr-stat-icon {
-    font-size: 20px !important;
-    margin-bottom: 4px;
-}
+.cr-stat-title-text { font-size: 11px; color: var(--cr-text-dim); white-space: nowrap; }
 .cr-stat-value {
     color: var(--cr-card-value) !important;
 }
@@ -218,18 +240,45 @@ body.body--light {
     background: var(--cr-surface-light); border: 2px solid var(--cr-border);
     transition: all 0.3s ease;
 }
-.cr-step-circle-active { background: rgba(108,99,255,0.15); }
+.cr-step-circle-active { background: rgba(11,95,255,0.15); }
+/* Step tracker: 10 equal boxes, fixed height, same border in every state */
+.cr-steps { display: flex; align-items: center; width: 100%; padding: 2px 0; }
+.cr-step { flex: 1 1 0; min-width: 0; }
+.cr-step-box {
+    height: 116px; padding: 10px 6px 8px;
+    border: 1px solid var(--cr-border); border-radius: 10px;
+    background: var(--cr-surface-light);
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    transition: border-color 0.3s ease, background 0.3s ease, box-shadow 0.3s ease;
+}
+.cr-step-box.is-passed { border-color: var(--cr-success); }
+.cr-step-box.is-failed { border-color: var(--cr-error); background: rgba(220,38,38,0.04); }
+.cr-step-box.is-retrying { border-color: var(--cr-warning); background: rgba(217,119,6,0.05); }
+.cr-step-box.is-in-progress {
+    border-color: var(--cr-primary); background: rgba(11,95,255,0.07);
+    box-shadow: 0 0 0 1px var(--cr-primary);
+}
+.cr-step-num { font-size: 10px; font-weight: 600; color: var(--cr-text); }
+.cr-step-name {
+    font-size: 10px; line-height: 13px; color: var(--cr-text-dim); text-align: center;
+    width: 100%; height: 26px; min-height: 26px; overflow: hidden; flex-shrink: 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.cr-step-status {
+    font-size: 10px; font-weight: 600; color: var(--cr-text-dim); margin-top: auto;
+    max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .cr-step-connector {
-    flex-shrink: 0; display: flex; align-items: center; margin-top: 12px;
+    flex: 0 0 18px; display: flex; align-items: center; justify-content: center;
 }
 .cr-step-connector::before {
-    content: ''; display: block; width: 10px; height: 2px;
-    background: var(--cr-border); transition: background 0.3s;
+    content: ''; display: block; width: 11px; height: 2px;
+    background: var(--cr-conn, var(--cr-border)); transition: background 0.3s;
 }
 .cr-step-connector::after {
     content: ''; display: block; width: 0; height: 0;
     border-top: 4px solid transparent; border-bottom: 4px solid transparent;
-    border-left: 5px solid var(--cr-border); transition: border-color 0.3s;
+    border-left: 5px solid var(--cr-conn, var(--cr-border)); transition: border-color 0.3s;
 }
 .cr-card-inner {
     background: var(--cr-surface-light) !important;
@@ -254,6 +303,8 @@ body.body--light {
     color: white !important;
     border-color: var(--cr-primary) !important;
 }
+.cr-settings-tab.active .q-btn__content, .cr-settings-tab.active .q-icon { color: #fff !important; }
+.cr-settings-tab:not(.active) { background: var(--cr-surface) !important; }
 /* Layout — entire page is fixed viewport, only cr-content scrolls */
 html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 * { box-sizing: border-box; }
@@ -266,8 +317,9 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-sidebar {
     background: var(--cr-surface) !important;
     border-right: 1px solid var(--cr-border);
-    width: 140px;
-    min-width: 140px;
+    width: 184px;
+    min-width: 184px;
+    gap: 2px !important;
     height: calc(100vh - 48px);
     max-height: calc(100vh - 48px);
     position: fixed;
@@ -286,13 +338,15 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-sidebar-item {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 14px 8px 13px;
     cursor: pointer;
     transition: all 0.15s ease;
     color: var(--cr-text-dim);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
+    white-space: nowrap;
     border-left: 3px solid transparent;
     user-select: none;
 }
@@ -301,9 +355,10 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     color: var(--cr-text);
 }
 .cr-sidebar-item.active {
-    background: var(--cr-surface-hover);
+    background: var(--cr-primary-soft);
     color: var(--cr-primary);
     border-left-color: var(--cr-primary);
+    font-weight: 600;
 }
 .cr-sidebar-item .material-icons {
     font-size: 16px;
@@ -316,10 +371,10 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-content {
     position: fixed;
     top: 48px;
-    left: 140px;
+    left: 184px;
     right: 0;
     bottom: 0;
-    padding: 6px 12px;
+    padding: 14px 20px 24px;
     overflow-y: auto;
     overflow-x: hidden;
 }
@@ -336,6 +391,346 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 /* Tables fill width */
 .cr-content .q-table { width: 100% !important; }
 .cr-content .q-table__container { width: 100% !important; }
+
+/* --- Consistency layer (shared by all pages; see ui/components.py) --- */
+.cr-page { width: 100%; gap: 12px !important; }
+.cr-page-header {
+    width: 100%; display: flex; align-items: flex-end; justify-content: space-between;
+    flex-wrap: nowrap; gap: 12px; min-height: 40px;
+}
+.cr-page-title { font-size: 18px; font-weight: 700; color: var(--cr-text); line-height: 1.25; }
+.cr-page-subtitle { font-size: 12px; color: var(--cr-text-dim); margin-top: 2px; }
+.cr-card-title {
+    display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+    font-size: 12px; font-weight: 600; color: var(--cr-text); margin-bottom: 8px;
+}
+/* One card level only: cards inside a page card are flat panels */
+.cr-section { border-radius: 12px !important; box-shadow: 0 1px 3px var(--cr-shadow) !important; }
+.cr-section .q-card, .cr-section .cr-card-inner { box-shadow: none !important; }
+.cr-content .q-card { box-shadow: 0 1px 2px var(--cr-shadow) !important; border: 1px solid var(--cr-border); }
+.cr-section { box-shadow: 0 1px 2px var(--cr-shadow) !important; }
+.cr-card-inner { border-radius: 10px !important; }
+/* Buttons: sentence case everywhere */
+.q-btn { text-transform: none !important; letter-spacing: normal !important; }
+/* Toolbars: filters left, actions right, aligned on one baseline */
+.cr-toolbar { width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cr-toolbar .q-select, .cr-toolbar .q-input { min-width: 170px; }
+/* Tables */
+.cr-content .q-table thead th {
+    font-size: 11px !important; font-weight: 600 !important; color: var(--cr-text-dim) !important;
+    background: var(--cr-surface-light);
+}
+.cr-content .q-table tbody td { font-size: 11px !important; }
+.cr-content .q-table--dense .q-table th, .cr-content .q-table--dense .q-table td { padding: 6px 12px !important; }
+/* Status pills */
+.cr-status {
+    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    text-transform: capitalize; background: rgba(148,163,184,0.16); color: var(--cr-text-dim);
+}
+.cr-status-completed, .cr-status-passed, .cr-status-success { background: rgba(22,163,74,0.12); color: var(--cr-success); }
+.cr-status-failed, .cr-status-error { background: rgba(220,38,38,0.12); color: var(--cr-error); }
+.cr-status-running, .cr-status-in-progress, .cr-status-started, .cr-status-resuming { background: rgba(79,70,229,0.12); color: var(--cr-primary); }
+.cr-status-paused, .cr-status-paused-milestone, .cr-status-retrying, .cr-status-awaiting-review { background: rgba(217,119,6,0.12); color: var(--cr-warning); }
+/* Responsive card grids */
+.cr-grid-3 { display: grid; width: 100%; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .cr-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .cr-grid-3, .cr-grid-2 { grid-template-columns: minmax(0, 1fr); } }
+.cr-content .q-table tbody td.text-left { white-space: normal; word-break: break-word; }
+.cr-grid-2 { display: grid; width: 100%; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.cr-grid-2 > *, .cr-grid-3 > *, .cr-stat-grid > * { min-width: 0; }
+.cr-content .q-table__middle { overflow-x: auto; }
+/* Upload slots: light header, compact body, no size/percent noise */
+.cr-upload-card { min-height: 0 !important; padding: 10px !important; border-width: 1px !important; }
+.cr-upload-card .q-uploader { width: 100%; box-shadow: none; border-radius: 8px; max-height: none; }
+.cr-upload-card .q-uploader__header { border-bottom: 1px dashed var(--cr-border); }
+.cr-upload-card .q-uploader__subtitle { display: none; }
+.cr-upload-card .q-uploader__title { font-size: 12px; font-weight: 600; }
+.cr-upload-card .q-uploader__list { min-height: 40px; padding: 6px 8px; }
+/* --- Run page (Live Run): run console header, step timeline, tabbed detail --- */
+:root { --cr-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; }
+@keyframes cr-flow { from { background-position: 0 0; } to { background-position: -200% 0; } }
+@keyframes cr-ring { 0% { box-shadow: 0 0 0 0 rgba(11,95,255,0.45); } 100% { box-shadow: 0 0 0 8px rgba(11,95,255,0); } }
+@keyframes cr-blink { 50% { opacity: 0.25; } }
+.cr-run-banner {
+    position: relative; overflow: hidden; padding: 16px 18px 14px; border-radius: 12px;
+    background: var(--cr-surface) !important; border: 1px solid var(--cr-border) !important;
+}
+.cr-run-banner::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--cr-border); }
+.cr-run-banner.is-running::before {
+    background: linear-gradient(90deg, var(--cr-primary), #22D3EE, var(--cr-primary));
+    background-size: 200% 100%; animation: cr-flow 2.4s linear infinite;
+}
+.cr-run-banner.is-review::before { background: var(--cr-warning); }
+.cr-run-banner.is-completed::before { background: var(--cr-success); }
+.cr-run-banner.is-failed::before { background: var(--cr-error); }
+.cr-run-banner .q-linear-progress { display: none !important; }
+.cr-state {
+    display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px;
+    font: 700 10px/1 var(--cr-mono); letter-spacing: 0.1em; border: 1px solid;
+}
+.cr-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.cr-state.is-running { color: var(--cr-primary); background: var(--cr-primary-soft); border-color: rgba(11,95,255,0.35); }
+.cr-state.is-running i { animation: cr-blink 1s steps(2) infinite; }
+.cr-state.is-review { color: var(--cr-warning); background: rgba(220,104,3,0.1); border-color: rgba(220,104,3,0.35); }
+.cr-state.is-completed { color: var(--cr-success); background: rgba(3,152,85,0.1); border-color: rgba(3,152,85,0.35); }
+.cr-state.is-failed { color: var(--cr-error); background: rgba(217,45,32,0.1); border-color: rgba(217,45,32,0.35); }
+.cr-state.is-idle { color: var(--cr-text-dim); background: var(--cr-surface-light); border-color: var(--cr-border); }
+.cr-run-chip {
+    font: 600 11px/1 var(--cr-mono); color: var(--cr-text); padding: 5px 8px; border-radius: 6px;
+    background: var(--cr-surface-light); border: 1px solid var(--cr-border); white-space: nowrap;
+}
+.cr-run-uc { font: 500 11px/1.2 var(--cr-mono); color: var(--cr-text-dim); white-space: nowrap; overflow: hidden;
+             text-overflow: ellipsis; min-width: 0; }
+.cr-run-chip:empty, .cr-run-uc:empty { display: none; }
+.cr-run-title { font-size: 14px; font-weight: 600; line-height: 19px; color: var(--cr-text); letter-spacing: -0.01em; }
+.cr-run-sub { font-size: 11px; line-height: 15px; color: var(--cr-text-dim); }
+.cr-seg-bar { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; margin-top: 14px; }
+.cr-seg { height: 6px; border-radius: 3px; background: var(--cr-border); transition: background 0.3s; }
+.cr-seg.is-passed, .cr-seg.is-completed { background: var(--cr-success); }
+.cr-seg.is-failed { background: var(--cr-error); }
+.cr-seg.is-in-progress, .cr-seg.is-retrying {
+    background: linear-gradient(90deg, var(--cr-primary), #8DB6FF, var(--cr-primary));
+    background-size: 200% 100%; animation: cr-flow 1.2s linear infinite;
+}
+.cr-seg.is-skipped { background: repeating-linear-gradient(45deg, var(--cr-border) 0 4px, transparent 4px 8px); }
+.cr-kpis {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 12px;
+    border: 1px solid var(--cr-border); border-radius: 10px; overflow: hidden; background: var(--cr-surface-light);
+}
+.cr-kpi { padding: 6px 12px; border-right: 1px solid var(--cr-border); min-width: 0; }
+.cr-kpi:last-child { border-right: none; }
+.cr-kpi-label { font: 600 9px/1.5 var(--cr-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--cr-text-dim); }
+.cr-kpi-value { font: 600 12px/1.5 var(--cr-mono); color: var(--cr-text); white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis; }
+@media (max-width: 700px) {
+    .cr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cr-kpi:nth-child(2) { border-right: none; }
+    .cr-kpi:nth-child(-n+2) { border-bottom: 1px solid var(--cr-border); }
+}
+.cr-run-layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 12px; width: 100%;
+                 align-items: start; }
+@media (max-width: 900px) {
+    .cr-run-layout { grid-template-columns: minmax(0, 1fr); }
+    .cr-run-detail { contain: none !important; max-height: none; }
+}
+.cr-run-steps {
+    background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
+    padding: 8px 6px; display: flex; flex-direction: column; gap: 2px;
+}
+.cr-run-steps-head { padding: 4px 8px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--cr-border); }
+.cr-run-steps-title { font: 700 10px/1 var(--cr-mono); text-transform: uppercase; letter-spacing: 0.12em;
+                      color: var(--cr-text-dim); }
+.cr-run-steps-count { font: 600 11px/1 var(--cr-mono); color: var(--cr-text); }
+.cr-step-row {
+    position: relative; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 8px;
+    cursor: pointer; border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.cr-step-row::before {
+    content: ""; position: absolute; left: 17px; top: 25px; bottom: -7px; width: 2px; background: var(--cr-border);
+}
+.cr-step-row:last-of-type::before { display: none; }
+.cr-step-row.is-passed::before { background: var(--cr-success); }
+.cr-step-row:hover { background: var(--cr-surface-hover); }
+.cr-step-row.is-selected { background: var(--cr-primary-soft); border-color: rgba(11,95,255,0.35); }
+.cr-step-row.is-skipped { opacity: 0.55; }
+.cr-step-node {
+    position: relative; z-index: 1; width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--cr-surface); border: 1.5px solid var(--cr-border); color: var(--cr-text-dim);
+}
+.cr-step-node-num { font: 700 9px/1 var(--cr-mono); color: var(--cr-text-dim); }
+.cr-step-row.is-passed .cr-step-node { background: var(--cr-success); border-color: var(--cr-success); color: #fff; }
+.cr-step-row.is-failed .cr-step-node { background: var(--cr-error); border-color: var(--cr-error); color: #fff; }
+.cr-step-row.is-in-progress .cr-step-node, .cr-step-row.is-retrying .cr-step-node {
+    background: var(--cr-primary-soft); border-color: var(--cr-primary); color: var(--cr-primary);
+    animation: cr-ring 1.6s ease-out infinite;
+}
+.cr-step-row-name { font-size: 11.5px; line-height: 15px; font-weight: 500; color: var(--cr-text);
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cr-step-agent { font: 400 10px/13px var(--cr-mono); color: var(--cr-text-dim); white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; }
+.cr-step-chip {
+    font: 700 9px/1 var(--cr-mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 6px;
+    border-radius: 999px; color: var(--cr-text-dim); background: var(--cr-surface-light); border: 1px solid var(--cr-border);
+}
+.cr-step-row.is-passed .cr-step-chip { color: var(--cr-success); background: rgba(3,152,85,0.08); border-color: rgba(3,152,85,0.3); }
+.cr-step-row.is-failed .cr-step-chip { color: var(--cr-error); background: rgba(217,45,32,0.08); border-color: rgba(217,45,32,0.3); }
+.cr-step-row.is-in-progress .cr-step-chip { color: var(--cr-primary); background: var(--cr-primary-soft); border-color: rgba(11,95,255,0.35); }
+.cr-step-row.is-retrying .cr-step-chip { color: var(--cr-warning); background: rgba(220,104,3,0.08); border-color: rgba(220,104,3,0.3); }
+.cr-step-duration { font: 500 10px/13px var(--cr-mono); color: var(--cr-text-dim); margin-top: 3px; }
+.cr-step-row-name, .cr-step-agent { max-width: 100%; }
+.cr-step-right { flex-shrink: 0; }
+.cr-file-label { font-size: 11.5px; font-weight: 600; line-height: 15px; color: var(--cr-text); }
+.cr-file-path { font: 400 10px/14px var(--cr-mono); color: var(--cr-text-dim); word-break: break-all; }
+.cr-run-banner .q-btn { font-size: 10.5px; }
+/* Same height as the step list: the step list sets the row height (contain: size keeps the detail's
+   content out of it), the detail scrolls inside */
+.cr-run-detail {
+    background: var(--cr-surface); border: 1px solid var(--cr-border); border-radius: 12px;
+    padding: 16px 18px; contain: size; overflow-y: auto; align-self: stretch;
+}
+.cr-run-detail-head { padding-bottom: 12px; }
+.cr-eyebrow { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; color: var(--cr-primary); }
+.cr-detail-title { font-size: 14px; line-height: 19px; font-weight: 600; color: var(--cr-text); letter-spacing: -0.01em; }
+.cr-detail-meta { font: 400 11px/1.5 var(--cr-mono); color: var(--cr-text-dim); }
+.cr-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+@media (max-width: 700px) { .cr-spec { grid-template-columns: minmax(0, 1fr); } }
+.cr-spec-cell { border: 1px solid var(--cr-border); border-radius: 8px; padding: 6px 10px; background: var(--cr-surface-light); min-width: 0; }
+.cr-spec-key { font: 700 9px/1.5 var(--cr-mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--cr-text-dim); }
+.cr-spec-value { font-size: 11.5px; line-height: 15px; color: var(--cr-text); word-break: break-word; }
+.cr-console { width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid #1F2937; background: #0B0F17; }
+.cr-console-bar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: #111827;
+    border-bottom: 1px solid #1F2937; font: 500 10px/1.4 var(--cr-mono); color: #9CA3AF;
+}
+.cr-console-bar .dots i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+.cr-console-bar .dots i:nth-child(1) { background: #F87171; }
+.cr-console-bar .dots i:nth-child(2) { background: #FBBF24; }
+.cr-console-bar .dots i:nth-child(3) { background: #34D399; }
+.cr-console-bar .title { flex: 1; }
+.cr-console-live { display: inline-flex; align-items: center; gap: 6px; color: #34D399; font-weight: 700; letter-spacing: 0.1em; }
+.cr-console-live i { width: 7px; height: 7px; border-radius: 50%; background: #34D399; animation: cr-blink 1s steps(2) infinite; }
+.cr-console-body { padding: 8px 0; max-height: 520px; overflow: auto; font: 11px/1.6 var(--cr-mono); color: #D1D5DB;
+                   display: flex; flex-direction: column-reverse; }
+.cr-console.is-compact .cr-console-body { max-height: 280px; }
+.cr-console .ln { display: grid; grid-template-columns: 58px 42px 130px minmax(0, 1fr); gap: 9px; padding: 0 12px; }
+.cr-console .ln:hover { background: rgba(255,255,255,0.04); }
+.cr-console .ts { color: #6B7280; }
+.cr-console .src { color: #A5B4FC; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cr-console .msg { white-space: pre-wrap; word-break: break-word; }
+.cr-console .lv { font-weight: 700; }
+.cr-console .lv-info { color: #60A5FA; }
+.cr-console .lv-flow { color: #34D399; }
+.cr-console .lv-warning { color: #FBBF24; }
+.cr-console .lv-error { color: #F87171; }
+.cr-console .lv-debug { color: #9CA3AF; }
+@media (max-width: 700px) {
+    .cr-console .ln { grid-template-columns: 56px minmax(0, 1fr); }
+    .cr-console .ln .lv, .cr-console .ln .src { display: none; }
+}
+.cr-tabs { border-bottom: 1px solid var(--cr-border); }
+.cr-tabs .q-tab { min-height: 32px; padding: 0 10px; color: var(--cr-text-dim); }
+.cr-tabs .q-tab__label { font-size: 11.5px; font-weight: 500; }
+.cr-tabs .q-tab__icon { font-size: 14px; }
+.cr-tab-panels, .cr-tab-panels .q-tab-panel { background: transparent !important; padding: 12px 0 0 !important; }
+.cr-kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
+.cr-kv-key { color: var(--cr-text-dim); font-size: 12px; }
+.cr-kv-value { font-size: 13px; color: var(--cr-text); }
+.cr-review-panel {
+    border: 1px solid var(--cr-warning); background: rgba(220,104,3,0.05); border-radius: 10px;
+    padding: 12px 14px; margin-top: 8px;
+}
+.cr-file-row { width: 100%; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--cr-border); }
+.cr-file-row:last-child { border-bottom: none; }
+/* Final documents: one bordered box per category (Requirement, CIQ Validation, ...) */
+.cr-doc-group { width: 100%; border: 1px solid var(--cr-border); border-radius: 8px;
+  background: var(--cr-surface); margin: 10px 0 4px; overflow: hidden; }
+.cr-doc-group-head { width: 100%; gap: 8px; padding: 7px 12px; background: var(--cr-surface-light);
+  border-bottom: 1px solid var(--cr-border); }
+.cr-doc-group-title { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--cr-text); }
+.cr-doc-group-count { font-size: 11px; font-weight: 600; line-height: 18px; padding: 0 8px;
+  border-radius: 9px; background: var(--cr-primary-soft); color: var(--cr-primary); }
+.cr-doc-group-body { padding: 0 12px; }
+.cr-doc-group-body > .cr-file-row, .cr-doc-group-body > .q-row { border-bottom: 1px solid var(--cr-border); }
+.cr-doc-group-body > *:last-child { border-bottom: none !important; }
+.cr-file-name { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--cr-text);
+                word-break: break-all; }
+.cr-test-summary { font-size: 13px; color: var(--cr-text-dim); margin-bottom: 4px; }
+.cr-test-summary b { color: var(--cr-text); }
+.cr-test-row { border: 1px solid var(--cr-border); border-radius: 10px !important; margin-bottom: 6px; }
+.cr-log {
+    background: #0F131C; color: #D0D5DD; border-radius: 10px; padding: 12px; margin: 0; width: 100%;
+    font: 12px/1.5 "JetBrains Mono", Consolas, monospace; max-height: 520px; overflow: auto; white-space: pre-wrap;
+}
+.cr-empty { padding: 40px 12px; gap: 4px !important; text-align: center; }
+.cr-status-pending, .cr-status-skipped, .cr-status-waiting, .cr-status-queued, .cr-status-cancelled,
+.cr-status-removed { background: rgba(102,112,133,0.12); color: var(--cr-text-dim); }
+/* --- New Run wizard --- */
+.cr-wizard { width: 100%; background: transparent !important; box-shadow: none !important; }
+.cr-wizard .q-stepper__header { border-bottom: 1px solid var(--cr-border); }
+.cr-wizard .q-stepper__tab { padding: 12px 16px; }
+.cr-wizard .q-stepper__title { font-size: 13px; font-weight: 600; }
+.cr-wizard .q-stepper__caption { font-size: 11px; }
+.cr-wizard .q-stepper__step-inner { padding: 16px 4px 4px !important; }
+.cr-wizard .q-stepper__nav { padding: 12px 4px 4px !important; }
+.cr-summary { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px 12px; width: 100%; }
+/* Settings tabs + sub-tabs share one look */
+.cr-settings-tab { min-height: 30px !important; font-size: 12px !important; padding: 2px 12px !important; }
+/* --- Technical theme for every page (same language as the Live Run page) --- */
+/* Page header: mono eyebrow, compact title */
+.cr-page-header { padding-bottom: 2px; }
+.cr-page-eyebrow { font: 700 10px/1.5 var(--cr-mono); letter-spacing: 0.12em; text-transform: uppercase;
+                   color: var(--cr-primary); }
+.cr-page-title { font-size: 15px; font-weight: 600; line-height: 20px; letter-spacing: -0.01em; }
+.cr-page-subtitle { font-size: 11px; line-height: 15px; margin-top: 1px; }
+/* Cards: flat, bordered, one radius */
+.cr-section, .cr-content .q-card {
+    box-shadow: none !important; border-radius: 12px !important; border: 1px solid var(--cr-border) !important;
+}
+.cr-section .q-card { border-radius: 10px !important; }
+.cr-card-title {
+    width: 100%; font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--cr-text-dim); padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--cr-border);
+}
+.cr-card-title .q-icon { font-size: 14px !important; }
+/* KPI tiles: mono label over mono value */
+/* All tiles on one line, equal columns (two per row on phones) */
+.cr-stat-grid { gap: 8px; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+    .cr-stat-grid { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 1250px) { .cr-stat-icon-wrap { display: none !important; } }
+.cr-stat-card { height: 58px; padding: 8px 12px; gap: 10px; border-radius: 10px; box-shadow: none; min-width: 0; }
+.cr-stat-title-text { overflow: hidden; text-overflow: ellipsis; }
+.cr-stat-card:hover { box-shadow: none; }
+.cr-stat-icon-wrap { width: 30px; height: 30px; border-radius: 8px; }
+.cr-stat-icon-wrap .q-icon { font-size: 16px !important; }
+.cr-stat-title-text { font: 600 9px/1.5 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase;
+                      color: var(--cr-text-dim); }
+.cr-stat-value-text { font: 600 14px/1.35 var(--cr-mono); }
+/* Tables: mono uppercase headers, quiet rows */
+.cr-content .q-table__container { box-shadow: none !important; }
+.cr-content .q-table thead th {
+    font: 700 9.5px/1.4 var(--cr-mono) !important; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--cr-text-dim) !important; background: var(--cr-surface-light) !important;
+}
+.cr-content .q-table tbody td { font-size: 11px !important; }
+.cr-content .q-table:not(.q-table--dense) tbody td { padding: 6px 10px; height: 36px; }
+.cr-content .q-table:not(.q-table--dense) thead th { padding: 6px 10px; height: 30px; }
+.cr-content .q-table tbody tr:hover td { background: var(--cr-surface-hover); }
+.cr-content .q-table__bottom--nodata { font-size: 11px; color: var(--cr-text-dim); }
+.cr-content .q-table__bottom--nodata .q-icon { font-size: 16px !important; color: var(--cr-text-dim); }
+.cr-content .q-table__bottom { font-size: 11px; }
+/* Status pills: the same chip as the step list */
+.cr-status {
+    font: 700 9px/1 var(--cr-mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 8px;
+    border: 1px solid var(--cr-border);
+}
+.cr-status-completed, .cr-status-passed, .cr-status-success { border-color: rgba(3,152,85,0.3); }
+.cr-status-failed, .cr-status-error { border-color: rgba(217,45,32,0.3); }
+.cr-status-running, .cr-status-in-progress, .cr-status-started, .cr-status-resuming { border-color: rgba(11,95,255,0.35); }
+.cr-status-paused, .cr-status-paused-milestone, .cr-status-retrying, .cr-status-awaiting-review { border-color: rgba(220,104,3,0.3); }
+/* Header + sidebar */
+.cr-nav-group { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; padding: 14px 16px 6px; }
+.cr-sidebar-item { font-size: 11.5px; padding: 6px 14px 6px 13px; }
+.cr-breadcrumb { font-size: 11.5px; }
+.cr-breadcrumb > div:first-child { font: 600 10px/1 var(--cr-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+/* Buttons, inputs, tabs, expansions */
+.cr-content .q-btn { font-size: 11px; }
+.cr-content .q-field__native, .cr-content .q-field__input, .cr-content .q-select__dropdown-icon { font-size: 12px; }
+.cr-content .q-field__label { font-size: 11px; }
+.cr-settings-tab { font-size: 11px !important; border-radius: 8px !important; }
+.cr-content .q-tab__label { font-size: 11.5px; font-weight: 500; }
+.cr-content .q-expansion-item .q-item__label { font-size: 11.5px; font-weight: 600; }
+.cr-content .q-expansion-item .q-item { min-height: 34px; }
+/* New Run wizard */
+.cr-wizard .q-stepper__title { font-size: 11.5px; }
+.cr-wizard .q-stepper__caption { font-size: 10px; font-family: var(--cr-mono); }
+/* Empty states */
+.cr-empty .q-icon { opacity: 0.6; }
+/* Log blocks anywhere: the run page console look */
+.cr-log { background: #0B0F17; border: 1px solid #1F2937; color: #D1D5DB; font: 11px/1.6 var(--cr-mono); }
 </style>
 """
 
@@ -399,8 +794,24 @@ async def _load_config(db):
     return config
 
 
+async def _resume_runs() -> None:
+    """Server start (spec 007): a run the restart interrupted resumes from its checkpoint, then
+    the queue goes on — without waiting for someone to open a page."""
+    try:
+        await _ensure_initialized()
+        await _runner.resume_queue()
+    except Exception as e:  # noqa: BLE001 — the UI must come up even if recovery fails
+        _logging.getLogger(__name__).error("Run recovery at start failed: %s", e, exc_info=True)
+
+
+async def _services() -> tuple[AuthService, AuditTrail]:
+    """Login services for the login page (spec 006)."""
+    await _ensure_initialized()
+    return _auth, _audit
+
+
 async def _ensure_initialized():
-    global _db, _runner, _artifact_store
+    global _db, _runner, _artifact_store, _auth, _audit
     if _db is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _db = await init_database(str(DATA_DIR / "pipeline.db"))
@@ -411,36 +822,111 @@ async def _ensure_initialized():
             db=_db,
             artifact_store=_artifact_store,
         )
+        _auth = AuthService(_db)
+        _audit = AuditTrail(_db)
+        await _auth.ensure_defaults()  # admin role + default administrator account
+
+
+def _user_menu(user) -> None:
+    """Header: who is logged in (name, role) with Change password and Sign out (spec 006)."""
+    from core.auth import AuthError
+
+    with ui.dialog() as dialog, ui.card().classes("p-4 gap-2").style("min-width: 340px"):
+        ui.label("Change password").classes("text-subtitle1 font-semibold")
+        current = ui.input("Current password", password=True).props("outlined dense").classes("w-full")
+        new = ui.input("New password", password=True, password_toggle_button=True) \
+            .props("outlined dense").classes("w-full")
+        again = ui.input("Repeat new password", password=True).props("outlined dense").classes("w-full")
+        ui.label("At least 8 characters, mixing letters with digits or symbols.").classes("text-caption cr-text-dim")
+        error = ui.label("").classes("text-caption").style("color: var(--cr-error)")
+
+        async def save():
+            error.text = ""
+            if (new.value or "") != (again.value or ""):
+                error.text = "The two passwords differ"
+                return
+            try:
+                await _auth.change_own_password(user.id, current.value or "", new.value or "")
+            except AuthError as e:
+                await _audit.record("password.changed", user=user, outcome="failed", details={"reason": str(e)})
+                error.text = str(e)
+                return
+            await _audit.record("password.changed", user=user)
+            for field in (current, new, again):
+                field.value = ""
+            dialog.close()
+            ui.notify("Password changed", type="positive")
+
+        with ui.row().classes("w-full justify-end gap-2 mt-1"):
+            ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+            ui.button("Save", on_click=save).props("unelevated color=primary no-caps")
+
+    with ui.button().props("flat no-caps dense").classes("cr-user-btn"):
+        with ui.row().classes("items-center gap-2 no-wrap"):
+            ui.icon("account_circle", size="22px").classes("cr-text-accent")
+            with ui.column().classes("gap-0 items-start"):
+                ui.label(user.display_name).classes("text-xs font-semibold").style("color: var(--cr-text)")
+                ui.label(user.role).classes("text-caption cr-text-dim")
+        with ui.menu().props("anchor='bottom right' self='top right'"):
+            ui.item(user.email).props("dense disable")
+            ui.separator()
+            with ui.item(on_click=dialog.open).props("dense clickable"):
+                with ui.item_section().props("avatar"):
+                    ui.icon("key", size="18px")
+                ui.item_section("Change password")
+            with ui.item(on_click=lambda: ui.navigate.to("/logout")).props("dense clickable"):
+                with ui.item_section().props("avatar"):
+                    ui.icon("logout", size="18px")
+                ui.item_section("Sign out")
 
 
 def create_app() -> None:
+    # Login gate (spec 006): every request without a session goes to /login
+    app.add_middleware(login_page.AuthMiddleware)
+    login_page.register(_services, CUSTOM_CSS)
 
     @ui.page("/")
-    async def main_page():
+    async def main_page(page: str = ""):
         await _ensure_initialized()
+        from fastapi.responses import RedirectResponse
+        user = await _auth.current_user(login_page.session_user_id())
+        if user is None:  # disabled or deleted since login
+            login_page.end_session()
+            return RedirectResponse("/login")
+        if user.must_change_password:
+            return RedirectResponse("/login")
+        ui_access.install(user, _audit)  # handlers check Update through it (ui/access.py)
+        run_scope = ui_access.scope()  # the admin sees every run, others only their own
+        ui.add_head_html(ui_access.READONLY_CSS)
 
         ui.add_head_html(CUSTOM_CSS)
         ui.add_head_html('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">')
+        ui.add_head_html('<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">')
         # Hide disconnect overlay and auto-reconnect
         ui.add_head_html("""<style>
 .nicegui-reconnecting { display: none !important; }
 .nicegui-disconnected { opacity: 0.3; pointer-events: none; }
 </style>""")
         ui.add_head_html("""<style>
-body { font-family: "Inter", sans-serif !important; font-size: 12px !important; }
-.q-field--dense .q-field__control { min-height: 28px !important; }
+body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
+       font-feature-settings: "tnum" 1; color: var(--cr-text); }
+.q-field--dense .q-field__control { min-height: 32px !important; }
 .q-field--dense .q-field__label { font-size: 11px !important; }
 .q-field--dense .q-field__native, .q-field--dense input { font-size: 12px !important; }
+.q-btn { border-radius: 8px !important; font-weight: 500; }
 .q-btn--dense { min-height: 28px !important; font-size: 11px !important; }
-.q-card { padding: 8px !important; }
+.q-card { padding: 8px !important; border-radius: 10px !important; }
 .q-card__section { padding: 6px 10px !important; }
-.text-h5 { font-size: 16px !important; line-height: 1.3 !important; }
+.text-h5 { font-size: 17px !important; line-height: 1.3 !important; }
 .text-h6 { font-size: 14px !important; line-height: 1.3 !important; }
 .text-subtitle1 { font-size: 13px !important; }
 .text-subtitle2 { font-size: 12px !important; }
 .text-body1 { font-size: 12px !important; }
 .text-body2 { font-size: 11px !important; }
-.text-caption { font-size: 10px !important; }
+.text-caption { font-size: 10.5px !important; }
+.q-field--outlined .q-field__control { border-radius: 8px !important; }
+.q-field--outlined .q-field__control:before { border-color: var(--cr-border) !important; }
+.q-linear-progress { border-radius: 99px; }
 .q-expansion-item__content { padding: 4px 8px !important; }
 .q-slider { margin: 2px 0 !important; }
 .q-badge { font-size: 10px !important; padding: 1px 6px !important; }
@@ -458,18 +944,26 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
         dark = ui.dark_mode(False)
         is_dark = {"value": False}
+        # Theme A: Quasar brand colours follow the design tokens
+        ui.colors(primary="#0B5FFF", secondary="#475467", accent="#0B5FFF", dark="#161B26",
+                  positive="#039855", negative="#D92D20", info="#1570EF", warning="#DC6803")
 
         # --- Header ---
-        with ui.header(fixed=True).classes("cr-header items-center justify-between px-4").style("min-height: 48px; height: 48px"):
-            with ui.row().classes("items-center gap-3"):
-                ui.icon("precision_manufacturing", size="20px").classes("text-[#6C63FF]")
-                ui.label("NetConfig").classes("text-body2 font-bold leading-tight")
-                ui.label("·").style("color: #9090A8; font-size: 10px")
-                ui.label("Agentic Pipeline").classes("text-caption leading-tight").style("color: #9090A8")
+        with ui.header(fixed=True).classes("cr-header items-center justify-between px-4").style("min-height: 52px; height: 52px"):
+            with ui.row().classes("items-center gap-3 no-wrap"):
+                with ui.element("div").classes("cr-logo"):
+                    ui.icon("hub", size="18px")
+                ui.label("NetConfig").classes("font-bold").style("font-size: 15px")
+                ui.element("div").style("width:1px;height:20px;background:var(--cr-border);margin:0 4px")
+                with ui.row().classes("cr-breadcrumb items-center gap-1 no-wrap"):
+                    breadcrumb_group = ui.label("Workspace")
+                    ui.icon("chevron_right", size="16px")
+                    breadcrumb = ui.label("Dashboard").classes("font-semibold").style("color: var(--cr-text)")
             with ui.row().classes("items-center gap-2"):
-                ui.badge("v0.1.0").props("color=grey-8 text-color=grey-4 outline")
+                ui.label("v0.1.0").classes("text-caption cr-text-dim")
+                _user_menu(user)
                 theme_btn = ui.button(icon="light_mode") \
-                    .props("flat round size=sm color=grey-5") \
+                    .props("flat round size=sm color=grey-7") \
                     .tooltip("Toggle theme")
 
                 def toggle_theme():
@@ -481,17 +975,31 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
 
         progress = None
 
-        # --- Menu items definition ---
-        menu_items = [
-            ("dashboard", "Dashboard", "dashboard"),
-            ("new_run", "New Pipeline Run", "add_circle_outline"),
-            ("progress", "Pipeline Progress", "view_timeline"),
-            ("outputs", "Output Documents", "source"),
-            ("history", "Run History", "history"),
-            ("cleanup", "Artifact Cleanup", "cleaning_services"),
-            ("usage", "LLM Usage", "analytics"),
-            ("settings", "Settings", "tune"),
+        # --- Menu items definition (grouped like a product sidebar) ---
+        menu_groups = [
+            ("Workspace", [
+                ("dashboard", "Dashboard", "space_dashboard"),
+                ("new_run", "New Run", "add_circle_outline"),
+                ("progress", "Live Run", "play_circle_outline"),
+                ("queue", "Pipeline Queue", "queue"),
+            ]),
+            ("Results", [
+                ("outputs", "Run Artifacts", "folder_open"),
+                ("cache", "Artifact Cache", "cached"),
+                ("history", "Run History", "history"),
+            ]),
+            ("Admin", [
+                ("usage", "LLM Usage", "insights"),
+                ("cleanup", "Artifact Cleanup", "cleaning_services"),
+                ("settings", "Settings", "settings"),
+                ("users", "Users & Roles", "manage_accounts"),
+                ("audit", "Audit Trail", "fact_check"),
+            ]),
         ]
+        section_labels = {key: (group, label) for group, items in menu_groups for key, label, _ in items}
+        # Only the screens the user's role grants (spec 006); empty groups disappear
+        menu_groups = [(group, [it for it in items if user.can_view(it[0])]) for group, items in menu_groups]
+        menu_groups = [(group, items) for group, items in menu_groups if items]
 
         # Content containers dict — filled below
         content_panels: dict = {}
@@ -500,6 +1008,12 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
         on_navigate_hooks: dict[str, list] = {}  # section -> [async callbacks]
 
         def navigate(section: str):
+            if section not in content_panels:  # not permitted (not built)
+                label = section_labels.get(section, ("", section))[1]
+                ui.notify(f"You do not have access to {label}", type="warning")
+                ui_access.run_later(_audit.record("screen.open", user=user, outcome="refused",
+                                                  target_type="screen", target_id=section))
+                return
             prev = active_section["value"]
             active_section["value"] = section
             # Toggle visibility
@@ -510,6 +1024,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 sidebar_items[prev].classes(remove="active")
             if section in sidebar_items:
                 sidebar_items[section].classes(add="active")
+            breadcrumb_group.text, breadcrumb.text = section_labels.get(section, ("Workspace", section))
             # Fire refresh hooks for the target section
             for hook in on_navigate_hooks.get(section, []):
                 try:
@@ -528,33 +1043,32 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
                 # PipelineRunner.start() takes a dict, not a UCDocumentSet
                 doc_dict = doc_set.model_dump() if hasattr(doc_set, 'model_dump') else doc_set
                 doc_dict["document_set_id"] = str(doc_dict.get("id", doc_dict.get("document_set_id", "")))
-                run_id = await _runner.start(doc_dict)
+                result = await submit_run(_runner, doc_dict, review_milestones, "run.start", details={
+                    "review_milestones": review_milestones,
+                    "documents": {k: Path(str(v)).name for k, v in doc_dict.items() if k.endswith("_path") and v}})
+                if result is None:  # refused (same use case already in the pipeline, queue limit)
+                    return
                 if progress:
                     from uuid import UUID
-                    await progress.start_tracking(UUID(run_id))
+                    await progress.start_tracking(UUID(result["run_id"]), queued=result["status"] == "queued")
                 navigate("progress")
-                uc_name = doc_dict.get("uc_name", "UC")
-                ui.notify(f"Pipeline started for {uc_name}", type="positive")
             except Exception as exc:
                 navigate("progress")
                 ui.notify(f"Pipeline start failed: {exc}", type="negative")
 
         # --- Sidebar ---
         with ui.column().classes("cr-sidebar"):
-            # Brand area
-            with ui.column().classes("px-5 pb-3 gap-0"):
-                ui.label("NAVIGATION").classes("text-[10px] font-bold tracking-widest cr-stat-title")
-            ui.element("div").classes("cr-sidebar-divider")
-
-            for key, label, icon in menu_items:
-                item = ui.element("div").classes(
-                    f"cr-sidebar-item {'active' if key == 'dashboard' else ''}"
-                )
-                with item:
-                    ui.icon(icon)
-                    ui.label(label)
-                item.on("click", lambda _, k=key: navigate(k))
-                sidebar_items[key] = item
+            for group, items in menu_groups:
+                ui.label(group).classes("cr-nav-group")
+                for key, label, icon in items:
+                    item = ui.element("div").classes(
+                        f"cr-sidebar-item {'active' if key == 'dashboard' else ''}"
+                    )
+                    with item:
+                        ui.icon(icon)
+                        ui.label(label)
+                    item.on("click", lambda _, k=key: navigate(k))
+                    sidebar_items[key] = item
 
             # Spacer + footer
             ui.element("div").style("flex:1")
@@ -562,171 +1076,465 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important; 
             with ui.column().classes("px-5 py-3 gap-0"):
                 ui.label("NetConfig v0.1.0").classes("text-[11px] cr-stat-title")
 
+        output_viewer = history_section = settings_section = None
         # --- Content area ---
         with ui.column().classes("cr-content"):
 
             # Dashboard
-            with ui.column().classes("w-full gap-5") as panel:
-                content_panels["dashboard"] = panel
-                with ui.element("div").classes("cr-hero"):
-                    with ui.row().classes("items-center justify-between w-full"):
-                        with ui.column().classes("gap-1"):
-                            ui.label("Use Case Automation Pipeline") \
-                                .classes("text-h5 font-bold cr-text-primary")
-                            ui.label(
-                                "Upload telecom UC documents, generate YAML configs via LLM agents, "
-                                "validate and test automatically"
-                            ).classes("text-body2 cr-text-dim max-w-xl")
-                        with ui.row().classes("gap-3"):
-                            runs_label = _stat_card("Pipeline Runs", "0", "rocket_launch", "#6C63FF")
-                            success_label = _stat_card("Success Rate", "—", "check_circle", "#4ADE80")
-                            duration_label = _stat_card("Avg Duration", "—", "timer", "#00D9FF")
+            if user.can_view("dashboard"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["dashboard"] = panel
 
-                async def refresh_dashboard():
-                    try:
-                        rows = await _db.execute(
-                            "SELECT status, duration_seconds FROM pipeline_runs", ()
-                        )
-                        total = len(rows)
-                        completed = sum(1 for r in rows if 'completed' in str(r.get('status') or '').lower())
-                        durations = [r['duration_seconds'] for r in rows
-                                     if r.get('duration_seconds') and 'completed' in str(r.get('status') or '').lower()]
-                        runs_label.text = str(total)
-                        if total > 0:
-                            success_label.text = f"{completed * 100 // total}%"
-                        else:
-                            success_label.text = "—"
-                        if durations:
-                            avg = sum(durations) / len(durations)
-                            duration_label.text = f"{avg:.0f}s"
-                        else:
-                            duration_label.text = "—"
-                    except Exception:
-                        pass
+                    page_header("Dashboard", "Upload telecom UC documents, generate YAML configs via "
+                                             "LLM agents, validate and test automatically")
 
-                on_navigate_hooks.setdefault("dashboard", []).append(refresh_dashboard)
-                ui.timer(0.5, refresh_dashboard, once=True)
+                    # Summary stat cards
+                    with ui.element("div").classes("cr-stat-grid"):
+                        runs_label = stat_card("Total Runs", "0", "rocket_launch", "#0B5FFF")
+                        success_label = stat_card("Success Rate", "\u2014", "check_circle", "#16A34A")
+                        failed_label = stat_card("Failed", "0", "cancel", "#DC2626")
+                        duration_label = stat_card("Avg Duration", "\u2014", "timer", "#0891B2")
+                        tokens_label = stat_card("LLM Tokens", "0", "token", "#8B5CF6")
+                        cost_label = stat_card("Est. Cost", "$0", "attach_money", "#D97706")
+
+                    # Pipeline queue (spec 007): what runs now and what waits
+                    with ui.card().classes("cr-card-inner w-full p-3"):
+                        QueuePanel(_runner, compact=True, on_open=lambda: navigate("queue"))
+
+                    # Charts row
+                    with ui.element("div").classes("cr-grid-2"):
+                        # Status pie chart
+                        with ui.card().classes("cr-card-inner p-3"):
+                            card_title("Run Status", "donut_large")
+                            status_chart = ui.echart({
+                                "tooltip": {"trigger": "item"},
+                                "series": [{"type": "pie", "radius": ["40%", "70%"],
+                                            "label": {"color": "#98A2B3", "fontSize": 11},
+                                            "data": []}],
+                            }).classes("w-full").style("height: 180px")
+
+                        # UC breakdown bar chart
+                        with ui.card().classes("cr-card-inner p-3"):
+                            card_title("Runs by Use Case", "bar_chart")
+                            uc_chart = ui.echart({
+                                "tooltip": {"trigger": "axis"},
+                                "legend": {"bottom": 0, "textStyle": {"color": "#98A2B3", "fontSize": 11}},
+                                "grid": {"left": 36, "right": 16, "top": 12, "bottom": 52},
+                                "xAxis": {"type": "category", "data": [],
+                                          "axisLabel": {"color": "#98A2B3", "fontSize": 10, "interval": 0}},
+                                "yAxis": {"type": "value", "minInterval": 1,
+                                          "axisLabel": {"color": "#98A2B3"}},
+                                "series": [
+                                    {"type": "bar", "name": "Completed", "stack": "total",
+                                     "itemStyle": {"color": "#12B76A"}, "data": []},
+                                    {"type": "bar", "name": "Failed", "stack": "total",
+                                     "itemStyle": {"color": "#F04438"}, "data": []},
+                                ],
+                            }).classes("w-full").style("height: 180px")
+
+                    # Per-UC table + LLM usage
+                    with ui.element("div").classes("cr-grid-2"):
+                        with ui.card().classes("cr-card-inner p-3"):
+                            card_title("Use Case Summary", "inventory_2")
+                            uc_table = ui.table(
+                                columns=[
+                                    {"name": "uc", "label": "Use Case", "field": "uc", "align": "left", "sortable": True},
+                                    {"name": "runs", "label": "Runs", "field": "runs", "sortable": True},
+                                    {"name": "pass", "label": "Pass", "field": "pass", "sortable": True},
+                                    {"name": "fail", "label": "Fail", "field": "fail", "sortable": True},
+                                    {"name": "rate", "label": "Success %", "field": "rate", "sortable": True},
+                                    {"name": "avg_dur", "label": "Avg Time", "field": "avg_dur", "sortable": True},
+                                ],
+                                rows=[], row_key="uc",
+                            ).props("dense flat bordered").classes("w-full")
+
+                        with ui.card().classes("cr-card-inner p-3"):
+                            card_title("LLM Usage by Step", "analytics")
+                            llm_table = ui.table(
+                                columns=[
+                                    {"name": "step", "label": "Step", "field": "step", "align": "left", "sortable": True},
+                                    {"name": "calls", "label": "Calls", "field": "calls", "sortable": True},
+                                    {"name": "tokens", "label": "Tokens", "field": "tokens", "sortable": True},
+                                    {"name": "cost", "label": "Cost", "field": "cost", "sortable": True},
+                                ],
+                                rows=[], row_key="step",
+                            ).props("dense flat bordered").classes("w-full")
+
+                    # Recent runs
+                    with ui.card().classes("cr-card-inner w-full p-3"):
+                        card_title("Recent Runs", "history")
+                        recent_table = ui.table(
+                            columns=[
+                                {"name": "uc", "label": "Use Case", "field": "uc", "align": "left"},
+                                {"name": "status", "label": "Status", "field": "status", "align": "center"},
+                                {"name": "started", "label": "Started", "field": "started", "align": "left"},
+                                {"name": "duration", "label": "Duration", "field": "duration"},
+                                {"name": "error", "label": "Error", "field": "error", "align": "left"},
+                            ],
+                            rows=[], row_key="id",
+                        ).props("dense flat bordered").classes("w-full")
+                        status_cells(recent_table)
+
+                    _STEP_LABELS = {
+                        "requirements_gatherer": "Requirements",
+                        "ciq_validation_json_gen": "CIQ Gen",
+                        "ciq_validation_json_qa": "CIQ QA",
+                        "network_config_gen": "Config Gen",
+                        "network_simulator_setup": "Simulator",
+                        "network_config_mop_qa": "MOP QA",
+                        "network_config_exec_qa": "Exec QA",
+                        "report_generator": "Report",
+                    }
+
+                    async def refresh_dashboard():
+                        try:
+                            # --- DB data ---
+                            runs = await _db.execute(
+                                "SELECT r.id, r.status, COALESCE(r.started_at, r.queued_at) AS started_at, "
+                                "r.duration_seconds, "
+                                "r.error_summary, d.uc_name "
+                                "FROM pipeline_runs r "
+                                "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                                f"WHERE {run_scope.where('r')[0]} "
+                                "ORDER BY COALESCE(r.started_at, r.queued_at) DESC", run_scope.where('r')[1]
+                            )
+                            total = len(runs)
+                            completed = sum(1 for r in runs if 'completed' in str(r.get('status') or '').lower())
+                            failed = sum(1 for r in runs if 'failed' in str(r.get('status') or '').lower())
+                            cancelled = sum(1 for r in runs if any(
+                                s in str(r.get('status') or '').lower() for s in ('cancelled', 'removed')))
+                            waiting = sum(1 for r in runs if r.get('status') == 'queued')  # run queue (spec 007)
+                            running = total - completed - failed - cancelled - waiting
+                            durations = [r['duration_seconds'] for r in runs
+                                         if r.get('duration_seconds') and 'completed' in str(r.get('status') or '').lower()]
+
+                            # Summary cards
+                            runs_label.text = str(total)
+                            success_label.text = f"{completed * 100 // total}%" if total > 0 else "\u2014"
+                            failed_label.text = str(failed)
+                            duration_label.text = f"{sum(durations) / len(durations):.0f}s" if durations else "\u2014"
+
+                            # LLM stats
+                            from shared.llm import load_usage_stats
+                            llm_raw = await load_usage_stats(owner=run_scope.owner)
+                            total_tokens = sum(e.get("total_tokens", 0) for e in llm_raw)
+                            total_cost = sum(e.get("cost_usd", 0) for e in llm_raw)
+                            tokens_label.text = f"{total_tokens:,}" if total_tokens else "0"
+                            cost_label.text = f"${total_cost:.2f}" if total_cost else "$0"
+
+                            # Status pie chart
+                            pie_data = []
+                            if completed: pie_data.append({"value": completed, "name": "Completed", "itemStyle": {"color": "#12B76A"}})
+                            if failed: pie_data.append({"value": failed, "name": "Failed", "itemStyle": {"color": "#F04438"}})
+                            if cancelled: pie_data.append({"value": cancelled, "name": "Cancelled", "itemStyle": {"color": "#98A2B3"}})
+                            if running: pie_data.append({"value": running, "name": "Running", "itemStyle": {"color": "#0B5FFF"}})
+                            if waiting: pie_data.append({"value": waiting, "name": "Waiting", "itemStyle": {"color": "#D0D5DD"}})
+                            status_chart.options["series"][0]["data"] = pie_data or [{"value": 0, "name": "No runs"}]
+                            status_chart.update()
+
+                            # Per-UC aggregation
+                            uc_stats: dict[str, dict] = {}
+                            for r in runs:
+                                uc = r.get("uc_name") or "Unknown"
+                                s = uc_stats.setdefault(uc, {"runs": 0, "pass": 0, "fail": 0, "durations": []})
+                                s["runs"] += 1
+                                status = str(r.get("status") or "").lower()
+                                if "completed" in status:
+                                    s["pass"] += 1
+                                    if r.get("duration_seconds"):
+                                        s["durations"].append(r["duration_seconds"])
+                                elif "failed" in status:
+                                    s["fail"] += 1
+
+                            # UC bar chart
+                            uc_names = list(uc_stats.keys())[:10]
+                            uc_chart.options["xAxis"]["data"] = [n.split("_")[0] if "_" in n else n for n in uc_names]
+                            uc_chart.options["series"][0]["data"] = [uc_stats[n]["pass"] for n in uc_names]
+                            uc_chart.options["series"][1]["data"] = [uc_stats[n]["fail"] for n in uc_names]
+                            uc_chart.update()
+
+                            # UC table
+                            uc_rows = []
+                            for uc, s in sorted(uc_stats.items(), key=lambda x: x[1]["runs"], reverse=True):
+                                avg_d = sum(s["durations"]) / len(s["durations"]) if s["durations"] else 0
+                                rate = f"{s['pass'] * 100 // s['runs']}%" if s["runs"] > 0 else "\u2014"
+                                uc_rows.append({
+                                    "uc": uc, "runs": s["runs"], "pass": s["pass"],
+                                    "fail": s["fail"], "rate": rate,
+                                    "avg_dur": f"{avg_d:.0f}s" if avg_d else "\u2014",
+                                })
+                            uc_table.rows = uc_rows
+
+                            # LLM per-step table
+                            by_step: dict[str, dict] = {}
+                            for e in llm_raw:
+                                step = e.get("step", "unknown")
+                                sd = by_step.setdefault(step, {"calls": 0, "tokens": 0, "cost": 0.0})
+                                sd["calls"] += 1
+                                sd["tokens"] += e.get("total_tokens", 0)
+                                sd["cost"] += e.get("cost_usd", 0)
+                            llm_rows = []
+                            for step, sd in sorted(by_step.items(), key=lambda x: x[1]["cost"], reverse=True):
+                                llm_rows.append({
+                                    "step": _STEP_LABELS.get(step, step.replace("_", " ").title()),
+                                    "calls": sd["calls"],
+                                    "tokens": f"{sd['tokens']:,}",
+                                    "cost": f"${sd['cost']:.4f}",
+                                })
+                            llm_table.rows = llm_rows
+
+                            # Recent runs table (last 5)
+                            recent_rows = []
+                            for r in runs[:5]:
+                                status = str(r.get("status") or "").replace("PipelineStatus.", "")
+                                started = str(r.get("started_at") or "")[:19]
+                                dur = r.get("duration_seconds")
+                                err = (r.get("error_summary") or "")[:60]
+                                recent_rows.append({
+                                    "id": r.get("id", ""),
+                                    "uc": r.get("uc_name") or "\u2014",
+                                    "status": status,
+                                    "started": started,
+                                    "duration": f"{dur:.1f}s" if dur else "\u2014",
+                                    "error": err or "\u2014",
+                                })
+                            recent_table.rows = recent_rows
+
+                        except Exception:
+                            pass
+
+                    on_navigate_hooks.setdefault("dashboard", []).append(refresh_dashboard)
+                    ui.timer(0.5, refresh_dashboard, once=True)
 
             # New Pipeline Run
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["new_run"] = panel
-                panel.set_visibility(False)
-                ui.label("New Pipeline Run").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    UploadSection(on_start_pipeline=on_start_pipeline)
+            if user.can_view("new_run"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["new_run"] = panel
+                    panel.set_visibility(False)
+                    page_header("New Run", "Set up a pipeline run in three steps: activity, documents, notes & review")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        QueuePanel(_runner, compact=True, on_open=lambda: navigate("queue"))
+                    with ui.card().classes("cr-section w-full p-4"):
+                        upload_section = UploadSection(on_start_pipeline=on_start_pipeline, db=_db)
+                        on_navigate_hooks.setdefault("new_run", []).append(upload_section._load_vendors)
 
             # Pipeline Progress
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["progress"] = panel
-                panel.set_visibility(False)
-                ui.label("Pipeline Progress").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    async def _progress_view_details(run_id):
-                        navigate("history")
-                        # Trigger details for this run in history section
-                        if hasattr(_refs, 'history') and _refs.history:
-                            await _refs.history._on_details(type('E', (), {'args': {'id': run_id}})())
+            if user.can_view("progress"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["progress"] = panel
+                    panel.set_visibility(False)
+                    page_header("Live Run", "Follow each step, review milestones, inspect artifacts, test cases and logs")
+                    with ui.column().classes("w-full gap-0"):
+                        async def _progress_view_details(run_id):
+                            navigate("history")
+                            # Trigger details for this run in history section
+                            if hasattr(_refs, 'history') and _refs.history:
+                                await _refs.history._on_details(type('E', (), {'args': {'id': run_id}})())
 
-                    async def _progress_view_outputs(run_id):
-                        navigate("outputs")
-                        if hasattr(_refs, 'output_viewer') and _refs.output_viewer:
-                            from uuid import UUID as _UUID
-                            await _refs.output_viewer.refresh_for_run(_UUID(run_id))
+                        async def _progress_view_outputs(run_id):
+                            navigate("outputs")
+                            if hasattr(_refs, 'output_viewer') and _refs.output_viewer:
+                                from uuid import UUID as _UUID
+                                await _refs.output_viewer.refresh_for_run(_UUID(run_id))
 
-                    progress = ProgressSection(
-                        runner=_runner,
-                        on_view_details=_progress_view_details,
-                        on_view_outputs=_progress_view_outputs,
-                    )
+                        progress = ProgressSection(
+                            runner=_runner,
+                            on_view_details=_progress_view_details,
+                            on_view_outputs=_progress_view_outputs,
+                        )
+
+            # Pipeline Queue (spec 007 / 008): every job, status, position, estimate; Remove
+            if user.can_view("queue"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["queue"] = panel
+                    panel.set_visibility(False)
+                    page_header("Pipeline Queue", "What runs now, what waits and when it is expected to start")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        QueuePanel(_runner)
 
             # Forward refs container
             class _refs:
                 history = None
                 output_viewer = None
 
-            # Output Documents
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["outputs"] = panel
-                panel.set_visibility(False)
-                ui.label("Output Documents").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    output_viewer = OutputViewerSection(
-                        artifact_store=_artifact_store, runner=_runner,
-                    )
-                    _refs.output_viewer = output_viewer
-                    on_navigate_hooks.setdefault("outputs", []).append(output_viewer._load_runs)
+            # Run Artifacts
+            if user.can_view("outputs"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["outputs"] = panel
+                    panel.set_visibility(False)
+                    page_header("Run Artifacts", "Browse and download the artifacts each run produced")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        output_viewer = OutputViewerSection(artifact_store=_artifact_store, runner=_runner)
+                        _refs.output_viewer = output_viewer
+                        on_navigate_hooks.setdefault("outputs", []).append(output_viewer._load_runs)
+
+            # Artifact Cache (admin: the cache is shared by every user's runs — spec 008 U-D3)
+            if user.can_view("cache"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["cache"] = panel
+                    panel.set_visibility(False)
+                    page_header("Artifact Cache", "Steps a use case already passed are reused instead of generated again")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        cache_section = CacheSection()
+                        on_navigate_hooks.setdefault("cache", []).append(cache_section.refresh)
 
             # Run History
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["history"] = panel
-                panel.set_visibility(False)
-                ui.label("Run History").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    async def on_rerun(run):
-                        if progress:
-                            from uuid import UUID as _UUID
-                            run_id = run.id if hasattr(run, 'id') else run
-                            if isinstance(run_id, str):
-                                run_id = _UUID(run_id)
-                            await progress.start_tracking(run_id)
-                        navigate("progress")
+            if user.can_view("history"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["history"] = panel
+                    panel.set_visibility(False)
+                    page_header("Run History", "All pipeline runs with their status, errors and outputs")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        async def on_rerun(run):
+                            navigate("progress")
+                            if run and progress:
+                                from uuid import UUID as _UUID
+                                run_id = run.id if hasattr(run, 'id') else run
+                                if isinstance(run_id, str):
+                                    run_id = _UUID(run_id)
+                                await progress.start_tracking(run_id)
 
-                    async def on_view_outputs(run_id):
-                        navigate("outputs")
-                        if output_viewer:
-                            from uuid import UUID as _UUID
-                            await output_viewer.refresh_for_run(_UUID(run_id))
+                        async def on_view_outputs(run_id):
+                            navigate("outputs")
+                            if output_viewer:
+                                from uuid import UUID as _UUID
+                                await output_viewer.refresh_for_run(_UUID(run_id))
 
-                    history_section = HistorySection(
-                        runner=_runner,
-                        on_rerun=on_rerun,
-                        on_view_outputs=on_view_outputs,
-                    )
-                    _refs.history = history_section
-                    on_navigate_hooks.setdefault("history", []).append(history_section._refresh)
+                        async def on_open_run(run_id):
+                            navigate("progress")
+                            if progress:
+                                await progress.view_run(str(run_id))
+
+                        history_section = HistorySection(
+                            runner=_runner,
+                            on_rerun=on_rerun,
+                            on_view_outputs=on_view_outputs,
+                            on_open_run=on_open_run,
+                        )
+                        _refs.history = history_section
+                        on_navigate_hooks.setdefault("history", []).append(history_section._refresh)
 
             # Artifact Cleanup
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["cleanup"] = panel
-                panel.set_visibility(False)
-                ui.label("Artifact Cleanup").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    cleanup_section = CleanupSection(runner=_runner, artifact_store=_artifact_store)
-                    on_navigate_hooks.setdefault("cleanup", []).append(cleanup_section._refresh)
+            if user.can_view("cleanup"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["cleanup"] = panel
+                    panel.set_visibility(False)
+                    page_header("Artifact Cleanup", "Free disk space by deleting the artifacts of old runs")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        cleanup_section = CleanupSection(runner=_runner, artifact_store=_artifact_store)
+                        on_navigate_hooks.setdefault("cleanup", []).append(cleanup_section._refresh)
 
             # LLM Usage
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["usage"] = panel
-                panel.set_visibility(False)
-                ui.label("LLM Usage Statistics").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    usage_section = UsageSection()
-                    on_navigate_hooks.setdefault("usage", []).append(usage_section._refresh)
+            if user.can_view("usage"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["usage"] = panel
+                    panel.set_visibility(False)
+                    page_header("LLM Usage", "Token consumption and cost per use case, pipeline step and model")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        usage_section = UsageSection()
+                        on_navigate_hooks.setdefault("usage", []).append(usage_section._refresh)
 
-            # Settings
-            with ui.column().classes("w-full gap-2") as panel:
-                content_panels["settings"] = panel
-                panel.set_visibility(False)
-                ui.label("Settings").classes("text-h6 font-bold cr-stat-value")
-                with ui.card().classes("cr-section w-full p-4"):
-                    settings_section = SettingsSection(config_manager=_config_manager, db=_db)
+            # Settings (tabbed: Pipeline Config | Vendor Profiles)
+            if user.can_view("settings"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["settings"] = panel
+                    panel.set_visibility(False)
+
+                    page_header("Settings", "LLM, retry, external modules and vendor profiles")
+                    settings_tab_panels = {}
+                    active_settings_tab = {"value": "config"}
+
+                    def switch_settings_tab(tab_key: str):
+                        prev = active_settings_tab["value"]
+                        active_settings_tab["value"] = tab_key
+                        for k, p in settings_tab_panels.items():
+                            p.set_visibility(k == tab_key)
+                        if prev in settings_tab_btns:
+                            settings_tab_btns[prev].classes(remove="active")
+                        if tab_key in settings_tab_btns:
+                            settings_tab_btns[tab_key].classes(add="active")
+
+                    settings_tab_btns = {}
+                    with ui.row().classes("w-full gap-2 mb-2"):
+                        for key, label, icon in [
+                            ("config", "Pipeline Config", "tune"),
+                            ("vendors", "Vendor Profiles", "business"),
+                        ]:
+                            btn = ui.button(label, icon=icon,
+                                            on_click=lambda _, k=key: switch_settings_tab(k)) \
+                                .props("flat no-caps size=sm") \
+                                .classes(f"cr-settings-tab {'active' if key == 'config' else ''}")
+                            settings_tab_btns[key] = btn
+
+                    # Tab: Pipeline Config
+                    with ui.column().classes("w-full") as config_panel:
+                        settings_tab_panels["config"] = config_panel
+                        with ui.card().classes("cr-section w-full p-4"):
+                            settings_section = SettingsSection(config_manager=_config_manager, db=_db)
+
+                    # Tab: Vendor Profiles
+                    with ui.column().classes("w-full") as vendor_panel:
+                        settings_tab_panels["vendors"] = vendor_panel
+                        vendor_panel.set_visibility(False)
+                        with ui.card().classes("cr-section w-full p-4"):
+                            vendor_section = VendorSection(db=_db)
+
+            # Users & Roles (administrator only, spec 006)
+            if user.can_view("users"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["users"] = panel
+                    panel.set_visibility(False)
+                    page_header("Users & Roles", "Who can log in, their role, and which screens each role "
+                                                 "may view or update")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        users_section = UsersSection(_auth, _audit, user)
+                        on_navigate_hooks.setdefault("users", []).append(users_section.refresh)
+
+            # Audit Trail (administrator only, spec 006 D8)
+            if user.can_view("audit"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["audit"] = panel
+                    panel.set_visibility(False)
+                    page_header("Audit Trail", "Who did what and when — every user action and refused attempt")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        audit_section = AuditSection(_audit, user)
+                        on_navigate_hooks.setdefault("audit", []).append(audit_section.refresh)
+
+            # Deep link: /?page=history opens that section (before the first await, so the page is
+            # sent already showing it)
+            # View-only screens: action buttons disabled (CSS on cr-action), a pill says so
+            for key, panel in content_panels.items():
+                if not user.can_update(key):
+                    panel.classes(add=ui_access.READONLY_CLASS)
+                    with panel:
+                        pill = ui.label("View only").classes("cr-view-only-pill self-start")
+                    pill.move(panel, target_index=1)
+            if not content_panels:
+                with ui.column().classes("cr-content"):
+                    page_header("No screens", "Your role grants no screens yet. Ask the administrator.")
+            if page and page not in content_panels:
+                ui_access.run_later(_audit.record("screen.open", user=user, outcome="refused",
+                                                  target_type="screen", target_id=page,
+                                                  details={"via": "link"}))
+            landing = page if page in content_panels else next(iter(content_panels), "")
+            if landing:
+                navigate(landing)
+                # Its data loader ran before the browser connected (empty tables): run it again
+                # once connected (a ui.timer starts only then)
+                ui.timer(0.3, lambda: navigate(landing), once=True)
 
             # Load saved settings
-            await settings_section.load_saved_settings()
-
-
-def _stat_card(title: str, value: str, icon: str, color: str) -> ui.label:
-    """Create a stat card and return the value label for dynamic updates."""
-    with ui.card().classes("cr-stat-card"):
-        with ui.column().classes("items-center gap-0"):
-            ui.icon(icon).classes("cr-stat-icon").style(f"color: {color}")
-            val_label = ui.label(value).classes("text-h6 font-bold cr-stat-value")
-            ui.label(title).classes("text-caption cr-stat-title")
-    return val_label
+            if settings_section:
+                await settings_section.load_saved_settings()
 
 
 def run() -> None:
     create_app()
+
+    from shared.state import stop_simulator
+    app.on_startup(_resume_runs)
+    app.on_shutdown(stop_simulator)
+
     ui.run(
         host="0.0.0.0",
         port=8000,
@@ -735,6 +1543,7 @@ def run() -> None:
         reload=False,
         favicon="🔧",
         reconnect_timeout=60,
+        storage_secret=storage_secret(DATA_DIR),  # signs the login session cookie
     )
 
 

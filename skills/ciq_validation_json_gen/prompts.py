@@ -7,14 +7,19 @@ from __future__ import annotations
 
 VALIDATION_RULES_SYSTEM = """\
 You are a CIQ validation rules expert. You generate YAML validation-rules files
-that conform to a specific schema and accurately validate CIQ Excel workbooks
-for telecom network activities.
+that define per-sheet column types for CIQ Excel workbooks.
 
-Your output must be valid YAML — no markdown fencing, no explanations, just YAML.
+CRITICAL RULES:
+- Output ONLY the "sheets:" section — nothing else (no workbook_rules, no outputs, no node_id_config, no report)
+- Use ONLY "type: string" with "required: true/false" for most columns
+- Use "type: enum" with "values: [...]" ONLY for columns where the sample data shows a SMALL CLOSED set (< 10 values)
+- Do NOT use "allowedValues" on string columns — the values come from the CIQ, not from you
+- Use EXACT column names from the CIQ — do NOT rename or invent columns
+- Your output must be valid YAML — no markdown fencing, no explanations, just YAML
 """
 
 VALIDATION_RULES_USER = """\
-Generate a validation-rules.yaml for the CIQ workbook described below.
+Generate a validation-rules.yaml for this CIQ workbook.
 
 === UC NAME ===
 {uc_name}
@@ -28,16 +33,36 @@ Generate a validation-rules.yaml for the CIQ workbook described below.
 === SCHEMA REFERENCE ===
 {schema_summary}
 
+=== EXAMPLE OUTPUT FORMAT ===
+sheets:
+  IP:
+    columns:
+      ZONE:
+        type: string
+        required: true
+      Node_Name:
+        type: enum
+        required: true
+        values:
+        - PGW
+        - RDS
+      NIAM_NAME1:
+        type: string
+        required: true
+  Index:
+    columns:
+      CRGroup:
+        type: string
+        required: true
+
 === INSTRUCTIONS ===
-1. Define validation rules for EVERY sheet that has data columns.
-2. Use EXACT column names from the CIQ structure above — do NOT rename or invent columns.
-3. Set appropriate types (string, enum, integer, decimal, boolean, ip, etc.) based on sample values.
-4. Mark columns as required where CIQ samples show consistent data.
-5. Use allowedValues for columns with small, discrete value sets visible in samples.
-6. Add cross-sheet workbook_rules where relationships exist (e.g., Index → data sheets).
-7. Configure node_id_config if a Node_ID or Node_Details sheet exists.
-8. Include outputs section for aggregates needed by downstream processing.
-9. Set report formats to [JSON, HTML, MSEXCEL].
+1. Output ONLY the "sheets:" section with column definitions.
+2. Use EXACT column names from the CIQ structure — do NOT invent columns.
+3. Use "type: string" for most columns. Use "type: enum" with "values:" ONLY when
+   sample data shows a small closed set (e.g. Node_Name with 2-3 values).
+4. Do NOT generate workbook_rules, outputs, node_id_config, report, or any other section.
+5. Do NOT use allowedValues on string columns — those are free-form data fields.
+6. Mark columns as required: true where samples show consistent non-empty data.
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
@@ -75,14 +100,18 @@ Output ONLY valid YAML. No markdown, no code fences, no explanations.
 
 JSON_OUTPUT_SYSTEM = """\
 You are a CIQ JSON output template expert. You generate YAML json-output files
-that define how CIQ Excel data is extracted into structured JSON for telecom
-network activity automation.
+that define how CIQ Excel data is extracted into structured JSON for the
+ciq-processor JAR.
 
-Your output must be valid YAML — no markdown fencing, no explanations, just YAML.
+CRITICAL RULES:
+- Output must be valid YAML — no markdown fencing, no explanations
+- Use EXACT column names from the CIQ — "Sheet Name.Column Name" for cross-sheet refs
+- Every _each block must be a YAML mapping (not a sequence mixed with a mapping)
+- The _each value is a list of iteration values; child keys are at the same mapping level
 """
 
 JSON_OUTPUT_USER = """\
-Generate a json-output.yaml for the CIQ workbook described below.
+Generate a json-output.yaml for this CIQ workbook.
 
 === UC NAME ===
 {uc_name}
@@ -96,15 +125,106 @@ Generate a json-output.yaml for the CIQ workbook described below.
 === SCHEMA REFERENCE ===
 {schema_summary}
 
+=== CORRECT _each SYNTAX ===
+IMPORTANT: Use "DISTINCT Sheet.Column AS $var" for iterating unique values from a CIQ sheet.
+Template fields are SIBLING keys of _each, NOT list items.
+
+CORRECT — iterate distinct node names from CIQ:
+  nodes:
+    _each: "DISTINCT IP.Node_Name WHERE IP.ZONE = $Zone AS $node"
+    name: $node
+    niam: "IP.NIAM_NAME1 WHERE IP.Node_Name = $node AND IP.ZONE = $Zone"
+
+CORRECT — iterate rows from a sheet with filter:
+  subscribers:
+    _each: "Profile Modification WHERE Zone = $Zone"
+    Test_IMSI: Profile Modification.Test IMSI
+
+WRONG — static list _each does NOT support WHERE lookups on siblings:
+  nodes:
+    _each:
+    - PGW
+    - RDS
+    name: $value
+
+WRONG — list items mixed with mapping keys:
+  nodes:
+    _each:
+    - PGW
+    - name: $value
+
+=== TARGET JSON STRUCTURE (the JSON the ciq-processor produces) ===
+The MOP generator looks for "nodeGroups" at the ROOT of the JSON (not nested).
+NOTE: schemaVersion and meta are injected by the JAR at runtime — do NOT include them in data:.
+{{
+  "nodeGroups": [{{
+    "nodeGroup": "<Zone>",
+    "crGroup": "<CRGroup>",
+    "email": "<email>",
+    "nodes": [{{
+      "node": "<Zone>",
+      "<NodeType1>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }},
+      "<NodeType2>": {{ "niamID-1": "...", "niamID-2": "...", "niamID-3": "..." }}
+    }}],
+    "configSequences": [{{
+      "configSeq": "Step1",
+      "records": [{{
+        "data": {{ ... all CIQ columns per subscriber row ... }}
+      }}]
+    }}]
+  }}]
+}}
+
+=== EXAMPLE json-output.yaml (produces the target structure) ===
+output_mode: individual
+segregate_by:
+  sheet: Index
+  column: CRGroup
+  as: $cr
+data:
+  nodeGroups:
+    _each: "DISTINCT Index.ZONE WHERE Index.CRGroup = $cr AS $zone"
+    nodeGroup: $zone
+    crGroup: $cr
+    email: "Index.Email WHERE Index.ZONE = $zone AND Index.CRGroup = $cr"
+    nodes:
+      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zone AS $n"
+      node: $zone
+      PGW:
+        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = PGW AND IP.ZONE = $zone"
+      RDS:
+        niamID-1: "IP.NIAM_NAME1 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+        niamID-2: "IP.NIAM_NAME2 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+        niamID-3: "IP.NIAM_NAME3 WHERE IP.Node_Name = RDS AND IP.ZONE = $zone"
+    configSequences:
+      _each: "DISTINCT Index.ZONE WHERE Index.ZONE = $zone AS $seq"
+      configSeq: Step1
+      records:
+        _each: "Profile Modification WHERE Zone = $zone"
+        data:
+          Zone: Zone
+          Test IMSI: Test IMSI
+          Test MSISDN: Test MSISDN
+          Mandatory Cap: Mandatory Cap
+          Optional Cap: Optional Cap
+          IFC: IFC
+          VNI: VNI
+          refinmocName: refinmocName
+          refinmtcName: refinmtcName
+          APN: APN
+          Packet Data Network Type: Packet Data Network Type
+
 === INSTRUCTIONS ===
-1. Set output_mode to "individual" if CIQ has per-node/per-subscriber rows, or "single" for one output.
-2. Configure segregate_by with the appropriate sheet and grouping column from requirements.
-3. Use EXACT column names from the CIQ structure — "SheetName.ColumnName" for cross-sheet refs.
-4. Use _each for array iterations with DISTINCT when iterating unique values.
-5. Use _join for comma-separated aggregations.
-6. Map CIQ columns to the JSON structure needed by the network activity commands.
-7. Reference the requirements for node groups, commands, and XML template mappings.
-8. Include configData tables for lookup data needed during execution.
+1. Your json-output.yaml must produce JSON matching the TARGET STRUCTURE above.
+2. Use output_mode: individual with segregate_by on the grouping column (usually Index.ZONE).
+3. Use "DISTINCT Sheet.Column AS $var" for iterating unique values.
+4. Use "Sheet WHERE Col = $var" for row iteration with filter.
+5. Inside a row iteration (_each: Sheet), use plain column names (no Sheet. prefix).
+6. Map ALL CIQ data columns into records[].data — the execution engine needs them.
+7. Node niamID-1/2/3 come from the IP sheet filtered by Node_Name and ZONE.
+8. Use EXACT column names from the CIQ structure.
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """

@@ -48,10 +48,14 @@ Generate a JSON array of test cases. Each test case must have:
 
 Generate at least:
 - 3-5 positive tests per sheet (valid data accepted)
-- 2-3 negative tests per sheet (invalid data caught)
-- 2-3 cross-sheet reference tests
 - 2-3 JSON output mapping verification tests
-- 1-2 edge case tests (empty values, special characters, max length)
+- positive cross-sheet tests (the CIQ's references resolve)
+
+Negative tests (invalid data rejected) are derived automatically from every rule of the
+validation rules and executed on modified CIQ copies — generate a negative test only for a
+rule combination those single-cell cases miss, and then give the exact change:
+  "mutations": [{{"sheet": "<sheet>", "row": <1 = first data row>, "column": "<column>", "value": "<invalid value, '' = blank>"}}]
+A negative test without "mutations" is dropped.
 
 Prioritize critical business rules first, then edge cases.
 

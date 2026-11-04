@@ -17,3 +17,16 @@ pipeline_actions: dict[str, dict] = {}  # run_id -> {"action": "rerun"/"cancel",
 
 # Reviewer feedback — set by MilestoneReviewerNode, read by step nodes on retry
 reviewer_feedback: dict[str, str] = {}  # "run_id:step_num" -> feedback text
+
+# Running MockWire simulators — registered by step 8, stopped by step 9, on step 8
+# re-run, when the pipeline ends (any outcome), and on app shutdown
+simulator_processes: dict[str, object] = {}  # run_id -> SimulatorProcess
+
+
+async def stop_simulator(run_id: str | None = None) -> None:
+    """Stop the simulator of one run, or of every run when run_id is None."""
+    run_ids = [run_id] if run_id else list(simulator_processes)
+    for rid in run_ids:
+        sim = simulator_processes.pop(rid, None)
+        if sim is not None:
+            await sim.stop()

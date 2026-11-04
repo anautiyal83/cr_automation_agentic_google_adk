@@ -5,6 +5,8 @@ import html as html_mod
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .deliverables import collect_deliverables
+
 
 def generate_pipeline_report(
     uc_name: str,
@@ -44,6 +46,8 @@ def generate_pipeline_report(
             for f in sorted(rd.iterdir()):
                 if f.is_file() and f.suffix in (".yaml", ".html", ".json", ".xlsx", ".txt"):
                     artifact_files.append({"name": f.name, "size": f.stat().st_size, "path": str(f)})
+    # the final report lists the documents before it (it is written now)
+    deliverables = collect_deliverables(run_dir, uc_name, include_final=False) if run_dir else []
 
     return f"""\
 <!DOCTYPE html>
@@ -107,7 +111,7 @@ def generate_pipeline_report(
 <!-- 3. Generated Artifacts -->
 <div class="card">
   <h2>3. Generated Artifacts</h2>
-  {_artifact_table(artifact_files) if artifact_files else '<p style="color:#94a3b8">No artifacts found</p>'}
+  {_deliverable_table(deliverables, run_dir) if deliverables else '<p style="color:#94a3b8">No artifacts found</p>'}
 </div>
 
 <!-- 4. Requirements Summary -->
@@ -162,6 +166,22 @@ def _artifact_table(files: list[dict]) -> str:
         size_str = f"{size:,} bytes" if size < 10240 else f"{size/1024:.1f} KB"
         rows.append(f'<tr><td><code>{_e(f["name"])}</code></td><td>{size_str}</td></tr>')
     return f'<table><tr><th>File</th><th>Size</th></tr>{"".join(rows)}</table>'
+
+
+def _deliverable_table(items: list, run_dir: str) -> str:
+    rows = []
+    category = None
+    for i, d in enumerate(items, 1):
+        if d.category != category:
+            category = d.category
+            rows.append(f'<tr><td colspan="4" style="background:#f8fafc;font-weight:700;color:#334155;'
+                        f'text-transform:uppercase;font-size:0.72rem;letter-spacing:.06em">{_e(category)}</td></tr>')
+        size = d.path.stat().st_size
+        size_str = f"{size:,} bytes" if size < 10240 else f"{size/1024:.1f} KB"
+        rel = d.rel(run_dir)
+        rows.append(f'<tr><td>{i}</td><td>{_e(d.label)}</td><td><a href="{_e(rel)}"><code>{_e(rel)}</code></a></td>'
+                    f'<td>{size_str}</td></tr>')
+    return f'<table><tr><th>#</th><th>Artifact</th><th>File</th><th>Size</th></tr>{"".join(rows)}</table>'
 
 
 def _test_report_links(files: list[dict], uc_name: str) -> str:

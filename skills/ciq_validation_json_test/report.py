@@ -34,7 +34,8 @@ def generate_qa_report(
     skipped = sum(1 for r in test_results if r.status == "SKIPPED")
     pass_rate = (passed / total * 100) if total > 0 else 0
 
-    # Risk assessment
+    # Every failure counts, negative cases included: they now run on CIQ copies with the invalid
+    # data written in, so a miss means a rule is not enforced (G-13; before they were "warnings")
     critical_fails = sum(1 for r in test_results if r.status == "FAIL" and r.severity == "critical")
     if critical_fails > 0:
         risk_level, risk_color = "HIGH", "#DC2626"
@@ -116,7 +117,12 @@ def generate_qa_report(
   .coverage-cell {{ font-weight: 600; }}
 
   /* Results table */
-  .results-table {{ width: 100%; border-collapse: collapse; font-size: 0.8rem; }}
+  /* Fixed column widths + wrapping: long descriptions and JAR messages pushed the Actual column
+     out of the card (cut off); the wrapper scrolls on narrow screens */
+  .results-wrap {{ width: 100%; overflow-x: auto; }}
+  .results-table {{ width: 100%; min-width: 900px; border-collapse: collapse; font-size: 0.8rem; table-layout: fixed; }}
+  .results-table td {{ overflow-wrap: anywhere; }}
+  .results-table .badge {{ white-space: nowrap; }}
   .results-table th {{ background: #f1f5f9; padding: 10px 12px; text-align: left; font-weight: 600; color: #475569; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }}
   .results-table td {{ padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }}
   .results-table tr:hover {{ background: #fafbfd; }}
@@ -125,6 +131,7 @@ def generate_qa_report(
   .badge {{ display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.3px; }}
   .badge-pass {{ background: #dcfce7; color: #166534; }}
   .badge-fail {{ background: #fce4ec; color: #991b1b; }}
+  .badge-warn {{ background: #fef3c7; color: #92400e; }}
   .badge-error {{ background: #fef3c7; color: #92400e; }}
   .badge-skip {{ background: #f1f5f9; color: #64748b; }}
   .badge-critical {{ background: #fce4ec; color: #991b1b; }}
@@ -186,6 +193,10 @@ def generate_qa_report(
         <div class="label">Failed</div>
       </div>
       <div class="metric">
+        <div class="value" style="color:#D97706">{errors}</div>
+        <div class="label">Errors</div>
+      </div>
+      <div class="metric">
         <div class="value">{pass_rate:.1f}%</div>
         <div class="label">Pass Rate</div>
       </div>
@@ -227,7 +238,12 @@ def generate_qa_report(
   <!-- 4. Test Results -->
   <div class="card">
     <h2>4. Test Results</h2>
+    <div class="results-wrap">
     <table class="results-table">
+      <colgroup>
+        <col style="width:7%"><col style="width:6%"><col style="width:9%"><col style="width:10%">
+        <col style="width:20%"><col style="width:13%"><col style="width:14%"><col style="width:21%">
+      </colgroup>
       <tr>
         <th>ID</th>
         <th>Status</th>
@@ -240,6 +256,7 @@ def generate_qa_report(
       </tr>
       {_result_rows(test_results)}
     </table>
+    </div>
   </div>
 
   <!-- 5. Failure Analysis -->
@@ -264,7 +281,7 @@ def _e(text: str) -> str:
     return html.escape(str(text)) if text else ""
 
 
-def _status_badge(status: str) -> str:
+def _status_badge(status: str, test_type: str = "positive") -> str:
     cls = {"PASS": "badge-pass", "FAIL": "badge-fail", "ERROR": "badge-error", "SKIPPED": "badge-skip"}.get(status, "badge-skip")
     return f'<span class="badge {cls}">{status}</span>'
 
@@ -321,7 +338,7 @@ def _result_rows(results: list[TestCaseResult]) -> str:
         rows.append(
             f'<tr>'
             f'<td><strong>{_e(r.id)}</strong></td>'
-            f'<td>{_status_badge(r.status)}</td>'
+            f'<td>{_status_badge(r.status, r.test_type)}</td>'
             f'<td>{_severity_badge(r.severity)}</td>'
             f'<td>{_e(r.category)}</td>'
             f'<td>{_e(r.description)}</td>'

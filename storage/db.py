@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = "./data/pipeline.db"
 
@@ -21,7 +24,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     config_snapshot TEXT NOT NULL DEFAULT '{}',
     intermediate_repr TEXT,
     error_summary TEXT,
-    is_regression_run INTEGER NOT NULL DEFAULT 0
+    is_regression_run INTEGER NOT NULL DEFAULT 0,
+    started_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS uc_document_sets (
@@ -36,7 +40,9 @@ CREATE TABLE IF NOT EXISTS uc_document_sets (
     additional_documents TEXT,
     validated INTEGER NOT NULL DEFAULT 0,
     validation_errors TEXT,
-    selected_sheets TEXT
+    selected_sheets TEXT,
+    developer_notes TEXT,
+    vendor_profile TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_results (
@@ -82,6 +88,21 @@ CREATE TABLE IF NOT EXISTS hil_requests (
     answered_at TEXT
 );
 
+-- One row per LLM call; run_id = pipeline_runs.id (CLI/step-test runs have no pipeline_runs row)
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
+    uc_name TEXT NOT NULL DEFAULT '',
+    step TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    elapsed_sec REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS generated_configs (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES pipeline_runs(id),
@@ -104,6 +125,58 @@ CREATE TABLE IF NOT EXISTS test_reports (
     has_regression_diff INTEGER NOT NULL DEFAULT 0,
     generated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    permissions TEXT NOT NULL DEFAULT '{}',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role_id TEXT NOT NULL REFERENCES roles(id),
+    active INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT,
+    password_changed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_checkpoints (
+    run_id TEXT PRIMARY KEY,
+    agent_index INTEGER NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'agent',
+    state_json TEXT NOT NULL,
+    requirements_json TEXT,
+    resume_attempts INTEGER NOT NULL DEFAULT 0,
+    saved_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    user_id TEXT,
+    email TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT '',
+    uc_name TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'done',
+    details TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_log(run_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -134,13 +207,46 @@ CREATE TABLE IF NOT EXISTS pipeline_milestones (
     PRIMARY KEY (run_id, step_number)
 );
 
+-- Vendor profiles
+CREATE TABLE IF NOT EXISTS vendors (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    access_gateway TEXT NOT NULL DEFAULT '{}',
+    ssh_defaults TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS node_types (
+    id TEXT PRIMARY KEY,
+    vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT '',
+    ssh_config TEXT NOT NULL DEFAULT '{}',
+    escalation TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(vendor_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS activities (
+    id TEXT PRIMARY KEY,
+    vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    node_types TEXT NOT NULL DEFAULT '[]',
+    default_phases TEXT NOT NULL DEFAULT '[]',
+    ciq_mapping TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(vendor_id, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_doc_set ON pipeline_runs(document_set_id);
 CREATE INDEX IF NOT EXISTS idx_step_results_run ON step_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_retry_attempts_step ON retry_attempts(step_result_id);
 CREATE INDEX IF NOT EXISTS idx_hil_requests_run ON hil_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_generated_configs_run ON generated_configs(run_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_run ON llm_usage(run_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_base_uc ON knowledge_base_entries(uc_name);
+CREATE INDEX IF NOT EXISTS idx_node_types_vendor ON node_types(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_activities_vendor ON activities(vendor_id);
 """
 
 
@@ -150,9 +256,40 @@ class Database:
 
     async def initialize(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        is_fresh = not Path(self.db_path).exists() or Path(self.db_path).stat().st_size == 0
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(SCHEMA_SQL)
+            # Migrate existing databases — add columns that may not exist
+            for col, default in [
+                ("developer_notes", "''"),
+                ("vendor_profile", "'{}'"),
+            ]:
+                try:
+                    await db.execute(
+                        f"ALTER TABLE uc_document_sets ADD COLUMN {col} TEXT DEFAULT {default}"
+                    )
+                except Exception:
+                    pass  # Column already exists
+            # Login (spec 006): who started a run; forced password change
+            for table, col, ddl in [
+                ("pipeline_runs", "started_by", "TEXT"),
+                # Run queue (spec 007)
+                ("pipeline_runs", "queued_at", "TEXT"),
+                ("pipeline_runs", "review_milestones", "INTEGER NOT NULL DEFAULT 1"),
+                ("pipeline_runs", "work_seconds", "REAL"),
+                ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                except Exception:
+                    pass  # Column already exists
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_started_by ON pipeline_runs(started_by)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_queue ON pipeline_runs(status, queued_at)")
             await db.commit()
+
+        # Auto-load seed data on fresh DB
+        if is_fresh:
+            await self._load_seed_data()
 
     async def execute(self, sql: str, params: tuple = ()) -> list[dict]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -215,6 +352,69 @@ class Database:
         if limit:
             sql += f" LIMIT {limit}"
         return await self.execute(sql, params)
+
+
+    # ------------------------------------------------------------------
+    # Seed data — export/import configuration
+    # ------------------------------------------------------------------
+
+    _SEED_FILE = Path("config/seed.json")
+
+    async def export_seed(self) -> str:
+        """Export vendors, node_types, activities, and settings to config/seed.json.
+
+        Call this after configuring vendor profiles so they survive DB resets.
+        Returns the path to the seed file.
+        """
+        seed = {
+            "vendors": await self.execute("SELECT * FROM vendors"),
+            "node_types": await self.execute("SELECT * FROM node_types"),
+            "activities": await self.execute("SELECT * FROM activities"),
+            "settings": await self.execute("SELECT * FROM settings"),
+        }
+        self._SEED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._SEED_FILE.write_text(json.dumps(seed, indent=2, default=str), encoding="utf-8")
+        logger.info("Exported seed data: %d vendors, %d nodes, %d activities, %d settings",
+                     len(seed["vendors"]), len(seed["node_types"]),
+                     len(seed["activities"]), len(seed["settings"]))
+        return str(self._SEED_FILE)
+
+    async def _load_seed_data(self):
+        """Load seed data from config/seed.json into a fresh database."""
+        if not self._SEED_FILE.exists():
+            return
+        try:
+            seed = json.loads(self._SEED_FILE.read_text(encoding="utf-8"))
+            count = 0
+            for table in ("vendors", "node_types", "activities", "settings"):
+                rows = seed.get(table, [])
+                for row in rows:
+                    if isinstance(row, dict) and row:
+                        await self.insert_model(table, row)
+                        count += 1
+            logger.info("Loaded seed data: %d rows from config/seed.json", count)
+        except Exception as e:
+            logger.error("Failed to load seed data: %s", e)
+
+    async def import_seed(self, seed_path: str | None = None) -> int:
+        """Import seed data from a JSON file. Returns number of rows imported."""
+        path = Path(seed_path) if seed_path else self._SEED_FILE
+        if not path.exists():
+            return 0
+        try:
+            seed = json.loads(path.read_text(encoding="utf-8"))
+            count = 0
+            for table in ("vendors", "node_types", "activities", "settings"):
+                rows = seed.get(table, [])
+                for row in rows:
+                    if isinstance(row, dict) and row:
+                        await self.insert_model(table, row)
+                        count += 1
+            logger.info("Imported %d rows from %s", count, path)
+            return count
+        except Exception as e:
+            logger.error("Failed to import seed: %s", e)
+            return 0
 
 
 async def init_database(db_path: str = _DEFAULT_DB) -> Database:

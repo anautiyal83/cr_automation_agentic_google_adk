@@ -1,13 +1,14 @@
-"""PipelineAgent — 7-agent orchestrator with built-in milestones and retry routing.
+"""PipelineAgent — 8-agent orchestrator with built-in milestones and retry routing.
 
-Executes 7 agents sequentially:
+Executes 8 agents sequentially:
 1. RequirementsGatherer — parse docs, questionnaire, compile requirements
 2. CiqValidationJsonGen — generate validation-rules.yaml + json-output.yaml
 3. CiqValidationJsonQA — test generated YAMLs via JAR
 4. NetworkConfigGen — generate workflow YAML
-5. NetworkSimulatorSetup — generate simulator config, start MockWire, sanity check
-6. NetworkConfigQA — MOP test + execution test
-7. ReportGenerator — final HTML + Excel report
+5. NetworkConfigMopQA — MOP generation test (no simulator needed)
+6. NetworkSimulatorSetup — generate simulator config, start MockWire, sanity check
+7. NetworkConfigExecQA — execution test against simulator
+8. ReportGenerator — final HTML + Excel report
 
 After each agent (except requirements and report), the pipeline:
 - Publishes step events for the UI progress tracker
@@ -18,6 +19,7 @@ After each agent (except requirements and report), the pipeline:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -38,14 +40,18 @@ from shared.state import (
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
+MAX_RETRIES = 3
+
 # Maps agent name → display step numbers for the UI (10-step tracker)
 _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
     "requirements_gatherer": [1, 2],
     "ciq_validation_json_gen": [3, 4],
     "ciq_validation_json_qa": [5],
     "network_config_gen": [6],
+    "helper_script_gen": [6],       # shares step 6 with config gen
+    "network_config_mop_qa": [7],
     "network_simulator_setup": [8],
-    "network_config_qa": [7, 9],
+    "network_config_exec_qa": [9],
     "report_generator": [10],
 }
 
@@ -53,9 +59,10 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
 _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
     "ciq_validation_json_qa": (5, "QA-Validation Results"),
-    "network_config_gen": (6, "Execution Workflow"),
+    "helper_script_gen": (6, "Execution Workflow & Scripts"),
+    "network_config_mop_qa": (7, "MOP Generation QA"),
     "network_simulator_setup": (8, "Simulator Setup"),
-    "network_config_qa": (9, "Network Configuration QA"),
+    "network_config_exec_qa": (9, "Execution QA"),
 }
 
 # Maps agent name → index for retry routing
@@ -64,22 +71,46 @@ _AGENT_NAMES = [
     "ciq_validation_json_gen",     # 1
     "ciq_validation_json_qa",      # 2
     "network_config_gen",          # 3
-    "network_simulator_setup",     # 4
-    "network_config_qa",           # 5
-    "report_generator",            # 6
+    "helper_script_gen",           # 4
+    "network_config_mop_qa",       # 5
+    "network_simulator_setup",     # 6
+    "network_config_exec_qa",      # 7
+    "report_generator",            # 8
 ]
+
+def _first_agent_of_step(step_num: int) -> str:
+    """First agent (in execution order) that reports into a display step."""
+    return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
+
+
+async def _checkpoint(run_id: str, index: int, agent_name: str, kind: str, state) -> None:
+    """Save the run's restart checkpoint (session state + requirements, spec 007)."""
+    from agents.requirements_agent import requirements_store
+    from orchestrator import checkpoints
+    await checkpoints.save(run_id, index, agent_name, kind, dict(state), requirements_store.get(run_id))
+
+
+def _write_requirements_summary(run_dir: str, uc_name: str, requirements: dict) -> None:
+    """Steps 1-2 from cache: the requirements document as the agent would have written it (OB-16)."""
+    try:
+        from skills.requirement_gathering.html_report import summary_html_from_requirements
+        (Path(run_dir) / f"{uc_name}_requirements-summary.html").write_text(
+            summary_html_from_requirements(uc_name, requirements), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Requirements summary not written from cache: %s", e)
+
 
 # Retry target step → agent index
 _RETRY_STEP_TO_INDEX: dict[int, int] = {
     3: 1,   # retry CiqValidationJsonGen
     4: 1,   # retry CiqValidationJsonGen
-    6: 3,   # retry NetworkConfigGen
-    8: 4,   # retry NetworkSimulatorSetup
+    6: 3,   # retry NetworkConfigGen (also re-runs helper_script_gen)
+    8: 6,   # retry NetworkSimulatorSetup
 }
 
 
 class PipelineAgent(BaseAgent):
-    """7-agent orchestrator with built-in milestone pauses and retry routing."""
+    """8-agent orchestrator with built-in milestone pauses and retry routing."""
 
     name: str = "netconfig_pipeline"
     description: str = "NetConfig pipeline: 7 agents with milestone review and retry loops"
@@ -94,7 +125,10 @@ class PipelineAgent(BaseAgent):
         self.sub_agents = list(agents_list)
 
     async def _run_async_impl(self, ctx):
-        index = 0
+        # Restart recovery (spec 007): a resumed run starts at its checkpoint's agent; at a
+        # milestone checkpoint the agent is not re-run, its review pause is shown again
+        index = int(ctx.session.state.pop("_resume_index", 0) or 0)
+        resume_pause_at = ctx.session.state.pop("_resume_milestone_at", None)
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
@@ -119,37 +153,150 @@ class PipelineAgent(BaseAgent):
                 break
 
             # ----- CLEAR old error files before re-run -----
+            # Only the first agent of a shared display step clears it: helper_script_gen runs
+            # after network_config_gen (both step 6) and must not wipe that agent's error
             run_dir = ctx.session.state.get("run_dir", "")
             for step_num in _AGENT_DISPLAY_STEPS.get(agent.name, []):
-                if run_dir:
+                if run_dir and _first_agent_of_step(step_num) == agent.name:
                     err = Path(run_dir) / f"step_{step_num}_error.json"
                     if err.exists():
                         err.unlink()
 
-            # ----- PUBLISH step_started -----
+            # ----- RESUMED AT THIS AGENT'S MILESTONE: no cache check, no run -----
+            resume_pause = resume_pause_at is not None and resume_pause_at == index
+            resume_pause_at = None if resume_pause else resume_pause_at
+
+            # ----- CHECK ARTIFACT CACHE -----
             display_steps = _AGENT_DISPLAY_STEPS.get(agent.name, [])
-            for sn in display_steps:
-                await self._publish(run_id_str, "step_started", sn)
-
-            # ----- EXECUTE AGENT -----
-            agent_t0 = time.monotonic()
-            flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
-
+            uc_name = ctx.session.state.get("uc_name", "")
+            cache_hit = False
             try:
-                async for evt in agent.run_async(ctx):
-                    yield evt
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                cache = ArtifactCache()
+                # A step an earlier agent of the same display step failed is not "passed" from
+                # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
+                step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
+                if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause:
+                    has = cache.has_cache(uc_name, agent.name,
+                                          inputs_fingerprint(ctx.session.state.get("document_set")))
+                    flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
+                    if has:
+                        cached = cache.load_cache(uc_name, agent.name)
+                    else:
+                        cached = None
+                    if cached:
+                        # Inject cached artifacts into session state
+                        artifacts = ctx.session.state.get("artifacts", {})
+                        for key, value in cached.items():
+                            if key == "requirements_json":
+                                # Special: load into requirements_store
+                                import json as _json
+                                from agents.requirements_agent import requirements_store
+                                requirements_store[run_id_str] = _json.loads(value) if isinstance(value, str) else value
+                                # Also write to disk
+                                if run_dir:
+                                    (Path(run_dir) / "requirements.json").write_text(
+                                        value if isinstance(value, str) else _json.dumps(value, indent=2),
+                                        encoding="utf-8")
+                                    _write_requirements_summary(run_dir, uc_name, requirements_store[run_id_str])
+                            elif key == "helper_scripts" and isinstance(value, dict):
+                                # Write scripts to run dir
+                                if run_dir:
+                                    scripts_dir = Path(run_dir) / "scripts"
+                                    scripts_dir.mkdir(parents=True, exist_ok=True)
+                                    for fname, content in value.items():
+                                        (scripts_dir / fname).write_text(content, encoding="utf-8")
+                                artifacts[key] = {fname: str(scripts_dir / fname) for fname in value}
+                            else:
+                                artifacts[key] = value
+                                # Also write YAML artifacts to disk
+                                if run_dir and isinstance(value, str) and key.endswith("_yaml"):
+                                    fname_map = {
+                                        "validation_rules_yaml": f"{uc_name}_validation-rules.yaml",
+                                        "json_template_yaml": f"{uc_name}_json-output.yaml",
+                                        "workflow_yaml": f"{uc_name}.yaml",
+                                    }
+                                    if key in fname_map:
+                                        (Path(run_dir) / fname_map[key]).write_text(value, encoding="utf-8")
+                        ctx.session.state["artifacts"] = artifacts
+                        # Mark steps as passed
+                        for sn in display_steps:
+                            ctx.session.state[f"step_{sn}_status"] = "passed"
+                            await self._publish(run_id_str, "step_started", sn)
+                            await self._publish(run_id_str, "step_completed", sn, {"status": "passed"})
+                        flow.flow("CACHE HIT [%d/%d] %s — skipped (artifacts loaded from cache)",
+                                   index + 1, total, agent.name)
+                        cache_hit = True
             except Exception as e:
-                elapsed = time.monotonic() - agent_t0
-                logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
-                flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
-                ctx.session.state["pipeline_failed"] = True
-                ctx.session.state["pipeline_error"] = str(e)
-                for sn in display_steps:
-                    await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
-                break
+                logger.error("Cache check failed for %s: %s", agent.name, e, exc_info=True)
+
+            if cache_hit:
+                index += 1
+                continue
+
+            # ----- SET LLM CONTEXT for usage tracking -----
+            from shared.llm import set_llm_context
+            set_llm_context(run_id=run_id_str, uc_name=uc_name, step=agent.name)
+            agent_t0 = time.monotonic()
+
+            if resume_pause:
+                flow.flow("RESUME [%d/%d] %s — back at its milestone (not re-run)", index + 1, total, agent.name)
+            else:
+                try:
+                    from storage.artifact_cache import ArtifactCache
+                    ArtifactCache().invalidate_after(uc_name, agent.name)
+                except Exception as e:
+                    logger.debug("Cache invalidation failed for %s: %s", agent.name, e)
+
+                # ----- CHECKPOINT: a restart re-runs this agent from here (spec 007) -----
+                await _checkpoint(run_id_str, index, agent.name, "agent", ctx.session.state)
+
+                # ----- PUBLISH step_started -----
+                if display_steps:
+                    await self._publish(run_id_str, "step_started", display_steps[0])
+
+                # ----- EXECUTE AGENT -----
+                flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
+
+                try:
+                    async for evt in agent.run_async(ctx):
+                        yield evt
+                except Exception as e:
+                    elapsed = time.monotonic() - agent_t0
+                    logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
+                    flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
+                    ctx.session.state["pipeline_failed"] = True
+                    ctx.session.state["pipeline_error"] = str(e)
+                    for sn in display_steps:
+                        await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
+                    break
 
             elapsed = time.monotonic() - agent_t0
             flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
+
+            # ----- SAVE TO CACHE (on success) -----
+            try:
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                if agent.name in CACHEABLE_AGENTS:
+                    all_passed = all(
+                        ctx.session.state.get(f"step_{sn}_status", "passed") != "failed"
+                        for sn in display_steps
+                    )
+                    if all_passed:
+                        cache = ArtifactCache()
+                        artifacts = ctx.session.state.get("artifacts", {})
+                        cache_data = dict(artifacts)
+                        # Special: save requirements_json from store
+                        if agent.name == "requirements_gatherer":
+                            from agents.requirements_agent import requirements_store
+                            import json as _json
+                            req = requirements_store.get(run_id_str)
+                            if req:
+                                cache_data["requirements_json"] = _json.dumps(req, indent=2)
+                        cache.save_cache(uc_name, agent.name, cache_data,
+                                         inputs=inputs_fingerprint(ctx.session.state.get("document_set")))
+            except Exception as e:
+                logger.debug("Cache save failed for %s: %s", agent.name, e)
 
             # ----- PUBLISH step_completed -----
             for sn in display_steps:
@@ -171,19 +318,44 @@ class PipelineAgent(BaseAgent):
             milestone_cfg = _AGENT_MILESTONES.get(agent.name)
             if milestone_cfg:
                 ms_step, ms_name = milestone_cfg
+                # ----- CHECKPOINT: a restart shows this review again (spec 007) -----
+                await _checkpoint(run_id_str, index, agent.name, "milestone", ctx.session.state)
                 decision = await self._milestone_pause(ctx, ms_step, ms_name, run_id_str)
 
                 if decision == "cancel":
                     ctx.session.state["pipeline_cancelled"] = True
                     pipeline_actions[run_id_str] = {"action": "cancel"}
                     break
+                elif decision == "clarify":
+                    # The user answers this step's open questions in step 1: requirements are
+                    # gathered again (clarifications.json is asked there) and every later step
+                    # regenerates from them
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        ArtifactCache().clear_from_step(uc_name, self._agents_list[0].name)
+                    except Exception as e:
+                        logger.debug("Cache clear failed on clarify: %s", e)
+                    flow.flow("CLARIFY — step %d sent the run back to step 1", ms_step)
+                    await self._publish(run_id_str, "retry_started", 1)
+                    index = 0
+                    continue
                 elif decision == "rerun":
                     # Determine retry target from the agent's output
                     retry_target = ctx.session.state.pop("_retry_target", None)
                     if retry_target and retry_target in _RETRY_STEP_TO_INDEX:
                         target_index = _RETRY_STEP_TO_INDEX[retry_target]
                     else:
-                        target_index = index  # re-run same agent
+                        # From the earliest agent of this step that failed: a step 6 rerun after a
+                        # workflow error must regenerate the workflow, not only the scripts (OB-12)
+                        target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
+                    # Clear cache from rerun target onward
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        rerun_agent = self._agents_list[target_index].name
+                        ArtifactCache().clear_from_step(uc_name, rerun_agent)
+                        flow.flow("RERUN — cleared cache from %s onward", rerun_agent)
+                    except Exception:
+                        pass
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
                     index = target_index
@@ -192,14 +364,26 @@ class PipelineAgent(BaseAgent):
             # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)
             if retry_target is not None and retry_target in _RETRY_STEP_TO_INDEX:
-                target_index = _RETRY_STEP_TO_INDEX[retry_target]
                 retry_count_key = f"retry_count_{retry_target}"
-                ctx.session.state[retry_count_key] = ctx.session.state.get(retry_count_key, 0) + 1
-                flow.flow("AUTO-RETRY — step %d → agent index %d (count=%d)",
-                           retry_target, target_index, ctx.session.state[retry_count_key])
-                await self._publish(run_id_str, "retry_started", retry_target)
-                index = target_index
-                continue
+                current_count = ctx.session.state.get(retry_count_key, 0) + 1
+                ctx.session.state[retry_count_key] = current_count
+
+                if current_count > MAX_RETRIES:
+                    flow.flow("MAX RETRIES exceeded for step %d (count=%d) — continuing pipeline",
+                               retry_target, current_count)
+                else:
+                    target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                    # The retried agent must regenerate, not reload what just failed (OB-11)
+                    try:
+                        from storage.artifact_cache import ArtifactCache
+                        ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
+                    except Exception as e:
+                        logger.debug("Cache clear failed on auto-retry: %s", e)
+                    flow.flow("AUTO-RETRY — step %d -> agent index %d (count=%d/%d)",
+                               retry_target, target_index, current_count, MAX_RETRIES)
+                    await self._publish(run_id_str, "retry_started", retry_target)
+                    index = target_index
+                    continue
 
             index += 1
 
@@ -214,11 +398,49 @@ class PipelineAgent(BaseAgent):
     # Built-in milestone pause
     # ------------------------------------------------------------------
 
+    def _rerun_index(self, run_id_str: str, ctx, step_num: int, index: int) -> int:
+        """Agent index a milestone rerun starts from: the earliest agent the step's error file
+        names in ``failed_agents``, else the agent that just ran."""
+        run_dir = ctx.session.state.get("run_dir", "")
+        err = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
+        try:
+            failed = json.loads(err.read_text(encoding="utf-8")).get("failed_agents") or [] if err and err.exists() else []
+        except (OSError, ValueError):
+            failed = []
+        names = [a.name for a in self._agents_list]
+        indices = [names.index(a) for a in failed if a in names]
+        return min(indices) if indices else index
+
     async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
         """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""
         run_dir = ctx.session.state.get("run_dir", "")
-        err_file = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
-        status = "failed" if (err_file and err_file.exists()) else "passed"
+
+        # Determine status: check error files AND session state for ALL display steps
+        # belonging to the current agent (e.g. step 4 milestone checks steps 3+4)
+        status = "passed"
+        # Find which agent owns this milestone step
+        agent_name = None
+        for aname, (ms_step, _) in _AGENT_MILESTONES.items():
+            if ms_step == step_num:
+                agent_name = aname
+                break
+        check_steps = _AGENT_DISPLAY_STEPS.get(agent_name, [step_num]) if agent_name else [step_num]
+
+        for sn in check_steps:
+            # Check error file on disk
+            if run_dir:
+                err_file = Path(run_dir) / f"step_{sn}_error.json"
+                if err_file.exists():
+                    status = "failed"
+                    break
+            # Check session state
+            if ctx.session.state.get(f"step_{sn}_status") == "failed":
+                status = "failed"
+                break
+
+        if status == "passed" and not ctx.session.state.get("review_milestones", True):
+            flow.flow("MILESTONE Step %d (%s): passed — review off, continuing", step_num, name)
+            return "continue"
 
         flow.flow("MILESTONE Step %d (%s): status=%s — awaiting review", step_num, name, status)
 
@@ -302,19 +524,49 @@ class PipelineAgent(BaseAgent):
             4: (f"{uc_name}_validation-rules.yaml", [f"{uc_name}_json-output.yaml"]),
             5: (f"{uc_name}_ciq-qa-report.html", []),
             6: (f"{uc_name}.yaml", []),
-            8: (f"{uc_name}_simulator-config.yaml", []),
+            7: (f"{uc_name}_mop-qa-report.html", []),
+            8: (f"{uc_name}_simulator-report.html", [f"{uc_name}_simulator-config.yaml"]),
             9: (f"{uc_name}_network-qa-report.html", []),
         }
 
         primary, extras = _ARTIFACT_MAP.get(step_num, ("", []))
-        primary_path = str(Path(run_dir) / primary) if primary else ""
-        extra_paths = [str(Path(run_dir) / e) for e in extras if (Path(run_dir) / e).exists()]
+        rd = Path(run_dir)
+        primary_path = str(rd / primary) if primary and (rd / primary).exists() else ""
+        extra_paths = [str(rd / e) for e in extras if (rd / e).exists()]
+
+        # For step 6: include generated helper scripts
+        if step_num == 6:
+            scripts_dir = rd / "scripts"
+            if scripts_dir.exists():
+                for f in scripts_dir.glob("*.py"):
+                    extra_paths.append(str(f))
+
+        # For step 5: the CIQ JSON the json-output template produced
+        if step_num == 5:
+            extra_paths += [str(f) for f in sorted((rd / "json_data").glob("*.json"))]
+
+        # For step 9: the execution-report-generator HTML of every executed case
+        if step_num == 9:
+            extra_paths += [str(f) for f in sorted((rd / "exec_report").glob("*.html"))]
+
+        # For step 7: also include MOP output HTML from mop_output/ subdir
+        if step_num == 7:
+            mop_dir = rd / "mop_output"
+            if mop_dir.exists():
+                for f in mop_dir.glob("*.html"):
+                    extra_paths.append(str(f))
+
+        # Fallback: if primary not found, search for any matching file
+        if not primary_path and primary:
+            candidates = list(rd.glob(f"*{primary.split('_', 1)[-1] if '_' in primary else primary}"))
+            if candidates:
+                primary_path = str(candidates[0])
 
         return primary_path, extra_paths
 
 
 def build_pipeline(config: dict | None = None) -> PipelineAgent:
-    """Build the 7-agent pipeline.
+    """Build the 9-agent pipeline.
 
     Returns a configured PipelineAgent ready for execution.
     """
@@ -329,6 +581,8 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
     from agents.ciq_validation_json_gen_agent import CiqValidationJsonGenAgent
     from agents.ciq_validation_json_qa_agent import CiqValidationJsonQAAgent
     from agents.network_config_gen_agent import NetworkConfigGenAgent
+    from agents.helper_script_gen_agent import HelperScriptGenAgent
+    from agents.network_config_mop_qa_agent import NetworkConfigMopQAAgent
     from agents.network_simulator_setup_agent import NetworkSimulatorSetupAgent
     from agents.network_config_qa_agent import NetworkConfigQAAgent
     from agents.report_agent import ReportAgent
@@ -337,10 +591,12 @@ def build_pipeline(config: dict | None = None) -> PipelineAgent:
         RequirementsGathererNode(),       # 0 - Steps 1+2
         CiqValidationJsonGenAgent(),      # 1 - Steps 3+4
         CiqValidationJsonQAAgent(),       # 2 - Step 5
-        NetworkConfigGenAgent(),          # 3 - Step 6
-        NetworkSimulatorSetupAgent(),     # 4 - Step 8
-        NetworkConfigQAAgent(),           # 5 - Steps 7+9
-        ReportAgent(),                    # 6 - Step 10
+        NetworkConfigGenAgent(),          # 3 - Step 6 (workflow YAML)
+        HelperScriptGenAgent(),           # 4 - Step 6 (helper scripts)
+        NetworkConfigMopQAAgent(),        # 5 - Step 7 (MOP QA)
+        NetworkSimulatorSetupAgent(),     # 6 - Step 8
+        NetworkConfigQAAgent(),           # 7 - Step 9 (Execution QA)
+        ReportAgent(),                    # 8 - Step 10
     ]
 
     pipeline = PipelineAgent()

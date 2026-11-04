@@ -33,6 +33,8 @@ class SkillInput:
     requirements: dict = field(default_factory=dict)
     generation_hints: dict = field(default_factory=dict)
     schema_dir: str | None = None
+    # Uploaded CIQ workbook: validation rules are derived from all its rows (rules_baseline)
+    ciq_file_path: str = ""
 
 
 @dataclass
@@ -69,6 +71,7 @@ class CiqValidationJsonGenSkill:
         self._llm_fn = llm_fn
         self._uc_name = ""
         self._ciq_sheets: dict = {}
+        self._ciq_file_path = ""
         self._requirements: dict = {}
         self._validation_schema_summary = ""
         self._json_output_schema_summary = ""
@@ -82,6 +85,7 @@ class CiqValidationJsonGenSkill:
         """
         self._uc_name = inp.uc_name
         self._requirements = inp.requirements
+        self._ciq_file_path = inp.ciq_file_path
 
         # Extract CIQ structure from requirements (already parsed upstream)
         doc_extracted = inp.requirements.get("doc_extracted", {})
@@ -107,6 +111,7 @@ class CiqValidationJsonGenSkill:
                 self._ciq_sheets,
                 self._requirements,
                 self._validation_schema_summary,
+                ciq_file_path=self._ciq_file_path,
             )
             self._last_validation_yaml = val_yaml
         except Exception as e:
@@ -121,6 +126,7 @@ class CiqValidationJsonGenSkill:
                 self._ciq_sheets,
                 self._requirements,
                 self._json_output_schema_summary,
+                ciq_file_path=self._ciq_file_path,
             )
             self._last_json_output_yaml = json_yaml
         except Exception as e:
@@ -171,6 +177,7 @@ class CiqValidationJsonGenSkill:
                     test_failures_text,
                     feedback.reviewer_analysis,
                     self._validation_schema_summary,
+                    ciq_file_path=self._ciq_file_path,
                 )
                 self._last_validation_yaml = val_yaml
             except Exception as e:
@@ -186,6 +193,9 @@ class CiqValidationJsonGenSkill:
                     test_failures_text,
                     feedback.reviewer_analysis,
                     self._json_output_schema_summary,
+                    uc_name=self._uc_name,
+                    ciq_file_path=self._ciq_file_path,
+                    requirements=self._requirements,
                 )
                 self._last_json_output_yaml = json_yaml
             except Exception as e:

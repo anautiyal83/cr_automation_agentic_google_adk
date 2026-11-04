@@ -60,6 +60,8 @@ class RequirementsGathererNode(BaseAgent):
                 ctx.session.state[key] = parsed[key]
 
         # ── Build SkillInput ──
+        vendor_profile = doc_set.get("vendor_profile") or None
+        flow.flow("REQUIREMENTS: vendor_profile=%s", bool(vendor_profile))
         skill_input = SkillInput(
             uc_name=uc_name,
             ciq_file_path=ctx.session.state.get("ciq_file_path", ""),
@@ -67,7 +69,10 @@ class RequirementsGathererNode(BaseAgent):
             mop_file_path=doc_set.get("mop_file_path", ""),
             ssh_log_path=doc_set.get("command_outputs_path", ""),
             xml_sample_paths=doc_set.get("sample_io_xml_paths", []) or [],
+            transcript_paths=_text_document_paths(doc_set.get("additional_documents")),
             developer_notes=developer_notes,
+            vendor_profile=vendor_profile,
+            extra_questions=_open_clarifications(run_dir),
         )
 
         # ── Create skill with local LLM wrapper ──
@@ -77,6 +82,17 @@ class RequirementsGathererNode(BaseAgent):
         skill = RequirementGatheringSkill(llm_fn=get_llm_fn(config))
 
         # ── Phase 1+2: Parse + Analyze ──
+        # Mark step 1 (DOC Parser) as complete, step 2 (DOC Analyzer) as in_progress
+        from core.events import PipelineEvent, event_bus
+        from uuid import UUID as _UUID
+        await event_bus.publish(PipelineEvent(
+            run_id=_UUID(run_id), event_type="step_completed", step_number=1,
+            payload={"status": "passed"},
+        ))
+        await event_bus.publish(PipelineEvent(
+            run_id=_UUID(run_id), event_type="step_started", step_number=2,
+        ))
+
         flow.flow("REQUIREMENTS Phase 1+2: Deterministic extraction + LLM analysis")
         output = await skill.parse_and_analyze(skill_input)
 
@@ -146,6 +162,10 @@ class RequirementsGathererNode(BaseAgent):
             req_file = Path(run_dir) / "requirements.json"
             req_file.write_text(output.requirements_json, encoding="utf-8")
 
+        # The open questions of later steps are answered now
+        from shared import clarifications
+        clarifications.clear(run_dir)
+
         # ── Phase 5: Write summary HTML ──
         flow.flow("REQUIREMENTS Phase 5: Writing summary document")
         if run_dir:
@@ -154,6 +174,9 @@ class RequirementsGathererNode(BaseAgent):
             flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
 
         # ── Phase 6: Milestone pause — developer reviews summary ──
+        if not ctx.session.state.get("review_milestones", True):
+            flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
+            return
         flow.flow("REQUIREMENTS: Pausing for developer review of summary")
         milestone_step = 2
         milestone_waiting[milestone_step] = {
@@ -277,3 +300,29 @@ class RequirementsGathererNode(BaseAgent):
         if "answer more" in str(decision).lower() or "clarify" in str(decision).lower():
             return "clarify"
         return "continue"
+
+
+def _text_document_paths(additional_documents) -> list[str]:
+    """Paths of uploaded plain-text documents (.txt/.log), e.g. node session logs."""
+    import json as _json
+    docs = additional_documents
+    if isinstance(docs, str):
+        try:
+            docs = _json.loads(docs)
+        except ValueError:
+            return []
+    paths = []
+    for d in docs or []:
+        path = d.get("path", "") if isinstance(d, dict) else str(d)
+        if path.lower().endswith((".txt", ".log")):
+            paths.append(path)
+    return paths
+
+
+def _open_clarifications(run_dir: str) -> list[dict]:
+    """Questions a later step recorded before the user sent the run back to step 1."""
+    from shared import clarifications
+    questions = clarifications.load(run_dir).get("questions") or []
+    if questions:
+        flow.flow("REQUIREMENTS: %d open question(s) from a later step", len(questions))
+    return questions

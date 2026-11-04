@@ -28,6 +28,9 @@ class TestCase:
     scenario: str = ""
     expected_outcome: str = ""
     validation_points: list[str] = field(default_factory=list)
+    # Negative cases: cells changed in a copy of the CIQ before the JAR runs
+    # [{"sheet", "row" (1 = first data row), "column", "value" ('' = blank)}]
+    mutations: list[dict] = field(default_factory=list)
 
 
 async def generate_test_cases(
@@ -97,6 +100,8 @@ def _parse_test_cases(response: str) -> list[TestCase]:
             scenario=item.get("scenario", ""),
             expected_outcome=item.get("expected_outcome", ""),
             validation_points=item.get("validation_points", []),
+            mutations=[m for m in (item.get("mutations") or ([item["mutation"]] if isinstance(item.get("mutation"), dict) else []))
+                       if isinstance(m, dict) and m.get("sheet") and m.get("column")],
         )
         test_cases.append(tc)
 
