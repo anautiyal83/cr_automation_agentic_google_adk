@@ -63,7 +63,7 @@ def _leaves(parsed: dict, phase: str) -> list[dict]:
 
 def test_record_steps_loop_over_all_records():
     parsed = _applied()
-    loop = parsed["phases"]["activity_configuration"]["steps"][0]
+    loop = parsed["phases"]["activityConfiguration"]["steps"][0]
     assert loop["type"] == "loop" and loop["for_each"] == "${configSequences.0.records}"
     assert loop["item_var"] == "rec" and loop["reverse_order"] is False  # null NPEs in the JAR
     sends = [s.get("send", "") for s in loop["steps"]]
@@ -72,7 +72,7 @@ def test_record_steps_loop_over_all_records():
 
 
 def test_every_transfer_is_checksummed_on_both_ends():
-    steps = _leaves(_applied(), "activity_configuration")
+    steps = _leaves(_applied(), "activityConfiguration")
     i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${rec.data.FILE}")
     before, after = steps[i - 1], steps[i + 1]
     assert before["node"] == "LOCAL" and before["send"] == "sha256sum ${rec.data.FILE}"
@@ -94,12 +94,12 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     assert put["node"] == "REPO" and put["when"] == "totalFiles != '0'"
     assert put["sftp"]["remote_path"] == "/backup/netconfig/${crGroup}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
     assert not any("${node}" in json.dumps(s) for s in backup)  # empties multi-node MOPs
-    rollback = _leaves(parsed, "rollback")
+    rollback = _leaves(parsed, "rollbackConfiguration")
     ids = [s.get("id") for s in rollback]
     assert ids.index("nc_rs1_get") < ids.index("nc_rs1_put") < ids.index(None)
     restore = rollback[ids.index(None)]
     assert restore["send"] == "tar -xzvf /tmp/clips_backup.tar.gz -C /" and restore["when"] == "backupFileName != ''"
-    loop = parsed["phases"]["rollback"]["steps"]
+    loop = parsed["phases"]["rollbackConfiguration"]["steps"]
     assert len(loop) == 1 and restore in loop[0]["steps"]  # extracted in the same record pass
 
 

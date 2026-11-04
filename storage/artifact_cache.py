@@ -76,6 +76,21 @@ def code_version(agent_name: str) -> str:
     return h.hexdigest()[:16]
 
 
+# Run options (spec 010: phases, backup route) only matter from step 6 on: they are not part of
+# the inputs fingerprint (changing them must not regenerate the requirements or the CIQ
+# artifacts) but of a separate options fingerprint the step 6 agents' cache entries carry
+STEP6_AGENTS = ("network_config_gen", "helper_script_gen")
+
+
+def options_fingerprint(document_set: dict | None) -> str:
+    """Hash of the run's options; "" for the default (all phases, backup kept on the node)."""
+    from shared import run_options
+    raw = (document_set or {}).get("run_options") if isinstance(document_set, dict) else None
+    if run_options.is_default(raw):
+        return ""
+    return hashlib.sha256(json.dumps(run_options.normalize(raw), sort_keys=True).encode()).hexdigest()[:16]
+
+
 def inputs_fingerprint(document_set: dict | None) -> str:
     """Hash of what the user gave the run: notes, settings and the CONTENT of the uploaded
     files (paths differ per upload). Requirements cached for other documents or without the
@@ -96,7 +111,7 @@ def inputs_fingerprint(document_set: dict | None) -> str:
         else:
             h.update(json.dumps(value, default=str).encode())
 
-    walk(document_set or {})
+    walk({k: v for k, v in (document_set or {}).items() if k != "run_options"})
     return h.hexdigest()[:16]
 
 
@@ -110,7 +125,7 @@ class ArtifactCache:
     def uc_cache_dir(self, uc_name: str) -> Path:
         return self._cache_dir / uc_name
 
-    def has_cache(self, uc_name: str, agent_name: str, inputs: str = "") -> bool:
+    def has_cache(self, uc_name: str, agent_name: str, inputs: str = "", options: str = "") -> bool:
         """Check if valid cached artifacts exist for this agent+UC, made by the current code
         from the same inputs (``inputs``: :func:`inputs_fingerprint` of the document set)."""
         entries = _AGENT_CACHE_MAP.get(agent_name, [])
@@ -140,6 +155,9 @@ class ArtifactCache:
         if inputs and meta.get("inputs") != inputs:
             logger.info("Cache for %s/%s is stale: documents or notes changed", uc_name, agent_name)
             return False
+        if agent_name in STEP6_AGENTS and (meta.get("options") or {}).get(agent_name, "") != options:
+            logger.info("Cache for %s/%s is stale: the run's phase options differ", uc_name, agent_name)
+            return False
         return True
 
     def load_cache(self, uc_name: str, agent_name: str) -> dict[str, str]:
@@ -166,7 +184,8 @@ class ArtifactCache:
         return result
 
     def save_cache(self, uc_name: str, agent_name: str,
-                   artifacts: dict[str, Any], status: str = "passed", inputs: str = "") -> None:
+                   artifacts: dict[str, Any], status: str = "passed", inputs: str = "",
+                   options: str = "") -> None:
         """Save artifacts to cache for this agent+UC."""
         entries = _AGENT_CACHE_MAP.get(agent_name, [])
         if not entries:
@@ -210,6 +229,8 @@ class ArtifactCache:
                     if other != agent_name:
                         meta["agent_status"].pop(other, None)
             meta["inputs"] = inputs
+        if agent_name in STEP6_AGENTS:
+            meta.setdefault("options", {})[agent_name] = options
         if agent_name in _AGENT_ORDER:
             # The agent produced new artifacts: what was cached after it was built from the old ones
             for later in _AGENT_ORDER[_AGENT_ORDER.index(agent_name) + 1:]:

@@ -65,6 +65,7 @@ def _document_set_from_row(row: dict) -> dict:
         "selected_sheets": loads(row.get("selected_sheets"), []),
         "developer_notes": row.get("developer_notes") or "",
         "vendor_profile": loads(row.get("vendor_profile"), {}),
+        "run_options": loads(row.get("run_options"), {}),
     }
 
 
@@ -178,7 +179,7 @@ class PipelineRunner:
                 "SELECT r.id AS run_id, r.status, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
                 "d.ciq_file_path, d.mop_file_path, d.sample_io_xml_paths, d.constraints_file_path, "
                 "d.command_outputs_path, d.additional_documents, d.selected_sheets, d.developer_notes, "
-                "d.vendor_profile FROM pipeline_runs r "
+                "d.vendor_profile, d.run_options FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON d.id = r.document_set_id "
                 "WHERE r.status IN ('resuming', 'queued') "
                 "ORDER BY CASE r.status WHEN 'resuming' THEN 0 ELSE 1 END, r.queued_at, r.rowid LIMIT 1")
@@ -306,8 +307,8 @@ class PipelineRunner:
             "INSERT OR REPLACE INTO uc_document_sets "
             "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
             "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, "
-            "selected_sheets, developer_notes, vendor_profile) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "selected_sheets, developer_notes, vendor_profile, run_options) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (doc_set_id,
              document_set.get("uc_name") or "",
              document_set.get("ciq_file_path") or "",
@@ -319,7 +320,8 @@ class PipelineRunner:
              json.dumps(document_set.get("additional_documents") or {}),
              json.dumps(document_set.get("selected_sheets") or []),
              document_set.get("developer_notes") or "",
-             json.dumps(document_set.get("vendor_profile") or {})),
+             json.dumps(document_set.get("vendor_profile") or {}),
+             json.dumps(document_set.get("run_options") or {})),
         )
 
     async def _launch(self, run_id: str, document_set: dict[str, Any], review_milestones: bool,

@@ -12,6 +12,8 @@
    ``criteria.expr`` comparison of the two registered sums (string ``==`` verified).
 4. Execution contract (spec 011, ``contract.py``): failure flags, phase conditions, abort and
    rollback rules.
+0. Before all: the run's phases (spec 010, ``select_phases``): the model's nine phases in order,
+   the ones the run switched off dropped.
 
 The LLM writes the flat form (``${configSequences.0.records.0.data.<Col>}``); ``flatten``
 turns a structured workflow back into it (loops unwrapped, added steps removed), so the
@@ -448,12 +450,41 @@ def _hostname_step(sid: str, node: str, var: str, when: str) -> dict:
 
 # --------------------------------------------------------------------------- entry point
 
+def select_phases(parsed: dict, requirements: dict | None = None) -> int:
+    """The run's phases (spec 010): each generated phase is put under its model phase
+    (``run_options.canonical_phase`` — two that map to the same one are merged), in model order;
+    phases the run's options switch off are dropped. Without options every phase is kept."""
+    from shared import run_options
+    phases = parsed.get("phases")
+    if not isinstance(phases, dict) or not phases:
+        return 0
+    raw = (requirements or {}).get("run_options") if isinstance(requirements, dict) else None
+    keep = set(run_options.selected(raw))
+    grouped: dict[str, dict] = {}
+    for key, body in phases.items():
+        if not isinstance(body, dict) or not isinstance(body.get("steps"), list):
+            continue
+        canon = run_options.canonical_phase(str(key), body)
+        if canon in grouped:
+            grouped[canon]["steps"] = list(grouped[canon]["steps"]) + list(body["steps"])
+        else:
+            grouped[canon] = body
+    new = {k: grouped[k] for k in run_options.KEYS if k in grouped and k in keep}
+    dropped = [k for k in grouped if k not in keep]
+    if dropped:
+        logger.info("Phases switched off for this run: %s", ", ".join(dropped))
+    changed = int(list(new) != list(phases))
+    parsed["phases"] = new
+    return changed
+
+
 def apply(parsed: dict, requirements: dict | None = None) -> int:
     """flatten → repo backups → record loops → transfer checksums → execution contract
     (spec 011; idempotent)."""
     from . import contract
     flatten(parsed)
-    changes = backup_to_repo(parsed, requirements)
+    changes = select_phases(parsed, requirements)
+    changes += backup_to_repo(parsed, requirements)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += contract.apply(parsed)

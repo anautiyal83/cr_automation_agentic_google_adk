@@ -620,7 +620,8 @@ class HistorySection:
         import json as _json
         doc = dict(row)
         # Parse JSON-encoded fields back to Python objects
-        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets", "vendor_profile"):
+        for json_field in ("sample_io_xml_paths", "additional_documents", "selected_sheets", "vendor_profile",
+                           "run_options"):
             val = doc.get(json_field)
             if isinstance(val, str):
                 try:

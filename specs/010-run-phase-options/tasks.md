@@ -9,12 +9,12 @@
 - [ ] T002 MockWire: node-side `scp` between instances (design) → `research.md`
 
 ## Step 2: Options end to end (phase selection)
-- [ ] T003 `uc_document_sets.run_options`; runner keeps it through queue / resume / re-run
-- [ ] T004 New Run Activity step: phase / sub-phase checkboxes (O-D1, O-D5), "via repo server", summary, pre-fill
+- [X] T003 `uc_document_sets.run_options` (JSON, migration), `UCDocumentSet.run_options`; runner saves / restores it (queue dispatch, resume, `_document_set_from_row`), Run History re-run keeps it
+- [X] T004 New Run Activity step: every phase / sub-phase a checkbox with its purpose, groups tick/clear their sub-phases and stay ticked while one is, "via repo server" only under Backup, no phase → Start refused; review summary line; pre-filled from the UC's last run (preview-checked)
 - [ ] T004b Vendor profile node type: `File transfer: SFTP / SCP` (O-D4, O-D6)
-- [ ] T005 Step 1 `run_options` in the requirements; phases = selection
-- [ ] T006 Step 6 prompt + `structure.py` drop + validator; cache key
-- [ ] T007 Tests
+- [X] T005 The step 6 agent passes the run's `run_options` (from the run's document set — cached requirements stay valid); the step 6 prompt lists exactly the selected phase keys with their purpose
+- [X] T006 `structure.select_phases` (first in `apply`): generated phases mapped to the nine model phases (`run_options.canonical_phase`, same-phase bodies merged), model order, deselected phases dropped; cache: `run_options` out of the inputs fingerprint (steps 1–4 keep their cache), a per-agent options fingerprint for step 6
+- [X] T007 Tests `tests/test_run_options.py` (14)
 
 ## Step 3: Backup kept on the node (/tmp)
 - [ ] T008 `structure.py` route "backup, not via repo": backup copy in node `/tmp`, restore from there; tests

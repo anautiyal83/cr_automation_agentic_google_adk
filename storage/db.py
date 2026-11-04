@@ -263,6 +263,7 @@ class Database:
             for col, default in [
                 ("developer_notes", "''"),
                 ("vendor_profile", "'{}'"),
+                ("run_options", "'{}'"),  # spec 010: phases + backup route of the run
             ]:
                 try:
                     await db.execute(
