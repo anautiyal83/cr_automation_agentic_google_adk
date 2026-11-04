@@ -165,3 +165,22 @@ def test_set_password_cli(tmp_path, monkeypatch, capsys):
     user, entries = run(check())
     assert not user.must_change_password and len(entries) == 1
     assert auth._cli(["set-password"]) == 2
+
+
+def test_login_gate_paths_and_redirect_targets():
+    from ui.pages.login_page import is_public, safe_target
+    assert is_public("/login") and is_public("/logout") and is_public("/_nicegui_ws/socket.io/")
+    assert is_public("/_nicegui/3.17.1/static/vue.esm-browser.prod.js")
+    assert not is_public("/") and not is_public("/_nicegui/auto/media/abc/report.html")  # files need a login
+    assert safe_target("/?page=history") == "/?page=history"
+    for bad in ("https://evil.example/", "//evil.example", "/\evil", "/logout", "/login?x=1", "", None):
+        assert safe_target(bad) == "/"
+
+
+def test_forced_change_must_differ(service):
+    user = run(service.authenticate("admin@netconfig.local", "admin"))
+    run(service.set_password(user.id, "Same-pass1", must_change=True))
+    with pytest.raises(AuthError, match="different"):
+        run(service.set_new_password(user.id, "Same-pass1"))
+    run(service.set_new_password(user.id, "Other-pass2"))
+    assert not run(service.current_user(user.id)).must_change_password

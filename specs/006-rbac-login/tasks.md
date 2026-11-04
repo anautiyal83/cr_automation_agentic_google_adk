@@ -16,11 +16,11 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T003 `tests/test_auth.py` (10 tests)
 - [X] T003a `core/audit.py` (append-only `AuditTrail`: record never raises, secrets masked, query/count/distinct filters, CSV export) + `tests/test_audit.py` (3 tests)
 
-## Step 2: Login gate
-- [ ] T004 Probe NiceGUI 3.17.1: middleware + `app.storage.user` + `storage_secret`; media URL blocked without session
-- [ ] T005 `ui/pages/login_page.py`: login form, forced new-password form, safe `redirect_to`
-- [ ] T006 `ui/app.py`: storage secret, `AuthMiddleware`, 12 h expiry, `AuthService` singleton + `ensure_defaults()`
-- [ ] T007 Preview harness with secret + login; check SC-001
+## Step 2: Login gate — done 2026-11-04
+- [X] T004 Probe NiceGUI 3.17.1 (no upgrade needed): `BaseHTTPMiddleware` reads the signed `app.storage.user`; no session → 307 to `/login`; static assets and websocket stay reachable; a media file is served with a session and redirected (content not leaked) without one
+- [X] T005 `ui/pages/login_page.py`: email + password form, forced new-password form (must differ from the current one), `/logout`, safe `redirect_to` (local paths only, never /login or /logout), trail entries login / login.failed / login.locked / logout / session.expired / password.changed
+- [X] T006 `ui/app.py`: `storage_secret` in `ui.run`, `AuthMiddleware`, 12 h session expiry, `AuthService` + `AuditTrail` created at start with `ensure_defaults()`; main page requires an active user who has set their password
+- [X] T007 Preview (DB copy): `/`, `/?page=settings`, a media URL and `/logout` without session → `/login` (deep link kept); wrong password message; default admin forced to change (main page refused until then); logout; login with the new password (email case-insensitive); all six trail entries recorded; tests for public paths and redirect targets
 
 ## Step 3: Screens and levels
 - [ ] T008 Main page: user per load (disabled/deleted → logout), sidebar filter, only permitted panels, guarded navigation and deep links, landing screen

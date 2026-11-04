@@ -287,6 +287,16 @@ class AuthService:
             raise AuthError("The new password must differ from the current one")
         await self.set_password(user_id, new)
 
+    async def set_new_password(self, user_id: str, new: str) -> None:
+        """The forced change after login (default / admin-chosen password): the user just proved
+        the current password; the new one must differ from it."""
+        rows = await self.db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        if not rows:
+            raise AuthError("User not found")
+        if verify_password(new or "", rows[0]["password_hash"]):
+            raise AuthError("Choose a password different from the current one")
+        await self.set_password(user_id, new)
+
     async def delete_user(self, user_id: str, acting_user_id: str) -> None:
         if user_id == acting_user_id:
             raise AuthError("You cannot delete your own account")

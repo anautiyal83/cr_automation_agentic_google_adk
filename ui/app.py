@@ -47,11 +47,16 @@ from ui.pages.usage_section import UsageSection
 from ui.pages.settings_section import SettingsSection
 from ui.pages.vendor_section import VendorSection
 from ui.pages.output_viewer_section import OutputViewerSection
+from ui.pages import login_page
+from core.audit import AuditTrail
+from core.auth import AuthService, storage_secret
 
 _db: Database | None = None
 _runner: PipelineRunner | None = None
 _artifact_store: ArtifactStore | None = None
 _config_manager = None
+_auth: AuthService | None = None
+_audit: AuditTrail | None = None
 
 CUSTOM_CSS = """
 <style>
@@ -783,8 +788,14 @@ async def _load_config(db):
     return config
 
 
+async def _services() -> tuple[AuthService, AuditTrail]:
+    """Login services for the login page (spec 006)."""
+    await _ensure_initialized()
+    return _auth, _audit
+
+
 async def _ensure_initialized():
-    global _db, _runner, _artifact_store
+    global _db, _runner, _artifact_store, _auth, _audit
     if _db is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _db = await init_database(str(DATA_DIR / "pipeline.db"))
@@ -795,13 +806,26 @@ async def _ensure_initialized():
             db=_db,
             artifact_store=_artifact_store,
         )
+        _auth = AuthService(_db)
+        _audit = AuditTrail(_db)
+        await _auth.ensure_defaults()  # admin role + default administrator account
 
 
 def create_app() -> None:
+    # Login gate (spec 006): every request without a session goes to /login
+    app.add_middleware(login_page.AuthMiddleware)
+    login_page.register(_services, CUSTOM_CSS)
 
     @ui.page("/")
     async def main_page(page: str = ""):
         await _ensure_initialized()
+        from fastapi.responses import RedirectResponse
+        user = await _auth.current_user(login_page.session_user_id())
+        if user is None:  # disabled or deleted since login
+            login_page.end_session()
+            return RedirectResponse("/login")
+        if user.must_change_password:
+            return RedirectResponse("/login")
 
         ui.add_head_html(CUSTOM_CSS)
         ui.add_head_html('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">')
@@ -1356,6 +1380,7 @@ def run() -> None:
         reload=False,
         favicon="🔧",
         reconnect_timeout=60,
+        storage_secret=storage_secret(DATA_DIR),  # signs the login session cookie
     )
 
 
