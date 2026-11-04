@@ -7,6 +7,8 @@ from pathlib import Path
 
 from nicegui import events, ui
 
+from ui.access import action, requires
+
 from models.domain import UCDocumentSet
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -186,6 +188,7 @@ class UploadSection:
                         "Start pipeline", icon="play_arrow",
                         on_click=self._on_start,
                     ).props("unelevated color=primary no-caps")
+                    action(self.start_btn, "new_run")
                     self.start_btn.disable()
 
         self.stepper.on_value_change(lambda e: self._refresh_summary() if e.value == "review" else None)
@@ -401,6 +404,7 @@ class UploadSection:
                     ui.button(icon="close", on_click=lambda _, idx=i: self._remove_additional_doc(idx)) \
                         .props("flat round size=xs color=grey-6")
 
+    @requires("new_run", "document.upload")
     async def _handle_upload(self, e: events.UploadEventArguments, doc_key: str, multi: bool = False) -> None:
         try:
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -527,6 +531,7 @@ class UploadSection:
                     ui.label("Document validator not available — validation skipped") \
                         .classes("text-body2 cr-text-warning")
 
+    @requires("new_run", "run.start")
     async def _on_start(self) -> None:
         if not self.is_valid or not self.on_start_pipeline:
             return

@@ -7,6 +7,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.access import action, requires
+
 from ui.components import status_cells
 
 
@@ -47,9 +49,9 @@ class CleanupSection:
                     on_change=lambda _: self._go_page(1),
                 ).props("outlined dense").classes("min-w-32")
                 ui.space()
-                ui.button("Bulk Cleanup", icon="delete_sweep",
+                action(ui.button("Bulk Cleanup", icon="delete_sweep",
                           on_click=self._confirm_bulk_cleanup) \
-                    .props("flat dense no-caps color=red-6 size=sm")
+                    .props("flat dense no-caps color=red-6 size=sm"), "cleanup")
                 ui.button("Refresh", icon="refresh", on_click=self._refresh) \
                     .props("flat color=primary size=sm no-caps")
 
@@ -76,7 +78,7 @@ class CleanupSection:
             status_cells(self.table)
             self.table.add_slot('body-cell-actions', '''
                 <q-td :props="props">
-                    <q-btn flat dense icon="delete_outline" color="red-4" size="sm"
+                    <q-btn class="cr-action" flat dense icon="delete_outline" color="red-4" size="sm"
                            @click="$parent.$emit('delete', props.row)"
                            label="Delete" no-caps />
                 </q-td>
@@ -191,6 +193,7 @@ class CleanupSection:
         else:
             self.btn_next.props(remove="disable")
 
+    @requires("cleanup", "run.delete")
     async def _on_delete_click(self, e):
         row = e.args
         rid = row.get("id", "")
@@ -228,6 +231,7 @@ class CleanupSection:
                         .props("unelevated color=red-6 size=sm no-caps")
         dialog.open()
 
+    @requires("cleanup", "runs.bulk_cleanup")
     async def _confirm_bulk_cleanup(self):
         """Bulk delete old runs — keep last N."""
         if not self.runner or not self.runner._db:

@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 from nicegui import ui, context
 
+from ui.access import action, requires
+
 from core.events import PipelineEvent
 from core.events import event_bus
 
@@ -94,15 +96,15 @@ class ProgressSection:
                         self.run_chip = ui.label("").classes("cr-run-chip")
                         self.uc_chip = ui.label("").classes("cr-run-uc")
                     with ui.row().classes("gap-2 no-wrap") as self.action_btns:
-                        self.restart_btn = ui.button("Restart", icon="restart_alt",
+                        self.restart_btn = action(ui.button("Restart", icon="restart_alt",
                             on_click=self._restart) \
-                            .props("outline color=primary size=sm no-caps")
-                        self.stop_btn = ui.button("Stop", icon="pause",
+                            .props("outline color=primary size=sm no-caps"), "progress")
+                        self.stop_btn = action(ui.button("Stop", icon="pause",
                             on_click=self._stop) \
-                            .props("outline color=warning size=sm no-caps")
-                        self.cancel_btn = ui.button("Cancel", icon="close",
+                            .props("outline color=warning size=sm no-caps"), "progress")
+                        self.cancel_btn = action(ui.button("Cancel", icon="close",
                             on_click=self._cancel) \
-                            .props("outline color=negative size=sm no-caps")
+                            .props("outline color=negative size=sm no-caps"), "progress")
                     self.action_btns.set_visibility(False)
                 with ui.row().classes("items-center gap-3 no-wrap mt-3"):
                     self.status_icon = ui.icon("hourglass_empty", size="20px") \
@@ -199,24 +201,24 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
             with ui.row().classes("w-full gap-2"):
-                self.ms_continue_btn = ui.button("Approve & continue", icon="check",
+                self.ms_continue_btn = action(ui.button("Approve & continue", icon="check",
                     on_click=lambda: self._milestone_respond("continue")) \
-                    .props("unelevated color=primary size=sm no-caps")
-                self.ms_skip_btn = ui.button("Skip & continue", icon="skip_next",
+                    .props("unelevated color=primary size=sm no-caps"), "progress")
+                self.ms_skip_btn = action(ui.button("Skip & continue", icon="skip_next",
                     on_click=lambda: self._milestone_respond("continue")) \
-                    .props("unelevated color=warning size=sm no-caps")
+                    .props("unelevated color=warning size=sm no-caps"), "progress")
                 self.ms_skip_btn.set_visibility(False)
-                self.ms_rerun_btn = ui.button("Re-run step", icon="replay",
+                self.ms_rerun_btn = action(ui.button("Re-run step", icon="replay",
                     on_click=lambda: self._milestone_respond("rerun")) \
-                    .props("outline color=primary size=sm no-caps")
-                self.ms_cancel_btn = ui.button("Cancel pipeline", icon="stop",
+                    .props("outline color=primary size=sm no-caps"), "progress")
+                self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
-                    .props("outline color=negative size=sm no-caps")
+                    .props("outline color=negative size=sm no-caps"), "progress")
             with ui.row().classes("w-full gap-2"):
-                self.ms_clarify_btn = ui.button("Clarify in requirements", icon="quiz",
+                self.ms_clarify_btn = action(ui.button("Clarify in requirements", icon="quiz",
                     on_click=lambda: self._milestone_respond("clarify")) \
                     .props("unelevated color=primary size=sm no-caps") \
-                    .tooltip("Answer the open questions in step 1; the later steps run again with the answers")
+                    .tooltip("Answer the open questions in step 1; the later steps run again with the answers"), "progress")
             self.ms_clarify_btn.set_visibility(False)
             # Open questions this step could not settle (shared.clarifications)
             self.ms_clarify_info = ui.column().classes("w-full gap-1")
@@ -1403,17 +1405,18 @@ class ProgressSection:
                 "background: linear-gradient(135deg, #1e1e32 0%, #2d2b55 100%)"
             ):
                 with ui.row().classes("w-full justify-end gap-3"):
-                    ui.button("Use All Defaults", icon="skip_next",
+                    action(ui.button("Use All Defaults", icon="skip_next",
                               on_click=lambda: self._submit_questionnaire(
                                   dialog, self._q_answer_inputs, use_defaults=True)) \
-                        .props("flat no-caps").style("color: rgba(255,255,255,0.6)")
-                    ui.button("Submit Answers", icon="send",
+                        .props("flat no-caps").style("color: rgba(255,255,255,0.6)"), "progress")
+                    action(ui.button("Submit Answers", icon="send",
                               on_click=lambda: self._submit_questionnaire(
                                   dialog, self._q_answer_inputs, use_defaults=False)) \
-                        .props("unelevated color=primary no-caps")
+                        .props("unelevated color=primary no-caps"), "progress")
 
         dialog.open()
 
+    @requires("progress", "questionnaire.submit")
     def _submit_questionnaire(self, dialog, answer_inputs: dict, use_defaults: bool = False):
         """Collect answers and respond to the milestone."""
         import json as _json
@@ -1504,6 +1507,7 @@ class ProgressSection:
                 ui.label("No content available").classes("p-4 cr-text-dim")
         dialog.open()
 
+    @requires("progress", "milestone.decision")
     async def _milestone_respond(self, decision: str):
         self.milestone_row.set_visibility(False)
         if not self.runner or not self.active_run_id:
@@ -1629,6 +1633,7 @@ class ProgressSection:
             self._update_step_visual(i, "pending")
         self._set_run_state("idle")
 
+    @requires("progress", "run.restart")
     async def _restart(self):
         """Cancel current run and notify user to start new run."""
         if not self.runner or not self.active_run_id:
@@ -1641,6 +1646,7 @@ class ProgressSection:
         except Exception as exc:
             ui.notify(f"Restart failed: {exc}", type="negative")
 
+    @requires("progress", "run.stop")
     async def _stop(self):
         """Stop the pipeline — preserves completed artifacts."""
         if not self.runner or not self.active_run_id:
@@ -1670,6 +1676,7 @@ class ProgressSection:
         self._reset_to_default()
         ui.notify("Pipeline stopped", type="warning")
 
+    @requires("progress", "run.cancel")
     async def _cancel(self):
         """Cancel the pipeline — shows cancelling state, then resets."""
         if not self.runner or not self.active_run_id:

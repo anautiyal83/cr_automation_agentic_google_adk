@@ -7,6 +7,8 @@ from typing import Any
 
 from nicegui import ui
 
+from ui.access import action, requires
+
 from shared.profiles import ProfileManager, Vendor, NodeType, Activity
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,9 @@ class VendorSection:
                               on_click=self._export_seed) \
                         .props("flat color=grey-6 size=sm no-caps") \
                         .tooltip("Save all vendors, nodes, activities & settings to config/seed.json")
-                    ui.button("+ Add Vendor", icon="add",
+                    action(ui.button("+ Add Vendor", icon="add",
                               on_click=self._show_add_vendor_dialog) \
-                        .props("unelevated color=primary size=sm no-caps")
+                        .props("unelevated color=primary size=sm no-caps"), "settings")
 
             self._vendor_container = ui.column().classes("w-full gap-3")
 
@@ -81,10 +83,10 @@ class VendorSection:
                         ui.icon("business", size="24px").classes("cr-text-accent")
                         ui.label(v.name).classes("text-subtitle1 font-bold")
                     with ui.row().classes("gap-1"):
-                        ui.button(icon="edit", on_click=lambda vid=v.id: self._show_edit_vendor_dialog(vid)) \
-                            .props("flat round size=sm color=primary")
-                        ui.button(icon="delete", on_click=lambda vid=v.id, vn=v.name: self._confirm_delete(vid, vn)) \
-                            .props("flat round size=sm color=red-4")
+                        action(ui.button(icon="edit", on_click=lambda vid=v.id: self._show_edit_vendor_dialog(vid)) \
+                            .props("flat round size=sm color=primary"), "settings")
+                        action(ui.button(icon="delete", on_click=lambda vid=v.id, vn=v.name: self._confirm_delete(vid, vn)) \
+                            .props("flat round size=sm color=red-4"), "settings")
 
                 # Access Gateway
                 gw = v.access_gateway
@@ -117,8 +119,8 @@ class VendorSection:
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.icon("dns", size="16px").classes("cr-text-accent")
                         ui.label("Node Types").classes("text-caption font-semibold")
-                        ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
-                            .props("flat size=xs color=primary no-caps")
+                        action(ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
+                            .props("flat size=xs color=primary no-caps"), "settings")
 
                     for nt in v.node_types:
                         with ui.row().classes("items-center gap-2 ml-6"):
@@ -136,24 +138,24 @@ class VendorSection:
                                 parts.append(f'prompt={prompt[:30]}')
                             ui.label(", ".join(parts) if parts else "default") \
                                 .classes("text-[11px] cr-text-dim font-mono")
-                            ui.button(icon="edit", on_click=lambda nid=nt.id, vid=v.id: self._show_edit_node_dialog(vid, nid)) \
-                                .props("flat round size=xs color=grey-6")
-                            ui.button(icon="close", on_click=lambda nid=nt.id: self._delete_node_type(nid)) \
-                                .props("flat round size=xs color=red-4")
+                            action(ui.button(icon="edit", on_click=lambda nid=nt.id, vid=v.id: self._show_edit_node_dialog(vid, nid)) \
+                                .props("flat round size=xs color=grey-6"), "settings")
+                            action(ui.button(icon="close", on_click=lambda nid=nt.id: self._delete_node_type(nid)) \
+                                .props("flat round size=xs color=red-4"), "settings")
                 else:
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.icon("dns", size="16px").classes("cr-text-dim")
                         ui.label("No node types").classes("text-caption cr-text-dim")
-                        ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
-                            .props("flat size=xs color=primary no-caps")
+                        action(ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_node_dialog(vid)) \
+                            .props("flat size=xs color=primary no-caps"), "settings")
 
                 # Activities
                 if v.activities:
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.icon("play_circle", size="16px").classes("cr-text-accent")
                         ui.label("Activities").classes("text-caption font-semibold")
-                        ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
-                            .props("flat size=xs color=primary no-caps")
+                        action(ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
+                            .props("flat size=xs color=primary no-caps"), "settings")
 
                     for act in v.activities:
                         with ui.row().classes("items-center gap-2 ml-6"):
@@ -164,16 +166,16 @@ class VendorSection:
                             fields_str = f' fields={n_fields}' if n_fields else ''
                             ui.label(f'nodes=[{nodes_str}] phases=[{phases_str}]{fields_str}') \
                                 .classes("text-[11px] cr-text-dim font-mono")
-                            ui.button(icon="edit", on_click=lambda aid=act.id, vid=v.id: self._show_edit_activity_dialog(vid, aid)) \
-                                .props("flat round size=xs color=grey-6")
-                            ui.button(icon="close", on_click=lambda aid=act.id: self._delete_activity(aid)) \
-                                .props("flat round size=xs color=red-4")
+                            action(ui.button(icon="edit", on_click=lambda aid=act.id, vid=v.id: self._show_edit_activity_dialog(vid, aid)) \
+                                .props("flat round size=xs color=grey-6"), "settings")
+                            action(ui.button(icon="close", on_click=lambda aid=act.id: self._delete_activity(aid)) \
+                                .props("flat round size=xs color=red-4"), "settings")
                 else:
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.icon("play_circle", size="16px").classes("cr-text-dim")
                         ui.label("No activities").classes("text-caption cr-text-dim")
-                        ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
-                            .props("flat size=xs color=primary no-caps")
+                        action(ui.button("+ Add", icon="add", on_click=lambda vid=v.id: self._show_add_activity_dialog(vid)) \
+                            .props("flat size=xs color=primary no-caps"), "settings")
 
     # ------------------------------------------------------------------
     # Vendor dialogs
@@ -248,15 +250,16 @@ class VendorSection:
 
             with ui.row().classes("w-full justify-end gap-2 mt-3"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
-                ui.button("Save", icon="save", on_click=lambda: self._save_vendor_from_dialog(
+                action(ui.button("Save", icon="save", on_click=lambda: self._save_vendor_from_dialog(
                     dialog, vendor,
                     name_input, gw_enabled, gw_name, gw_host, gw_port, gw_user, gw_pass,
                     gw_auth, gw_kex, gw_hka, gw_prompt,
                     ssh_user,
-                )).props("unelevated color=primary no-caps")
+                )).props("unelevated color=primary no-caps"), "settings")
 
         dialog.open()
 
+    @requires("settings", "vendor.save")
     async def _save_vendor_from_dialog(self, dialog, vendor, name_input,
                                         gw_enabled, gw_name, gw_host, gw_port,
                                         gw_user, gw_pass, gw_auth,
@@ -296,11 +299,12 @@ class VendorSection:
                 .classes("text-body2")
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
-                ui.button("Delete", icon="delete",
+                action(ui.button("Delete", icon="delete",
                           on_click=lambda: self._do_delete_vendor(dlg, vendor_id)) \
-                    .props("unelevated color=negative no-caps")
+                    .props("unelevated color=negative no-caps"), "settings")
         dlg.open()
 
+    @requires("settings", "vendor.delete")
     async def _do_delete_vendor(self, dialog, vendor_id):
         self._ensure_pm()
         await self._pm.delete_vendor(vendor_id)
@@ -371,13 +375,14 @@ class VendorSection:
 
             with ui.row().classes("w-full justify-end gap-2 mt-3"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
-                ui.button("Save", icon="save", on_click=lambda: self._save_node_from_dialog(
+                action(ui.button("Save", icon="save", on_click=lambda: self._save_node_from_dialog(
                     dialog, nt, vendor_id, name, login_method, node_prompt,
                     elevate_root,
-                )).props("unelevated color=primary no-caps")
+                )).props("unelevated color=primary no-caps"), "settings")
 
         dialog.open()
 
+    @requires("settings", "vendor.node_type.save")
     async def _save_node_from_dialog(self, dialog, nt, vendor_id,
                                       name, login_method, node_prompt,
                                       elevate_root):
@@ -402,6 +407,7 @@ class VendorSection:
         ui.notify(f"Node type '{nt.name}' saved", type="positive")
         await self._refresh()
 
+    @requires("settings", "vendor.node_type.delete")
     async def _delete_node_type(self, node_id: str):
         self._ensure_pm()
         await self._pm.delete_node_type(node_id)
@@ -471,9 +477,9 @@ class VendorSection:
 
             with ui.row().classes("w-full items-center justify-between mt-2"):
                 ui.label("Field Mappings (CIQ Column → Node Field)").classes("text-caption font-semibold")
-                add_mapping_btn = ui.button("+ Add Field", icon="add",
+                add_mapping_btn = action(ui.button("+ Add Field", icon="add",
                     on_click=lambda: self._add_mapping_row(mappings_container, mapping_rows)) \
-                    .props("flat size=xs color=primary no-caps")
+                    .props("flat size=xs color=primary no-caps"), "settings")
 
             mapping_rows: list[dict] = []
             mappings_container = ui.column().classes("w-full gap-1")
@@ -489,10 +495,10 @@ class VendorSection:
 
             with ui.row().classes("w-full justify-end gap-2 mt-3"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
-                ui.button("Save", icon="save", on_click=lambda: self._save_activity_from_dialog(
+                action(ui.button("Save", icon="save", on_click=lambda: self._save_activity_from_dialog(
                     dialog, act, vendor_id, name, display, node_checks, phases,
                     node_id_col, gw_id_col, group_col, data_sheet, mapping_rows,
-                )).props("unelevated color=primary no-caps")
+                )).props("unelevated color=primary no-caps"), "settings")
 
         dialog.open()
 
@@ -516,10 +522,11 @@ class VendorSection:
                     if rd in mapping_rows:
                         mapping_rows.remove(rd)
 
-                ui.button(icon="close", on_click=remove) \
-                    .props("flat round size=xs color=red-4")
+                action(ui.button(icon="close", on_click=remove) \
+                    .props("flat round size=xs color=red-4"), "settings")
         mapping_rows.append(row_data)
 
+    @requires("settings", "vendor.activity.save")
     async def _save_activity_from_dialog(self, dialog, act, vendor_id,
                                           name, display, node_checks, phases,
                                           node_id_col, gw_id_col, group_col, data_sheet, mapping_rows):
@@ -558,6 +565,7 @@ class VendorSection:
         ui.notify(f"Activity '{act.display_name}' saved", type="positive")
         await self._refresh()
 
+    @requires("settings", "vendor.activity.delete")
     async def _delete_activity(self, activity_id: str):
         self._ensure_pm()
         await self._pm.delete_activity(activity_id)

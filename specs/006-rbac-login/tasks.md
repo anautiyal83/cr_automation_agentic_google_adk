@@ -22,11 +22,11 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T006 `ui/app.py`: `storage_secret` in `ui.run`, `AuthMiddleware`, 12 h session expiry, `AuthService` + `AuditTrail` created at start with `ensure_defaults()`; main page requires an active user who has set their password
 - [X] T007 Preview (DB copy): `/`, `/?page=settings`, a media URL and `/logout` without session → `/login` (deep link kept); wrong password message; default admin forced to change (main page refused until then); logout; login with the new password (email case-insensitive); all six trail entries recorded; tests for public paths and redirect targets
 
-## Step 3: Screens and levels
-- [ ] T008 Main page: user per load (disabled/deleted → logout), sidebar filter, only permitted panels, guarded navigation and deep links, landing screen
-- [ ] T009 `ui/access.py`: mark action buttons in every section, disable them on View panels (after build and after refreshes); `require(update)` in every changing handler
-- [ ] T010 Header: user + role, Change password, Logout
-- [ ] T011 Check SC-002
+## Step 3: Screens and levels — done 2026-11-04
+- [X] T008 Main page: user per load (disabled/deleted → logout), sidebar only permitted screens (empty groups hidden), panels of other screens not built, `navigate()` refuses them (notice + trail `screen.open` refused), deep link to one refused and recorded, landing on the first permitted screen, cross-screen calls None-safe, artifact cache panel admin only
+- [X] T009 `ui/access.py`: `action()` marks 32 action buttons (Live Run, New Run, Run History, Artifact Cleanup, LLM Usage, Settings, Vendor Profiles; table-row Re-run/Delete by class); View panels get `cr-readonly` (CSS disables marked buttons and uploads, "View only" pill); buttons with a screen are disabled outright (dialogs). Server guard `@requires(screen, action)` on 21 handlers, `@requires_admin` on cache clearing; refusals notified and recorded
+- [X] T010 Header user menu: name + role, email, Change password dialog (trail), Sign out
+- [X] T011 Preview (DB copy, role analyst: Dashboard/Run History/Output Documents View, Live Run Update): admin sees 8 screens + cache; Ana 4 screens, no cache, `/?page=settings` refused (recorded), View pills, Cleanup Old Runs disabled, Re-run greyed; devtools bypass (class removed) → server refuses Re-run, notification + trail `run.rerun` refused; Live Run (Update) interactive. `tests/test_access.py`
 
 ## Step 4: Run ownership
 - [ ] T012 `started_by` recorded by the runner (UI user / `cli`)

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
+from ui.access import action, requires
+
 AVAILABLE_MODELS = [
     # Tier 1: Best value (paid)
     {"id": "openrouter/google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier": "Best Value", "cost": "$0.15/$0.60"},
@@ -166,9 +168,9 @@ class SettingsSection:
                             placeholder="sk-or-...",
                             password=True, password_toggle_button=True,
                         ).classes("flex-1").props("outlined dense")
-                        ui.button("Save Key", icon="vpn_key",
+                        action(ui.button("Save Key", icon="vpn_key",
                                   on_click=self._save_key) \
-                            .props("unelevated color=primary size=sm")
+                            .props("unelevated color=primary size=sm"), "settings")
 
                 with ui.card().classes("w-full p-3 cr-card-inner"):
                     ui.label("Default LLM Model").classes("text-caption font-semibold")
@@ -262,9 +264,9 @@ class SettingsSection:
 
             # Save all button — always visible
             with ui.row().classes("w-full justify-end"):
-                ui.button("Save All Settings", icon="save",
+                action(ui.button("Save All Settings", icon="save",
                           on_click=self._save_all) \
-                    .props("unelevated color=primary size=sm")
+                    .props("unelevated color=primary size=sm"), "settings")
 
     @staticmethod
     def _card_header(title: str, icon: str, desc: str):
@@ -273,12 +275,14 @@ class SettingsSection:
             ui.label(title).classes("text-subtitle2 font-semibold")
         ui.label(desc).classes("text-caption cr-text-dim ml-7 -mt-1 mb-1")
 
+    @requires("settings", "settings.save_key")
     async def _save_key(self):
         await self._save_setting("api_key", self.api_key_input.value or "")
         if self.config_manager and self.api_key_input.value:
             await self.config_manager.update_config({"openrouter_api_key": self.api_key_input.value})
         ui.notify("API key saved", type="positive")
 
+    @requires("settings", "settings.save")
     async def _save_all(self):
         await self._save_setting("default_model", self.model_select.value or "")
         await self._save_setting("test_retry_limit", str(int(self.test_retry.value)))

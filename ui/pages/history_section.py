@@ -7,6 +7,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.access import action, requires
+
 from ui.components import status_cells
 
 PAGE_SIZE = 10
@@ -52,9 +54,9 @@ class HistorySection:
                         on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
                     ui.space()
-                    ui.button("Cleanup Old Runs", icon="delete_sweep",
+                    action(ui.button("Cleanup Old Runs", icon="delete_sweep",
                               on_click=self._confirm_cleanup) \
-                        .props("flat dense no-caps color=red-6 size=sm")
+                        .props("flat dense no-caps color=red-6 size=sm"), "history")
 
             # Results table
             self.table = ui.table(
@@ -103,7 +105,7 @@ class HistorySection:
                     <q-btn flat dense icon="source" color="primary" size="sm"
                            @click="$parent.$emit('view', props.row)"
                            label="Outputs" no-caps class="q-mr-xs" />
-                    <q-btn flat dense icon="replay" color="primary" size="sm"
+                    <q-btn class="cr-action" flat dense icon="replay" color="primary" size="sm"
                            @click="$parent.$emit('rerun', props.row)"
                            label="Re-run" no-caps />
                 </q-td>
@@ -442,6 +444,7 @@ class HistorySection:
         if run_id and self.on_view_outputs:
             await self.on_view_outputs(run_id)
 
+    @requires("history", "run.rerun")
     async def _on_rerun(self, e):
         row = e.args
         run_id = row.get("id")
@@ -472,6 +475,7 @@ class HistorySection:
         self._current_page = max(1, page)
         await self._refresh()
 
+    @requires("history", "runs.cleanup")
     async def _confirm_cleanup(self):
         """Show confirmation dialog for artifact cleanup."""
         if not self.runner or not self.runner._db:

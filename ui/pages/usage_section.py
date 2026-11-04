@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
+from ui.access import action, requires
+
 from ui.components import card_title, stat_card
 
 logger = logging.getLogger(__name__)
@@ -34,8 +36,8 @@ class UsageSection:
                 with ui.row().classes("gap-2"):
                     ui.button("Refresh", icon="refresh", on_click=self._refresh) \
                         .props("flat color=primary size=sm no-caps")
-                    ui.button("Clear", icon="delete_outline", on_click=self._clear) \
-                        .props("flat color=red-4 size=sm no-caps")
+                    action(ui.button("Clear", icon="delete_outline", on_click=self._clear) \
+                        .props("flat color=red-4 size=sm no-caps"), "usage")
 
             # Summary cards
             self.summary_row = ui.element("div").classes("cr-stat-grid")
@@ -54,6 +56,7 @@ class UsageSection:
 
         ui.timer(0.5, self._refresh, once=True)
 
+    @requires("usage", "usage.clear")
     async def _clear(self):
         from shared.llm import clear_usage_stats
         await clear_usage_stats()

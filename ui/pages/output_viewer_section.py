@@ -6,6 +6,8 @@ from uuid import UUID
 
 from nicegui import ui
 
+from ui.access import requires_admin
+
 from ui.components import card_title
 
 from storage.artifact_store import ArtifactStore
@@ -26,9 +28,10 @@ ICON_MAP = {
 
 
 class OutputViewerSection:
-    def __init__(self, artifact_store: ArtifactStore | None = None, runner=None):
+    def __init__(self, artifact_store: ArtifactStore | None = None, runner=None, show_cache: bool = True):
         self.artifact_store = artifact_store
         self.runner = runner
+        self._show_cache = show_cache  # the cache is shared by all users: admin only (spec 006)
         self._current_file: Path | None = None
         self._build_ui()
         # Auto-load runs on init
@@ -75,8 +78,8 @@ class OutputViewerSection:
                 ui.label("Complete a pipeline run to browse output documents") \
                     .classes("text-caption cr-text-dim")
 
-            # Artifact Cache Management
-            with ui.card().classes("w-full p-4 cr-card-inner"):
+            # Artifact Cache Management (admin only)
+            with ui.card().classes("w-full p-4 cr-card-inner") as cache_card:
                 card_title("Artifact Cache", "cached")
                 ui.label("Cached artifacts skip LLM generation for previously completed steps. "
                          "Clear cache to force regeneration.") \
@@ -109,6 +112,8 @@ class OutputViewerSection:
                     ui.button("Clear All Cache", icon="delete_sweep",
                               on_click=self._clear_all_cache) \
                         .props("flat size=sm no-caps color=red-6")
+            if not self._show_cache:
+                cache_card.delete()
 
     async def _load_runs(self):
         try:
@@ -318,6 +323,8 @@ class OutputViewerSection:
         dialog.open()
 
     async def _refresh_cache(self):
+        if not self._show_cache:
+            return
         try:
             from storage.artifact_cache import ArtifactCache
             cache = ArtifactCache()
@@ -333,6 +340,7 @@ class OutputViewerSection:
         except Exception as e:
             ui.notify(f"Cache refresh failed: {e}", type="negative")
 
+    @requires_admin("cache.clear")
     async def _on_clear_cache(self, e):
         row = e.args
         uc = row.get("uc_name", "")
@@ -346,6 +354,7 @@ class OutputViewerSection:
         except Exception as ex:
             ui.notify(f"Failed: {ex}", type="negative")
 
+    @requires_admin("cache.clear_all")
     async def _clear_all_cache(self):
         try:
             from storage.artifact_cache import ArtifactCache
