@@ -17,6 +17,7 @@
 | Q-005 | UI | Dashboard counted waiting jobs as "Running" | Medium | Fixed | Preview E2E | (this commit) |
 | Q-006 | UI | Run History / Dashboard sorted waiting jobs last (no `started_at` yet) | Low | Fixed | Preview E2E | (this commit) |
 | Q-007 | UI | Delete / Cleanup Old Runs could delete a waiting or resuming job | High | Fixed | Review | (this commit) |
+| Q-008 | Recovery | Step 9 failed 0/2 after the step 9 restart test — not caused by the restart | — | Not a recovery bug | Restart E2E | — |
 
 ## Details
 
@@ -41,3 +42,5 @@ the queue time as the start until the job starts.
 **Q-007** — the bulk delete excluded only running/paused statuses and the per-row Delete checked nothing; deleting a
 waiting job's row left the queue consistent but discarded the user's job silently. Both skip `queued`/`resuming`; the
 per-row Delete says "remove it from the queue / cancel it first".
+
+**Q-008** — run 761db0de resumed correctly (step 8 re-ran, then step 9), but step 9 failed 0/2. Its step 6 came from the artifact cache: a workflow generated in the earlier restart test (7ec00db9) whose `exit` steps wait for the root prompt (`rdsggn01:~ #`) although `exit` returns to `oamsys@rdsggn01:~>` — it failed step 9 there too, with the same step counts. A fresh PGW run without restart (40a31978) generated a workflow accepting both prompts and passed 2/2. Follow-ups in spec 001: DEP-54 (exit prompt), DEP-55 (step 6 cached before step 9 tested it).
