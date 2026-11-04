@@ -19,7 +19,7 @@
 1. **Probe** (before code): cli-automation JAR — `scp` from a node session with `expect_reply` password, phase drop;
    MockWire — what a node-side `scp` needs. Record results in `research.md`.
 2. **Options end to end without route changes**: C1–C4, C7 (phase selection), C8. Test: deselected phases are absent.
-3. **Backup without repo** (C6 part 1): backups on the automation server; restore from it.
+3. **Backup without repo** (C6 part 1): backup copy in node `/tmp`; restore from it.
 4. **Via repo** (C6 part 2, C9): input files and backups through the repo; simulator support; step 9 green for MRF
    both ways.
 5. **Docs** (C10), E2E: MRF with each option combination on the preview.

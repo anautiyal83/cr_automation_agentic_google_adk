@@ -16,7 +16,7 @@
 - [ ] T006 Step 6 prompt + `structure.py` drop + validator; cache key
 - [ ] T007 Tests
 
-## Step 3: Backup on the automation server
+## Step 3: Backup kept on the node (/tmp)
 - [ ] T008 `structure.py` route "backup, not via repo": backup copy in node `/tmp`, restore from there; tests
 
 ## Step 4: Via repo server
