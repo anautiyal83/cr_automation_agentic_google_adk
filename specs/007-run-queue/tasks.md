@@ -12,10 +12,10 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 # Phase 1 — Queue
 
-## Step 1: Queue in the runner
-- [ ] T001 Schema: `queued_at`, `review_milestones`, `work_seconds`; `step_results.started_at`
-- [ ] T002 `runner.submit()` (always queues; refuses past `max_queued_per_user` or when the use case already has a job) / `dispatch()` (lock, `slots = 1`) / `_launch()` / `remove_queued()` / `resume_queue()`; no cancel-on-start
-- [ ] T003 `tests/test_run_queue.py` (FIFO, auto-start, removal, restart, single start)
+## Step 1: Queue in the runner — done 2026-11-04
+- [X] T001 Schema: `pipeline_runs.queued_at`, `review_milestones`, `work_seconds` (+ index on status, queued_at); `execution.max_queued_per_user` (default 3, config + `core.config.max_queued_per_user()`)
+- [X] T002 `PipelineRunner.submit()` (always through the queue; refuses — `QueueRefused` — when the use case already has a waiting/running/paused job or the user has `max_queued_per_user` waiting), `dispatch()` (one lock; starts the oldest queued run when nothing runs; a run that cannot start is marked failed and the next one goes), `_launch()` (the former start path), `queue_position()`, `remove_queued()` (status `removed`), `resume_queue()` (interrupted runs failed — to become "resumed", see restart recovery — then dispatch); every run end dispatches the next; `start()` = `submit()`; no DB (CLI) → runs start directly (CLI runs are outside the queue: separate process)
+- [X] T003 `tests/test_run_queue.py` (7): FIFO + automatic next start, failed run frees the pipeline, review choice kept, one job per use case, per-user limit, removal, restart, single start under concurrent dispatch, unstartable run skipped, no-DB path
 
 ## Step 2: Timing and estimates
 - [ ] T004 Step start times, milestone wait times, `work_seconds` at run end

@@ -262,6 +262,10 @@ class Database:
             # Login (spec 006): who started a run; forced password change
             for table, col, ddl in [
                 ("pipeline_runs", "started_by", "TEXT"),
+                # Run queue (spec 007)
+                ("pipeline_runs", "queued_at", "TEXT"),
+                ("pipeline_runs", "review_milestones", "INTEGER NOT NULL DEFAULT 1"),
+                ("pipeline_runs", "work_seconds", "REAL"),
                 ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 try:
@@ -269,6 +273,7 @@ class Database:
                 except Exception:
                     pass  # Column already exists
             await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_started_by ON pipeline_runs(started_by)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_queue ON pipeline_runs(status, queued_at)")
             await db.commit()
 
         # Auto-load seed data on fresh DB

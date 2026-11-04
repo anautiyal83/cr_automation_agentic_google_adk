@@ -83,6 +83,7 @@ class PipelineConfiguration(BaseModel):
     simulator_startup_timeout: int = 30
     runtime_params: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_RUNTIME_PARAMS))
     repo_server: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_REPO_SERVER))
+    max_queued_per_user: int = Field(default=3, ge=1, le=100)  # waiting jobs per user (spec 007)
     ciq_processor_jar: str = "./lib/ciq-processor.jar"
     cli_automation_jar: str = "./lib/cli-automation-standalone.jar"
     execution_report_jar: str = "./lib/execution-report-generator-1.0.2-cli.jar"
@@ -128,6 +129,13 @@ def runtime_params() -> dict[str, str]:
     cm = ConfigManager._live_instance
     config = getattr(cm, "_config", None) if cm else None
     return dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+
+
+def max_queued_per_user() -> int:
+    """Waiting jobs one user may have in the run queue (execution.max_queued_per_user, spec 007)."""
+    cm = ConfigManager._live_instance
+    config = getattr(cm, "_config", None) if cm else None
+    return int(config.max_queued_per_user) if config else 3
 
 
 def repo_server() -> dict[str, str]:
@@ -216,6 +224,8 @@ class ConfigManager:
         execution = raw.get("execution", {})
         if execution.get("runtime_params"):
             flat["runtime_params"] = {str(k): str(v) for k, v in dict(execution["runtime_params"]).items()}
+        if execution.get("max_queued_per_user"):
+            flat["max_queued_per_user"] = int(execution["max_queued_per_user"])
         if execution.get("repo_server"):
             flat["repo_server"] = {**DEFAULT_REPO_SERVER,
                                    **{str(k): str(v) for k, v in dict(execution["repo_server"]).items()}}

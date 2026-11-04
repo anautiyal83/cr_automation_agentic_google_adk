@@ -49,7 +49,8 @@ handle "N running + queued". Phase 2 adds what concurrent runs need (below).
 - **Leaving the queue**: the owner removes their own queued run; the administrator removes any.
 - **Server restart**: queued runs stay queued and the queue resumes when the server starts (the run that
   was executing is marked failed, as today).
-- Runs from the command line (`main.py`, `test_run.py`) use the same queue.
+- Runs from the command line (`main.py`, `test_run.py`) run in their own process without the database: they
+  start directly, outside the queue (developer tools).
 
 ## The queue view
 

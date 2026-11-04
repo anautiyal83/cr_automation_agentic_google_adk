@@ -25,6 +25,43 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+class QueueRefused(ValueError):
+    """A submit the queue rules refuse (spec 007); the message is shown to the user."""
+
+
+# Statuses of a run that holds or waits for the pipeline
+_LIVE = ("queued", "running", "paused_milestone", "paused_hil")
+_LIVE_SQL = ", ".join(f"'{s}'" for s in (*_LIVE, "PipelineStatus.RUNNING", "PipelineStatus.PAUSED_HIL",
+                                          "PipelineStatus.PAUSED_MILESTONE"))
+
+
+def _status_word(status: str) -> str:
+    s = str(status or "").replace("PipelineStatus.", "").lower()
+    return {"queued": "waiting", "paused_milestone": "paused", "paused_hil": "paused"}.get(s, s)
+
+
+def _document_set_from_row(row: dict) -> dict:
+    """uc_document_sets row → the dict ``submit`` was given."""
+    def loads(value, default):
+        try:
+            return json.loads(value) if value else default
+        except (TypeError, ValueError):
+            return default
+    return {
+        "document_set_id": row.get("document_set_id") or row.get("id"),
+        "uc_name": row.get("uc_name") or "",
+        "ciq_file_path": row.get("ciq_file_path") or "",
+        "mop_file_path": row.get("mop_file_path") or "",
+        "sample_io_xml_paths": loads(row.get("sample_io_xml_paths"), []),
+        "constraints_file_path": row.get("constraints_file_path") or "",
+        "command_outputs_path": row.get("command_outputs_path") or "",
+        "additional_documents": loads(row.get("additional_documents"), {}),
+        "selected_sheets": loads(row.get("selected_sheets"), []),
+        "developer_notes": row.get("developer_notes") or "",
+        "vendor_profile": loads(row.get("vendor_profile"), {}),
+    }
+
+
 class PipelineRunner:
     """Runs the NetConfig pipeline via Google ADK with DB persistence.
 
@@ -56,6 +93,7 @@ class PipelineRunner:
         self._artifact_store = artifact_store
         self._session_service = InMemorySessionService()
         self._active_runs: dict[str, dict] = {}  # run_id → {session, task, state}
+        self._queue_lock = asyncio.Lock()  # one dispatcher decision at a time (spec 007)
         self._pipeline = build_pipeline(self._config)
 
         self._runner = Runner(
@@ -70,13 +108,160 @@ class PipelineRunner:
 
     async def start(self, document_set: dict[str, Any], review_milestones: bool = True,
                     started_by: str = "cli") -> str:
-        """Start a new pipeline run. Returns run_id. ``review_milestones=False`` (New Run →
-        "Pause for review at milestones" unchecked) pauses only at milestones of failed steps."""
+        """Submit a run (spec 007: it waits in the queue while another run executes). Returns run_id;
+        raises ``QueueRefused`` when the queue rules refuse it."""
+        return (await self.submit(document_set, review_milestones, started_by))["run_id"]
+
+    # ------------------------------------------------------------------ run queue (spec 007)
+    async def submit(self, document_set: dict[str, Any], review_milestones: bool = True,
+                     started_by: str = "cli") -> dict:
+        """Put a run in the queue and start it at once when the pipeline is free.
+
+        Returns ``{"run_id", "status": "running" | "queued", "position"}`` (position 0 = running).
+        Refused (``QueueRefused``) when the use case already has a job waiting, running or paused, or
+        the user already has ``execution.max_queued_per_user`` jobs waiting. Without a DB (CLI) the run
+        starts directly."""
         run_id = str(uuid4())
+        if not self._db:
+            await self._launch(run_id, document_set, review_milestones, started_by)
+            return {"run_id": run_id, "status": "running", "position": 0}
+        from datetime import datetime, timezone
+        from core.config import max_queued_per_user
+        uc_name = document_set.get("uc_name") or ""
+        async with self._queue_lock:
+            busy = await self._db.execute(
+                "SELECT r.status FROM pipeline_runs r JOIN uc_document_sets d ON d.id = r.document_set_id "
+                f"WHERE d.uc_name = ? AND r.status IN ({_LIVE_SQL}) LIMIT 1", (uc_name,))
+            if busy or any(info.get("uc_name") == uc_name and info.get("status") in _LIVE
+                           for info in self._active_runs.values()):
+                status = busy[0]["status"] if busy else "running"
+                raise QueueRefused(f"{uc_name} already has a job in the pipeline ({_status_word(status)}) — "
+                                   "one job per use case at a time")
+            limit = max_queued_per_user()
+            waiting = await self._db.execute(
+                "SELECT COUNT(*) AS n FROM pipeline_runs WHERE status = 'queued' AND started_by = ?",
+                (started_by or "cli",))
+            if int(waiting[0]["n"]) >= limit:
+                raise QueueRefused(f"You already have {limit} jobs waiting in the queue (the limit) — "
+                                   "start another one when one of them has started")
+            now = datetime.now(timezone.utc).isoformat()
+            doc_set_id = document_set.get("document_set_id") or run_id
+            await self._save_document_set(doc_set_id, document_set, now)
+            await self._db.execute_insert(
+                "INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at, queued_at, "
+                "config_snapshot, started_by, review_milestones) VALUES (?, ?, 'queued', 0, ?, ?, ?, ?, ?)",
+                (run_id, doc_set_id, now, now, json.dumps(self._config, default=str), started_by or "cli",
+                 int(bool(review_milestones))))
+            flow.flow("RUN QUEUED — run_id=%s, uc=%s, by=%s", run_id[:8], uc_name, started_by)
+        await self.dispatch()
+        if run_id in self._active_runs:
+            return {"run_id": run_id, "status": "running", "position": 0}
+        return {"run_id": run_id, "status": "queued", "position": await self.queue_position(run_id)}
+
+    async def dispatch(self) -> str | None:
+        """Start the oldest queued run when the pipeline is free (phase 1: one run at a time). Called
+        after a submit, after every run end and at server start. Returns the started run id."""
+        if not self._db:
+            return None
+        async with self._queue_lock:
+            if self.active_run():
+                return None
+            rows = await self._db.execute(
+                "SELECT r.id AS run_id, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
+                "d.ciq_file_path, d.mop_file_path, d.sample_io_xml_paths, d.constraints_file_path, "
+                "d.command_outputs_path, d.additional_documents, d.selected_sheets, d.developer_notes, "
+                "d.vendor_profile FROM pipeline_runs r "
+                "LEFT JOIN uc_document_sets d ON d.id = r.document_set_id "
+                "WHERE r.status = 'queued' ORDER BY r.queued_at, r.rowid LIMIT 1")
+            if not rows:
+                return None
+            row = rows[0]
+            run_id = row["run_id"]
+            from datetime import datetime, timezone
+            await self._db.execute("UPDATE pipeline_runs SET status = 'running', started_at = ? WHERE id = ?",
+                                   (datetime.now(timezone.utc).isoformat(), run_id))
+            try:
+                await self._launch(run_id, _document_set_from_row(row), bool(row["review_milestones"]),
+                                   row["started_by"] or "cli")
+            except Exception as e:  # never leave the queue stuck on a run that could not start
+                logger.exception("Queued run %s could not start", run_id[:8])
+                await self._persist_run_status(run_id, "failed", f"Could not start: {e}")
+                asyncio.ensure_future(self.dispatch())
+                return None
+        flow.flow("RUN DEQUEUED — run_id=%s", run_id[:8])
+        if self._db:
+            from core.audit import AuditTrail
+            await AuditTrail(self._db).record("run.dequeued", target_type="run", target_id=run_id, run_id=run_id,
+                                              uc_name=row.get("uc_name") or "",
+                                              details={"started_by": row["started_by"]})
+        return run_id
+
+    async def queue_position(self, run_id: str) -> int:
+        """1-based position of a queued run (0 when it is not waiting)."""
+        rows = await self._db.execute(
+            "SELECT id FROM pipeline_runs WHERE status = 'queued' ORDER BY queued_at, rowid") if self._db else []
+        ids = [r["id"] for r in rows]
+        return ids.index(run_id) + 1 if run_id in ids else 0
+
+    async def remove_queued(self, run_id: str) -> bool:
+        """Take a waiting run out of the queue (status ``removed``). False when it is not waiting."""
+        if not self._db:
+            return False
+        from datetime import datetime, timezone
+        async with self._queue_lock:
+            rows = await self._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (run_id,))
+            if not rows or rows[0]["status"] != "queued":
+                return False
+            await self._db.execute("UPDATE pipeline_runs SET status = 'removed', completed_at = ? WHERE id = ?",
+                                   (datetime.now(timezone.utc).isoformat(), run_id))
+        flow.flow("RUN REMOVED FROM QUEUE — run_id=%s", run_id[:8])
+        return True
+
+    async def resume_queue(self) -> str | None:
+        """Server start: runs the restart interrupted are marked failed, then the queue goes on."""
+        if not self._db:
+            return None
+        from datetime import datetime, timezone
+        # interrupted = was executing (running / paused), never the waiting ones
+        lost = await self._db.execute(f"SELECT id FROM pipeline_runs WHERE status IN ({_LIVE_SQL}) "
+                                      "AND status != 'queued'")
+        for row in lost:
+            if row["id"] not in self._active_runs:
+                await self._db.execute(
+                    "UPDATE pipeline_runs SET status = 'failed', error_summary = 'Server restarted — pipeline lost', "
+                    "completed_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), row["id"]))
+        return await self.dispatch()
+
+    async def _save_document_set(self, doc_set_id: str, document_set: dict, now: str) -> None:
+        """The run's documents (re-run support and starting a queued run)."""
+        # Coerce None → "" for NOT NULL columns
+        await self._db.execute_insert(
+            "INSERT OR REPLACE INTO uc_document_sets "
+            "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
+            "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, "
+            "selected_sheets, developer_notes, vendor_profile) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (doc_set_id,
+             document_set.get("uc_name") or "",
+             document_set.get("ciq_file_path") or "",
+             document_set.get("mop_file_path") or "",
+             json.dumps(document_set.get("sample_io_xml_paths") or []),
+             document_set.get("constraints_file_path") or "",
+             document_set.get("command_outputs_path") or "",
+             now,
+             json.dumps(document_set.get("additional_documents") or {}),
+             json.dumps(document_set.get("selected_sheets") or []),
+             document_set.get("developer_notes") or "",
+             json.dumps(document_set.get("vendor_profile") or {})),
+        )
+
+    async def _launch(self, run_id: str, document_set: dict[str, Any], review_milestones: bool,
+                      started_by: str) -> None:
+        """Execute a run now (the pipeline is free: the dispatcher decided, or there is no DB)."""
         flow.flow("RUN START — run_id=%s, uc=%s", run_id[:8], document_set.get("uc_name", "?"))
         user_id = "pipeline_user"
 
-        # Cancel any active runs first — milestone state is global (keyed by step, not run_id)
+        # The previous run has ended: clear its milestone state (keyed by step, not run_id)
         await self._cancel_active_runs()
 
         # Build initial state
@@ -106,51 +291,13 @@ class PipelineRunner:
         for step in (0, 2, 3, 4, 5, 6, 7, 8, 9):
             milestone_events[step] = asyncio.Event()
 
-        # Persist document set + run to DB
-        if self._db:
-            try:
-                from datetime import datetime, timezone
-                now = datetime.now(timezone.utc).isoformat()
-                doc_set_id = document_set.get("document_set_id", run_id)
-
-                # Save document set for re-run support
-                # Coerce None → "" for NOT NULL columns
-                await self._db.execute_insert(
-                    "INSERT OR REPLACE INTO uc_document_sets "
-                    "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
-                    "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, "
-                    "selected_sheets, developer_notes, vendor_profile) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_set_id,
-                     document_set.get("uc_name") or "",
-                     document_set.get("ciq_file_path") or "",
-                     document_set.get("mop_file_path") or "",
-                     json.dumps(document_set.get("sample_io_xml_paths") or []),
-                     document_set.get("constraints_file_path") or "",
-                     document_set.get("command_outputs_path") or "",
-                     now,
-                     json.dumps(document_set.get("additional_documents") or {}),
-                     json.dumps(document_set.get("selected_sheets") or []),
-                     document_set.get("developer_notes") or "",
-                     json.dumps(document_set.get("vendor_profile") or {})),
-                )
-
-                # Save pipeline run
-                await self._db.execute_insert(
-                    "INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at, "
-                    "config_snapshot, started_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (run_id, doc_set_id, "running", 0, now,
-                     json.dumps(self._config, default=str), started_by or "cli"),
-                )
-            except Exception:
-                logger.exception("Failed to persist pipeline run to DB")
-
         self._active_runs[run_id] = {
             "status": "running",
             "current_step": 0,
             "started_at": time.monotonic(),
             "session_id": run_id,
             "started_by": started_by or "cli",
+            "uc_name": document_set.get("uc_name", ""),
         }
 
         # Subscribe to own events to persist step results to DB and to the activity trail
@@ -182,7 +329,6 @@ class PipelineRunner:
             run_id=UUID(run_id), event_type="run_started",
             payload={"run_id": run_id},
         ))
-        return run_id
 
     async def _run_pipeline(self, run_id: str, user_id: str):
         """Execute the pipeline. Milestone monitoring handled by _monitor_milestones."""
@@ -269,6 +415,13 @@ class PipelineRunner:
                 await stop_simulator(run_id)
             except Exception as e:
                 logger.warning("Simulator stop failed for run %s: %s", run_id[:8], e)
+            # The pipeline is free: the next queued run starts (spec 007). A task cancelled outright
+            # never reached a final status — without one it would hold the queue forever
+            info = self._active_runs.get(run_id, {})
+            if info.get("status") in _LIVE:
+                info["status"] = "cancelled"
+                await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
+            asyncio.ensure_future(self.dispatch())
 
     async def _monitor_milestones(self, run_id: str):
         """Monitor session state for milestone pauses and update runner status."""
@@ -417,7 +570,7 @@ class PipelineRunner:
         runs at a time: milestone state is global (spec 006 — a new start must not silently
         cancel another user's run)."""
         for rid, info in self._active_runs.items():
-            if info.get("status") in ("running", "paused_milestone"):
+            if info.get("status") in ("running", "paused_milestone", "paused_hil"):
                 return {"run_id": rid, "started_by": info.get("started_by", "cli"), "status": info["status"]}
         return None
 
