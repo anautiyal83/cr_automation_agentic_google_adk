@@ -36,6 +36,9 @@ class NetworkConfigGenAgent(BaseAgent):
         uc_name = state.get("uc_name", "")
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
+        # The run's phases and backup route (spec 010) — from the run, not the cached requirements
+        requirements = {**requirements,
+                        "run_options": (state.get("document_set") or {}).get("run_options") or {}}
 
         flow.flow("NETWORK_CONFIG_GEN START — uc=%s", uc_name)
 

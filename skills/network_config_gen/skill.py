@@ -155,6 +155,17 @@ def _expected_coverage(requirements: dict) -> dict:
             "record_columns": _record_columns(requirements)}
 
 
+def _phases_text(requirements: dict, phases: list) -> str:
+    """The run's phases (spec 010) as the phase keys to use, each with its purpose; the MOP's
+    phase list only when the run has no options (older runs)."""
+    from shared import run_options
+    if "run_options" in requirements:
+        keys = run_options.selected(requirements.get("run_options"))
+        return ("use exactly these phase keys, in this order (no others): "
+                + "; ".join(f"{k} — {run_options.PURPOSE[k]}" for k in keys))
+    return ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck"
+
+
 def _hint_if_pattern(answer):
     """A developer answer written as a regex is a hint, not a check (spec 011 — users cannot write
     patterns; PGW's `Updates Rejected:\\s*0…` did not match the real output)."""
@@ -525,7 +536,7 @@ class NetworkConfigGenSkill:
             "xml": str(xml_summary)[:5000] or "No XML samples",
             "answers": answers_text,
             "notes": str(req.get("developer_notes") or "").strip()[:6000] or "None",
-            "phases_str": ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck",
+            "phases_str": _phases_text(req, phases),
             "runtime_params": ", ".join(f"${{{p}}}" for p in runtime_params()) or "none",
         }
 

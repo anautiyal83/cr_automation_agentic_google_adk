@@ -442,6 +442,9 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-dot-cancelled { background: #98A2B3; }
 .cr-dot-removed { background: transparent; border: 1.5px solid #98A2B3; }
 .cr-dot-legend { gap: 14px; row-gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+/* New Run phase options (spec 010): sub-phases indented under their group */
+.cr-phase-sub { padding-left: 28px; }
+.cr-phase-options .q-checkbox__label { font-size: 13px; }
 /* LLM Usage tree (spec 008): each use case a bordered box like the tables, its steps separated by rules */
 .cr-usage-uc { border: 1px solid var(--cr-border); border-radius: 4px !important; background: var(--cr-surface);
                margin-bottom: 6px !important; }

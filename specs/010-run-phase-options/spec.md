@@ -1,6 +1,6 @@
 # Feature Specification: Run phase options — choose the phases, move files through the repo server
 
-**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Decided — implementation step 1 (probes)
+**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Step 2 done (options end to end, phase selection); backup routes next
 
 ## Request (2026-11-04, user)
 

@@ -521,7 +521,7 @@ def test_step6_is_cached_only_after_step9_passes(tmp_path):
         def __init__(self):
             self.saved, self.cleared = {}, []
 
-        def save_cache(self, uc, name, data, inputs=""):
+        def save_cache(self, uc, name, data, inputs="", options=""):
             self.saved[name] = data
 
         def clear_cache(self, uc, name=None):

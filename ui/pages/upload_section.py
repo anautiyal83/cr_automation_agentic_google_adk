@@ -114,6 +114,8 @@ class UploadSection:
                     ui.label("Use case:").classes("text-caption cr-text-dim")
                     self.uc_name_label = ui.label("—").classes("cr-file-name font-semibold")
 
+                self._build_phase_options()
+
                 with ui.stepper_navigation():
                     ui.button("Next: documents", on_click=self.stepper.next) \
                         .props("unelevated color=primary no-caps icon-right=arrow_forward")
@@ -196,6 +198,98 @@ class UploadSection:
         # Load vendor data
         ui.timer(0.5, self._load_vendors, once=True)
 
+    # ------------------------------------------------------------------ run phases (spec 010)
+
+    def _build_phase_options(self) -> None:
+        """Every phase and sub-phase is a checkbox (O-D5); "via repo server" only under Backup."""
+        from shared import run_options
+        self._phase_boxes: dict[str, ui.checkbox] = {}
+        self._group_boxes: dict[str, ui.checkbox] = {}
+        self._syncing = False
+        with ui.column().classes("cr-phase-options w-full gap-0 mt-3"):
+            ui.label("Phases").classes("text-subtitle2 font-semibold")
+            ui.label("The workflow has only the phases ticked here; rollback runs only when an activity step "
+                     "failed after changing the node, or on its own with ROLLBACK_ONLY.").classes("text-caption cr-text-dim")
+            groups_done: set[str] = set()
+            for key, label, group in run_options.PHASES:
+                if group and group not in groups_done:
+                    groups_done.add(group)
+                    self._group_boxes[group] = ui.checkbox(
+                        run_options.GROUPS[group], value=True,
+                        on_change=lambda e, g=group: self._on_group(g, e.value))
+                with ui.row().classes("items-center gap-1 no-wrap" + (" cr-phase-sub" if group else "")):
+                    self._phase_boxes[key] = ui.checkbox(
+                        label, value=True, on_change=lambda e, k=key, g=group: self._on_phase(k, g))
+                    ui.label(run_options.PURPOSE[key]).classes("text-caption cr-text-dim")
+                if key == "backup":
+                    with ui.row().classes("cr-phase-sub") as self._repo_row:
+                        self._via_repo = ui.checkbox(
+                            "via repo server — every file (input files, backups, restores) goes through the repo "
+                            "server", value=False)
+            self._phase_error = ui.label("Select at least one phase").classes("text-caption") \
+                .style("color: var(--cr-error)")
+            self._phase_error.set_visibility(False)
+
+    def _on_group(self, group: str, value: bool) -> None:
+        """A group ticks / clears all its sub-phases."""
+        from shared import run_options
+        if self._syncing:
+            return
+        self._syncing = True
+        for key, _, g in run_options.PHASES:
+            if g == group:
+                self._phase_boxes[key].value = value
+        self._syncing = False
+        self._on_phase("", group)
+
+    def _on_phase(self, key: str, group: str) -> None:
+        """A group stays ticked while one of its sub-phases is; via repo only with Backup."""
+        from shared import run_options
+        if not self._syncing and group:
+            self._syncing = True
+            self._group_boxes[group].value = any(
+                self._phase_boxes[k].value for k, _, g in run_options.PHASES if g == group)
+            self._syncing = False
+        backup = self._phase_boxes["backup"].value
+        self._repo_row.set_visibility(backup)
+        if not backup:
+            self._via_repo.value = False
+        self._phase_error.set_visibility(not any(b.value for b in self._phase_boxes.values()))
+
+    def _run_options(self) -> dict:
+        from shared import run_options
+        return run_options.normalize({"phases": {k: b.value for k, b in self._phase_boxes.items()},
+                                      "backup_via_repo": self._via_repo.value})
+
+    def _set_run_options(self, options: dict) -> None:
+        from shared import run_options
+        opts = run_options.normalize(options)
+        self._syncing = True
+        for k, b in self._phase_boxes.items():
+            b.value = opts["phases"][k]
+        for g, box in self._group_boxes.items():
+            box.value = any(opts["phases"][k] for k, _, gg in run_options.PHASES if gg == g)
+        self._via_repo.value = opts["backup_via_repo"]
+        self._syncing = False
+        self._on_phase("", "")
+
+    async def _prefill_run_options(self) -> None:
+        """Phase choices are per use case: start from the last run's (as the notes are)."""
+        import json as _json
+        from shared import run_options
+        if not (self._db and self.uc_name):
+            return
+        try:
+            rows = await self._db.execute(
+                "SELECT run_options FROM uc_document_sets WHERE uc_name = ? AND run_options IS NOT NULL "
+                "AND run_options NOT IN ('', '{}') ORDER BY uploaded_at DESC LIMIT 1", (self.uc_name,))
+            raw = _json.loads(rows[0]["run_options"]) if rows else None
+        except Exception:
+            return
+        if raw and not run_options.is_default(raw) and self._run_options() == run_options.default():
+            self._set_run_options(raw)
+            ui.notify(f"Phases pre-filled from the last {self.uc_name} run", type="info")
+
     def _refresh_summary(self) -> None:
         """Step 3 summary: what will run, which documents are in."""
         self.summary_box.clear()
@@ -210,6 +304,9 @@ class UploadSection:
                          ("Activity", self.selected_activity_name or self.activity_name or "—")):
                 ui.label(k).classes("cr-kv-key")
                 ui.label(v).classes("cr-kv-value")
+            from shared import run_options
+            ui.label("Phases").classes("cr-kv-key")
+            ui.label(run_options.summary(self._run_options())).classes("cr-kv-value")
             for doc in DOC_TYPES:
                 files = _files(doc["key"])
                 ui.label(doc["label"]).classes("cr-kv-key")
@@ -365,6 +462,7 @@ class UploadSection:
             self.uc_name = f"{self.node_type}_{self.activity_name}"
             self.uc_name_label.text = self.uc_name
             ui.timer(0.1, self._prefill_notes, once=True)
+            ui.timer(0.1, self._prefill_run_options, once=True)
         else:
             self.uc_name = ""
             self.uc_name_label.text = "—"
@@ -537,6 +635,10 @@ class UploadSection:
     async def _on_start(self) -> None:
         if not self.is_valid or not self.on_start_pipeline:
             return
+        from shared import run_options
+        if not run_options.selected(self._run_options()):
+            ui.notify("Select at least one phase", type="warning")
+            return
         # Persist new node type and activity name for future dropdowns
         if self.node_type and self.node_type != "OTHER" and self.node_type not in self._node_types:
             self._node_types.insert(-1, self.node_type)  # before OTHER
@@ -584,6 +686,7 @@ class UploadSection:
             validated=True,
             developer_notes=notes,
             vendor_profile=vendor_profile,
+            run_options=self._run_options(),
         )
         self.start_btn.disable()
         self.start_btn.props("loading")

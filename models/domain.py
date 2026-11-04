@@ -79,6 +79,7 @@ class UCDocumentSet(BaseModel):
     selected_sheets: list[str] | None = None  # None = all sheets
     developer_notes: str | None = None  # Free-form domain guidance for LLM agents
     vendor_profile: dict[str, Any] | None = None  # Pre-filled from vendor profile selection
+    run_options: dict[str, Any] | None = None  # spec 010: phases + backup route (shared.run_options)
 
 
 class PipelineRun(BaseModel):

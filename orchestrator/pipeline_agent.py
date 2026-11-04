@@ -87,8 +87,8 @@ def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: li
         if _step_ok(state, run_dir, proof):
             for name in proven:
                 if name in pending:
-                    data, inputs = pending.pop(name)
-                    cache.save_cache(uc_name, name, data, inputs=inputs)
+                    data, inputs, *rest = pending.pop(name)
+                    cache.save_cache(uc_name, name, data, inputs=inputs, options=rest[0] if rest else "")
         else:
             for name in proven:
                 pending.pop(name, None)
@@ -160,7 +160,7 @@ class PipelineAgent(BaseAgent):
         # milestone checkpoint the agent is not re-run, its review pause is shown again
         index = int(ctx.session.state.pop("_resume_index", 0) or 0)
         resume_pause_at = ctx.session.state.pop("_resume_milestone_at", None)
-        pending_cache: dict[str, tuple[dict, str]] = {}  # agent → artifacts waiting for step 9 (DEP-55)
+        pending_cache: dict[str, tuple] = {}  # (artifacts, inputs, options)  # agent → artifacts waiting for step 9 (DEP-55)
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
@@ -203,14 +203,15 @@ class PipelineAgent(BaseAgent):
             uc_name = ctx.session.state.get("uc_name", "")
             cache_hit = False
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
                 cache = ArtifactCache()
                 # A step an earlier agent of the same display step failed is not "passed" from
                 # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
                 step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
                 if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause:
                     has = cache.has_cache(uc_name, agent.name,
-                                          inputs_fingerprint(ctx.session.state.get("document_set")))
+                                          inputs_fingerprint(ctx.session.state.get("document_set")),
+                                          options_fingerprint(ctx.session.state.get("document_set")))
                     flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
                     if has:
                         cached = cache.load_cache(uc_name, agent.name)
@@ -308,7 +309,7 @@ class PipelineAgent(BaseAgent):
 
             # ----- SAVE TO CACHE (on success) -----
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
                 run_dir = ctx.session.state.get("run_dir", "")
                 if agent.name in CACHEABLE_AGENTS:
                     all_passed = all(_step_ok(ctx.session.state, run_dir, sn) for sn in display_steps)
@@ -324,12 +325,13 @@ class PipelineAgent(BaseAgent):
                             if req:
                                 cache_data["requirements_json"] = _json.dumps(req, indent=2)
                         inputs = inputs_fingerprint(ctx.session.state.get("document_set"))
+                        options = options_fingerprint(ctx.session.state.get("document_set"))
                         proof = _CACHE_AFTER_STEP.get(agent.name)
                         if proof:  # kept until the step that executes them passes (DEP-55)
-                            pending_cache[agent.name] = (cache_data, inputs)
+                            pending_cache[agent.name] = (cache_data, inputs, options)
                             flow.flow("CACHE DEFERRED %s — saved when step %d passes", agent.name, proof)
                         else:
-                            cache.save_cache(uc_name, agent.name, cache_data, inputs=inputs)
+                            cache.save_cache(uc_name, agent.name, cache_data, inputs=inputs, options=options)
                 _settle_deferred_cache(ArtifactCache(), uc_name, pending_cache, display_steps,
                                        ctx.session.state, run_dir)
             except Exception as e:
