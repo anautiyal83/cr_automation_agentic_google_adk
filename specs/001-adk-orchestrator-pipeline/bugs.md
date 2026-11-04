@@ -687,11 +687,17 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### OB-3 — CIQ gen fails with status=failed but 0 errors — Likely fixed
 - `skills/ciq_validation_json_gen/skill.py:92` sets `error="No CIQ structure in requirements.doc_extracted.ciq_sheets"`. The agent writes `output.error` to `step_3_error.json` and logs `error[:200]` (agent error logging improved in 0f52f58). Unverified by a reproduction.
 
-### OB-4 — MAX_RETRIES exhaustion continues the pipeline (High, Open)
+### OB-4 — MAX_RETRIES exhaustion continues the pipeline (High, Fixed 2026-11-04)
 - `orchestrator/pipeline_agent.py:304-306` logs "MAX RETRIES exceeded … continuing pipeline" and proceeds to the next agent with failed artifacts. This contradicts US3 AC4 / FR-007 ("fails gracefully with a clear error").
 
-### OB-5 — Continue on a failed QA milestone still auto-retries (Medium, Suspected)
+### OB-5 — Continue on a failed QA milestone still auto-retries (Medium, Fixed 2026-11-04)
 - After `_milestone_pause` returns `continue`, the loop falls through to the auto-retry block, which pops `_retry_target` set by the QA agent and jumps back. "Skip & Continue" on a failed step 5/7/9 therefore re-runs generation instead of continuing. Needs confirmation in the UI.
+- **Confirmed** by reading: every failed step pauses for review; "Continue" fell through to the auto-retry block.
+- **Fix (OB-4 + OB-5)**: "Continue" drops the QA agent's `_retry_target`; every retry — review "Re-run step" or
+  auto-retry — counts per agent (`PipelineAgent._retries_exhausted`); past `MAX_RETRIES` (3) the run fails with
+  "Step N still failing after 3 retries of <agent>: <first error line>". The CLI (`main.py`, `test_run.py`) answers
+  every failed review with "rerun", so a step that never passes looped forever before. The Re-run button's tooltip
+  states the limit. Tests: `tests/test_pipeline_retries.py`.
 
 ### OB-7 — Cached helper scripts contain file paths, not code (High, Fixed — see OB-14)
 - `artifacts["helper_scripts"]` is `{name: path}`; `save_cache()` writes `str(value)`, so a cache hit writes path strings into `run_dir/scripts/*.py`. Tracked as [002](../002-artifact-cache/spec.md) C-2 / [003](../003-helper-script-gen/spec.md) H-3.
@@ -737,6 +743,13 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   tar command; with the builtin the backup fails. Step 6 has no real-output sample for `tar` to check the regex
   against. Candidate fix: a validator / autofix rule for `tar -c` success regexes (archive listing or "Removing
   leading"), or a built-in sample of tar's output.
+- **Fixed 2026-11-04**: autofix `tar_create_success` — a `tar -c` step's success regex is tested against a sample of
+  GNU tar's output (`Removing leading` line, members, archive); one that misses becomes the archive's `ls -1` line
+  (`^/tmp/x\.tar\.gz$`, `$(…)` / `${…}` parts `\S*`) with `&& ls -1 <archive>` appended; a matching regex is kept.
+  `structure.backup_to_repo` canonicalizes every mention of the archive. Steps 8 + 9 on the 3d75c561 copy without
+  the manual patch: 4/4 (repo route, SCP).
+- Found with it: `test_step --refix-workflow` validated without step 6's context (CIQ sheets, samples, expected
+  coverage) and reported `${MRF.VER}` as unresolvable — now passes the same context as step 6.
 
 ### DEP-59 — Simulated post-check answers vary per step 8 run (Medium, Open)
 - MRF run 3d75c561 copy (`data/step_tests/3d75c561_20261104_214717`, spec 010 T013a): the final check

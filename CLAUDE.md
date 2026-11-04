@@ -52,7 +52,8 @@ report_generation -> HTML + Excel pipeline report
 
 ## PipelineAgent Built-in Features
 - **Milestones**: built-in pause after each agent (configured via `_AGENT_MILESTONES`)
-- **Retry routing**: reads `_retry_target` from state, maps via `_RETRY_STEP_TO_INDEX`
+- **Retry routing**: reads `_retry_target` from state, maps via `_RETRY_STEP_TO_INDEX`; "Continue" at a review drops it;
+  every retry counts per agent, past `MAX_RETRIES` (3) the run fails (OB-4/5)
 - **Display steps**: maps agent name to 10 UI steps via `_AGENT_DISPLAY_STEPS`
 - **No separate** milestone agents, reviewer agents, or router agents
 - **app_name**: `"netconfig"`
@@ -148,6 +149,8 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
   step 9 passes their test values as `--var`
 - Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
+- `tar -c` success regexes must match GNU tar (``tar: Removing leading `/' …``); autofix replaces a missing one with
+  the archive's `ls -1` line (DEP-58)
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)

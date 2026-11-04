@@ -229,7 +229,8 @@ class ProgressSection:
                 self.ms_skip_btn.set_visibility(False)
                 self.ms_rerun_btn = action(ui.button("Re-run step", icon="replay",
                     on_click=lambda: self._milestone_respond("rerun")) \
-                    .props("outline color=primary size=sm no-caps"), "progress")
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")

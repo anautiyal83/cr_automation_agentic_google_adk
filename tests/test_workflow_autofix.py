@@ -452,3 +452,29 @@ def test_cwd_prompts_match_any_directory():
     assert re.search(pgw, "[provgw@pgwggn01 inbox]$") and re.search(pgw, "pgwggn01:~ #")
     assert re.search(wf["phases"]["a"]["steps"][0]["prompt_regex"], "[swmsuser@rjjvrmr03 ~]$")
     assert generalize_prompt_cwd(wf) == 0                                       # idempotent
+
+
+def test_tar_backup_success_regex_matches_gnu_tar():
+    """DEP-58: GNU tar prints "tar: Removing leading `/' from member names", never the quoted form
+    the LLM wrote; such a regex becomes the archive's `ls -1` line, a matching one is kept."""
+    import re
+    from skills.network_config_gen.autofix import tar_create_success
+
+    def step(send, regex):
+        return {"node": "MRF", "send": send, "validation": {"success": {"criteria": {"regex": regex}}}}
+
+    wrong = step("tar -czvf /tmp/announcement_backup.tar.gz ${rec.data.DEST}/", "tar: Removing '.*'")
+    dated = step("tar -czf /tmp/bk_$(date +%F).tgz /etc/x", "Removing '/'")
+    good = step("tar -czvf /tmp/b.tar.gz /d/", "tar: Removing leading")
+    local = {"node": "LOCAL", "send": "tar -czf /tmp/l.tgz /x", "validation": {"success": {"criteria": {"regex": "nope"}}}}
+    wf = {"nodes": {"MRF": {"type": "remote"}, "LOCAL": {"type": "local"}},
+          "phases": {"backup": {"steps": [wrong, dated, good, local]}}}
+    assert tar_create_success(wf) == 2
+    assert wrong["send"].endswith(" && ls -1 /tmp/announcement_backup.tar.gz")
+    regex = wrong["validation"]["success"]["criteria"]["regex"]
+    assert re.search(regex, "tar: Removing leading `/' from member names\n/tmp/announcement_backup.tar.gz", re.M)
+    regex = dated["validation"]["success"]["criteria"]["regex"]
+    assert re.search(regex, "/tmp/bk_2026-11-04.tgz", re.M) and re.search(regex, "/tmp/bk.tgz", re.M)
+    assert good["validation"]["success"]["criteria"]["regex"] == "tar: Removing leading" and "ls -1" not in good["send"]
+    assert local["validation"]["success"]["criteria"]["regex"] == "nope"
+    assert tar_create_success(wf) == 0  # idempotent

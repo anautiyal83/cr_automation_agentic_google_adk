@@ -387,6 +387,8 @@ class PipelineAgent(BaseAgent):
                         # From the earliest agent of this step that failed: a step 6 rerun after a
                         # workflow error must regenerate the workflow, not only the scripts (OB-12)
                         target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
+                    if await self._retries_exhausted(ctx, run_id_str, target_index, ms_step):
+                        break
                     # Clear cache from rerun target onward
                     try:
                         from storage.artifact_cache import ArtifactCache
@@ -399,30 +401,29 @@ class PipelineAgent(BaseAgent):
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
                     index = target_index
                     continue
+                else:
+                    # "Continue" on a failed step goes on with what it produced: the QA agent's
+                    # retry request is dropped (OB-5)
+                    dropped = ctx.session.state.pop("_retry_target", None)
+                    if dropped is not None:
+                        flow.flow("CONTINUE — step %d accepted by the reviewer, no retry of step %s", ms_step, dropped)
 
             # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)
             if retry_target is not None and retry_target in _RETRY_STEP_TO_INDEX:
-                retry_count_key = f"retry_count_{retry_target}"
-                current_count = ctx.session.state.get(retry_count_key, 0) + 1
-                ctx.session.state[retry_count_key] = current_count
-
-                if current_count > MAX_RETRIES:
-                    flow.flow("MAX RETRIES exceeded for step %d (count=%d) — continuing pipeline",
-                               retry_target, current_count)
-                else:
-                    target_index = _RETRY_STEP_TO_INDEX[retry_target]
-                    # The retried agent must regenerate, not reload what just failed (OB-11)
-                    try:
-                        from storage.artifact_cache import ArtifactCache
-                        ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
-                    except Exception as e:
-                        logger.debug("Cache clear failed on auto-retry: %s", e)
-                    flow.flow("AUTO-RETRY — step %d -> agent index %d (count=%d/%d)",
-                               retry_target, target_index, current_count, MAX_RETRIES)
-                    await self._publish(run_id_str, "retry_started", retry_target)
-                    index = target_index
-                    continue
+                target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                if await self._retries_exhausted(ctx, run_id_str, target_index, display_steps[-1] if display_steps else 0):
+                    break
+                # The retried agent must regenerate, not reload what just failed (OB-11)
+                try:
+                    from storage.artifact_cache import ArtifactCache
+                    ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
+                except Exception as e:
+                    logger.debug("Cache clear failed on auto-retry: %s", e)
+                flow.flow("AUTO-RETRY — step %d -> agent index %d", retry_target, target_index)
+                await self._publish(run_id_str, "retry_started", retry_target)
+                index = target_index
+                continue
 
             index += 1
 
@@ -436,6 +437,32 @@ class PipelineAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Built-in milestone pause
     # ------------------------------------------------------------------
+
+    async def _retries_exhausted(self, ctx, run_id_str: str, target_index: int, failed_step: int) -> bool:
+        """Count a retry of the agent at ``target_index`` (review rerun or auto-retry); past
+        ``MAX_RETRIES`` the run fails with the failed step's error instead of going on with failed
+        artifacts or looping (OB-4)."""
+        key = f"retry_count_agent_{target_index}"
+        count = ctx.session.state.get(key, 0) + 1
+        ctx.session.state[key] = count
+        if count <= MAX_RETRIES:
+            flow.flow("RETRY %d/%d of %s", count, MAX_RETRIES, self._agents_list[target_index].name)
+            return False
+        detail = ""
+        run_dir = ctx.session.state.get("run_dir", "")
+        err = Path(run_dir) / f"step_{failed_step}_error.json" if run_dir and failed_step else None
+        try:
+            if err and err.exists():
+                detail = str(json.loads(err.read_text(encoding="utf-8")).get("error") or "").strip().splitlines()[0][:300]
+        except (OSError, ValueError, IndexError):
+            pass
+        message = (f"Step {failed_step} still failing after {MAX_RETRIES} retries of "
+                   f"{self._agents_list[target_index].name}" + (f": {detail}" if detail else ""))
+        flow.flow("MAX RETRIES — %s", message)
+        ctx.session.state["pipeline_failed"] = True
+        ctx.session.state["pipeline_error"] = message
+        await self._publish(run_id_str, "step_failed", failed_step, {"error": message})
+        return True
 
     def _rerun_index(self, run_id_str: str, ctx, step_num: int, index: int) -> int:
         """Agent index a milestone rerun starts from: the earliest agent the step's error file

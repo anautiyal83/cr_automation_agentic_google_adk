@@ -293,7 +293,13 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
             structure.apply(parsed, json.loads(read("requirements.json") or "{}"))
             workflow_yaml = dump_yaml(parsed)
         (work / f"{uc_name}.yaml").write_text(workflow_yaml, encoding="utf-8")
-        problems = validate_workflow(workflow_yaml)
+        # with step 6's context: CIQ sheets know node values like ${MRF.VER}
+        from skills.network_config_gen.skill import _expected_coverage
+        from tools.command_samples import with_library
+        reqs = json.loads(read("requirements.json") or "{}")
+        doc = reqs.get("doc_extracted") or {}
+        problems = validate_workflow(workflow_yaml, with_library(list(doc.get("command_samples") or [])),
+                                     dict(doc.get("ciq_sheets") or {}), _expected_coverage(reqs))
         print(f"Workflow re-fixed with current step 6 autofix ({len(problems)} validator findings)")
         for p in problems:
             print(f"  - {p[:140]}")

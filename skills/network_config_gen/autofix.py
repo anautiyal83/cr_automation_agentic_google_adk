@@ -286,6 +286,7 @@ def fix_workflow(yaml_text: str) -> str:
     fix_missing_downloads(parsed)
     drop_session_exits(parsed)
     fix_single_file_listings(parsed)
+    tar_create_success(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1306,6 +1307,44 @@ def fix_single_file_listings(parsed: dict) -> int:
             if re.search(r"(?<![A-Za-z])total\b", regex):
                 criteria["regex"] = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
                 changed += 1
+    return changed
+
+
+def tar_create_success(parsed: dict) -> int:
+    """A ``tar -c`` backup's success regex must match what tar prints (DEP-58): the LLM wrote
+    ``tar: Removing '.*'`` but GNU tar (and MockWire's builtin) prints ``tar: Removing leading
+    `/' from member names``. A regex that misses a sample of that output is replaced by the
+    archive's ``ls -1`` line (appended to the command); a non-zero tar exit fails the step first."""
+    from .structure import _SHELL_SUBST, tar_archive
+    nodes = parsed.get("nodes") or {}
+    local = {"LOCAL", "local"} | {str(n) for n, v in nodes.items() if isinstance(v, dict)
+                                  and "local" in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        found = tar_archive(send) if str(step.get("node", "")) not in local else None
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+        blocks = [c for c in (validation.get("criteria"), success.get("criteria")) if isinstance(c, dict) and c.get("regex")]
+        if not found or not blocks:
+            continue
+        archive, sources = found
+        dynamic = r"_?\$\{[^}]*\}|" + _SHELL_SUBST.pattern  # ${var}, $(date …): a value at run time
+        sample = "\n".join(["tar: Removing leading `/' from member names",
+                            *(s.lstrip("/").rstrip("/") + "/" for s in sources), re.sub(dynamic, "_1", archive)])
+        name = r"\S*".join(re.escape(p) for p in re.split(dynamic, archive))
+        for criteria in blocks:
+            try:
+                ok = re.search(re.sub(r"\(\?<(?=[A-Za-z])", "(?P<", str(criteria["regex"])), sample, re.M)
+            except re.error:
+                ok = None
+            if ok:
+                continue
+            listing = f" && ls -1 {archive}"
+            if listing not in send:
+                step["send"] = send = send + listing
+            criteria["regex"] = f"^{name}$"
+            changed += 1
     return changed
 
 

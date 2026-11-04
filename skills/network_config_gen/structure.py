@@ -441,7 +441,7 @@ def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
             canonical = _SHELL_SUBST.sub("", archive)
             basename = canonical.rsplit("/", 1)[-1]
             if canonical != archive:  # the name must be known to fetch it again
-                send = send.replace(archive, canonical, 1)
+                send = send.replace(archive, canonical)  # the ls -1 autofix appends too (DEP-58)
             # The variables the step registered for the archive (tar prints no archive name, so
             # the LLM's regexes never matched) now hold its file name, from a listing of it:
             # later `/tmp/${backupFileName}` and "no backup taken" checks keep their meaning
