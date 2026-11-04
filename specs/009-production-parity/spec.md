@@ -1,6 +1,6 @@
 # Feature Specification: Production parity — compare generated workflows with production, per use case
 
-**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: In progress (MRF analysed)
+**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: In progress (MRF, PGW analysed)
 
 ## Request (2026-11-04, user)
 
@@ -41,4 +41,4 @@ questions and generates a proper YAML with the fewest mistakes. We will do this 
 | UC | Analysis | Status |
 |----|----------|--------|
 | MRF_ANNOUNCEMENT_LOADING | [uc-mrf-announcement-loading.md](uc-mrf-announcement-loading.md) | Gaps listed, fixes proposed |
-| PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION | — | Pending (production YAML needed) |
+| PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION | [uc-pgw-rds-1058-ifc-capability-modification.md](uc-pgw-rds-1058-ifc-capability-modification.md) | Gaps listed, fixes proposed |

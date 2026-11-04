@@ -1,7 +1,7 @@
 # Requirement document guidelines (draft — grows with each use case)
 
 **Goal**: documents from which the pipeline generates a production-grade workflow with the fewest questions and
-mistakes. Every rule cites the gap that taught it (`M-n` = [MRF analysis](uc-mrf-announcement-loading.md)); rules
+mistakes. Every rule cites the gap that taught it (`M-n` = [MRF analysis](uc-mrf-announcement-loading.md), `G-n` / `Q-n` = [PGW analysis](uc-pgw-rds-1058-ifc-capability-modification.md)); rules
 without a citation come from the pipeline's verified framework facts (CLAUDE.md, spec 004/005).
 
 ## 1. The document set
@@ -27,6 +27,8 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - **Either-or columns** (e.g. Test IMSI / Test MSISDN): say which one a row may leave empty and how the other is
   resolved.
 - **Test data must follow the rules**: rows used for testing must match the MOP's branches (a `VER 13` node with
+- **Node access entries**: list every NIAM entry per node (`NIAM_NAME1/2/3`) and say whether they are failover alternatives (G-2).
+- **Special values**: define `UNCHANGED` (do not touch) vs blank (remove) vs a value, and multi-value cells (`IFC: 101,102`) (G-5, G-8).
   plain files, not `.tar`, when 13 means "plain copy") — include at least one row per branch (M-12).
 
 ## 3. MOP
@@ -36,6 +38,10 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - **Every step**: the exact command (no prose like "copy each file"), the node and the user it runs as, the
   expected output and the pass criterion, what a failure means (stop / continue / **trigger rollback**) (M-2, M-7).
 - **Health checks have commands**: e.g. `systemctl status swms --no-pager` → `Active: active (running)`; say whether a
+- **Health checks gate the activity**: say whether a failed pre-health check stops the run before the activity (G-1).
+- **Target guard**: which targets the activity may touch and how that is checked (e.g. test IMSIs listed per zone in a whitelist file) (G-3).
+- **Compare before apply**: whether current values are read first and only differences are sent (G-5).
+- **Referenced entities must exist**: e.g. the APN whose pdnType changes must already exist for the subscriber (G-7).
   failed post-health check triggers rollback (M-7).
 - **Branches**: `IF <CIQ column or node value> <condition> THEN <steps> ELSE <steps>`, with the column/value named
   exactly as in the CIQ (`Node_Details.VER starts with 13`) (M-12).
@@ -51,6 +57,7 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - **Report**: what the report contains and who receives it (M-11).
 
 ## 4. Command output transcripts
+- **Never write regexes for the pipeline** — give the real output; the pipeline derives patterns (a hand-written `Updates Rejected:\s*0…` did not match the real table, PGW Q-2).
 
 - One transcript per node and user, **prompts included**, for every command in the MOP: health checks, listings,
   transfers, the activity, verification, rollback (M-7).
@@ -66,9 +73,13 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
   server; protocol `sftp`/`scp`; jump host) (M-8).
 - **Repo server**: host, user, base path and the directory convention (`/tmp/${ORDER_NO}/${NODE_NAME}/<path>`) (M-9).
 - **Runtime parameters** the platform passes (`ORDER_NO`, `PARENT_REQ_ID`, …) and their meaning.
+- **Shared paths and naming**: where request files, evidence (pre/post values) and reports are written, and the file naming convention (e.g. `<type>_${CHILD_REQ_ID}_<configSeq>_<nodeGroup>.xml`) (G-12).
+- **Pre-installed scripts**: whether helper scripts exist centrally (path) or must be generated (G-12).
 - **Credentials**: names of the secrets (never values).
 
 ## 6. Developer answers and notes
+- One request type per I/O sample: if refinmocName / refinmtcName go to the HLR and capabilities to the HSS, say so — each sample becomes its own request and response check (G-4).
+- Answer with environment *names*, not test values (`localhost`, `password123`) — put real hosts in the environment sheet and secrets in the vault (Q-3).
 
 - Answer with commands, not intentions; when an answer refines a MOP rule, restate the full rule.
 - Never contradict the MOP or the CIQ test data; if the MOP is wrong, fix the MOP (M-12).
@@ -83,9 +94,13 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - [ ] Verification scope stated ("every" / "exists")
 - [ ] Backup = what will be overwritten; rollback = remove loaded + restore backup
 - [ ] No answer or note contradicts the MOP or the test data
+- [ ] Health-check gate, target guard, compare-before-apply and referenced-entity checks stated
+- [ ] Every I/O sample says which request it is and which response proves it
+- [ ] NIAM entries per node and failover stated
 
 ## Changelog
 
 | Date | UC | Rules added |
 |------|----|-------------|
+| 2026-11-04 | PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION | Health-check gate, target guard, compare-before-apply, referenced-entity checks, special values (UNCHANGED/blank/multi), NIAM failover entries, one request per I/O sample, no regexes from users, environment names not test values, shared paths/naming, central scripts |
 | 2026-11-04 | MRF_ANNOUNCEMENT_LOADING | Phase order and rollback trigger, step failure semantics, health-check commands, branch syntax, verification scope, backup/rollback contracts, input source/route/repo convention, test data per branch, run modes, report |

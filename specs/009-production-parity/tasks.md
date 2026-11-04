@@ -21,6 +21,18 @@
 - [ ] P009-09 Use orchestration `paths.local` as the input-file location in step 6 (M-3)
 - [ ] P009-10 Re-run MRF, compare again, update the analysis
 
-## Next use cases
+## PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION (analysis 2026-11-04 — fixes proposed, awaiting go-ahead)
 
-- [ ] PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION — production YAML into `CR-Config/PGW/production`
+- [X] P009-11 Logical comparison → [uc-pgw-rds-1058-ifc-capability-modification.md](uc-pgw-rds-1058-ifc-capability-modification.md); guideline extended
+- [ ] P009-12 Health-check gate (G-1): a failed pre-health check stops before the activity (flag + gate, or phase `on_failure: stop`) — generic
+- [ ] P009-13 NIAM failover pattern (G-2) when the CIQ has several NIAM entries per node
+- [ ] P009-14 Step 1 question: subscriber/target guard (G-3) — "which targets may this activity touch and how is that checked?"
+- [ ] P009-15 One request per I/O sample type (G-4): each XML sample = its own request, upload, response check
+- [ ] P009-16 Compare-before-apply (G-5): read current values, send only what differs; conflict check of answers (cmd_q11 vs orch_q32)
+- [ ] P009-17 APN / referenced-entity pre-validation (G-7); captured file ownership applied after upload (G-9); duplicate guard stops (G-10)
+- [ ] P009-18 Step 1: de-duplicate questions across rounds (Q-1); never ask the user for regexes — derive from transcripts (Q-2); secrets as names (Q-3); no internal syntax in suggested answers (Q-4)
+- [ ] P009-19 Re-run PGW, compare again
+
+## Shared by both UCs
+
+- P009-06 "every item" checks (MRF M-6, PGW G-6); P009-03 failure → stop/rollback flags (MRF M-1/M-2, PGW G-1)
