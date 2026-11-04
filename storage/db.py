@@ -277,6 +277,9 @@ class Database:
                 ("pipeline_runs", "queued_at", "TEXT"),
                 ("pipeline_runs", "review_milestones", "INTEGER NOT NULL DEFAULT 1"),
                 ("pipeline_runs", "work_seconds", "REAL"),
+                # A completed run the user marked finished leaves Live Run (spec 008 U-D7)
+                ("pipeline_runs", "finished_at", "TEXT"),
+                ("pipeline_runs", "finished_by", "TEXT"),
                 ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 try:

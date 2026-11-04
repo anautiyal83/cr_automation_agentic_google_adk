@@ -278,3 +278,23 @@ def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
     assert rows[0]["detail"] == "Paused — review of step 5" and rows[0]["estimate"] == "now"
     assert rows[1]["estimate"].startswith("after the review") and rows[1]["pos"] == "1"
     assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"
+
+
+def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
+    """Spec 008 U-D7: a completed run can be marked finished (it leaves Live Run), once; a failed
+    or still running one cannot; the status stays 'completed'."""
+    runner, _ = _runner(tmp_path, monkeypatch)
+
+    async def scenario():
+        db = runner._db
+        await db.execute_insert("INSERT INTO uc_document_sets (id, uc_name, ciq_file_path, mop_file_path, "
+                                "command_outputs_path, uploaded_at) VALUES ('d', 'UC', '', '', '', '2026-11-04')")
+        for rid, status in (("ok", "completed"), ("bad", "failed"), ("run", "running")):
+            await db.execute_insert("INSERT INTO pipeline_runs (id, document_set_id, status, started_at, started_by) "
+                                    "VALUES (?, 'd', ?, '2026-11-04T00:00:00+00:00', 'u1')", (rid, status))
+        results = [await runner.mark_finished(r, "u1") for r in ("ok", "ok", "bad", "run", "missing")]
+        row = (await db.execute("SELECT status, finished_at, finished_by FROM pipeline_runs WHERE id = 'ok'"))[0]
+        return results, row
+    results, row = asyncio.run(scenario())
+    assert results == [True, False, False, False, False]
+    assert row["status"] == "completed" and row["finished_at"] and row["finished_by"] == "u1"

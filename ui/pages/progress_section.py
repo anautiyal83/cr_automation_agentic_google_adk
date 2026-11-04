@@ -256,6 +256,11 @@ class ProgressSection:
             self.btn_outputs = ui.button("Browse outputs", icon="folder_open",
                                          on_click=self._go_outputs) \
                 .props("outline color=primary size=sm no-caps")
+            # A completed run stays here until the user is done with it (spec 008 U-D7)
+            self.btn_finish = action(ui.button("Mark as finished", icon="task_alt", on_click=self._finish)
+                                     .props("unelevated color=positive size=sm no-caps"), "progress")
+            self.btn_finish.tooltip("Done with this run: it leaves Live Run (Run History keeps it)")
+            self.btn_finish.set_visibility(False)
 
     def _step_widget(self, step_num: int):
         with ui.element("div").classes("cr-step-row") as box:
@@ -544,14 +549,15 @@ class ProgressSection:
 
     async def _show_latest_run(self):
         """Nothing executes: Live Run keeps showing the user's latest run (completed, failed, waiting…) —
-        a run leaves Live Run only when it is cancelled (spec 007)."""
+        a run leaves Live Run when it is cancelled (spec 007) or marked finished (spec 008 U-D7)."""
         if not self.runner or not self.runner._db:
             return
         where, params = self._scope.where("r")
         rows = await self.runner._db.execute(
-            "SELECT r.id, r.status FROM pipeline_runs r "
+            "SELECT r.id, r.status, r.finished_at FROM pipeline_runs r "
             f"WHERE {where} ORDER BY COALESCE(r.queued_at, r.started_at) DESC LIMIT 1", params)
-        if rows and str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
+        if rows and not rows[0]["finished_at"] and \
+                str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
             await self.view_run(rows[0]["id"])
 
     async def _show_waiting(self, run_id) -> None:
@@ -851,13 +857,14 @@ class ProgressSection:
         self.action_btns.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.completion_row.set_visibility(True)
-        status, error, statuses = "unknown", "", {}
+        status, error, statuses, finished = "unknown", "", {}, False
         if self.runner and self.runner._db:
             try:
                 rows = await self.runner._db.execute(
-                    "SELECT status, error_summary, current_step, started_at, completed_at FROM pipeline_runs "
-                    "WHERE id = ?", (str(run_id),))
+                    "SELECT status, error_summary, current_step, started_at, completed_at, finished_at "
+                    "FROM pipeline_runs WHERE id = ?", (str(run_id),))
                 if rows:
+                    finished = bool(rows[0].get("finished_at"))
                     status = str(rows[0].get("status") or "").replace("PipelineStatus.", "").lower()
                     error = rows[0].get("error_summary") or ""
                     self._run_elapsed = _elapsed_between(rows[0].get("started_at"), rows[0].get("completed_at"))
@@ -873,6 +880,7 @@ class ProgressSection:
         failed = [n for n, st in statuses.items() if st.startswith("failed")]
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
+        self.btn_finish.set_visibility(ok and not finished)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -1055,6 +1063,7 @@ class ProgressSection:
             ))
             self.action_btns.set_visibility(False)
             self.completion_row.set_visibility(True)
+            self.btn_finish.set_visibility(True)
             self.progress_bar.value = 1.0
             self.progress_bar.props("color=positive")
         elif event.event_type == "run_failed":
@@ -1706,6 +1715,7 @@ class ProgressSection:
         self.active_run_id = None
         self.action_btns.set_visibility(False)
         self.completion_row.set_visibility(False)
+        self.btn_finish.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.progress_bar.set_visibility(False)
         self.status_icon.name = "hourglass_empty"
@@ -1717,6 +1727,22 @@ class ProgressSection:
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
         self._set_run_state("idle")
+
+    @requires("progress", "run.finish")
+    @_own_run("run.finish")
+    async def _finish(self):
+        """The user is done with this completed run: it leaves Live Run (spec 008 U-D7)."""
+        if not self.runner or not self.active_run_id:
+            return
+        run_id = str(self.active_run_id)
+        user = self._scope.user
+        if not await self.runner.mark_finished(run_id, user.id if user else "cli"):
+            ui.notify("Only a completed run that is not finished yet can be marked finished", type="warning")
+            return
+        await record("run.finish", target_type="run", target_id=run_id, run_id=run_id, uc_name=self._uc_name or "")
+        ui.notify(f"{self._uc_name or 'Run'} marked as finished — it stays in Run History", type="positive")
+        self._reset_to_default()
+        self.uc_chip.text = ""
 
     @requires("progress", "run.restart")
     @_own_run("run.restart")
