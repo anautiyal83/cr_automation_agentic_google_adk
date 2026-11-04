@@ -1,4 +1,4 @@
-# Feature Specification: Pipeline Run Queue
+# Feature Specification: Pipeline Run Queue (phase 1) and Parallel Runs (phase 2)
 
 **Feature Branch**: `007-run-queue` (work continues on `feature/skill-packages`)
 
@@ -9,7 +9,9 @@
 **Input**: "The pipeline can only run one job at a time … our pipeline should support parallel runs" →
 after the parallel-run proposal: "ok lets not run pipeline parallely but make a queue based system for
 now. If one pipeline is running then other waits in a queue, but user should be able to see the queue so
-that he can estimate the time."
+that he can estimate the time." Then: "lets make it phase wise for now. phase 1 queue based phase 2
+supports parallel runs, picked from queue only" and "queue should show job status also, like waiting,
+paused, running, completed etc".
 
 ## Problem
 
@@ -23,8 +25,21 @@ have to keep retrying and cannot tell when the pipeline will be free.
 |---|----------|----------|
 | Q-D1 | Parallel runs or a queue | **Queue**: one pipeline at a time, the other starts wait in a queue (parallel runs later) |
 | Q-D2 | Queue visibility | Users **see the queue** and can **estimate when their run starts** |
+| Q-D4 | Job status in the queue | The queue shows each job's status — waiting, running, paused, completed, failed, cancelled, removed — including recently finished jobs |
+| Q-D3 | Phases | **Phase 1**: the queue, one run at a time. **Phase 2**: several runs in parallel, **always taken from the queue** (the queue stays the only way in) |
 
-## Behaviour
+## Phases
+
+| Phase | What runs | How a run starts |
+|-------|-----------|------------------|
+| **1 — Queue** | One pipeline run at a time | Every start goes into the queue; the dispatcher starts the oldest queued run when the pipeline is free |
+| **2 — Parallel runs** | Up to `execution.max_parallel_runs` runs at once (a setting) | Same queue; the dispatcher starts queued runs while a slot is free |
+
+Phase 1 is built so that phase 2 only raises the number of slots: one **dispatcher** owns starting runs
+(phase 1: 1 slot), every start path goes through the queue, and the queue view and estimates already
+handle "N running + queued". Phase 2 adds what concurrent runs need (below).
+
+## Phase 1 — Behaviour
 
 - **Start** (New Run, Run History → Re-run): when the pipeline is free the run starts at once (as today);
   otherwise it is stored with status **queued** and the user is told its position and estimated start.
@@ -38,14 +53,31 @@ have to keep retrying and cannot tell when the pipeline will be free.
 
 ## The queue view
 
-A **Pipeline queue** panel (on Live Run, and summarised on the Dashboard and New Run) lists:
+A **Pipeline queue** panel (on Live Run, and summarised on the Dashboard and New Run) lists every job
+with its **status**:
 
-| Position | Use case | Started by | Status | Waiting since | Estimated start | Estimated duration |
-|----------|----------|------------|--------|---------------|-----------------|--------------------|
-| ▶ running | MRF_ANNOUNCEMENT_LOADING | You | Step 6 / 10 (or "Waiting for review — step 5") | 10:02 | — | ~4 min left |
-| 1 | PGW_RDS_1058_… | Another user | queued | 10:05 | ~10:08 | ~6 min |
-| 2 | MRF_ANNOUNCEMENT_LOADING | You | queued | 10:07 | ~10:14 | ~4 min |
+| Status | Meaning | Shown with |
+|--------|---------|------------|
+| **Waiting** | In the queue (status `queued`) | position, waiting since, estimated start and duration |
+| **Running** | The pipeline is executing it | current step (e.g. "Step 6 / 10 — Generate Execution Config"), started at, estimated time left |
+| **Paused** | Waiting at a milestone for its owner's review or for step 1 answers | the step and milestone, paused since; time left "after the review + ~X min" |
+| **Completed** | Finished successfully | ended at, duration |
+| **Failed** | Ended with an error | ended at, failed step |
+| **Cancelled** | Stopped / cancelled by a user | ended at, by whom (admin) |
+| **Removed** | Taken out of the queue before it started | removed at |
 
+Order: running/paused first, then waiting (by position), then the **recently finished** jobs (completed,
+failed, cancelled, removed — last 24 h, at most 10) so users see how the queue moved and how long jobs took.
+
+| # | Use case | Started by | Status | Since | Estimated start | Duration |
+|---|----------|------------|--------|-------|-----------------|----------|
+| ▶ | MRF_ANNOUNCEMENT_LOADING | You | Running — step 6 / 10 | 10:02 | — | ~4 min left |
+| 1 | PGW_RDS_1058_… | Another user | Waiting | 10:05 | ~10:08 | ~6 min |
+| 2 | MRF_ANNOUNCEMENT_LOADING | You | Waiting | 10:07 | ~10:14 | ~4 min |
+| — | PGW_RDS_1058_… | Another user | Completed | 09:51 | — | 6 min 12 s |
+| — | MRF_ANNOUNCEMENT_LOADING | You | Failed — step 9 | 09:40 | — | 4 min 40 s |
+
+- Statuses use the same coloured pills as Run History; status changes appear without reloading.
 - Every logged-in user sees the whole queue (positions, use cases, status, times) so they can estimate
   their wait; **who started another user's run is shown only to the administrator** ("Another user"
   otherwise, consistent with spec 006 D3). Only one's own queued runs can be removed (admin: any).
@@ -89,9 +121,10 @@ A **Pipeline queue** panel (on Live Run, and summarised on the Dashboard and New
 - **FR-002** FIFO by queue time; the next run starts automatically when the active run ends.
 - **FR-003** Queued runs persist in the DB (status `queued`, everything needed to start them) and survive
   a server restart.
-- **FR-004** The queue (running + queued runs) is visible to every logged-in user with position, use case,
-  status, waiting since, estimated start and duration; the owner identity of other users' runs only to the
-  administrator.
+- **FR-004** The queue is visible to every logged-in user: running, paused and waiting jobs plus the recently
+  finished ones (last 24 h, max 10), each with its **status** (Waiting, Running, Paused, Completed, Failed,
+  Cancelled, Removed), position, use case, step, times, estimated start and duration; the owner identity of
+  other users' runs only to the administrator.
 - **FR-005** Estimates from working time (milestone waits excluded) of past completed runs (median of the
   last 5 of the use case, fallbacks), labelled as estimates.
 - **FR-006** Owners remove their own queued runs; the administrator any; removal is recorded.
@@ -100,8 +133,37 @@ A **Pipeline queue** panel (on Live Run, and summarised on the Dashboard and New
 - **FR-008** Run History, Dashboard and Output Documents show `queued` as a status; a queued run has no
   outputs yet.
 
-## Out of Scope (this iteration)
-- Parallel runs (see the parallel-run proposal; the per-run state work can come later).
+## Phase 2 — Parallel runs (picked from the queue)
+
+- **Slots**: `execution.max_parallel_runs` (Settings, default 1 = phase 1 behaviour); the dispatcher starts
+  queued runs, oldest first, while fewer than that many are running.
+- **One run per use case at a time**: a queued run whose use case is already running is skipped until that
+  run ends (the next queued run of another use case may start) — the per-use-case files (artifact cache,
+  saved requirements and answers) are not shared by two live runs.
+- **Isolation needed before more than one slot** (found in the code, 2026-11-04):
+  - milestone signalling per run, not per step (`shared.state` milestone dicts → one state object per run);
+    a milestone decision reaches exactly one run;
+  - no process-wide "current run": LLM usage and flow-log tagging per run (`contextvars`);
+  - simulator ports reserved under a process-wide lock (step 8 and the per-case restarts of step 9);
+  - the shared command-sample library written atomically under a lock;
+  - stopping or cancelling a run touches only that run's state.
+- **Live Run** lists the user's running runs (admin: all) and follows the chosen one; the queue view shows
+  every running run with its step and time left; estimates use the number of slots (a queued run starts
+  when the earliest of the running runs ends).
+- Optional per-user limit of runs running at the same time (Q5).
+
+### Phase 2 requirements
+- **FR-201** At most `max_parallel_runs` runs execute; every run starts from the queue (FIFO, use-case rule).
+- **FR-202** Two runs never share milestone state, LLM-usage attribution, simulator ports or per-use-case files.
+- **FR-203** Estimates and the queue view account for several running runs.
+
+### Phase 2 success criteria
+- **SC-201** With 2 slots, PGW and MRF runs submitted together run at the same time end to end (steps 1–10),
+  each with its own milestones, usage and simulator; a third run waits in the queue and starts when a slot
+  frees.
+- **SC-202** A milestone decision on one run never moves the other.
+
+## Out of Scope
 - Priorities or reordering of the queue (beyond removal).
 - E-mail / push notification when a queued run starts.
 
@@ -113,11 +175,13 @@ A **Pipeline queue** panel (on Live Run, and summarised on the Dashboard and New
 | Q2 | May the administrator move a queued run to the front? | No (FIFO only) in this iteration |
 | Q3 | Limit queued runs per user? | No limit |
 | Q4 | Same use case queued more than once? | Allowed (they run one after another) |
+| Q5 | Phase 2: default number of parallel runs; per-user limit? | Default 2 slots once phase 2 ships (Settings); per-user limit 1 running run (admin unlimited) |
 
-## Success Criteria
+## Success Criteria (phase 1)
 - **SC-001** With a run active, a second start is queued (not refused, nothing cancelled); when the first
   ends the second starts by itself.
-- **SC-002** Every user sees the queue with positions and estimates; other users' runs are anonymous to
+- **SC-002** Every user sees the queue with positions, statuses (waiting, running, paused at a milestone,
+  completed, failed, cancelled, removed) and estimates, updated live; other users' runs are anonymous to
   non-admins.
 - **SC-003** Removing a queued run moves the ones behind it up; non-owners cannot remove it (refused,
   recorded).
