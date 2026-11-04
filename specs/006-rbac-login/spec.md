@@ -105,7 +105,7 @@ user sees **only their own runs** on every screen that shows runs:
 | Artifact Cleanup | Their runs |
 | Settings | Global settings (the screen permission decides) |
 
-**One pipeline at a time.** The runner runs one pipeline at a time (milestone state is global) and a
+**One pipeline at a time.** *(Superseded by spec 007, 2026-11-04: starts no longer replace or refuse another user's run — they wait in the run queue; see [007-run-queue](../007-run-queue/spec.md).)* The runner runs one pipeline at a time (milestone state is global) and a
 new start replaces the active run. A user may replace only their own active run: when another user's
 run is in progress, a start (New Run or Run History → Re-run) is refused with a message (the admin is
 told who started it, others "another user") and the refusal is recorded. The admin stops another

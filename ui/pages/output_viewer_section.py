@@ -1,4 +1,4 @@
-"""Output document viewer — browse and view all pipeline artifacts (input + output)."""
+"""Run Artifacts viewer — browse and view all pipeline artifacts (input + output)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,9 +6,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import download, record, record_document, requires_admin, scope
-
-from ui.components import card_title
+from ui.access import download, record_document, scope
 
 from storage.artifact_store import ArtifactStore
 
@@ -28,10 +26,9 @@ ICON_MAP = {
 
 
 class OutputViewerSection:
-    def __init__(self, artifact_store: ArtifactStore | None = None, runner=None, show_cache: bool = True):
+    def __init__(self, artifact_store: ArtifactStore | None = None, runner=None):
         self.artifact_store = artifact_store
         self.runner = runner
-        self._show_cache = show_cache  # the cache is shared by all users: admin only (spec 006)
         self._scope = scope()  # the admin sees every run, others only their own
         self._current_file: Path | None = None
         self._build_ui()
@@ -40,7 +37,6 @@ class OutputViewerSection:
             async def _safe_load():
                 try:
                     await self._load_runs()
-                    await self._refresh_cache()
                 except RuntimeError:
                     pass
             ui.timer(0.5, _safe_load, once=True)
@@ -76,45 +72,9 @@ class OutputViewerSection:
             with self.empty_state:
                 ui.icon("folder_open", size="48px").classes("cr-text-dim")
                 ui.label("No pipeline runs yet").classes("text-body2 cr-text-dim")
-                ui.label("Complete a pipeline run to browse output documents") \
+                ui.label("Complete a pipeline run to browse its artifacts") \
                     .classes("text-caption cr-text-dim")
 
-            # Artifact Cache Management (admin only)
-            with ui.card().classes("w-full p-4 cr-card-inner") as cache_card:
-                card_title("Artifact Cache", "cached")
-                ui.label("Cached artifacts skip LLM generation for previously completed steps. "
-                         "Clear cache to force regeneration.") \
-                    .classes("text-caption cr-text-dim mb-2")
-                self.cache_table = ui.table(
-                    columns=[
-                        {"name": "uc", "label": "UC Name", "field": "uc_name", "align": "left", "sortable": True},
-                        {"name": "steps", "label": "Cached Steps", "field": "cached_steps", "align": "center"},
-                        {"name": "detail", "label": "Cached Artifacts", "field": "cached_detail", "align": "left"},
-                        {"name": "size", "label": "Size", "field": "size_kb", "align": "right"},
-                        {"name": "actions", "label": "", "field": "actions", "align": "center"},
-                    ],
-                    rows=[], row_key="uc_name",
-                ).classes("w-full").props(
-                    'flat bordered dense separator=cell '
-                    'no-data-label="No cached artifacts" '
-                    'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
-                )
-                self.cache_table.add_slot('body-cell-actions', '''
-                    <q-td :props="props">
-                        <q-btn flat dense icon="delete_outline" color="red-4" size="sm"
-                               @click="$parent.$emit('clear_cache', props.row)"
-                               label="Clear" no-caps />
-                    </q-td>
-                ''')
-                self.cache_table.on('clear_cache', self._on_clear_cache)
-                with ui.row().classes("w-full justify-end mt-2 gap-2"):
-                    ui.button("Refresh", icon="refresh", on_click=self._refresh_cache) \
-                        .props("flat size=sm no-caps color=primary")
-                    ui.button("Clear All Cache", icon="delete_sweep",
-                              on_click=self._clear_all_cache) \
-                        .props("flat size=sm no-caps color=red-6")
-            if not self._show_cache:
-                cache_card.delete()
 
     async def _load_runs(self):
         try:
@@ -326,54 +286,6 @@ class OutputViewerSection:
                 else:
                     ui.label("No content available").classes("p-4 cr-text-dim")
         dialog.open()
-
-    async def _refresh_cache(self):
-        if not self._show_cache:
-            return
-        try:
-            from storage.artifact_cache import ArtifactCache
-            cache = ArtifactCache()
-            ucs = cache.list_cached_ucs()
-            # Show per-agent detail in cached_steps
-            for uc in ucs:
-                agents = uc.get("agents", {})
-                detail = ", ".join(
-                    f"{a.replace('_', ' ').title()}" for a, s in agents.items() if s == "passed"
-                )
-                uc["cached_detail"] = detail or "None"
-            self.cache_table.rows = ucs
-        except Exception as e:
-            ui.notify(f"Cache refresh failed: {e}", type="negative")
-
-    @requires_admin("cache.clear")
-    async def _on_clear_cache(self, e):
-        row = e.args
-        uc = row.get("uc_name", "")
-        if not uc:
-            return
-        try:
-            from storage.artifact_cache import ArtifactCache
-            ArtifactCache().clear_cache(uc)
-            ui.notify(f"Cache cleared for {uc}", type="positive")
-            await record("cache.clear", target_type="use_case", target_id=uc, uc_name=uc)
-            await self._refresh_cache()
-        except Exception as ex:
-            ui.notify(f"Failed: {ex}", type="negative")
-
-    @requires_admin("cache.clear_all")
-    async def _clear_all_cache(self):
-        try:
-            from storage.artifact_cache import ArtifactCache
-            import shutil
-            cache = ArtifactCache()
-            if cache._cache_dir.exists():
-                shutil.rmtree(cache._cache_dir, ignore_errors=True)
-                cache._cache_dir.mkdir(parents=True, exist_ok=True)
-            ui.notify("All cache cleared", type="positive")
-            await record("cache.clear_all")
-            await self._refresh_cache()
-        except Exception as e:
-            ui.notify(f"Failed: {e}", type="negative")
 
     async def refresh_for_run(self, run_id: UUID):
         """Called externally to show outputs for a specific completed run."""

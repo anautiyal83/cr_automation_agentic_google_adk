@@ -50,6 +50,7 @@ from ui.pages.output_viewer_section import OutputViewerSection
 from ui.pages import login_page
 from ui.pages.users_section import UsersSection
 from ui.pages.audit_section import AuditSection
+from ui.pages.cache_section import CacheSection
 from ui.pages.queue_panel import QueuePanel, submit_run
 from core.audit import AuditTrail
 from core.auth import SCREENS, ADMIN_SCREENS, AuthService, storage_secret
@@ -980,9 +981,11 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 ("dashboard", "Dashboard", "space_dashboard"),
                 ("new_run", "New Run", "add_circle_outline"),
                 ("progress", "Live Run", "play_circle_outline"),
+                ("queue", "Pipeline Queue", "queue"),
             ]),
             ("Results", [
-                ("outputs", "Output Documents", "folder_open"),
+                ("outputs", "Run Artifacts", "folder_open"),
+                ("cache", "Artifact Cache", "cached"),
                 ("history", "Run History", "history"),
             ]),
             ("Admin", [
@@ -1096,7 +1099,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
 
                     # Pipeline queue (spec 007): what runs now and what waits
                     with ui.card().classes("cr-card-inner w-full p-3"):
-                        QueuePanel(_runner, compact=True)
+                        QueuePanel(_runner, compact=True, on_open=lambda: navigate("queue"))
 
                     # Charts row
                     with ui.element("div").classes("cr-grid-2"):
@@ -1310,7 +1313,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                     panel.set_visibility(False)
                     page_header("New Run", "Set up a pipeline run in three steps: activity, documents, notes & review")
                     with ui.card().classes("cr-section w-full p-4"):
-                        QueuePanel(_runner, compact=True)
+                        QueuePanel(_runner, compact=True, on_open=lambda: navigate("queue"))
                     with ui.card().classes("cr-section w-full p-4"):
                         upload_section = UploadSection(on_start_pipeline=on_start_pipeline, db=_db)
                         on_navigate_hooks.setdefault("new_run", []).append(upload_section._load_vendors)
@@ -1339,26 +1342,41 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                             on_view_details=_progress_view_details,
                             on_view_outputs=_progress_view_outputs,
                         )
-                    with ui.card().classes("cr-section w-full p-4 mt-3"):
-                        QueuePanel(_runner)  # every job, status, position, estimate (spec 007)
+
+            # Pipeline Queue (spec 007 / 008): every job, status, position, estimate; Remove
+            if user.can_view("queue"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["queue"] = panel
+                    panel.set_visibility(False)
+                    page_header("Pipeline Queue", "What runs now, what waits and when it is expected to start")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        QueuePanel(_runner)
 
             # Forward refs container
             class _refs:
                 history = None
                 output_viewer = None
 
-            # Output Documents
+            # Run Artifacts
             if user.can_view("outputs"):
                 with ui.column().classes("cr-page") as panel:
                     content_panels["outputs"] = panel
                     panel.set_visibility(False)
-                    page_header("Output Documents", "Browse and download the artifacts each run produced")
+                    page_header("Run Artifacts", "Browse and download the artifacts each run produced")
                     with ui.card().classes("cr-section w-full p-4"):
-                        output_viewer = OutputViewerSection(
-                            artifact_store=_artifact_store, runner=_runner, show_cache=user.is_admin,
-                        )
+                        output_viewer = OutputViewerSection(artifact_store=_artifact_store, runner=_runner)
                         _refs.output_viewer = output_viewer
                         on_navigate_hooks.setdefault("outputs", []).append(output_viewer._load_runs)
+
+            # Artifact Cache (admin: the cache is shared by every user's runs — spec 008 U-D3)
+            if user.can_view("cache"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["cache"] = panel
+                    panel.set_visibility(False)
+                    page_header("Artifact Cache", "Steps a use case already passed are reused instead of generated again")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        cache_section = CacheSection()
+                        on_navigate_hooks.setdefault("cache", []).append(cache_section.refresh)
 
             # Run History
             if user.can_view("history"):

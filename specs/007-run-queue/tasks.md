@@ -37,7 +37,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 ## Step 4: Check + docs
 - [~] T010 E2E on the preview (DB copy, dispatch disabled, one fake running job + 2 waiting): ana / bob / admin see the queue on Dashboard, New Run, Live Run; owners "You" / "Another user" (admin: emails); Remove only on own waiting jobs (admin: all); ana removed hers → notified, positions and estimates moved up, Live Run back to idle. Open: a real queued run starting after another ends
-- [ ] T011 README / CLAUDE.md; spec 006 note (one pipeline at a time → queue)
+- [X] T011 README (Run Queue & Restart Recovery), CLAUDE.md (spec 007 section), spec 006 "one pipeline at a time" marked superseded
 
 # Phase 2 — Parallel runs (picked from the queue)
 

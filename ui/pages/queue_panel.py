@@ -1,6 +1,6 @@
 """Pipeline queue view (spec 007): every job with its status, position and estimated start.
 
-Full panel on Live Run; compact one (in the pipeline + waiting jobs) on Dashboard and New Run.
+Full panel on the Pipeline Queue page; compact one (in the pipeline + waiting jobs) on Dashboard and New Run.
 Refreshes every few seconds. Owners remove their own waiting jobs (administrator: any); other
 users' jobs show "Another user" (the administrator sees the email).
 """
@@ -13,7 +13,7 @@ from nicegui import ui
 
 from orchestrator.run_queue import snapshot
 from ui.access import record, requires, scope
-from ui.components import card_title
+from ui.components import card_title, confirm
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +70,10 @@ def job_rows(jobs: list[dict]) -> list[dict]:
 
 
 class QueuePanel:
-    def __init__(self, runner, compact: bool = False):
+    def __init__(self, runner, compact: bool = False, on_open=None):
         self.runner = runner
         self.compact = compact
+        self._on_open = on_open  # compact view: link to the Pipeline Queue page
         self._scope = scope()
         self._build_ui()
         ui.timer(0.3, self.refresh, once=True)
@@ -82,7 +83,10 @@ class QueuePanel:
         with ui.column().classes("w-full gap-2"):
             with ui.row().classes("w-full items-center justify-between"):
                 card_title("Pipeline queue", "queue")
-                self.summary = ui.label("").classes("text-caption cr-text-dim")
+                with ui.row().classes("items-center gap-2"):
+                    self.summary = ui.label("").classes("text-caption cr-text-dim")
+                    if self.compact and self._on_open:
+                        ui.button("Open queue", icon="open_in_new", on_click=self._on_open)                             .props("flat dense no-caps size=sm color=primary")
             ui.label("One pipeline runs at a time; the other jobs wait here and start by themselves, "
                      "oldest first. Times are estimates.").classes("text-caption cr-text-dim")
             columns = [
@@ -137,18 +141,24 @@ class QueuePanel:
         except RuntimeError:
             pass  # the page was closed
 
-    @requires("progress", "queue.remove")
+    @requires("queue", "queue.remove")
     async def _remove(self, e):
         row = e.args if isinstance(e.args, dict) else {}
         run_id = row.get("run_id", "")
-        if not run_id or not await self._scope.check(self.runner._db, run_id, "queue.remove", "progress"):
+        if not run_id or not await self._scope.check(self.runner._db, run_id, "queue.remove", "queue"):
             return
-        if await self.runner.remove_queued(run_id):
-            await record("queue.remove", target_type="run", target_id=run_id, run_id=run_id, uc_name=row.get("uc", ""))
-            ui.notify(f"{row.get('uc', 'Job')} removed from the queue", type="info")
-        else:
-            ui.notify("This job is no longer waiting (it has started or ended)", type="warning")
-        await self.refresh()
+        uc = row.get("uc", "Job")
+
+        async def remove():
+            if await self.runner.remove_queued(run_id):
+                await record("queue.remove", target_type="run", target_id=run_id, run_id=run_id, uc_name=uc)
+                ui.notify(f"{uc} removed from the queue", type="info")
+            else:
+                ui.notify("This job is no longer waiting (it has started or ended)", type="warning")
+            await self.refresh()
+
+        confirm(f"Remove {uc} from the queue?", "The job will not run; start it again from New Run or Run History.",
+                remove, ok_label="Remove", ok_icon="remove_circle_outline")
 
 
 async def submit_run(runner, document_set: dict, review_milestones: bool = True, action_name: str = "run.start",

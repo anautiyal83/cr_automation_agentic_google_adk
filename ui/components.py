@@ -16,8 +16,8 @@ STATUS_CELL_SLOT = r'''
 
 # Sidebar group of each page, shown as the header eyebrow ("RESULTS / RUN HISTORY")
 _PAGE_GROUPS = {
-    "Dashboard": "Workspace", "New Run": "Workspace", "Live Run": "Workspace",
-    "Output Documents": "Results", "Run History": "Results",
+    "Dashboard": "Workspace", "New Run": "Workspace", "Live Run": "Workspace", "Pipeline Queue": "Workspace",
+    "Run Artifacts": "Results", "Artifact Cache": "Results", "Run History": "Results",
     "LLM Usage": "Admin", "Artifact Cleanup": "Admin", "Settings": "Admin",
     "Users & Roles": "Admin", "Audit Trail": "Admin",
 }
@@ -59,3 +59,24 @@ def status_cells(table: ui.table, column: str = "status") -> ui.table:
     """Render ``column`` of ``table`` as coloured status pills."""
     table.add_slot(f"body-cell-{column}", STATUS_CELL_SLOT)
     return table
+
+
+def confirm(title: str, message: str, on_confirm, ok_label: str = "Delete", ok_icon: str = "delete") -> None:
+    """Ask before a delete / clear / remove (spec 008 U-D5): ``on_confirm`` (sync or async) runs only
+    on the confirm button; Cancel or closing the dialog does nothing."""
+    with ui.dialog() as dialog:
+        card = ui.card().classes("p-4 gap-2 cr-card-inner").style("min-width: 380px; max-width: 520px")
+    with card:
+        ui.label(title).classes("text-subtitle1 font-semibold")
+        ui.label(message).classes("text-body2 cr-text-dim")
+
+        async def ok():
+            dialog.close()
+            result = on_confirm()
+            if hasattr(result, "__await__"):
+                await result
+
+        with ui.row().classes("w-full justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+            ui.button(ok_label, icon=ok_icon, on_click=ok).props("unelevated color=negative no-caps")
+    dialog.open()

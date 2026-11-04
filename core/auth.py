@@ -32,7 +32,8 @@ SCREENS: dict[str, tuple[str, str]] = {
     "dashboard": ("Dashboard", "Workspace"),
     "new_run": ("New Run", "Workspace"),
     "progress": ("Live Run", "Workspace"),
-    "outputs": ("Output Documents", "Results"),
+    "queue": ("Pipeline Queue", "Workspace"),
+    "outputs": ("Run Artifacts", "Results"),
     "history": ("Run History", "Results"),
     "usage": ("LLM Usage", "Admin"),
     "cleanup": ("Artifact Cleanup", "Admin"),
@@ -40,9 +41,12 @@ SCREENS: dict[str, tuple[str, str]] = {
 }
 # Screens only the admin role has (never assignable to another role)
 ADMIN_SCREENS: dict[str, tuple[str, str]] = {
+    "cache": ("Artifact Cache", "Results"),  # shared by every user's runs (spec 008 U-D3)
     "users": ("Users & Roles", "Admin"),
     "audit": ("Audit Trail", "Admin"),
 }
+# Screens split off an older screen: a role saved before keeps the old screen's level (spec 008 U-D1)
+_DERIVED_SCREENS = {"queue": "progress"}
 ADMIN_ROLE = "admin"
 DEFAULT_ADMIN_EMAIL = "admin@netconfig.local"
 DEFAULT_ADMIN_PASSWORD = "admin"  # only good for setting a new one (must_change_password)
@@ -146,7 +150,12 @@ def _levels(raw) -> dict[str, str]:
         return {}
     if isinstance(data, list):  # early draft stored a list of screens
         data = {k: UPDATE for k in data}
-    return {k: v for k, v in data.items() if k in SCREENS and v in LEVELS}
+    levels = {k: v for k, v in data.items() if k in SCREENS and v in LEVELS}
+    # a screen added later takes the level of the screen it came from (roles saved before it)
+    for new, origin in _DERIVED_SCREENS.items():
+        if new not in data and origin in levels:
+            levels[new] = levels[origin]
+    return levels
 
 
 # --------------------------------------------------------------------------- service
@@ -345,7 +354,8 @@ class AuthService:
         bad = {k for k in levels if k not in SCREENS} | {v for v in levels.values() if v not in LEVELS}
         if bad:
             raise AuthError(f"Unknown screens or levels: {', '.join(sorted(map(str, bad)))}")
-        stored = json.dumps({k: levels[k] for k in SCREENS if k in levels})  # registry order
+        # registry order; a derived screen left out is stored as "none" (else it would be derived again)
+        stored = json.dumps({k: levels.get(k, "none") for k in SCREENS if k in levels or k in _DERIVED_SCREENS})
         clash = await self.db.execute("SELECT id FROM roles WHERE name = ?", (name,))
         if clash and clash[0]["id"] != role_id:
             raise AuthError(f"Role '{name}' already exists")

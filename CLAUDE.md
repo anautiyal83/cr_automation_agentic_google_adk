@@ -188,10 +188,10 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - New action buttons: wrap in `action(btn[, screen])` (disabled on View screens) AND guard the handler with
   `@requires(screen, "<action>")` (server check); admin-only things `@requires_admin`
 - Runs: `pipeline_runs.started_by`; sections take `scope()` at build time and use `RunScope.where()` in queries,
-  `RunScope.check()` before acting on a run id (admin: all runs, others own runs). One pipeline at a time:
-  `may_start_run()` before `runner.start(..., started_by=user.id)`
+  `RunScope.check()` before acting on a run id (admin: all runs, others own runs). Starts go through
+  `ui/pages/queue_panel.submit_run()` (run queue, spec 007)
 - Trail: `await record(...)` in async handlers after success, `record_later(...)` in sync code (takes the
-  user now); pipeline events are recorded as `system` by `PipelineRunner._trail_event`. Never record secrets
+  user now); user actions only — the pipeline/system writes no entries (D11). Never record secrets
 - Session data: `.nicegui/` (git-ignored); cookie secret `NETCONFIG_STORAGE_SECRET` or `data/.storage_secret`
 
 ## Step Names (UI)
@@ -220,3 +220,12 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): requirements document, validation rules,
   JSON output, execution YAML, MOP, QA-Validation, QA-Execution, execution summary + success/failure reports
 - Running simulators are registered in `shared.state.simulator_processes` and stopped on every exit path
+
+## Run Queue + Restart Recovery — spec 007
+- `PipelineRunner.submit()` (= `start()`) queues every run (`pipeline_runs.status = 'queued'`); `dispatch()` starts the
+  oldest (`resuming` first) when `active_run()` is None — after a submit, at every run end and at server start
+- Queue view: `orchestrator/run_queue.snapshot()` + `ui/pages/queue_panel.py` (Pipeline Queue page, screen `queue`); start paths use `submit_run()`
+- UI (spec 008): Run Artifacts = screen `outputs`; Artifact Cache page = admin screen `cache`; destructive buttons go through `ui.components.confirm`
+- Checkpoints (`orchestrator/checkpoints.py`, table `run_checkpoints`): before every agent and at review pauses;
+  `resume_queue()` at startup; step 9 resumes at step 8; `MAX_RESUME_ATTEMPTS = 2`
+- Audit trail: user actions only (`ui/access.record`) — the runner writes no trail entries

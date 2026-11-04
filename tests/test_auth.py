@@ -190,7 +190,7 @@ def test_users_screen_helpers():
     from ui.pages.users_section import _generated_password, _levels_text
     for _ in range(20):
         auth.check_password_policy(_generated_password())  # generated passwords pass the policy
-    assert _levels_text({"history": VIEW, "outputs": UPDATE}) == "Run History: View · Output Documents: Update"
+    assert _levels_text({"history": VIEW, "outputs": UPDATE}) == "Run History: View · Run Artifacts: Update"
     assert _levels_text({}) == "No screens"
 
 
@@ -206,3 +206,25 @@ def test_runs_from_before_the_login_belong_to_the_default_admin(service):
         return admin["id"], {r["id"]: r["started_by"] for r in rows}
     admin_id, owners = run(scenario())
     assert owners == {"cli1": "cli", "old1": admin_id, "old2": admin_id, "u1run": "u1"}
+
+
+def test_new_screens_queue_derived_from_live_run_cache_admin_only(service):
+    """Spec 008: Pipeline Queue takes the Live Run level of roles saved before it; once the
+    role is saved without it, it stays off. Artifact Cache is admin-only."""
+    import json
+    run(service.save_role("ops", {"progress": UPDATE, "history": VIEW}))
+    uid = run(service.create_user("ops@x.io", "first-pass1", "ops", "Ops"))
+    assert not run(service.current_user(uid)).can_view("queue")  # a role saved now: as ticked (off)
+    # a role stored before the queue screen existed
+    run(service.db.execute("UPDATE roles SET permissions = ? WHERE name = 'ops'",
+                           (json.dumps({"progress": VIEW, "history": VIEW}),)))
+    user = run(service.current_user(uid))
+    assert user.levels["queue"] == VIEW and not user.can_update("queue")
+    role_id = next(r["id"] for r in run(service.list_roles()) if r["name"] == "ops")
+    assert next(r for r in run(service.list_roles()) if r["name"] == "ops")["levels"]["queue"] == VIEW
+    run(service.save_role("ops", {"progress": UPDATE}, role_id=role_id))  # the admin unticked the queue
+    assert not run(service.current_user(uid)).can_view("queue")
+    with pytest.raises(AuthError):
+        run(service.save_role("ops", {"cache": VIEW}, role_id=role_id))  # admin-only screen
+    admin = run(service.authenticate("admin@netconfig.local", "admin"))
+    assert admin.can_update("cache") and admin.can_update("queue")

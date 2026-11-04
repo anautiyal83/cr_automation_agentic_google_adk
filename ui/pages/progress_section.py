@@ -569,8 +569,8 @@ class ProgressSection:
         self.status_label.text = ("Resuming after a server restart" if resuming
                                   else f"Waiting in the queue — position {position}" if position
                                   else "Waiting in the queue")
-        self.status_detail.text = ("It starts by itself when the pipeline is free — see the Pipeline queue "
-                                   "below for the estimated start")
+        self.status_detail.text = ("It starts by itself when the pipeline is free — see Pipeline Queue "
+                                   "for the estimated start")
         self.banner.style(replace="background: var(--cr-surface-light); border: 1px solid var(--cr-border)")
 
     async def _restore_active_run(self):
