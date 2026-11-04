@@ -68,7 +68,8 @@ class PipelineRunner:
     def event_bus(self) -> EventBus:
         return event_bus
 
-    async def start(self, document_set: dict[str, Any], review_milestones: bool = True) -> str:
+    async def start(self, document_set: dict[str, Any], review_milestones: bool = True,
+                    started_by: str = "cli") -> str:
         """Start a new pipeline run. Returns run_id. ``review_milestones=False`` (New Run →
         "Pause for review at milestones" unchecked) pauses only at milestones of failed steps."""
         run_id = str(uuid4())
@@ -136,10 +137,10 @@ class PipelineRunner:
 
                 # Save pipeline run
                 await self._db.execute_insert(
-                    "INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at, config_snapshot) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at, "
+                    "config_snapshot, started_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (run_id, doc_set_id, "running", 0, now,
-                     json.dumps(self._config, default=str)),
+                     json.dumps(self._config, default=str), started_by or "cli"),
                 )
             except Exception:
                 logger.exception("Failed to persist pipeline run to DB")
@@ -149,6 +150,7 @@ class PipelineRunner:
             "current_step": 0,
             "started_at": time.monotonic(),
             "session_id": run_id,
+            "started_by": started_by or "cli",
         }
 
         # Subscribe to own events to persist step results to DB
@@ -384,6 +386,15 @@ class PipelineRunner:
         if session and session.state:
             return dict(session.state)
         return {}
+
+    def active_run(self) -> dict | None:
+        """The run in progress (``{"run_id", "started_by", "status"}``), if any. Only one pipeline
+        runs at a time: milestone state is global (spec 006 — a new start must not silently
+        cancel another user's run)."""
+        for rid, info in self._active_runs.items():
+            if info.get("status") in ("running", "paused_milestone"):
+                return {"run_id": rid, "started_by": info.get("started_by", "cli"), "status": info["status"]}
+        return None
 
     async def _cancel_active_runs(self):
         """Cancel all active pipeline/monitor tasks and clear stale milestone state."""

@@ -103,6 +103,12 @@ user sees **only their own runs** on every screen that shows runs:
 | Artifact Cleanup | Their runs |
 | Settings | Global settings (the screen permission decides) |
 
+**One pipeline at a time.** The runner runs one pipeline at a time (milestone state is global) and a
+new start replaces the active run. A user may replace only their own active run: when another user's
+run is in progress, a start (New Run or Run History → Re-run) is refused with a message (the admin is
+told who started it, others "another user") and the refusal is recorded. The admin stops another
+user's run explicitly from Live Run.
+
 Runs created before this feature have no owner: only the admin sees them. Runs started from the
 CLI record `cli` (admin only). Ownership is checked on the server for every action that takes a
 run id (open, re-run, cancel, delete, milestone decision, view/download a file), not only by

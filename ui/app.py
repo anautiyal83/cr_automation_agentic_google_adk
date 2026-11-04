@@ -881,6 +881,7 @@ def create_app() -> None:
         if user.must_change_password:
             return RedirectResponse("/login")
         ui_access.install(user, _audit)  # handlers check Update through it (ui/access.py)
+        run_scope = ui_access.scope()  # the admin sees every run, others only their own
         ui.add_head_html(ui_access.READONLY_CSS)
 
         ui.add_head_html(CUSTOM_CSS)
@@ -1023,7 +1024,9 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 # PipelineRunner.start() takes a dict, not a UCDocumentSet
                 doc_dict = doc_set.model_dump() if hasattr(doc_set, 'model_dump') else doc_set
                 doc_dict["document_set_id"] = str(doc_dict.get("id", doc_dict.get("document_set_id", "")))
-                run_id = await _runner.start(doc_dict, review_milestones=review_milestones)
+                if not await ui_access.may_start_run(_runner, _db):
+                    return
+                run_id = await _runner.start(doc_dict, review_milestones=review_milestones, started_by=user.id)
                 if progress:
                     from uuid import UUID
                     await progress.start_tracking(UUID(run_id))
@@ -1168,7 +1171,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                                 "r.error_summary, d.uc_name "
                                 "FROM pipeline_runs r "
                                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
-                                "ORDER BY r.started_at DESC", ()
+                                f"WHERE {run_scope.where('r')[0]} "
+                                "ORDER BY r.started_at DESC", run_scope.where('r')[1]
                             )
                             total = len(runs)
                             completed = sum(1 for r in runs if 'completed' in str(r.get('status') or '').lower())
@@ -1186,7 +1190,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
 
                             # LLM stats
                             from shared.llm import load_usage_stats
-                            llm_raw = await load_usage_stats()
+                            llm_raw = await load_usage_stats(owner=run_scope.owner)
                             total_tokens = sum(e.get("total_tokens", 0) for e in llm_raw)
                             total_cost = sum(e.get("cost_usd", 0) for e in llm_raw)
                             tokens_label.text = f"{total_tokens:,}" if total_tokens else "0"

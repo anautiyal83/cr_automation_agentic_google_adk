@@ -7,7 +7,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import action, requires
+from ui.access import action, may_start_run, requires, scope
 
 from ui.components import status_cells
 
@@ -23,6 +23,7 @@ class HistorySection:
         self._current_page = 1
         self._total_pages = 1
         self._all_filtered_runs: list[dict] = []
+        self._scope = scope()  # the admin sees every run, others only their own (spec 006)
         self._build_ui()
         # Auto-load on init
         if runner:
@@ -158,11 +159,12 @@ class HistorySection:
         db = self.runner._db
         filters = {}
         status_val = self.status_filter.value
-        where_clause = ""
-        params = ()
+        owner_sql, owner_params = self._scope.where("r")
+        where_clause = f"WHERE {owner_sql}"
+        params = owner_params
         if status_val and status_val != "all":
-            where_clause = "WHERE r.status = ? OR r.status = ?"
-            params = (status_val, f"PipelineStatus.{status_val.upper()}")
+            where_clause += " AND (r.status = ? OR r.status = ?)"
+            params = (*owner_params, status_val, f"PipelineStatus.{status_val.upper()}")
 
         try:
             runs = await db.execute(
@@ -246,12 +248,16 @@ class HistorySection:
     async def _on_open_run(self, e):
         row = e.args if isinstance(e.args, dict) else {}
         if self.on_open_run and row.get("id"):
+            if not await self._scope.check(self.runner._db, row["id"], "run.open", "history"):
+                return
             await self.on_open_run(row["id"])
 
     async def _on_details(self, e):
         row = e.args
         run_id = row.get("id")
         if not run_id or not self.runner or not self.runner._db:
+            return
+        if not await self._scope.check(self.runner._db, run_id, "run.details", "history"):
             return
 
         self.detail_title.text = f"Run Details — {row.get('uc_name') or ''} ({row.get('status') or ''})"
@@ -442,6 +448,8 @@ class HistorySection:
         row = e.args
         run_id = row.get("id")
         if run_id and self.on_view_outputs:
+            if not await self._scope.check(self.runner._db, run_id, "run.outputs", "history"):
+                return
             await self.on_view_outputs(run_id)
 
     @requires("history", "run.rerun")
@@ -449,6 +457,10 @@ class HistorySection:
         row = e.args
         run_id = row.get("id")
         if not run_id or not self.runner:
+            return
+        if not await self._scope.check(self.runner._db, run_id, "run.rerun", "history"):
+            return
+        if not await may_start_run(self.runner, self.runner._db):
             return
 
         uc_name = row.get("uc_name", "UC")
@@ -463,7 +475,7 @@ class HistorySection:
             from uuid import uuid4
             doc["document_set_id"] = str(uuid4())
 
-            new_run_id = await self.runner.start(doc)
+            new_run_id = await self.runner.start(doc, started_by=self._scope.user.id)
             ui.notify(f"Pipeline started for {uc_name}", type="positive")
             if self.on_rerun:
                 await self.on_rerun(new_run_id)
@@ -485,8 +497,9 @@ class HistorySection:
         db = self.runner._db
         try:
             rows = await db.execute(
-                "SELECT COUNT(*) as cnt FROM pipeline_runs WHERE status NOT IN ('running', 'paused_milestone', 'paused_hil', "
-                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE')", ()
+                "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                f"AND {self._scope.where('r')[0]}", self._scope.where('r')[1]
             )
             total = rows[0]["cnt"] if rows else 0
         except Exception:
@@ -524,7 +537,8 @@ class HistorySection:
                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
                 "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
-                "ORDER BY r.started_at DESC", ()
+                f"AND {self._scope.where('r')[0]} "
+                "ORDER BY r.started_at DESC", self._scope.where('r')[1]
             )
         except Exception:
             ui.notify("Failed to query runs", type="negative")

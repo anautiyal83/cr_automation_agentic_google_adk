@@ -28,10 +28,10 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T010 Header user menu: name + role, email, Change password dialog (trail), Sign out
 - [X] T011 Preview (DB copy, role analyst: Dashboard/Run History/Output Documents View, Live Run Update): admin sees 8 screens + cache; Ana 4 screens, no cache, `/?page=settings` refused (recorded), View pills, Cleanup Old Runs disabled, Re-run greyed; devtools bypass (class removed) → server refuses Re-run, notification + trail `run.rerun` refused; Live Run (Update) interactive. `tests/test_access.py`
 
-## Step 4: Run ownership
-- [ ] T012 `started_by` recorded by the runner (UI user / `cli`)
-- [ ] T013 Run scope in Dashboard, Live Run, Output Documents, Run History, LLM Usage, Artifact Cleanup; ownership check on run-id actions and file View/Download
-- [ ] T014 Check SC-004 with two users
+## Step 4: Run ownership — done 2026-11-04
+- [X] T012 `started_by` recorded by the runner (`runner.start(..., started_by=)`: the logged-in user from New Run and Run History → Re-run; `cli` from main.py / test_run.py); `runner.active_run()`
+- [X] T013 `ui/access.py` `RunScope` (SQL filter, `owns`, `check` with notice + trail) used in Dashboard (runs + LLM totals), Live Run (restore of the active run, DB fallback, opening a run, restart/stop/cancel/milestone/questionnaire via `@_own_run`), Output Documents (run list, selection, jump from other screens), Run History (list with status filter, details, open, outputs, re-run, cleanup), LLM Usage (view and clear only own runs: `load_usage_stats/clear_usage_stats(owner=)`), Artifact Cleanup (list, delete, bulk). One pipeline at a time: `may_start_run` refuses a start while another user's run is active (spec)
+- [X] T014 Preview (DB copy, 10 ownerless runs; Ana owns 2, Bob 1): admin sees 10 on Dashboard/Run History/Output Documents/Artifact Cleanup, Ana 2, Bob 1. `tests/test_access.py`: scope filter/owns/check (refusal recorded), ownerless runs admin-only, usage by owner, one pipeline at a time
 
 ## Step 5: Users & Roles screen
 - [ ] T015 Users tab (add, role, enable/disable, reset password, delete)

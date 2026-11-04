@@ -7,7 +7,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import action, requires
+from ui.access import action, requires, scope
 
 from ui.components import status_cells
 
@@ -27,6 +27,7 @@ class CleanupSection:
         self._current_page = 1
         self._total_pages = 1
         self._all_filtered_runs: list[dict] = []
+        self._scope = scope()  # the admin sees every run, others only their own (spec 006)
         self._build_ui()
         if runner:
             async def _safe_refresh():
@@ -115,8 +116,9 @@ class CleanupSection:
                 "SELECT r.id, r.status, r.started_at, d.uc_name "
                 "FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                f"WHERE {self._scope.where('r')[0]} "
                 "ORDER BY r.started_at DESC",
-                (),
+                self._scope.where('r')[1],
             )
         except Exception:
             runs = []
@@ -200,6 +202,8 @@ class CleanupSection:
         uc = row.get("uc_name", rid[:8])
         if not rid:
             return
+        if not await self._scope.check(self.runner._db, rid, "run.delete", "cleanup"):
+            return
 
         async def do_delete():
             try:
@@ -241,9 +245,10 @@ class CleanupSection:
         db = self.runner._db
         try:
             rows = await db.execute(
-                "SELECT COUNT(*) as cnt FROM pipeline_runs WHERE status NOT IN "
+                "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN "
                 "('running', 'paused_milestone', 'paused_hil', "
-                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE')", ()
+                "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
+                f"AND {self._scope.where('r')[0]}", self._scope.where('r')[1]
             )
             total = rows[0]["cnt"] if rows else 0
         except Exception:
@@ -278,7 +283,8 @@ class CleanupSection:
                 "SELECT r.id FROM pipeline_runs r "
                 "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
-                "ORDER BY r.started_at DESC", ()
+                f"AND {self._scope.where('r')[0]} "
+                "ORDER BY r.started_at DESC", self._scope.where('r')[1]
             )
         except Exception:
             ui.notify("Failed to query runs", type="negative")

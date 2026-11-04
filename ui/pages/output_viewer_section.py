@@ -6,7 +6,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import requires_admin
+from ui.access import requires_admin, scope
 
 from ui.components import card_title
 
@@ -32,6 +32,7 @@ class OutputViewerSection:
         self.artifact_store = artifact_store
         self.runner = runner
         self._show_cache = show_cache  # the cache is shared by all users: admin only (spec 006)
+        self._scope = scope()  # the admin sees every run, others only their own
         self._current_file: Path | None = None
         self._build_ui()
         # Auto-load runs on init
@@ -130,8 +131,9 @@ class OutputViewerSection:
                 "SELECT r.id, r.status, r.started_at, d.uc_name "
                 "FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
+                f"WHERE {self._scope.where('r')[0]} "
                 "ORDER BY r.started_at DESC",
-                (),
+                self._scope.where('r')[1],
             )
         except Exception:
             self._all_runs = []
@@ -201,6 +203,8 @@ class OutputViewerSection:
     async def _on_run_selected(self, e):
         run_id = self.run_select.value
         if not run_id or not self.artifact_store:
+            return
+        if not await self._scope.check(self.runner._db, run_id, "run.outputs", "outputs"):
             return
         self.viewer_row.set_visibility(True)
         self.empty_state.set_visibility(False)
@@ -370,6 +374,8 @@ class OutputViewerSection:
 
     async def refresh_for_run(self, run_id: UUID):
         """Called externally to show outputs for a specific completed run."""
+        if not await self._scope.check(self.runner._db, str(run_id), "run.outputs", "outputs"):
+            return
         await self._load_runs()
         self.run_select.value = str(run_id)
         self.viewer_row.set_visibility(True)

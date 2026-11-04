@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
-from ui.access import action, requires
+from ui.access import action, requires, scope
 
 from ui.components import card_title, stat_card
 
@@ -28,6 +28,7 @@ _STEP_LABELS = {
 
 class UsageSection:
     def __init__(self):
+        self._scope = scope()  # the admin sees every run's usage, others their own runs'
         self._build_ui()
 
     def _build_ui(self):
@@ -59,13 +60,13 @@ class UsageSection:
     @requires("usage", "usage.clear")
     async def _clear(self):
         from shared.llm import clear_usage_stats
-        await clear_usage_stats()
+        await clear_usage_stats(owner=self._scope.owner)
         ui.notify("Usage stats cleared", type="info")
         await self._refresh()
 
     async def _refresh(self):
         from shared.llm import load_usage_stats
-        raw = await load_usage_stats()
+        raw = await load_usage_stats(owner=self._scope.owner)
 
         # Aggregate totals
         by_model: dict[str, dict] = {}

@@ -222,15 +222,23 @@ def get_usage_stats() -> list[dict]:
     return list(_usage_log)
 
 
-async def load_usage_stats(run_id: str = "") -> list[dict]:
+async def load_usage_stats(run_id: str = "", owner: str | None = None) -> list[dict]:
     """Every recorded LLM call from the DB (all runs, or one run), oldest first; the in-memory
-    log when no DB is registered. Same keys as the in-memory entries (``timestamp`` = epoch)."""
+    log when no DB is registered. Same keys as the in-memory entries (``timestamp`` = epoch).
+    ``owner``: only the runs that user started (spec 006; None = all runs)."""
     if _usage_db is None:
-        return [e for e in _usage_log if not run_id or e.get("run_id") == run_id]
+        return [e for e in _usage_log if (not run_id or e.get("run_id") == run_id) and owner is None]
     from datetime import datetime
+    where, params = [], []
+    if run_id:
+        where.append("run_id = ?")
+        params.append(run_id)
+    if owner is not None:
+        where.append("run_id IN (SELECT id FROM pipeline_runs WHERE started_by = ?)")
+        params.append(owner)
     rows = await _usage_db.execute(
         f"SELECT {', '.join(_USAGE_COLUMNS)}, created_at FROM llm_usage "
-        + ("WHERE run_id = ? " if run_id else "") + "ORDER BY id", (run_id,) if run_id else ())
+        + (f"WHERE {' AND '.join(where)} " if where else "") + "ORDER BY id", tuple(params))
     for r in rows:
         try:
             r["timestamp"] = datetime.fromisoformat(str(r.pop("created_at"))).timestamp()
@@ -239,8 +247,14 @@ async def load_usage_stats(run_id: str = "") -> list[dict]:
     return rows
 
 
-async def clear_usage_stats() -> None:
-    """Delete all recorded LLM usage (memory and DB)."""
+async def clear_usage_stats(owner: str | None = None) -> None:
+    """Delete recorded LLM usage (memory and DB): all of it, or only that of the runs ``owner``
+    started (spec 006: a user clears only their own)."""
+    if owner is not None:
+        if _usage_db is not None:
+            await _usage_db.execute_insert(
+                "DELETE FROM llm_usage WHERE run_id IN (SELECT id FROM pipeline_runs WHERE started_by = ?)", (owner,))
+        return
     _usage_log.clear()
     if _usage_db is not None:
         await _usage_db.execute_insert("DELETE FROM llm_usage")

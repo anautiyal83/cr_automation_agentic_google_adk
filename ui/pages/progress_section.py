@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
 import re
 import time
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 from nicegui import ui, context
 
-from ui.access import action, requires
+from ui.access import action, requires, scope
 
 from core.events import PipelineEvent
 from core.events import event_bus
@@ -58,6 +60,22 @@ _MILESTONE_NAMES = {
 }
 
 
+def _own_run(action_name: str):
+    """Run only on the user's own tracked run (the admin: any run) — spec 006."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(self, *args, **kwargs):
+            if self.active_run_id and self.runner and not await self._scope.check(
+                    self.runner._db, str(self.active_run_id), action_name, "progress"):
+                return None
+            result = fn(self, *args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        return wrapper
+    return deco
+
+
 class ProgressSection:
     def __init__(self, runner=None, on_view_details=None, on_view_outputs=None):
         self.runner = runner
@@ -70,6 +88,7 @@ class ProgressSection:
             self._client = context.client
         except Exception:
             self._client = None
+        self._scope = scope()  # the admin follows every run, others only their own (spec 006)
         self._build_ui()
         # Check for active runs on load
         if runner:
@@ -541,6 +560,8 @@ class ProgressSection:
                 live_status = info.get("status", "")
                 logger.info("_restore: run %s status=%s", rid[:8], live_status)
                 if live_status in ("running", "paused_milestone", "paused_hil"):
+                    if not (self._scope.user and self._scope.user.owns_run(info.get("started_by"))):
+                        continue  # another user's run
                     run_id = UUID(rid)
                     status = live_status
                     step = info.get("current_step", 0)
@@ -559,7 +580,8 @@ class ProgressSection:
                     "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
                     "WHERE r.status IN ('running', 'paused_hil', 'paused_milestone', "
                     "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
-                    "ORDER BY r.started_at DESC LIMIT 1", ()
+                    f"AND {self._scope.where('r')[0]} "
+                    "ORDER BY r.started_at DESC LIMIT 1", self._scope.where('r')[1]
                 )
                 if not rows:
                     return
@@ -778,6 +800,8 @@ class ProgressSection:
 
     async def view_run(self, run_id: str):
         """Open a finished (or any) run on the run page: steps, artifacts, test cases, logs."""
+        if self.runner and not await self._scope.check(self.runner._db, str(run_id), "run.open", "progress"):
+            return
         live = self.runner._active_runs.get(str(run_id), {}) if self.runner else {}
         if live.get("status") in ("running", "paused_milestone", "paused_hil"):
             await self.start_tracking(UUID(str(run_id)))
@@ -1417,6 +1441,7 @@ class ProgressSection:
         dialog.open()
 
     @requires("progress", "questionnaire.submit")
+    @_own_run("questionnaire.submit")
     def _submit_questionnaire(self, dialog, answer_inputs: dict, use_defaults: bool = False):
         """Collect answers and respond to the milestone."""
         import json as _json
@@ -1508,6 +1533,7 @@ class ProgressSection:
         dialog.open()
 
     @requires("progress", "milestone.decision")
+    @_own_run("milestone.decision")
     async def _milestone_respond(self, decision: str):
         self.milestone_row.set_visibility(False)
         if not self.runner or not self.active_run_id:
@@ -1634,6 +1660,7 @@ class ProgressSection:
         self._set_run_state("idle")
 
     @requires("progress", "run.restart")
+    @_own_run("run.restart")
     async def _restart(self):
         """Cancel current run and notify user to start new run."""
         if not self.runner or not self.active_run_id:
@@ -1647,6 +1674,7 @@ class ProgressSection:
             ui.notify(f"Restart failed: {exc}", type="negative")
 
     @requires("progress", "run.stop")
+    @_own_run("run.stop")
     async def _stop(self):
         """Stop the pipeline — preserves completed artifacts."""
         if not self.runner or not self.active_run_id:
@@ -1677,6 +1705,7 @@ class ProgressSection:
         ui.notify("Pipeline stopped", type="warning")
 
     @requires("progress", "run.cancel")
+    @_own_run("run.cancel")
     async def _cancel(self):
         """Cancel the pipeline — shows cancelling state, then resets."""
         if not self.runner or not self.active_run_id:

@@ -127,6 +127,76 @@ def guard(screen: str, action_name: str, fn):
     return requires(screen, action_name)(fn)
 
 
+class RunScope:
+    """Which runs a page's user sees (spec 006 D3/D5): the admin every run, anyone else only the
+    runs they started. Sections take it when they are built (``scope()``) and use it in their
+    queries and before every action on a run id."""
+
+    def __init__(self, access: Access | None) -> None:
+        self.access = access
+
+    @property
+    def user(self):
+        return self.access.user if self.access else None
+
+    def where(self, alias: str = "r") -> tuple[str, tuple]:
+        """SQL condition (no WHERE/AND) + params on ``<alias>.started_by``."""
+        if self.user is None:
+            return "1 = 0", ()
+        if self.user.is_admin:
+            return "1 = 1", ()
+        return f"{alias}.started_by = ?", (self.user.id,)
+
+    @property
+    def owner(self) -> str | None:
+        """``None`` for the admin (all runs), else the user id."""
+        return None if self.user is None or self.user.is_admin else self.user.id
+
+    async def owns(self, db, run_id: str) -> bool:
+        if self.user is None or not run_id:
+            return False
+        if self.user.is_admin:
+            return True
+        rows = await db.execute("SELECT started_by FROM pipeline_runs WHERE id = ?", (str(run_id),))
+        return bool(rows) and self.user.owns_run(rows[0]["started_by"])
+
+    async def check(self, db, run_id: str, action_name: str, screen: str = "") -> bool:
+        """``owns`` + notify and record a refusal (another user's run, or a crafted id)."""
+        if await self.owns(db, run_id):
+            return True
+        if self.access is not None:
+            ui.notify("This run belongs to another user", type="warning")
+            await self.access.audit.record(action_name, user=self.user, outcome=REFUSED, target_type="run",
+                                           target_id=str(run_id), run_id=str(run_id),
+                                           details={"reason": "not the owner", "screen": screen})
+        return False
+
+
+def scope() -> RunScope:
+    """The run scope of the page being built (call in a section's ``__init__``)."""
+    return RunScope(current())
+
+
+async def may_start_run(runner, db) -> bool:
+    """One pipeline runs at a time (milestone state is global) and a new start cancels the active
+    run: refuse when that run belongs to another user, instead of cancelling it silently."""
+    access = current()
+    active = runner.active_run() if hasattr(runner, "active_run") else None
+    if not active or (access is not None and active["started_by"] == access.user.id):
+        return True
+    who = "another user"
+    if access is not None and access.user.is_admin:
+        rows = await db.execute("SELECT email FROM users WHERE id = ?", (active["started_by"],))
+        who = rows[0]["email"] if rows else ("the command line" if active["started_by"] == "cli" else who)
+    ui.notify(f"A pipeline is already running (started by {who}). Only one pipeline runs at a time — "
+              "start yours when it has finished.", type="warning", timeout=8000)
+    if access is not None:
+        await access.audit.record("run.start", user=access.user, outcome=REFUSED, target_type="run",
+                                  target_id=active["run_id"], run_id=active["run_id"],
+                                  details={"reason": "another user's run is in progress"})
+    return False
+
+
 def run_later(coro) -> None:
     """Fire-and-forget for sync callers (navigation refusals)."""
     try:
