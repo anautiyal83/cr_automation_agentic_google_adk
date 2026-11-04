@@ -1,0 +1,26 @@
+# Tasks: Production parity (spec 009)
+
+## MRF_ANNOUNCEMENT_LOADING (analysis 2026-11-04 — fixes proposed, awaiting go-ahead)
+
+- [X] P009-01 Logical comparison local vs production, gap causes → [uc-mrf-announcement-loading.md](uc-mrf-announcement-loading.md)
+- [X] P009-02 Requirement guideline draft → [requirement-guidelines.md](requirement-guidelines.md)
+- [ ] P009-03 Rollback contract (M-1, M-2; OB-25): rollback / rollback post-check phases `when: ROLLBACK_REQUIRED == 'true'`;
+  failure branches of activity, activity post-check and post-health steps set `vars: {ROLLBACK_REQUIRED: 'true'}`;
+  JAR probe first (phase `when` on a branch var, string compare). Deterministic in `structure.py` + prompt + validator
+- [ ] P009-04 Per-row failure flags (M-2): transfer/apply failure sets a row flag; later steps of the row gate on it
+  (`when`) / `break_when`; teach branch `vars` + `break_when` in the step 6 prompt
+- [ ] P009-05 File-load backup/rollback pattern (M-4, M-5): back up only items the load overwrites (archive members via
+  `tar -tf`, or the file), rollback = remove loaded items, then restore the backup; prompt rule + validator warning
+  for whole-directory backups and `rm` of an archive name
+- [ ] P009-06 "Every item" verification (M-6): when the requirement says all files/items, validator rejects an
+  "exists" regex; pattern `find … | grep -v <good>` must be empty
+- [ ] P009-07 Step 1 questions when the documents lack them (M-3, M-7, M-8, M-9, M-10): input-file source and presence
+  check, transfer route, repo path convention, health-check commands, rollback trigger, run modes
+- [ ] P009-08 Step 1 conflict check (M-4, M-5, M-12): answers vs MOP branch rules, answers vs each other, CIQ test rows
+  vs branch rules → one confirmation question each
+- [ ] P009-09 Use orchestration `paths.local` as the input-file location in step 6 (M-3)
+- [ ] P009-10 Re-run MRF, compare again, update the analysis
+
+## Next use cases
+
+- [ ] PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION — production YAML into `CR-Config/PGW/production`
