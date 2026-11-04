@@ -28,7 +28,7 @@ production stages every file on the repo server; the pipeline sends them straigh
 | O-D4 | Transfer protocol | **Per node: SFTP where the node supports it, otherwise SCP** |
 | O-D5 | Checkboxes | **Every phase and sub-phase is a checkbox**, Activity / ActivityConfiguration / RollbackConfiguration included (a run may be checks only). A group (Activity, Rollback) ticks/clears its sub-phases; a group stays ticked while one of its sub-phases is; at least one phase must be selected to start |
 | O-D6 | SFTP support | Per node type in Settings → Vendor profiles: `File transfer: SFTP / SCP` (default SFTP); a node type without a profile is asked once in step 1 |
-| O-D7 | Repo route (user, 2026-11-04) | **The node talks to the repo**, as in production: the automation server uploads an input file to the repo (framework SFTP), the node downloads it (`sftp` client when the node type supports SFTP, otherwise `scp`); backups: the node uploads to the repo; rollback: the node downloads them back. The repo password is answered by `expect_reply` (JAR-verified, research.md). Paths: `<backup_dir>/${ORDER_NO}/<node>/…` |
+| O-D7 | Repo route (user, 2026-11-04, corrected) | **The repo server runs the transfers**: the automation server uploads an input file to the repo (framework SFTP); on the repo server an `sftp` (node type supports SFTP) or `scp` command **uploads** it to the node; backups: the repo server **downloads** them from the node; rollback: the repo server uploads them back. The node's login password is answered by `expect_reply` on the repo step (JAR-verified for a password prompt, research.md). Repo paths `<backup_dir>/${ORDER_NO}/<node>/…` |
 
 ## Behaviour
 
@@ -79,6 +79,12 @@ Every hop keeps the `sha256sum` check on both ends. Repo paths follow the produc
 - **Step 8** simulates the repo server; a node-side transfer from/to the repo must work in MockWire (cross-instance
   file copy, password prompt).
 - **Cache**: the options are part of step 6's cache key, not of steps 1–4.
+
+## To confirm
+
+| ID | Question | Proposed |
+|----|----------|----------|
+| O-Q8 | How does the repo server reach a node (address, user, password)? | Address: a node value of the CIQ (Node_Details / IP sheet column with the node's IP or host name, `${<NODE>.<field>}`); user: the node type's SSH user (vendor profile); password: secret `${SECRET.<node>_password}`. Step 1 asks once which CIQ column holds the address when none is obvious |
 
 ## Out of scope
 
