@@ -10,14 +10,11 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T000c D8: activity trail of every action, admin-only separate screen
 - [X] T000b Q1: only action buttons (start / delete / update) are disabled on View screens; reading buttons stay enabled
 
-## Step 1: Data + service (no UI change)
-- [~] T001 Schema: `roles`, `users` tables (drafted before the spec) — add `must_change_password`,
-  levels per screen in `roles.permissions`, `pipeline_runs.started_by` migration
-- [~] T002 `core/auth.py` (drafted before the spec) — rework for D1/D2/D6: screen levels, only the
-  admin role, email login (D9), default administrator account + forced change, account protected,
-  `set-password` CLI
-- [ ] T003 `tests/test_auth.py`
-- [ ] T003a `audit_log` table + `core/audit.py` (record, query, CSV) + `tests/test_audit.py`
+## Step 1: Data + service (no UI change) — done 2026-11-04
+- [X] T001 Schema (`storage/db.py`): `roles` (levels per screen as JSON), `users` (email login, `must_change_password`), `audit_log` + indexes; migration adds `pipeline_runs.started_by` (+ index) and `users.must_change_password` — checked on a copy of the real DB (10 runs kept)
+- [X] T002 `core/auth.py`: screens + admin-only screens, View/Update levels, PBKDF2-SHA256 310k, password policy, email validation, storage secret, `AuthService` (default administrator from `NETCONFIG_ADMIN_EMAIL`/`NETCONFIG_ADMIN_PASSWORD` else `admin@netconfig.local`/`admin` + forced change; lockout; same message for unknown email; users/roles CRUD; default/last administrator and admin-role protection), `CurrentUser.can_view/can_update/owns_run`, CLI `python -m core.auth set-password <email>` (recorded in the trail)
+- [X] T003 `tests/test_auth.py` (10 tests)
+- [X] T003a `core/audit.py` (append-only `AuditTrail`: record never raises, secrets masked, query/count/distinct filters, CSV export) + `tests/test_audit.py` (3 tests)
 
 ## Step 2: Login gate
 - [ ] T004 Probe NiceGUI 3.17.1: middleware + `app.storage.user` + `storage_secret`; media URL blocked without session

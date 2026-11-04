@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     config_snapshot TEXT NOT NULL DEFAULT '{}',
     intermediate_repr TEXT,
     error_summary TEXT,
-    is_regression_run INTEGER NOT NULL DEFAULT 0
+    is_regression_run INTEGER NOT NULL DEFAULT 0,
+    started_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS uc_document_sets (
@@ -125,6 +126,47 @@ CREATE TABLE IF NOT EXISTS test_reports (
     generated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    permissions TEXT NOT NULL DEFAULT '{}',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role_id TEXT NOT NULL REFERENCES roles(id),
+    active INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT,
+    password_changed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    user_id TEXT,
+    email TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT '',
+    uc_name TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'done',
+    details TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_log(run_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -217,6 +259,16 @@ class Database:
                     )
                 except Exception:
                     pass  # Column already exists
+            # Login (spec 006): who started a run; forced password change
+            for table, col, ddl in [
+                ("pipeline_runs", "started_by", "TEXT"),
+                ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                except Exception:
+                    pass  # Column already exists
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_started_by ON pipeline_runs(started_by)")
             await db.commit()
 
         # Auto-load seed data on fresh DB
