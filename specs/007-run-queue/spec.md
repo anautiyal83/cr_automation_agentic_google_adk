@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-04
 
-**Status**: Draft — spec and plan for review; implementation step by step after approval
+**Status**: Phase 1 approved (decisions below, 2026-11-04); phase 2 deferred
 
 **Input**: "The pipeline can only run one job at a time … our pipeline should support parallel runs" →
 after the parallel-run proposal: "ok lets not run pipeline parallely but make a queue based system for
@@ -132,6 +132,9 @@ failed, cancelled, removed — last 24 h, at most 10) so users see how the queue
   queue), queue.remove (user), with positions.
 - **FR-008** Run History, Dashboard and Output Documents show `queued` as a status; a queued run has no
   outputs yet.
+- **FR-009** A submit is refused (message + trail `run.queue` refused) when the user already has
+  `max_queued_per_user` (default 3) waiting jobs, or when a job of the same use case is waiting, running or
+  paused.
 
 ## Phase 2 — Parallel runs (picked from the queue)
 
@@ -167,15 +170,15 @@ failed, cancelled, removed — last 24 h, at most 10) so users see how the queue
 - Priorities or reordering of the queue (beyond removal).
 - E-mail / push notification when a queued run starts.
 
-## Open Questions
+## Decisions on the open questions (2026-11-04, user)
 
-| # | Question | Proposed default |
-|---|----------|------------------|
-| Q1 | A run waiting for a milestone review holds the queue indefinitely. Auto-cancel after a time? | No auto-cancel; the queue shows how long it has been waiting; the admin can cancel it |
-| Q2 | May the administrator move a queued run to the front? | No (FIFO only) in this iteration |
-| Q3 | Limit queued runs per user? | No limit |
-| Q4 | Same use case queued more than once? | Allowed (they run one after another) |
-| Q5 | Phase 2: default number of parallel runs; per-user limit? | Default 2 slots once phase 2 ships (Settings); per-user limit 1 running run (admin unlimited) |
+| # | Question | Decision |
+|---|----------|----------|
+| Q1 | Auto-cancel a run paused for review? | **No** — the queue shows how long it has been paused; the admin can cancel it |
+| Q2 | Admin moves a queued run to the front? | **No** — first in, first out |
+| Q3 | Limit of queued runs per user? | **At most 3** waiting jobs per user, configurable (`execution.max_queued_per_user`); a 4th submit is refused with a message (admin included) |
+| Q4 | Same use case queued more than once? | **No (for now)** — a use case cannot be submitted while a job of it is waiting, running or paused; refused with a message naming the existing job's status |
+| Q5 | Phase 2 slots / per-user limit | **Deferred** with phase 2 |
 
 ## Success Criteria (phase 1)
 - **SC-001** With a run active, a second start is queued (not refused, nothing cancelled); when the first

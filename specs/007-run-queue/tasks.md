@@ -8,13 +8,13 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T000 Queue instead of parallel runs; users see the queue to estimate their wait (2026-11-04)
 - [X] T000c Queue shows each job's status incl. recently finished (2026-11-04)
 - [X] T000a Two phases: phase 1 queue, phase 2 parallel runs picked from the queue only (2026-11-04)
-- [ ] T000b Open questions Q1–Q4 (spec)
+- [X] T000b Q1 no auto-cancel, Q2 no reordering, Q3 max 3 waiting jobs per user (configurable), Q4 one job per use case, Q5 phase 2 deferred
 
 # Phase 1 — Queue
 
 ## Step 1: Queue in the runner
 - [ ] T001 Schema: `queued_at`, `review_milestones`, `work_seconds`; `step_results.started_at`
-- [ ] T002 `runner.submit()` (always queues) / `dispatch()` (lock, `slots = 1`) / `_launch()` / `remove_queued()` / `resume_queue()`; no cancel-on-start
+- [ ] T002 `runner.submit()` (always queues; refuses past `max_queued_per_user` or when the use case already has a job) / `dispatch()` (lock, `slots = 1`) / `_launch()` / `remove_queued()` / `resume_queue()`; no cancel-on-start
 - [ ] T003 `tests/test_run_queue.py` (FIFO, auto-start, removal, restart, single start)
 
 ## Step 2: Timing and estimates
