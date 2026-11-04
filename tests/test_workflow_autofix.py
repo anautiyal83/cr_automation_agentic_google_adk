@@ -504,3 +504,28 @@ def test_no_output_check_passes_on_empty_output():
     assert not java_regex_matches(r"^$", "") and java_regex_matches(r"$", "")       # the JAR's rule
     assert java_regex_matches(r"[^x]*", "")                                          # a class, no anchor
     assert empty_output_success(wf) == 0
+
+
+def test_chmod_check_reads_a_listing_and_a_skip_passes():
+    """DEP-63 (run c89f65c2): chmod prints nothing, its count check had nothing to count; the JAR
+    counts `.*` twice per line, fails on any parenthesis in expr, reads unregistered vars as ''."""
+    from skills.network_config_gen.autofix import (expr_without_parentheses, guard_skip_expr,
+                                                    list_after_silent, loop_count_nonempty)
+    step = {"node": "MRF",
+            "send": "if [[ ! '${MRF.VER}' == '13.'* ]]; then chmod 777 ${rec.data.DEST}/*; "
+                    "else echo SKIPPED_BY_CONDITION; fi",
+            "register": [{"regex": "(?<fileLine>.*)", "loop": True, "count_var": "TOTAL_FILES"},
+                         {"regex": "^-rwxrwxrwx.*", "loop": True, "count_var": "OK_PERMISSIONS"}],
+            "validation": {"success": {"criteria": {"expr": "(OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0)"}}}}
+    plain_cp = {"node": "MRF", "send": "cp /tmp/a /opt/x/", "validation": {"success": {"criteria": {"regex": ".*"}}}}
+    wf = {"phases": {"activity": {"steps": [step, plain_cp]}}}
+    for rule in (list_after_silent, loop_count_nonempty, expr_without_parentheses, guard_skip_expr):
+        assert rule(wf) == 1, rule.__name__
+        assert rule(wf) == 0, rule.__name__ + " is idempotent"
+    assert step["send"] == ("if [[ ! '${MRF.VER}' == '13.'* ]]; then chmod 777 ${rec.data.DEST}/* && "
+                            "ls -l ${rec.data.DEST}/*; else echo SKIPPED_BY_CONDITION; fi")
+    assert step["register"][0]["regex"] == "(?<fileLine>.+)"
+    assert step["register"][-1] == {"regex": "(?<ncSkipped>SKIPPED_BY_CONDITION)"}
+    assert step["validation"]["success"]["criteria"]["expr"] == \
+        "OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0 || ncSkipped == 'SKIPPED_BY_CONDITION'"
+    assert plain_cp["send"] == "cp /tmp/a /opt/x/"     # its check needs no output

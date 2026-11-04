@@ -289,6 +289,10 @@ def fix_workflow(yaml_text: str) -> str:
     fix_single_file_listings(parsed)
     tar_create_success(parsed)
     empty_output_success(parsed)
+    list_after_silent(parsed)
+    loop_count_nonempty(parsed)
+    expr_without_parentheses(parsed)
+    guard_skip_expr(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1394,6 +1398,124 @@ def empty_output_success(parsed: dict) -> int:
             if new != regex:
                 criteria["regex"] = new
                 changed += 1
+    return changed
+
+
+# Commands that print nothing when they succeed (coreutils): a check that reads their output
+# has nothing to read (DEP-63: `chmod 777 d/*` checked by counting `-rwxrwxrwx` lines)
+_SILENT = re.compile(r"^(chmod|chown|chgrp|cp|mv)\s+(.*)$")
+_GUARD_THEN = re.compile(r"^(if \[\[.+?\]\]; then\s*)(.+?)(\s*;\s*else echo " + SKIPPED_BY_CONDITION + r";\s*fi)$", re.S)
+
+
+def _needs_output(step: dict) -> bool:
+    """The step reads its command's output: registers, an expr, or a regex empty output fails."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    if step.get("register"):
+        return True
+    for criteria in _criteria_blocks(step):
+        if criteria.get("expr"):
+            return True
+        regex = criteria.get("regex")
+        if isinstance(regex, str) and regex and not java_regex_matches(regex, ""):
+            return True
+    return False
+
+
+def list_after_silent(parsed: dict) -> int:
+    """``chmod / chown / cp / mv`` print nothing: when the step checks their output, list what they
+    changed (``&& ls -l <files>`` — the files, not the folder: no ``total N`` line to count)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or "&&" in send or "|" in send.replace("||", "") or not _needs_output(step):
+            continue
+        guard = _GUARD_THEN.match(send.strip())
+        inner = guard.group(2) if guard else send.strip()
+        m = _SILENT.match(inner)
+        if not m or ";" in inner:
+            continue
+        args = [a for a in m.group(2).split() if not a.startswith("-")]
+        paths = args[-1:] if m.group(1) in ("cp", "mv") else args[1:]
+        if not paths:
+            continue
+        listed = f"{inner} && ls -l {' '.join(paths)}"
+        step["send"] = guard.group(1) + listed + guard.group(3) if guard else listed
+        changed += 1
+    return changed
+
+
+def loop_count_nonempty(parsed: dict) -> int:
+    """A looped register counts every match: ``(?<line>.*)`` also matches the empty string after
+    each line, so one line counted 2 and ``OK == TOTAL`` never held (probed 2026-11-04). A loop
+    regex that can match empty text gets ``.+`` for ``.*`` (or must match one character)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            if not isinstance(reg, dict) or not reg.get("loop") or not isinstance(reg.get("regex"), str):
+                continue
+            regex = reg["regex"]
+            py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+            try:
+                empty = re.fullmatch(py, "") is not None
+            except re.error:
+                continue
+            if not empty:
+                continue
+            new = re.sub(r"(?<!\\)\.\*", ".+", regex)
+            try:
+                if re.fullmatch(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", new), ""):
+                    new = "(?=.)" + regex
+            except re.error:
+                new = "(?=.)" + regex
+            reg["regex"] = new
+            changed += 1
+    return changed
+
+
+def expr_without_parentheses(parsed: dict) -> int:
+    """The JAR's ``criteria.expr`` fails on any parenthesis (``(TOTAL > 0)`` fails; probed
+    2026-11-04) and binds ``&&`` tighter than ``||``: parentheses around an ``&&`` group or a
+    single comparison are dropped. Ones that hold ``||`` stay (the validator reports them)."""
+    changed = 0
+    group = re.compile(r"\(([^()'|]*(?:'[^']*'[^()'|]*)*)\)")
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for criteria in _criteria_blocks(step):
+            expr = criteria.get("expr")
+            if not isinstance(expr, str) or "(" not in expr:
+                continue
+            new = expr
+            while True:
+                stripped = group.sub(lambda m: m.group(1).strip(), new)
+                if stripped == new:
+                    break
+                new = stripped
+            if new != expr:
+                criteria["expr"] = re.sub(r"\s+", " ", new).strip()
+                changed += 1
+    return changed
+
+
+def guard_skip_expr(parsed: dict) -> int:
+    """A guarded step (``…; else echo SKIPPED_BY_CONDITION; fi``) must pass when skipped: regex
+    checks get the alternative (``shell_guard_conditions``), an ``expr`` check gets
+    ``|| ncSkipped == 'SKIPPED_BY_CONDITION'`` with ``ncSkipped`` registered (an unregistered
+    variable reads as '' — probed 2026-11-04; DEP-63: the VER 13 nodes failed the skipped chmod)."""
+    changed = 0
+    tail = f" || ncSkipped == '{SKIPPED_BY_CONDITION}'"
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or not _GUARD_THEN.match(send.strip()):
+            continue
+        blocks = [c for c in _criteria_blocks(step) if isinstance(c.get("expr"), str) and c["expr"]
+                  and tail not in c["expr"]]
+        if not blocks:
+            continue
+        for criteria in blocks:
+            criteria["expr"] = criteria["expr"] + tail
+        regs = step.setdefault("register", [])
+        if not any(isinstance(r, dict) and "(?<ncSkipped>" in str(r.get("regex")) for r in regs):
+            regs.append({"regex": f"(?<ncSkipped>{SKIPPED_BY_CONDITION})"})
+        changed += 1
     return changed
 
 

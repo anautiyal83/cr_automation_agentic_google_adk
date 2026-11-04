@@ -813,8 +813,14 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   still fails by its exit code first).
 - Replay (steps 8 + 9, DB copy): TC-R01 passes; MRF1 / MRF2 now stop at DEP-63; MRF3 = DEP-60.
 
-### DEP-63 — Step 6: a chmod step checked by counting `ls -l` lines (Medium, Open)
+### DEP-63 — Step 6: a chmod step checked by counting `ls -l` lines (Medium, Fixed 2026-11-04)
 - c89f65c2: `if [[ ! VER == 13.* ]]; then chmod 777 <dest>/*; else echo SKIPPED_BY_CONDITION; fi` registers
   `TOTAL_FILES` / `OK_PERMISSIONS` from its output and succeeds on `OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0`.
   chmod prints nothing → 0 == 0 && 0 > 0 is false on every node; and the guard autofix lets SKIPPED_BY_CONDITION
   pass only regex checks, not `expr` ones, so the skipped branch (VER 13) fails too.
+- Probed (cli-automation): `expr` fails on ANY parenthesis (`(TOTAL_FILES > 0)` fails), `&&` binds tighter than
+  `||`; a looped `(?<x>.*)` counts the empty match after each line (one line → 2); an unregistered variable is `''`.
+- **Fix** (autofix): `list_after_silent` (`chmod 777 d/*` → `chmod 777 d/* && ls -l d/*` when the check reads
+  output), `loop_count_nonempty` (`.*` → `.+`), `expr_without_parentheses` (groups without `||`),
+  `guard_skip_expr` (`|| ncSkipped == 'SKIPPED_BY_CONDITION'` + its register). Replay of c89f65c2 steps 8 + 9:
+  MRF1, MRF2, rollback-only PASS; MRF3 = DEP-60.

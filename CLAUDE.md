@@ -154,6 +154,11 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- JAR facts (probed 2026-11-04): on EMPTY output a regex with `^` never matches (`^$` fails, `.*` passes —
+  autofix `empty_output_success`); `expr` fails on any parenthesis and binds `&&` tighter than `||` (autofix drops
+  them); a looped register counts `.*` twice per line (autofix → `.+`); an unregistered variable reads as `''`;
+  silent commands (`chmod cp mv chown`) whose check reads output get `&& ls -l <paths>` (autofix); guarded steps
+  with an `expr` pass when skipped (`|| ncSkipped == 'SKIPPED_BY_CONDITION'`)
 - `criteria.expr` compares REGISTERED variables only (`cpuIdle >= 90`): no `Float()`/`Int()`, a literal `True` always
   fails, named groups of the validation regex are invisible to expr → `register:` the value on the step (autofix)
 - A non-zero exit fails a step before its regex (`use_exit_code: false` does not help): "must be absent" checks are
