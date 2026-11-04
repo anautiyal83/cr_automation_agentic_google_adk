@@ -192,3 +192,17 @@ def test_users_screen_helpers():
         auth.check_password_policy(_generated_password())  # generated passwords pass the policy
     assert _levels_text({"history": VIEW, "outputs": UPDATE}) == "Run History: View · Output Documents: Update"
     assert _levels_text({}) == "No screens"
+
+
+def test_runs_from_before_the_login_belong_to_the_default_admin(service):
+    async def scenario():
+        for rid, owner in (("old1", None), ("old2", ""), ("cli1", "cli"), ("u1run", "u1")):
+            await service.db.execute_insert(
+                "INSERT INTO pipeline_runs (id, document_set_id, status, started_by) VALUES (?, 'd', 'completed', ?)",
+                (rid, owner))
+        await service.ensure_defaults()  # every start
+        admin = await service.user_by_email("admin@netconfig.local")
+        rows = await service.db.execute("SELECT id, started_by FROM pipeline_runs ORDER BY id")
+        return admin["id"], {r["id"]: r["started_by"] for r in rows}
+    admin_id, owners = run(scenario())
+    assert owners == {"cli1": "cli", "old1": admin_id, "old2": admin_id, "u1run": "u1"}

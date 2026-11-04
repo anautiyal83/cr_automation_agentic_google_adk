@@ -26,7 +26,8 @@ The web UI needs a login (email + password). Spec: [specs/006-rbac-login](specs/
 - **Forgotten password** (any user, run on the server): `python -m core.auth set-password <email>`
 - **Users & Roles** (admin): create users (they set their own password at first login), give each one a role;
   a role grants each screen **None**, **View** (data only, action buttons disabled) or **Update**.
-- **Runs**: everyone sees and acts on the runs they started; the administrator sees all runs. One pipeline
+- **Runs**: everyone sees and acts on the runs they started; the administrator sees all runs (runs from
+  before the login belong to the administrator). One pipeline
   runs at a time — a start is refused while another user's run is in progress.
 - **Audit Trail** (admin): every action, refused attempt and pipeline step — filter, details, CSV export.
 - Sessions last 12 h; 5 failed logins lock an email for 5 minutes. The session cookie is signed with

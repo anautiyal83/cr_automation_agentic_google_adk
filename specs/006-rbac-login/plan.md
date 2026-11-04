@@ -64,7 +64,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | K4 | View enforced twice: action buttons (explicitly marked) disabled (D7) **and** a server-side `require(update)` in changing handlers | Disabled buttons are a UI hint; the server check is the security boundary; explicit marking keeps reading buttons enabled |
 | K5 | Stdlib PBKDF2 (310k, OWASP 2023) | No new dependency |
 | K6 | NiceGUI `app.storage.user` for the session; lockout in memory | Built in; single server process |
-| K7 | Ownership by `started_by` on `pipeline_runs`; ownerless/CLI runs admin-only | D3/D5 without a sharing model |
+| K7 | Ownership by `started_by` on `pipeline_runs`; runs from before the login are given to the default administrator at start (D10); CLI runs (`cli`) admin-only | D3/D5 without a sharing model |
 | K8 | One append-only `audit_log` table for user actions and pipeline (`system`) events | D8: one place to follow who did what in a run; recording must never break the action it records |
 
 ## Security Notes
@@ -81,8 +81,8 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
   buttons enabled on reload; another user's run id refused; logout.
 
 ## Rollout
-1. On the first start after the upgrade: tables created, administrator account created; existing runs get no
-   owner (admin-only).
+1. On the first start after the upgrade: tables created, administrator account created; existing runs belong to
+   the default administrator.
 2. Set `NETCONFIG_ADMIN_EMAIL` / `NETCONFIG_ADMIN_PASSWORD` before the first start, or log in with
    `admin@netconfig.local` / `admin` and set a new password, or run
    `python -m core.auth set-password <email>` on the server.

@@ -173,9 +173,20 @@ class AuthService:
         else:  # new screens included
             await self.db.execute("UPDATE roles SET permissions = ?, is_system = 1 WHERE name = ?",
                                   (admin_levels, ADMIN_ROLE))
-        if await self.db.execute("SELECT 1 FROM users u JOIN roles r ON r.id = u.role_id "
-                                 "WHERE r.name = ? LIMIT 1", (ADMIN_ROLE,)):
-            return
+        if not await self.db.execute("SELECT 1 FROM users u JOIN roles r ON r.id = u.role_id "
+                                     "WHERE r.name = ? LIMIT 1", (ADMIN_ROLE,)):
+            await self._create_default_admin()
+        await self._adopt_ownerless_runs()
+
+    async def _adopt_ownerless_runs(self) -> None:
+        """Runs from before the login (no ``started_by``) belong to the default administrator."""
+        rows = await self.db.execute(
+            "SELECT u.id FROM users u JOIN settings s ON s.key = 'default_admin_email' AND s.value = u.email")
+        if rows:
+            await self.db.execute("UPDATE pipeline_runs SET started_by = ? WHERE started_by IS NULL OR started_by = ''",
+                                  (rows[0]["id"],))
+
+    async def _create_default_admin(self) -> None:
         email = normalize_email(os.environ.get("NETCONFIG_ADMIN_EMAIL") or DEFAULT_ADMIN_EMAIL)
         password = os.environ.get("NETCONFIG_ADMIN_PASSWORD") or ""
         if password:

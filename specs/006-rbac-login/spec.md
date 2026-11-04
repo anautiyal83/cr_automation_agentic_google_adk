@@ -16,6 +16,7 @@ add or create specs and plan for this, then we will implement step by step"; the
 | # | Question | Decision |
 |---|----------|----------|
 | D1 | First administrator | A default administrator is created on first start, and its password can be set (no setup form) |
+| D10 | Runs from before the login | They belong to the default administrator |
 | D9 | Login name | Users log in with their **email address** (unique, case-insensitive); there is no separate username |
 | D2 | Starting roles | Only the built-in **`admin`** role; the admin creates every other role |
 | D3 | Which runs a normal user sees | **Only the runs they started** |
@@ -109,8 +110,8 @@ run is in progress, a start (New Run or Run History → Re-run) is refused with 
 told who started it, others "another user") and the refusal is recorded. The admin stops another
 user's run explicitly from Live Run.
 
-Runs created before this feature have no owner: only the admin sees them. Runs started from the
-CLI record `cli` (admin only). Ownership is checked on the server for every action that takes a
+Runs created before this feature belong to the default administrator (assigned at start, D10).
+Runs started from the CLI record `cli` (admin only). Ownership is checked on the server for every action that takes a
 run id (open, re-run, cancel, delete, milestone decision, view/download a file), not only by
 filtering lists.
 
@@ -180,7 +181,7 @@ locked account) are recorded too.
 1. User A started R1, user B started R2 → A sees only R1 on Dashboard, Live Run, Output Documents,
    Run History, LLM Usage and Artifact Cleanup.
 2. A acting on R2's id (crafted event or URL) is refused.
-3. The admin sees R1, R2 and the runs without an owner.
+3. The admin sees R1, R2, the CLI runs and the runs from before the login (which are the admin's).
 
 ### US8 — Activity trail (P1)
 1. User A logs in, starts a run, approves a milestone and downloads the MOP; the pipeline retries

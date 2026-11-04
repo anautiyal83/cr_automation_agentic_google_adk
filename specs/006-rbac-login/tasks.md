@@ -44,5 +44,8 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T021 `ui/pages/audit_section.py`: admin-only Audit Trail (Admin group) — filters date range (last 7 days by default), user, action, outcome, run id / use case, text; newest first, 50 per page; outcome pills; row → details dialog (JSON); Export CSV of the filter (recorded as audit.export)
 - [X] T022 Preview (DB copy): Ana views and downloads documents of her run and follows two refused links → admin's Audit Trail filtered by Ana shows login, document.view, document.download (run aac54518, file), screen.open refused ×2; details dialog; CSV export (5 rows); Ana cannot open the screen. `tests/test_audit.py` (system events), `tests/test_access.py` (document entries)
 
+## Follow-up (2026-11-04)
+- [X] T023 D10: runs from before the login belong to the default administrator — `AuthService.ensure_defaults` assigns ownerless runs to it at every start (CLI runs keep `cli`); test
+
 ## Step 7: Wrap-up — done 2026-11-04
 - [X] T018 README "Login & Access" (first start, env vars, set-password, roles/levels, own runs, one pipeline at a time, audit trail, secret, HTTPS, CLI); CLAUDE.md "Login & Access" (how to add action buttons, run scope, trail) + structure
