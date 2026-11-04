@@ -348,23 +348,23 @@ class HistorySection:
                             ui.label(f"${(u['cost'] or 0):.4f}").classes("text-caption font-mono")
 
             # --- Final Documents (the run's deliverables, as on step 10 / Output Documents) ---
-            from ui.pages.output_viewer_section import OutputViewerSection, _category_header, _final_documents
+            from ui.pages.output_viewer_section import OutputViewerSection, _category_box, _final_documents
             uc_name = (doc or {}).get("uc_name") or row.get("uc_name") or ""
             final = _final_documents(Path("data/runs") / str(run_id), uc_name)
             if final:
                 with ui.expansion("Final Documents", icon="verified")                         .classes("w-full").props("dense default-opened"):
                     for category, docs in final:
-                        _category_header(category, len(docs))
-                        for label, fpath in docs:
-                            with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
-                                ui.icon("description", size="14px").classes("cr-text-accent")
-                                with ui.column().classes("gap-0 flex-1 min-w-0"):
-                                    ui.label(label).classes("text-caption font-semibold")
-                                    ui.label(fpath.name).classes("text-caption cr-text-dim font-mono")
-                                ui.button("View", icon="visibility",
-                                          on_click=lambda _, f=fpath: OutputViewerSection._view_dialog(f))                                 .props("flat dense size=xs color=primary no-caps")
-                                ui.button("Download", icon="download",
-                                          on_click=lambda _, f=fpath: ui.download(str(f)))                                 .props("flat dense size=xs color=primary no-caps")
+                        with _category_box(category, len(docs)):
+                            for label, fpath in docs:
+                                with ui.row().classes("items-center gap-2 w-full py-1 no-wrap"):
+                                    ui.icon("description", size="14px").classes("cr-text-accent")
+                                    with ui.column().classes("gap-0 flex-1 min-w-0"):
+                                        ui.label(label).classes("text-caption font-semibold")
+                                        ui.label(fpath.name).classes("text-caption cr-text-dim font-mono")
+                                    ui.button("View", icon="visibility",
+                                              on_click=lambda _, f=fpath: OutputViewerSection._view_dialog(f))                                 .props("flat dense size=xs color=primary no-caps")
+                                    ui.button("Download", icon="download",
+                                              on_click=lambda _, f=fpath: ui.download(str(f)))                                 .props("flat dense size=xs color=primary no-caps")
 
             # --- Output Artifacts ---
             try:

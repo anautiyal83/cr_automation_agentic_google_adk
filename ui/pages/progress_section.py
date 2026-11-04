@@ -419,24 +419,34 @@ class ProgressSection:
                 _empty_state("description", "No artifacts yet",
                              "Files this step writes to the run folder appear here.")
                 return
+            from ui.pages.output_viewer_section import _category_box
+            container = None
             for f in files:
-                if f in headers:
-                    from ui.pages.output_viewer_section import _category_header
-                    _category_header(*headers[f])
-                with ui.row().classes("cr-file-row items-center no-wrap"):
-                    ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
-                    with ui.column().classes("gap-0 flex-1 min-w-0"):
-                        if f in labels:
-                            ui.label(labels[f]).classes("cr-file-label")
-                            ui.label(f"{Path(f).relative_to(self._run_dir).as_posix()} · {_size(f.stat().st_size)}") \
-                                .classes("cr-file-path")
-                        else:
-                            ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
-                            ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
-                    ui.button("View", icon="visibility", on_click=lambda _, p=f: _open_view(p)) \
-                        .props("flat dense color=primary size=sm no-caps")
-                    ui.button("Download", icon="download", on_click=lambda _, p=f: ui.download(str(p))) \
-                        .props("flat dense color=primary size=sm no-caps")
+                if f in headers:  # step 10: a bordered box per category
+                    container = _category_box(*headers[f])
+                elif headers and f not in labels:
+                    container = None
+                if container is not None:
+                    with container:
+                        self._file_row_for(f, labels)
+                else:
+                    self._file_row_for(f, labels)
+
+    def _file_row_for(self, f, labels: dict):
+        with ui.row().classes("cr-file-row items-center no-wrap"):
+            ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
+            with ui.column().classes("gap-0 flex-1 min-w-0"):
+                if f in labels:
+                    ui.label(labels[f]).classes("cr-file-label")
+                    ui.label(f"{Path(f).relative_to(self._run_dir).as_posix()} · {_size(f.stat().st_size)}") \
+                        .classes("cr-file-path")
+                else:
+                    ui.label(str(f.relative_to(self._run_dir))).classes("cr-file-name")
+                    ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
+            ui.button("View", icon="visibility", on_click=lambda _, p=f: _open_view(p)) \
+                .props("flat dense color=primary size=sm no-caps")
+            ui.button("Download", icon="download", on_click=lambda _, p=f: ui.download(str(p))) \
+                .props("flat dense color=primary size=sm no-caps")
 
     def _render_tests(self):
         import json as _json

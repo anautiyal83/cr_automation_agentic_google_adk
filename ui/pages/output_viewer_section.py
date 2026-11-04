@@ -230,9 +230,9 @@ class OutputViewerSection:
             if final:
                 with ui.expansion("Final Documents", icon="verified", value=True)                         .classes("w-full").props("dense header-class='text-body2 font-semibold'"):
                     for category, docs in final:
-                        _category_header(category, len(docs))
-                        for label, fpath in docs:
-                            self._file_row(fpath, label)
+                        with _category_box(category, len(docs)):
+                            for label, fpath in docs:
+                                self._file_row(fpath, label)
             for group_name in sorted(groups.keys()):
                 group_files = groups[group_name]
                 label = group_name.replace("_", " ").title()
@@ -378,11 +378,20 @@ def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, list[tuple
             for cat, docs in group_deliverables(collect_deliverables(run_root, uc_name))]
 
 
-def _category_header(category: str, count: int) -> None:
-    """Sub-heading of a final-documents category (Requirement, CIQ Validation, …)."""
-    with ui.row().classes("w-full items-center gap-2 px-2 pt-2 pb-1"):
-        ui.label(category.upper()).classes("text-caption font-semibold cr-text-dim")             .style("letter-spacing: .06em")
-        ui.label(str(count)).classes("text-caption cr-text-dim")
+_CATEGORY_ICONS = {"Requirement": "assignment", "CIQ Validation": "fact_check",
+                   "Execution": "terminal", "General": "summarize"}
+
+
+def _category_box(category: str, count: int):
+    """A bordered box for one final-documents category (Requirement, CIQ Validation, …): header
+    with the category and its document count; use ``with`` on the result to add the rows."""
+    with ui.element("div").classes("cr-doc-group"):
+        with ui.row().classes("cr-doc-group-head items-center no-wrap"):
+            ui.icon(_CATEGORY_ICONS.get(category, "folder"), size="16px").classes("cr-text-accent")
+            ui.label(category).classes("cr-doc-group-title")
+            ui.label(f"{count} document{'s' if count != 1 else ''}").classes("cr-doc-group-count")
+        body = ui.element("div").classes("cr-doc-group-body")
+    return body
 
 
 def _format_size(size: int) -> str:

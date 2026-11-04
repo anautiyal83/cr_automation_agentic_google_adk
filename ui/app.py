@@ -612,6 +612,18 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-file-row { width: 100%; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--cr-border); }
 .cr-file-row:last-child { border-bottom: none; }
+/* Final documents: one bordered box per category (Requirement, CIQ Validation, ...) */
+.cr-doc-group { width: 100%; border: 1px solid var(--cr-border); border-radius: 8px;
+  background: var(--cr-surface); margin: 10px 0 4px; overflow: hidden; }
+.cr-doc-group-head { width: 100%; gap: 8px; padding: 7px 12px; background: var(--cr-surface-light);
+  border-bottom: 1px solid var(--cr-border); }
+.cr-doc-group-title { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--cr-text); }
+.cr-doc-group-count { font-size: 11px; font-weight: 600; line-height: 18px; padding: 0 8px;
+  border-radius: 9px; background: var(--cr-primary-soft); color: var(--cr-primary); }
+.cr-doc-group-body { padding: 0 12px; }
+.cr-doc-group-body > .cr-file-row, .cr-doc-group-body > .q-row { border-bottom: 1px solid var(--cr-border); }
+.cr-doc-group-body > *:last-child { border-bottom: none !important; }
 .cr-file-name { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--cr-text);
                 word-break: break-all; }
 .cr-test-summary { font-size: 13px; color: var(--cr-text-dim); margin-bottom: 4px; }
