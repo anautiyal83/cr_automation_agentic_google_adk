@@ -28,6 +28,7 @@ production stages every file on the repo server; the pipeline sends them straigh
 | O-D4 | Transfer protocol | **Per node: SFTP where the node supports it, otherwise SCP** |
 | O-D5 | Checkboxes | **Every phase and sub-phase is a checkbox**, Activity / ActivityConfiguration / RollbackConfiguration included (a run may be checks only). A group (Activity, Rollback) ticks/clears its sub-phases; a group stays ticked while one of its sub-phases is; at least one phase must be selected to start |
 | O-D6 | SFTP support | Per node type in Settings → Vendor profiles: `File transfer: SFTP / SCP` (default SFTP); a node type without a profile is asked once in step 1 |
+| O-D7 | Repo route (user, 2026-11-04) | **The node talks to the repo**, as in production: the automation server uploads an input file to the repo (framework SFTP), the node downloads it (`sftp` client when the node type supports SFTP, otherwise `scp`); backups: the node uploads to the repo; rollback: the node downloads them back. The repo password is answered by `expect_reply` (JAR-verified, research.md). Paths: `<backup_dir>/${ORDER_NO}/<node>/…` |
 
 ## Behaviour
 
