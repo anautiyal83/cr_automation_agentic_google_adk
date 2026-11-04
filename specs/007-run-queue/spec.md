@@ -27,6 +27,8 @@ have to keep retrying and cannot tell when the pipeline will be free.
 | Q-D2 | Queue visibility | Users **see the queue** and can **estimate when their run starts** |
 | Q-D4 | Job status in the queue | The queue shows each job's status — waiting, running, paused, completed, failed, cancelled, removed — including recently finished jobs |
 | Q-D5 | Server restart | "A server restart clears everything but it should not … pipeline should also survive a run in case of restart. A step should re-run in case of server start" — interrupted runs **resume**, re-running the step they were in |
+| Q-D6 | Live Run | "If a pipeline is cancelled only then it should be removed from the Live Run page" |
+| Q-D7 | Audit trail | Only users' actions, not the system's (spec 006 D11): no run.dequeued / run.interrupted / run.resumed entries |
 | Q-D3 | Phases | **Phase 1**: the queue, one run at a time. **Phase 2**: several runs in parallel, **always taken from the queue** (the queue stays the only way in) |
 
 ## Phases
@@ -69,8 +71,8 @@ Everything a run needs is in the database and its run folder, so a server restar
   (the step it reviews is not re-run); the owner reviews it again.
 - A run that cannot resume (no checkpoint, run folder gone, a second restart while resuming the same step
   — max 2 attempts) is marked **failed** with the reason; the queue goes on.
-- Trail: `run.interrupted` and `run.resumed` (system) with the step; Live Run / queue show
-  "Resumed after a server restart — step n runs again".
+- Live Run / queue show "Resumed after a server restart — step n runs again" (not in the activity
+  trail: it is not a user's action).
 
 ### Requirements
 - **FR-010** After every completed agent the run's checkpoint is saved (DB), overwriting the previous one.
@@ -162,8 +164,12 @@ failed, cancelled, removed — last 24 h, at most 10) so users see how the queue
 - **FR-005** Estimates from working time (milestone waits excluded) of past completed runs (median of the
   last 5 of the use case, fallbacks), labelled as estimates.
 - **FR-006** Owners remove their own queued runs; the administrator any; removal is recorded.
-- **FR-007** Queue events go to the activity trail: run.queued, run.dequeued (system: started from the
-  queue), queue.remove (user), with positions.
+- **FR-007** Users' queue actions go to the activity trail: run.queued (submit), queue.remove, refused
+  submits; the system's (start from the queue, interruption, resume) do not (spec 006 D11) — they show in
+  the queue view and Live Run and in the flow log.
+- **FR-013** Live Run shows the user's latest run in every state (waiting, running, paused, resuming,
+  completed, failed) — also after a page reload, a new login or a server restart; a run leaves Live Run only
+  when it is **cancelled** (or removed from the queue). Starting another run switches Live Run to it.
 - **FR-008** Run History, Dashboard and Output Documents show `queued` as a status; a queued run has no
   outputs yet.
 - **FR-009** A submit is refused (message + trail `run.queue` refused) when the user already has

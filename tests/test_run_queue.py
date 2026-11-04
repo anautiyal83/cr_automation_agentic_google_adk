@@ -12,12 +12,12 @@ from storage.db import init_database
 def _runner(tmp_path, monkeypatch, fail_uc: str = ""):
     launched: list[str] = []
 
-    async def fake_launch(self, run_id, document_set, review_milestones, started_by):
+    async def fake_launch(self, run_id, document_set, review_milestones, started_by, resume=None):
         if document_set.get("uc_name") == fail_uc:
             raise RuntimeError("cannot start")
-        launched.append(document_set["uc_name"])
+        launched.append(document_set["uc_name"] + (" (resumed)" if resume else ""))
         self._active_runs[run_id] = {"status": "running", "uc_name": document_set["uc_name"],
-                                     "started_by": started_by, "review": review_milestones}
+                                     "started_by": started_by, "review": review_milestones, "resume": resume}
 
     monkeypatch.setattr(PipelineRunner, "_launch", fake_launch)
 
@@ -121,7 +121,7 @@ def test_resume_after_restart(tmp_path, monkeypatch):
         started = await runner.resume_queue()
         return a, started, await _statuses(runner)
     a, started, statuses = asyncio.run(scenario())
-    assert statuses == {"UC_A": "failed", "UC_B": "running"} and launched == ["UC_A", "UC_B"]
+    assert statuses == {"UC_A": "failed", "UC_B": "running"} and launched == ["UC_A", "UC_B"]  # no checkpoint
 
 
 def test_single_start_when_dispatched_together(tmp_path, monkeypatch):
@@ -157,7 +157,7 @@ def test_run_that_cannot_start_does_not_block_the_queue(tmp_path, monkeypatch):
 def test_without_db_runs_start_directly(monkeypatch):
     calls = []
 
-    async def fake_launch(self, run_id, document_set, review_milestones, started_by):
+    async def fake_launch(self, run_id, document_set, review_milestones, started_by, resume=None):
         calls.append(run_id)
 
     monkeypatch.setattr(PipelineRunner, "_launch", fake_launch)
@@ -169,3 +169,62 @@ def test_without_db_runs_start_directly(monkeypatch):
 def _no_trail_noise(monkeypatch):
     """The dispatcher records run.dequeued — fine in the test DB; nothing to patch."""
     yield
+
+
+def test_interrupted_run_resumes_ahead_of_the_queue(tmp_path, monkeypatch):
+    from orchestrator import checkpoints
+    runner, launched = _runner(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run_a"
+    run_dir.mkdir()
+
+    async def scenario():
+        a = await runner.submit(_doc("UC_A"), started_by="u1")
+        await runner.submit(_doc("UC_B"), started_by="u2")
+        await checkpoints.save(a["run_id"], 3, "network_config_gen", "agent",
+                               {"run_id": a["run_id"], "run_dir": str(run_dir), "artifacts": {"x": "y"}},
+                               {"uc": "UC_A"})
+        runner._active_runs.clear()                       # restart
+        await runner.resume_queue()
+        resumed = runner._active_runs[a["run_id"]]["resume"]
+        first = (list(launched), await _statuses(runner))
+        runner._active_runs.clear()                       # a second and a third restart at the same point
+        await runner.resume_queue()
+        runner._active_runs.clear()
+        await runner.resume_queue()
+        return resumed, first, await _statuses(runner), list(launched)
+    resumed, (launched_1, statuses_1), statuses_3, launched_3 = asyncio.run(scenario())
+    assert launched_1 == ["UC_A", "UC_A (resumed)"] and statuses_1 == {"UC_A": "running", "UC_B": "queued"}
+    assert resumed["agent_name"] == "network_config_gen" and resumed["state"]["artifacts"] == {"x": "y"}
+    assert resumed["requirements"] == {"uc": "UC_A"}
+    # resumed twice; the third interruption at the same step fails it and the queue goes on
+    assert statuses_3 == {"UC_A": "failed", "UC_B": "running"}
+    assert launched_3 == ["UC_A", "UC_A (resumed)", "UC_A (resumed)", "UC_B"]
+
+
+def test_checkpoint_progress_resets_attempts_and_resume_positions(tmp_path):
+    from orchestrator import checkpoints
+    from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step
+
+    async def scenario():
+        db = await init_database(str(tmp_path / "c.db"))
+        checkpoints.set_db(db)
+        await checkpoints.save("r1", 3, "network_config_gen", "agent", {"a": 1}, None)
+        await checkpoints.count_attempt(db, "r1")
+        same = (await checkpoints.load(db, "r1"))["resume_attempts"]
+        await checkpoints.save("r1", 3, "network_config_gen", "agent", {"a": 2}, None)   # same point
+        kept = (await checkpoints.load(db, "r1"))["resume_attempts"]
+        await checkpoints.save("r1", 4, "helper_script_gen", "agent", {"a": 3}, None)    # progress
+        reset = await checkpoints.load(db, "r1")
+        await checkpoints.delete(db, "r1")
+        return same, kept, reset, await checkpoints.load(db, "r1")
+    same, kept, reset, gone = asyncio.run(scenario())
+    assert (same, kept, reset["resume_attempts"], reset["state"], gone) == (1, 1, 0, {"a": 3}, None)
+
+    def pos(index, kind):
+        return checkpoints.resume_position({"agent_index": index, "kind": kind}, _AGENT_NAMES,
+                                           _AGENT_DISPLAY_STEPS, _first_agent_of_step)
+    idx = _AGENT_NAMES.index
+    assert pos(idx("network_config_gen"), "agent") == (idx("network_config_gen"), False)    # step 6 again
+    assert pos(idx("network_config_exec_qa"), "agent") == (idx("network_simulator_setup"), False)  # 9 → 8
+    assert pos(idx("ciq_validation_json_qa"), "milestone") == (idx("ciq_validation_json_qa"), True)  # review
+    assert pos(idx("network_simulator_setup"), "milestone") == (idx("network_simulator_setup"), False)  # 8 again

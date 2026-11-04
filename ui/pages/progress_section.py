@@ -542,6 +542,18 @@ class ProgressSection:
         self._refresh_selected_header()
         self._refresh_tab()
 
+    async def _show_latest_run(self):
+        """Nothing executes: Live Run keeps showing the user's latest run (completed, failed, waiting…) —
+        a run leaves Live Run only when it is cancelled (spec 007)."""
+        if not self.runner or not self.runner._db:
+            return
+        where, params = self._scope.where("r")
+        rows = await self.runner._db.execute(
+            "SELECT r.id, r.status FROM pipeline_runs r "
+            f"WHERE {where} ORDER BY COALESCE(r.queued_at, r.started_at) DESC LIMIT 1", params)
+        if rows and str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
+            await self.view_run(rows[0]["id"])
+
     async def _restore_active_run(self):
         """Check runner's live state (or DB) for any running/paused pipeline and restore the progress view."""
         try:
@@ -584,22 +596,16 @@ class ProgressSection:
                     "ORDER BY r.started_at DESC LIMIT 1", self._scope.where('r')[1]
                 )
                 if not rows:
+                    await self._show_latest_run()
                     return
                 run = rows[0]
                 db_run_id = run["id"]
 
-                # Check if this run is actually still alive in the runner
-                # If not, it's an orphaned record from a crashed/restarted server
+                # Not alive in this process: the runner resumes or fails interrupted runs at server
+                # start (spec 007 restart recovery) — show it as it stands
                 if db_run_id not in self.runner._active_runs:
-                    logger.info("_restore: orphaned DB run %s — marking as failed", db_run_id[:8])
-                    try:
-                        from datetime import datetime, timezone
-                        await self.runner._db.execute_insert(
-                            "UPDATE pipeline_runs SET status='failed', error_summary='Server restarted — pipeline lost', completed_at=? WHERE id=?",
-                            (datetime.now(timezone.utc).isoformat(), db_run_id),
-                        )
-                    except Exception:
-                        pass
+                    logger.info("_restore: run %s is not executing in this process", db_run_id[:8])
+                    await self.view_run(db_run_id)
                     return
 
                 run_id = UUID(db_run_id)
@@ -609,6 +615,7 @@ class ProgressSection:
 
             if not run_id:
                 logger.info("_restore: no active run found in memory or DB")
+                await self._show_latest_run()
                 return
 
             logger.info("_restore: found run %s, status=%s, step=%d, uc=%s",

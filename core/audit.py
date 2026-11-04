@@ -2,7 +2,8 @@
 
 Append-only: this module offers ``record`` and reading functions, nothing that edits or deletes an
 entry. ``record`` never raises — a trail write that fails is logged and the action goes on.
-Pipeline progress is recorded with the actor ``system``.
+The trail holds actions of people only (D11): the pipeline's own steps, retries, queue dispatch and
+restart recovery are not recorded (the flow log has them); older ``system`` entries are not shown.
 """
 from __future__ import annotations
 
@@ -91,7 +92,8 @@ class AuditTrail:
         """Values for the screen's filter lists (users, actions)."""
         if column not in ("email", "action", "outcome"):
             raise ValueError(column)
-        rows = await self.db.execute(f"SELECT DISTINCT {column} AS v FROM audit_log ORDER BY v")
+        rows = await self.db.execute(f"SELECT DISTINCT {column} AS v FROM audit_log WHERE email != ? ORDER BY v",
+                                     (SYSTEM,))
         return [r["v"] for r in rows if r["v"]]
 
     async def export_csv(self, **filters) -> str:
@@ -105,7 +107,7 @@ class AuditTrail:
 
     @staticmethod
     def _where(since="", until="", email="", action="", run_id="", uc_name="", outcome="", text=""):
-        clauses, params = [], []
+        clauses, params = ["email != ?"], [SYSTEM]  # user actions only (D11)
         for col, op, val in (("at", ">=", since), ("at", "<=", until), ("email", "=", email),
                              ("action", "=", action), ("run_id", "=", run_id), ("uc_name", "=", uc_name),
                              ("outcome", "=", outcome)):
@@ -116,4 +118,4 @@ class AuditTrail:
             clauses.append("(action LIKE ? OR target_id LIKE ? OR uc_name LIKE ? OR details LIKE ? "
                            "OR email LIKE ?)")
             params += [f"%{text}%"] * 5
-        return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
+        return " WHERE " + " AND ".join(clauses), tuple(params)

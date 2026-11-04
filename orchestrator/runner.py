@@ -30,14 +30,15 @@ class QueueRefused(ValueError):
 
 
 # Statuses of a run that holds or waits for the pipeline
-_LIVE = ("queued", "running", "paused_milestone", "paused_hil")
+_LIVE = ("queued", "resuming", "running", "paused_milestone", "paused_hil")
 _LIVE_SQL = ", ".join(f"'{s}'" for s in (*_LIVE, "PipelineStatus.RUNNING", "PipelineStatus.PAUSED_HIL",
                                           "PipelineStatus.PAUSED_MILESTONE"))
 
 
 def _status_word(status: str) -> str:
     s = str(status or "").replace("PipelineStatus.", "").lower()
-    return {"queued": "waiting", "paused_milestone": "paused", "paused_hil": "paused"}.get(s, s)
+    return {"queued": "waiting", "resuming": "resuming", "paused_milestone": "paused",
+            "paused_hil": "paused"}.get(s, s)
 
 
 def _document_set_from_row(row: dict) -> dict:
@@ -90,6 +91,8 @@ class PipelineRunner:
             # LLM usage rows go into the same DB as the runs (table llm_usage, by run_id)
             from shared.llm import set_usage_db
             set_usage_db(db)
+            from orchestrator import checkpoints
+            checkpoints.set_db(db)  # the pipeline saves restart checkpoints (spec 007)
         self._artifact_store = artifact_store
         self._session_service = InMemorySessionService()
         self._active_runs: dict[str, dict] = {}  # run_id → {session, task, state}
@@ -167,33 +170,38 @@ class PipelineRunner:
             if self.active_run():
                 return None
             rows = await self._db.execute(
-                "SELECT r.id AS run_id, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
+                "SELECT r.id AS run_id, r.status, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
                 "d.ciq_file_path, d.mop_file_path, d.sample_io_xml_paths, d.constraints_file_path, "
                 "d.command_outputs_path, d.additional_documents, d.selected_sheets, d.developer_notes, "
                 "d.vendor_profile FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON d.id = r.document_set_id "
-                "WHERE r.status = 'queued' ORDER BY r.queued_at, r.rowid LIMIT 1")
+                "WHERE r.status IN ('resuming', 'queued') "
+                "ORDER BY CASE r.status WHEN 'resuming' THEN 0 ELSE 1 END, r.queued_at, r.rowid LIMIT 1")
             if not rows:
                 return None
             row = rows[0]
             run_id = row["run_id"]
             from datetime import datetime, timezone
-            await self._db.execute("UPDATE pipeline_runs SET status = 'running', started_at = ? WHERE id = ?",
-                                   (datetime.now(timezone.utc).isoformat(), run_id))
+            from orchestrator import checkpoints
+            resume = await checkpoints.load(self._db, run_id) if row["status"] == "resuming" else None
+            if row["status"] == "resuming" and resume is None:
+                await self._persist_run_status(run_id, "failed", "Server restart: no checkpoint to resume from")
+                asyncio.ensure_future(self.dispatch())
+                return None
+            if resume is None:  # a resumed run keeps its original start time
+                await self._db.execute("UPDATE pipeline_runs SET status = 'running', started_at = ? WHERE id = ?",
+                                       (datetime.now(timezone.utc).isoformat(), run_id))
+            else:
+                await self._db.execute("UPDATE pipeline_runs SET status = 'running' WHERE id = ?", (run_id,))
             try:
                 await self._launch(run_id, _document_set_from_row(row), bool(row["review_milestones"]),
-                                   row["started_by"] or "cli")
+                                   row["started_by"] or "cli", resume=resume)
             except Exception as e:  # never leave the queue stuck on a run that could not start
                 logger.exception("Queued run %s could not start", run_id[:8])
                 await self._persist_run_status(run_id, "failed", f"Could not start: {e}")
                 asyncio.ensure_future(self.dispatch())
                 return None
-        flow.flow("RUN DEQUEUED — run_id=%s", run_id[:8])
-        if self._db:
-            from core.audit import AuditTrail
-            await AuditTrail(self._db).record("run.dequeued", target_type="run", target_id=run_id, run_id=run_id,
-                                              uc_name=row.get("uc_name") or "",
-                                              details={"started_by": row["started_by"]})
+        flow.flow("RUN %s — run_id=%s", "RESUMED" if resume else "DEQUEUED", run_id[:8])
         return run_id
 
     async def queue_position(self, run_id: str) -> int:
@@ -218,19 +226,56 @@ class PipelineRunner:
         return True
 
     async def resume_queue(self) -> str | None:
-        """Server start: runs the restart interrupted are marked failed, then the queue goes on."""
+        """Server start: a run the restart interrupted resumes from its checkpoint, ahead of the
+        waiting runs (status ``resuming``); without a checkpoint, a run folder, or after
+        ``MAX_RESUME_ATTEMPTS`` resumes at the same point it fails. Then the queue goes on."""
         if not self._db:
             return None
-        from datetime import datetime, timezone
-        # interrupted = was executing (running / paused), never the waiting ones
-        lost = await self._db.execute(f"SELECT id FROM pipeline_runs WHERE status IN ({_LIVE_SQL}) "
-                                      "AND status != 'queued'")
+        from orchestrator import checkpoints
+        # interrupted = was executing (running / paused / resuming), never the waiting ones
+        lost = await self._db.execute(
+            "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
+            f"ON d.id = r.document_set_id WHERE r.status IN ({_LIVE_SQL}) AND r.status != 'queued'")
         for row in lost:
-            if row["id"] not in self._active_runs:
-                await self._db.execute(
-                    "UPDATE pipeline_runs SET status = 'failed', error_summary = 'Server restarted — pipeline lost', "
-                    "completed_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), row["id"]))
+            run_id = row["id"]
+            if run_id in self._active_runs:
+                continue
+            cp = await checkpoints.load(self._db, run_id)
+            reason = ""
+            if cp is None:
+                reason = "no checkpoint"
+            elif not Path(str(cp["state"].get("run_dir") or "")).is_dir():
+                reason = "run folder missing"
+            else:
+                attempts = await checkpoints.count_attempt(self._db, run_id)
+                if attempts > checkpoints.MAX_RESUME_ATTEMPTS:
+                    reason = f"interrupted {attempts} times at {cp.get('agent_name')}"
+            if reason:
+                await self._persist_run_status(run_id, "failed", f"Server restarted — could not resume ({reason})")
+                await checkpoints.delete(self._db, run_id)
+                continue
+            await self._db.execute("UPDATE pipeline_runs SET status = 'resuming' WHERE id = ?", (run_id,))
+            flow.flow("RUN INTERRUPTED — run_id=%s resumes at %s (%s)", run_id[:8], cp.get("agent_name"), cp.get("kind"))
         return await self.dispatch()
+
+    @staticmethod
+    def _resume_state(run_id: str, resume: dict) -> dict:
+        """Session state of a resumed run: the checkpoint's, with where the pipeline continues."""
+        from agents.requirements_agent import requirements_store
+        from orchestrator import checkpoints
+        from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step
+        state = dict(resume["state"])
+        for key in ("pipeline_cancelled", "pipeline_failed", "pipeline_error"):
+            state.pop(key, None)
+        if resume.get("requirements"):
+            requirements_store[run_id] = resume["requirements"]
+        index, at_milestone = checkpoints.resume_position(resume, _AGENT_NAMES, _AGENT_DISPLAY_STEPS,
+                                                          _first_agent_of_step)
+        state["_resume_index"] = index
+        if at_milestone:
+            state["_resume_milestone_at"] = index
+        state["resumed_after_restart"] = True
+        return state
 
     async def _save_document_set(self, doc_set_id: str, document_set: dict, now: str) -> None:
         """The run's documents (re-run support and starting a queued run)."""
@@ -256,8 +301,9 @@ class PipelineRunner:
         )
 
     async def _launch(self, run_id: str, document_set: dict[str, Any], review_milestones: bool,
-                      started_by: str) -> None:
-        """Execute a run now (the pipeline is free: the dispatcher decided, or there is no DB)."""
+                      started_by: str, resume: dict | None = None) -> None:
+        """Execute a run now (the pipeline is free: the dispatcher decided, or there is no DB).
+        ``resume``: the run's checkpoint — the session continues from it (restart recovery)."""
         flow.flow("RUN START — run_id=%s, uc=%s", run_id[:8], document_set.get("uc_name", "?"))
         user_id = "pipeline_user"
 
@@ -265,7 +311,7 @@ class PipelineRunner:
         await self._cancel_active_runs()
 
         # Build initial state
-        initial_state = self._build_initial_state(run_id, document_set)
+        initial_state = self._resume_state(run_id, resume) if resume else self._build_initial_state(run_id, document_set)
         initial_state["review_milestones"] = review_milestones
 
         # Create ADK session
@@ -300,11 +346,8 @@ class PipelineRunner:
             "uc_name": document_set.get("uc_name", ""),
         }
 
-        # Subscribe to own events to persist step results to DB and to the activity trail
-        uc_name = document_set.get("uc_name", "")
-
+        # Subscribe to own events to persist step results to DB
         async def _persist_events(event: PipelineEvent):
-            await self._trail_event(run_id, uc_name, event)
             try:
                 if event.event_type in ("step_completed", "step_failed") and event.step_number:
                     step_status = event.payload.get("status", "passed")
@@ -421,6 +464,9 @@ class PipelineRunner:
             if info.get("status") in _LIVE:
                 info["status"] = "cancelled"
                 await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
+            if self._db:  # the run is over: nothing to resume
+                from orchestrator import checkpoints
+                await checkpoints.delete(self._db, run_id)
             asyncio.ensure_future(self.dispatch())
 
     async def _monitor_milestones(self, run_id: str):
@@ -542,28 +588,6 @@ class PipelineRunner:
         if session and session.state:
             return dict(session.state)
         return {}
-
-    # Pipeline progress in the activity trail (actor "system", spec 006 D8)
-    _TRAIL_EVENTS = {
-        "step_started": "step.started", "step_completed": "step.passed",
-        "step_failed": "step.failed", "retry_started": "step.retry", "milestone_reached": "milestone.reached",
-        "run_completed": "run.completed", "run_failed": "run.failed", "run_cancelled": "run.cancelled",
-    }
-
-    async def _trail_event(self, run_id: str, uc_name: str, event: PipelineEvent) -> None:
-        action = self._TRAIL_EVENTS.get(event.event_type)
-        if not action or not self._db:
-            return
-        from core.audit import FAILED, AuditTrail
-        payload = dict(event.payload or {})
-        details = {k: v for k, v in payload.items() if k in ("status", "error", "decision", "attempt", "reason")}
-        if event.step_number:
-            details["step"] = event.step_number
-        if action == "step.passed" and payload.get("status") not in (None, "passed"):
-            details["status"] = payload.get("status")
-        outcome = FAILED if action in ("step.failed", "run.failed") else "done"
-        await AuditTrail(self._db).record(action, outcome=outcome, target_type="run", target_id=run_id,
-                                          run_id=run_id, uc_name=uc_name, details=details)
 
     def active_run(self) -> dict | None:
         """The run in progress (``{"run_id", "started_by", "status"}``), if any. Only one pipeline

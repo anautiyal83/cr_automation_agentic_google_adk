@@ -16,6 +16,7 @@ add or create specs and plan for this, then we will implement step by step"; the
 | # | Question | Decision |
 |---|----------|----------|
 | D1 | First administrator | A default administrator is created on first start, and its password can be set (no setup form) |
+| D11 | What the trail shows | Only **actions by users** — started, cancelled, deleted, modified, logins, refused attempts …; **not actions taken by the system** (pipeline steps, retries, queue dispatch, restart recovery) |
 | D10 | Runs from before the login | They belong to the default administrator |
 | D9 | Login name | Users log in with their **email address** (unique, case-insensitive); there is no separate username |
 | D2 | Starting roles | Only the built-in **`admin`** role; the admin creates every other role |
@@ -128,7 +129,6 @@ locked account) are recorded too.
 | Users & roles | user created / role changed / enabled / disabled / password reset / deleted; role created / edited (old → new levels) / deleted |
 | Pipeline runs | run started (UC, documents), cancelled, stopped, restarted, re-run of a step, deleted |
 | Pipeline decisions | milestone decision per step (approve & continue, skip & continue, re-run, clarify in requirements), step 1 questions answered / defaults used |
-| Pipeline progress (actor `system`) | step started / passed / failed, automatic retry and its target step, run completed / failed — so a run's trail shows what the pipeline did between user actions |
 | Documents | document viewed or downloaded (run, file) |
 | Configuration | settings saved (changed keys; secrets such as the API key are never written, only "changed"), vendor profile added / changed / deleted, cache cleared, artifacts / old runs deleted, LLM usage cleared |
 

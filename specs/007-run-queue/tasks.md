@@ -18,10 +18,12 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T003 `tests/test_run_queue.py` (7): FIFO + automatic next start, failed run frees the pipeline, review choice kept, one job per use case, per-user limit, removal, restart, single start under concurrent dispatch, unstartable run skipped, no-DB path
 
 ## Step 1b: Restart recovery
-- [ ] T020 `run_checkpoints` table; checkpoint after every agent and at milestone pauses (PipelineAgent)
-- [ ] T021 `_launch(resume=True)`: session from checkpoint, requirements restored, start index (live-chain rule 9 → 8), restored milestone pause
-- [ ] T022 `resume_queue()`: interrupted runs → `resuming`, first in the queue; attempt limit; trail run.interrupted / run.resumed
-- [ ] T023 Tests (checkpoint round trip, resume index rules, attempts) + E2E: kill the server during step 6, during step 9, while paused at step 5 → each resumes as specified (SC-006)
+- [X] T020 `run_checkpoints` table + `orchestrator/checkpoints.py`; PipelineAgent saves a checkpoint before every agent runs (`agent`) and when a review pause begins (`milestone`); deleted at run end
+- [X] T021 `_launch(resume=…)` / `_resume_state`: session from the checkpoint, requirements restored, start index (step 9 → step 8's agent; a step 8 review re-runs step 8 — its simulator is gone), other reviews come back as the same pause (agent not re-run)
+- [X] T022 `resume_queue()` at server start (`app.on_startup`): interrupted runs → `resuming`, dispatched before waiting runs; no checkpoint / run folder missing / more than 2 resumes at the same point → failed with the reason; Live Run's old "Server restarted — pipeline lost" marking removed
+- [~] T023 Tests (`tests/test_run_queue.py`: resume ahead of the queue, attempts, checkpoint round trip, resume positions). E2E (DB copy, PGW): run killed 5 s into step 6 → a new process resumed it at step 6 (steps 1–5 not re-run) and it went on through steps 7, 8, 9 to the step 9 review. Open: resume from a review pause and from step 9 (killed run), stopped on request
+- [X] T024 Live Run keeps showing the user's latest run unless it was cancelled/removed (`_show_latest_run`), also when it is not executing in this process (Q-D6)
+- [X] T025 No system entries in the trail (Q-D7, spec 006 D11)
 
 ## Step 2: Timing and estimates
 - [ ] T004 Step start times, milestone wait times, `work_seconds` at run end

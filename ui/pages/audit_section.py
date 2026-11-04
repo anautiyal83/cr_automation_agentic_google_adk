@@ -1,4 +1,4 @@
-"""Audit Trail (spec 006 D8) — the administrator's read-only view of every recorded action.
+"""Audit Trail (spec 006 D8, D11) — the administrator's read-only view of what users did.
 
 Filters: date range, user, action, outcome, run id or use case, free text. Newest first, paged.
 A row opens its details. CSV export of the filtered entries (the export itself is recorded).

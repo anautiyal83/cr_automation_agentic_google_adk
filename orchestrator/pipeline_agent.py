@@ -83,6 +83,13 @@ def _first_agent_of_step(step_num: int) -> str:
     return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
 
 
+async def _checkpoint(run_id: str, index: int, agent_name: str, kind: str, state) -> None:
+    """Save the run's restart checkpoint (session state + requirements, spec 007)."""
+    from agents.requirements_agent import requirements_store
+    from orchestrator import checkpoints
+    await checkpoints.save(run_id, index, agent_name, kind, dict(state), requirements_store.get(run_id))
+
+
 def _write_requirements_summary(run_dir: str, uc_name: str, requirements: dict) -> None:
     """Steps 1-2 from cache: the requirements document as the agent would have written it (OB-16)."""
     try:
@@ -118,7 +125,10 @@ class PipelineAgent(BaseAgent):
         self.sub_agents = list(agents_list)
 
     async def _run_async_impl(self, ctx):
-        index = 0
+        # Restart recovery (spec 007): a resumed run starts at its checkpoint's agent; at a
+        # milestone checkpoint the agent is not re-run, its review pause is shown again
+        index = int(ctx.session.state.pop("_resume_index", 0) or 0)
+        resume_pause_at = ctx.session.state.pop("_resume_milestone_at", None)
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
@@ -152,6 +162,10 @@ class PipelineAgent(BaseAgent):
                     if err.exists():
                         err.unlink()
 
+            # ----- RESUMED AT THIS AGENT'S MILESTONE: no cache check, no run -----
+            resume_pause = resume_pause_at is not None and resume_pause_at == index
+            resume_pause_at = None if resume_pause else resume_pause_at
+
             # ----- CHECK ARTIFACT CACHE -----
             display_steps = _AGENT_DISPLAY_STEPS.get(agent.name, [])
             uc_name = ctx.session.state.get("uc_name", "")
@@ -162,7 +176,7 @@ class PipelineAgent(BaseAgent):
                 # A step an earlier agent of the same display step failed is not "passed" from
                 # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
                 step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
-                if agent.name in CACHEABLE_AGENTS and not step_failed:
+                if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause:
                     has = cache.has_cache(uc_name, agent.name,
                                           inputs_fingerprint(ctx.session.state.get("document_set")))
                     flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
@@ -219,36 +233,43 @@ class PipelineAgent(BaseAgent):
             if cache_hit:
                 index += 1
                 continue
-            try:
-                from storage.artifact_cache import ArtifactCache
-                ArtifactCache().invalidate_after(uc_name, agent.name)
-            except Exception as e:
-                logger.debug("Cache invalidation failed for %s: %s", agent.name, e)
-
-            # ----- PUBLISH step_started -----
-            if display_steps:
-                await self._publish(run_id_str, "step_started", display_steps[0])
 
             # ----- SET LLM CONTEXT for usage tracking -----
             from shared.llm import set_llm_context
             set_llm_context(run_id=run_id_str, uc_name=uc_name, step=agent.name)
-
-            # ----- EXECUTE AGENT -----
             agent_t0 = time.monotonic()
-            flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
 
-            try:
-                async for evt in agent.run_async(ctx):
-                    yield evt
-            except Exception as e:
-                elapsed = time.monotonic() - agent_t0
-                logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
-                flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
-                ctx.session.state["pipeline_failed"] = True
-                ctx.session.state["pipeline_error"] = str(e)
-                for sn in display_steps:
-                    await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
-                break
+            if resume_pause:
+                flow.flow("RESUME [%d/%d] %s — back at its milestone (not re-run)", index + 1, total, agent.name)
+            else:
+                try:
+                    from storage.artifact_cache import ArtifactCache
+                    ArtifactCache().invalidate_after(uc_name, agent.name)
+                except Exception as e:
+                    logger.debug("Cache invalidation failed for %s: %s", agent.name, e)
+
+                # ----- CHECKPOINT: a restart re-runs this agent from here (spec 007) -----
+                await _checkpoint(run_id_str, index, agent.name, "agent", ctx.session.state)
+
+                # ----- PUBLISH step_started -----
+                if display_steps:
+                    await self._publish(run_id_str, "step_started", display_steps[0])
+
+                # ----- EXECUTE AGENT -----
+                flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
+
+                try:
+                    async for evt in agent.run_async(ctx):
+                        yield evt
+                except Exception as e:
+                    elapsed = time.monotonic() - agent_t0
+                    logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
+                    flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
+                    ctx.session.state["pipeline_failed"] = True
+                    ctx.session.state["pipeline_error"] = str(e)
+                    for sn in display_steps:
+                        await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
+                    break
 
             elapsed = time.monotonic() - agent_t0
             flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
@@ -297,6 +318,8 @@ class PipelineAgent(BaseAgent):
             milestone_cfg = _AGENT_MILESTONES.get(agent.name)
             if milestone_cfg:
                 ms_step, ms_name = milestone_cfg
+                # ----- CHECKPOINT: a restart shows this review again (spec 007) -----
+                await _checkpoint(run_id_str, index, agent.name, "milestone", ctx.session.state)
                 decision = await self._milestone_pause(ctx, ms_step, ms_name, run_id_str)
 
                 if decision == "cancel":

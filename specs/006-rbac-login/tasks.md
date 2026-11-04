@@ -47,5 +47,8 @@ Implement step by step; each step is reviewed (and committed) before the next.
 ## Follow-up (2026-11-04)
 - [X] T023 D10: runs from before the login belong to the default administrator — `AuthService.ensure_defaults` assigns ownerless runs to it at every start (CLI runs keep `cli`); test
 
+## Follow-up (2026-11-04)
+- [X] T024 D11: the trail holds user actions only — the runner records no system entries (steps, retries, queue dispatch, restart recovery; the flow log has them) and reads hide older `system` entries
+
 ## Step 7: Wrap-up — done 2026-11-04
 - [X] T018 README "Login & Access" (first start, env vars, set-password, roles/levels, own runs, one pipeline at a time, audit trail, secret, HTTPS, CLI); CLAUDE.md "Login & Access" (how to add action buttons, run scope, trail) + structure

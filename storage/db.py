@@ -148,6 +148,17 @@ CREATE TABLE IF NOT EXISTS users (
     password_changed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS run_checkpoints (
+    run_id TEXT PRIMARY KEY,
+    agent_index INTEGER NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'agent',
+    state_json TEXT NOT NULL,
+    requirements_json TEXT,
+    resume_attempts INTEGER NOT NULL DEFAULT 0,
+    saved_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,

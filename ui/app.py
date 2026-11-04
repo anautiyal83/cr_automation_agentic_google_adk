@@ -791,6 +791,16 @@ async def _load_config(db):
     return config
 
 
+async def _resume_runs() -> None:
+    """Server start (spec 007): a run the restart interrupted resumes from its checkpoint, then
+    the queue goes on — without waiting for someone to open a page."""
+    try:
+        await _ensure_initialized()
+        await _runner.resume_queue()
+    except Exception as e:  # noqa: BLE001 — the UI must come up even if recovery fails
+        _logging.getLogger(__name__).error("Run recovery at start failed: %s", e, exc_info=True)
+
+
 async def _services() -> tuple[AuthService, AuditTrail]:
     """Login services for the login page (spec 006)."""
     await _ensure_initialized()
@@ -1458,8 +1468,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 with ui.column().classes("cr-page") as panel:
                     content_panels["audit"] = panel
                     panel.set_visibility(False)
-                    page_header("Audit Trail", "Who did what and when — every action, refused attempt and "
-                                               "pipeline step")
+                    page_header("Audit Trail", "Who did what and when — every user action and refused attempt")
                     with ui.card().classes("cr-section w-full p-4"):
                         audit_section = AuditSection(_audit, user)
                         on_navigate_hooks.setdefault("audit", []).append(audit_section.refresh)
@@ -1496,6 +1505,7 @@ def run() -> None:
     create_app()
 
     from shared.state import stop_simulator
+    app.on_startup(_resume_runs)
     app.on_shutdown(stop_simulator)
 
     ui.run(
