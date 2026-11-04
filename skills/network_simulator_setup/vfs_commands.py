@@ -59,7 +59,51 @@ def _simple_commands(cmd: str) -> list[str]:
             continue
         i += 1
     parts.append(cmd[start:])
-    return [_FD.sub("", p).strip() for p in parts if p.strip()]
+    out = []
+    for p in parts:
+        p = _FD.sub("", p).strip()
+        if not p:
+            continue
+        outer, inners = _lift_substitutions(p)
+        out.append(outer)
+        for inner in inners:  # `$(cat L | grep -v '/$' | sed …)`: judged as commands of their own
+            out += _simple_commands(inner)
+    return out
+
+
+SUBST = "__SUBST__"
+
+
+def _lift_substitutions(cmd: str) -> tuple[str, list[str]]:
+    """``cmd`` with every top-level ``$(…)`` replaced by a token, and the inner commands."""
+    out, inners, i, quote = [], [], 0, ""
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote == "'":
+            quote = "" if ch == "'" else quote
+        elif ch == "'":
+            quote = "'"
+        elif cmd.startswith("$(", i):
+            depth, j, q = 1, i + 2, ""
+            while j < len(cmd) and depth:
+                c = cmd[j]
+                if q:
+                    q = "" if c == q else q
+                elif c in "'\"":
+                    q = c
+                elif cmd.startswith("$(", j):
+                    depth += 1
+                    j += 1
+                elif c == ")":
+                    depth -= 1
+                j += 1
+            inners.append(cmd[i + 2:j - 1])
+            out.append(SUBST)
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), inners
 
 
 def _words(simple: str) -> list[str]:
@@ -197,13 +241,19 @@ def vfs_handled(cmd: str, prefixes: set[str]) -> bool:
             reads, dests = _paths(s)
             # tar -x … -C /: a known archive restores its own (absolute) members
             paths = reads + [d for d in dests if not (name == "tar" and _norm(d) == "/")]
-            if name == "ls" and not paths:
+            if name == "ls" and not paths and SUBST not in s:
                 return False                        # the working directory: not modelled
             if not all(_under(p, prefixes) for p in paths):
                 return False
             files += 1
         elif name not in PURE:
             return False
+        else:  # `echo x >> /tmp/…/items.list`: a redirect into the VFS is a file command
+            targets = [words[i + 1] for i, w in enumerate(words[:-1]) if w in (">", ">>")]
+            if targets:
+                if not all(_under(t, prefixes) for t in targets):
+                    return False
+                files += 1
     return files > 0
 
 

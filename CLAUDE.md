@@ -178,6 +178,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   node `/tmp/${ORDERNO}/<source folder>/<archive without $(date)>`, repo `<backup_dir>/${ORDERNO}/${<NODE>.<CIQ node
   name field>}/<source folder>/<archive>` (`structure.backups_by_convention`); the rollback lists that path
   (`nc_rb<k>_check` → `ncBackup<k>`) and decides by it. `when` takes bare names (`${x} > 0` is always false; autofix)
+- Never touch anything on the node unrelated to the activity (user rule): for a folder the activity loads into,
+  structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
+  backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)

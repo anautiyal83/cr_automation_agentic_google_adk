@@ -119,7 +119,9 @@ def _resolve(cmd: str, t: dict) -> str:
 def backup_seed_files(commands: list[dict], ciq_json_files: list[str]) -> dict[str, list[str]]:
     """VFS files that make the sources of a ``tar -c`` backup exist on the simulated node (the
     MockWire ``tar`` builtin archives what is in the VFS; a missing source fails the step).
-    A directory source gets one seed file in it."""
+    A directory source gets one seed file in it. A folder the activity loads into (``cp`` /
+    ``tar -x``) gets the files the load will overwrite — the copied file, the test archive's member
+    (``jar_executor.test_member_name``) — so the backup of exactly those runs (user rule 2026-11-05)."""
     from skills.network_config_gen.structure import tar_archive
     from .topology import file_builtin
     files: dict[str, list[str]] = {}
@@ -136,6 +138,33 @@ def backup_seed_files(commands: list[dict], ciq_json_files: list[str]) -> dict[s
                 last = src.rstrip("/").rsplit("/", 1)[-1]
                 path = src.rstrip("/") + "/existing_content.dat" if src.endswith("/") or "." not in last else src
                 files.setdefault(path, ["existing content (NetConfig simulator seed)"])
+    from skills.network_config_test.jar_executor import test_member_name
+    from .vfs_commands import _simple_commands
+    load = re.compile(r"^(?:cp(?:\s+-\w+)*\s+(\S+)\s+(\S+?)/?|tar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+?)/?)$")
+    for c in commands:
+        cmd = str(c.get("cmd", "")).strip()
+        for simple in _simple_commands(cmd):
+            m = load.match(simple)
+            if not m:
+                continue
+            src, dest, extract = (m.group(1), m.group(2), False) if m.group(1) else (m.group(3), m.group(4), True)
+            if re.search(r"(?i)backup", src):
+                continue  # the rollback's restore of a backup is no load
+            for t in tgts:
+                resolved = _resolve(cmd, t)
+                g = _GUARD.match(resolved)
+                try:
+                    if g and not eval_test(g.group(1)):
+                        continue  # this node takes the other branch
+                except (ValueError, re.error):
+                    pass
+                s, d = _resolve(src, t), _resolve(dest, t).rstrip("/")
+                if "${" in s + d or not d.startswith("/") or d == "":
+                    continue
+                name = s.rsplit("/", 1)[-1]
+                files.setdefault(f"{d}/{test_member_name(name) if extract else name}",
+                                 ["the original file the activity overwrites (NetConfig simulator seed)"])
+                files.setdefault(f"{d}/existing_content.dat", ["existing content (NetConfig simulator seed)"])
     return files
 
 

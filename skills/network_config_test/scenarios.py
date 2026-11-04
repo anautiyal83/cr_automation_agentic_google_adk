@@ -757,12 +757,15 @@ def align(commands: list[CommandResult], steps: list[WorkflowStep]) -> list[int 
             if steps[j].node.lower() == cmd.node.lower() and matches_command(steps[j].send, cmd.command):
                 found = j
                 break
-        if found is None:  # repeated/looping steps: search from the start
-            found = next((s.index for s in steps if s.node.lower() == cmd.node.lower()
-                          and matches_command(s.send, cmd.command)), None)
-        else:
+        if found is not None:
             cursor = found + 1
-        indexes.append(found)
+            indexes.append(steps[found].index)
+            continue
+        # a record loop's next pass: the nearest PRECEDING match (same loop) — the first one from the
+        # start was the backup's identical sha256sum for a rollback step
+        indexes.append(next((steps[j].index for j in range(min(cursor, len(steps)) - 1, -1, -1)
+                             if steps[j].node.lower() == cmd.node.lower()
+                             and matches_command(steps[j].send, cmd.command)), None))
     return indexes
 
 
@@ -789,6 +792,8 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
         checks.append(Check("Run reported PASS", run_passed(result.overall_status), result.overall_status))
         result.actual = (f"{len(cmds)} steps ran, {len(failed)} failed; run {result.overall_status}")
     elif sc.kind == "rollback":
+        # matched against the rollback's steps only: the backup's identical sha256sum came first
+        idx = align(cmds, [s for s in steps if s.phase_kind == "rollback"])
         outside = [c for c, i in zip(cmds, idx) if i is None or steps[i].phase_kind != "rollback"]
         checks.append(Check("Rollback steps ran", bool(cmds),
                             f"{len(cmds)} commands" if cmds else

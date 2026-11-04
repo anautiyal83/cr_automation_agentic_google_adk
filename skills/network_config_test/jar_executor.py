@@ -573,6 +573,13 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
     return created
 
 
+def test_member_name(archive_name: str) -> str:
+    """The one member of a staged test archive (``a.tar`` → ``a.dat``); step 8 seeds it as the
+    file the extraction overwrites."""
+    import re
+    return re.sub(r"\.(tar(\.(gz|bz2))?|tgz)$", "", archive_name, flags=re.I) + ".dat"
+
+
 def _write_test_input(target: Path, path: str) -> None:
     """A staged input file. An archive name gets a real archive with one member: the simulated
     node extracts it (``tar -xf … -C <dir>``, MockWire f5928df); a text placeholder fails there
@@ -587,10 +594,9 @@ def _write_test_input(target: Path, path: str) -> None:
     if not mode:
         target.write_text(body, encoding="utf-8")
         return
-    stem = re.sub(r"\.(tar(\.(gz|bz2))?|tgz)$", "", target.name, flags=re.I)
     data = body.encode("utf-8")
     with tarfile.open(target, mode, format=tarfile.USTAR_FORMAT) as tar:
-        info = tarfile.TarInfo(f"{stem}.dat")
+        info = tarfile.TarInfo(test_member_name(target.name))
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
 

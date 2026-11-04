@@ -112,3 +112,20 @@ def test_if_else_member_check_runs_on_the_vfs():
              f"else ls -ltrh {DEST}/ | grep \"{FILE}\"; fi")
     assert vfs_handled(check, _prefixes())
     assert not vfs_handled("if [[ 'a' == 'a' ]]; then systemctl status x; else echo no; fi", _prefixes())
+
+
+def test_loop_pass_aligns_with_the_nearest_preceding_step():
+    """Rollback-only via repo (run 9de5fcb8): the 2nd record pass of the rollback's sha256sum matched the
+    backup's identical command and was reported as "outside the rollback phase"."""
+    from types import SimpleNamespace
+    from skills.network_config_test.scenarios import WorkflowStep, align
+
+    def step(i, kind, node, send):
+        return WorkflowStep(index=i, phase=kind, phase_kind=kind, node=node, send=send, regex="", on_failure="stop")
+    steps = [step(0, "backup", "REPO", "sha256sum /r/x"), step(1, "rollback", "REPO", "sha256sum /r/x"),
+             step(2, "rollback", "MRF", "tar -xzvf /t/x")]
+    cmds = [SimpleNamespace(node="REPO", command="sha256sum /r/x"), SimpleNamespace(node="MRF", command="tar -xzvf /t/x")]
+    # a loop's 2nd pass goes to the nearest preceding match, not the backup's identical command
+    assert align(cmds * 2, steps)[2:] == [1, 2]
+    # rollback-only: matched against the rollback steps, indexes stay the workflow's
+    assert align(cmds * 2, [s for s in steps if s.phase_kind == "rollback"]) == [1, 2, 1, 2]

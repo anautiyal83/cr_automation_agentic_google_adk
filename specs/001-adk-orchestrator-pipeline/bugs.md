@@ -863,3 +863,21 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   with this example, `rules_baseline.conditional_pattern` keeps a well-formed one even when the CIQ breaks it, the
   JAR sanitizer lets it through (`_clean_conditional_pattern`).
 
+### DEP-66 — Backup / rollback touched files unrelated to the activity (High, Fixed 2026-11-05)
+- User rule (2026-11-05): never touch anything on a node unrelated to the activity — back up and restore exactly
+  the files the activity overwrites. Run 9de5fcb8's workflow backed up the whole destination folder, its untar
+  branch ran `chmod 777 <dest>/*`, its rollback "no backup" branch `rm -rf <dest>/*`; the "already there?" pre-check
+  counted the archive's files before the archive was on the node (it counted the folder itself: 1).
+- **Fix** (structure, option A): for a folder the activity loads into (`cp` / `tar -x`) the uploads of the loaded
+  files move to the backup phase; `nc_bk<k>_items*` list what the load puts there (`L/items.list`, same branch
+  tests), `nc_bk<k>_existing` which of them exist (files only → `L/overwritten.list`), the backup archives exactly
+  those (`tar -C <dest> $(cat …)`, else NO_FILES_TO_BACK_UP; repo copies only when archived); the rollback removes
+  exactly the loaded files (`nc_rb<k>_remove`, replaces `rm -rf <dest>/*`), then restores into `<dest>`;
+  `loaded_members_only`: `<dest>/*` after an untar becomes the archive's members. Simulator: the folder is seeded
+  with the file the load overwrites + an unrelated file (branch-aware, `jar_executor.test_member_name`); step 8
+  judges `$(…)` inner commands on their own and `>`/`>>` into the VFS as file commands. Step 9: rollback-only
+  aligns against the rollback steps (a loop's 2nd pass took the backup's identical sha256sum).
+- Replays of 9de5fcb8 (steps 8 + 9): node route, repo SFTP, repo SCP 4/4 each — the backup holds only
+  `DOC_VERIFICATION_PROMPT_5003.dat`, rollback-only restores its original, `existing_content.dat` is never touched.
+  PGW 6db86ff8: 2/2.
+

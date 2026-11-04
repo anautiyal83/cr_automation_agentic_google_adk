@@ -448,6 +448,103 @@ def _rollback_bodies(parsed: dict) -> list[dict]:
             if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or ""))]
 
 
+_GUARDED = re.compile(r"^(if (\[\[.+?\]\]); then\s*)(.+?)(\s*;\s*else echo SKIPPED_BY_CONDITION;\s*fi)$", re.S)
+_EXTRACT = re.compile(r"^tar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+?)/?$")
+_COPY = re.compile(r"^cp(?:\s+-\w+)*\s+(\S+)\s+(\S+?)/?$")
+_OVERWRITTEN = re.compile(r"-C (\S+) \$\(cat \S+/overwritten\.list\)")
+NOTHING_TO_BACK_UP = "NO_FILES_TO_BACK_UP"
+
+
+def _loads(parsed: dict) -> list[dict]:
+    """What the activity puts into a folder: ``cp <src> <dest>/`` (that file) and ``tar -xf
+    <archive> -C <dest>`` (the archive's members), with the bash test guarding the step."""
+    out = []
+    for name, body in _phase_bodies(parsed):
+        if _BACKUP_PHASE.search(name) or _ROLLBACK_PHASE.search(name) \
+                or _ROLLBACK_PHASE.search(str(body.get("name") or "")):
+            continue
+        for step in _all_steps(body["steps"]):
+            if _is_auto(step) or not isinstance(step.get("send"), str):
+                continue
+            send = step["send"].strip()
+            g = _GUARDED.match(send)
+            inner = g.group(3).strip() if g else send
+            for kind, rx in (("extract", _EXTRACT), ("copy", _COPY)):
+                m = rx.match(inner)
+                if m:
+                    out.append({"kind": kind, "src": m.group(1), "dest": m.group(2).rstrip("/"),
+                                "test": g.group(2) if g else "", "node": str(step.get("node", ""))})
+                    break
+    return out
+
+
+def loaded_members_only(parsed: dict) -> int:
+    """``<dest>/*`` after ``tar -xf <archive> -C <dest>`` (same branch) means every file of the
+    folder — ``chmod 777 <dest>/*`` changed files the activity never loaded. It becomes exactly the
+    archive's members (user rule 2026-11-05: never touch anything else on the node)."""
+    changed = 0
+    for load in _loads(parsed):
+        if load["kind"] != "extract":
+            continue
+        members = f"$(tar -tf {load['src']} | grep -v '/$' | sed 's#^#{load['dest']}/#')"
+        glob = re.compile(re.escape(load["dest"]) + r"/\*(?=$|[\s;&|)])")
+        for name, body in _phase_bodies(parsed):
+            if _BACKUP_PHASE.search(name) or _ROLLBACK_PHASE.search(name):
+                continue
+            for step in _all_steps(body["steps"]):
+                send = step.get("send") if isinstance(step, dict) else None
+                if not isinstance(send, str) or _is_auto(step) or str(step.get("node", "")) != load["node"]:
+                    continue
+                g = _GUARDED.match(send.strip())
+                if (g.group(2) if g else "") != load["test"] or not glob.search(send):
+                    continue
+                step["send"] = glob.sub(lambda m: members, send)
+                changed += 1
+    return changed
+
+
+def _take_uploads(parsed: dict, body: dict, sources: set[str]) -> list[dict]:
+    """The uploads of the files the activity loads, taken out of their (later) phase: the backup
+    must know what the load will overwrite (option A, user 2026-11-05)."""
+    moved = []
+    for name, other in _phase_bodies(parsed):
+        if other is body or _BACKUP_PHASE.search(name) or _ROLLBACK_PHASE.search(name):
+            continue
+        keep = []
+        for step in other["steps"]:
+            sftp = step.get("sftp") if isinstance(step, dict) else None
+            if isinstance(sftp, dict) and str(sftp.get("operation", "")).lower() == "upload" \
+                    and str(sftp.get("remote_path") or "") in sources and not _is_auto(step):
+                moved.append(step)
+            else:
+                keep.append(step)
+        other["steps"] = keep
+    return moved
+
+
+def _overwritten_steps(k: int, step: dict, loads: list[dict], dest: str, lst: str, path: str) -> list[dict]:
+    """List what the load puts into ``dest`` and which of those exist already; the backup step then
+    archives exactly those — nothing else on the node is touched (user rule, 2026-11-05)."""
+    items, over = f"{lst}/items.list", f"{lst}/overwritten.list"
+    node, when = str(step.get("node")), str(step.get("when") or "")
+    steps = [_step(f"{AUTO_ID}bk{k}_items0", node, "Start the list of files the activity loads", when,
+                   send=f"mkdir -p {lst} && rm -f {items} {over}")]
+    for i, load in enumerate(loads, 1):
+        name = load["src"].rsplit("/", 1)[-1]
+        cmd = f"tar -tf {load['src']} >> {items}" if load["kind"] == "extract" else f"echo {name} >> {items}"
+        steps.append(_step(f"{AUTO_ID}bk{k}_items{i}", node, f"Files the activity loads into {dest}", when,
+                           send=f"if {load['test']}; then {cmd}; fi" if load["test"] else cmd))
+    steps.append(_step(
+        f"{AUTO_ID}bk{k}_existing", node, "Which of them exist already: only those are backed up", when,
+        send=(f"if [[ -s {items} ]]; then ls -d $(cat {items} | grep -v '/$' | sed 's#^#{dest}/#') 2>/dev/null "
+              f"| sed 's#^{dest}/##' > {over} || true; fi")))
+    return steps
+
+
+def _all_registered(parsed: dict) -> set[str]:
+    return {v for _, body in _phase_bodies(parsed) for st in _all_steps(body["steps"]) for v in _registers(st)}
+
+
 def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int:
     """Backups by a naming convention, so a rollback — also a rollback-only run of the order —
     finds them without any value the execution registered (user, 2026-11-05; production M-9):
@@ -456,77 +553,101 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
       ``$(date …)``; the source folder keeps each record's backup apart)
     - via repo server (spec 010): ``<backup_dir>/${ORDERNO}/<node name in the CIQ>/<source
       folder>/<name>`` — the node copies it there and back (O-D7)
-    - the rollback first lists that path (``nc_rb<k>_check``, registers ``ncBackup<k>``) and
-      decides by it: references to what the backup step registered (``${backupTarName}``,
-      ``== null``) become that check, and the restore extracts the convention path. Run 9de5fcb8:
-      a rollback-only run skipped the restore and ran its ``rm -rf`` "no backup" branch."""
+    - a folder the activity loads into (``cp`` / ``tar -x``): only the files the load will
+      overwrite are backed up (``<list folder>/items.list`` → ``overwritten.list``; the uploads of
+      the loaded files move before them), the rollback removes exactly what was loaded, then
+      restores — never anything else on the node (user, 2026-11-05)
+    - the rollback first lists the archive (``nc_rb<k>_check`` → ``ncBackup<k>``) and decides by it:
+      references to what the backup step registered become that check."""
     order = _order_ref()
     repo_route = via_repo(requirements)
     cfg = _repo_config(requirements)
     local = _local_node(parsed)
-    backups = []  # (node, archive path, repo path or '', dropped vars, absolute sources, when)
+    loads = _loads(parsed)
+    registered = _all_registered(parsed)
+    backups = []  # (node, archive path, repo path, dropped vars, absolute sources, load dest or '')
     for name, body in _phase_bodies(parsed):
         phase_is_backup = bool(_BACKUP_PHASE.search(name) or _BACKUP_PHASE.search(str(body.get("name") or "")))
         if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or "")):
             continue
         out = []
-        for step in body["steps"]:
-            out.append(step)
+        for step in list(body["steps"]):
             if not isinstance(step, dict) or _is_auto(step) or str(step.get("node", "")) == local:
+                out.append(step)
                 continue
             send = str(step.get("send") or "")
             parsed_tar = tar_archive(send)
-            if not parsed_tar:
+            if not parsed_tar or not (phase_is_backup or _BACKUP_PHASE.search(parsed_tar[0])
+                                      or _BACKUP_PHASE.search(str(step.get("command_description") or ""))):
+                out.append(step)
                 continue
             archive, sources = parsed_tar
-            if not (phase_is_backup or _BACKUP_PHASE.search(archive)
-                    or _BACKUP_PHASE.search(str(step.get("command_description") or ""))):
-                continue
             basename = _SHELL_SUBST.sub("", archive).rsplit("/", 1)[-1]
-            src = sources[0].rstrip("/") if sources else ""
+            done = _OVERWRITTEN.search(send)                     # the load-aware form, applied before
+            src = done.group(1) if done else (sources[0].rstrip("/") if sources else "")
             mirror = src if src.startswith("/") else (f"/{src}" if src.startswith("${") else "")
             node_dir = f"/tmp/{order}{mirror}"
             path = f"{node_dir}/{basename}"
-            dropped = _registers(step)
-            if archive != path:
-                stem = re.escape(archive.rsplit("/", 1)[-1].split("$(")[0].split("${")[0])
-                # listings the LLM or the DEP-58 autofix appended for the old name go with it
-                send = re.sub(r"\s*&&\s*ls\s+-1\s+\S*" + stem + r"\S*", "", send).replace(archive, path)
-            if not send.lstrip().startswith(f"mkdir -p {node_dir}"):
-                send = f"mkdir -p {node_dir} && {send.strip()}"
-            if f"ls -1 {path}" not in send:
-                send += f" && ls -1 {path}"
-            step["send"] = send
-            step["register"] = [{"regex": f"(?<{v}>{re.escape(basename)})"} for v in sorted(dropped)] \
-                if dropped else step.get("register")
-            if not step["register"]:
-                step.pop("register")
+            dropped = _registers(step) - {v for v in _registers(step) if v.startswith("ncArchived")}
+            node = str(step.get("node"))
+            k = len(backups) + 1
             listed = "^" + r"\S+".join(re.escape(x) for x in re.split(r"\$\{[^}]*\}", path)) + "$"
+            dest_loads = [ld for ld in loads if ld["dest"] == src.rstrip("/") and ld["node"] == node]
+            if dest_loads:
+                # only what the load overwrites; the LLM's "already there?" gate read a count taken
+                # before the upload — the lists decide now
+                if step.get("when"):
+                    terms = [t for t in re.split(r"\s*&&\s*", str(step["when"])) if not any(
+                        re.search(rf"(?<![\w.]){re.escape(v)}(?![\w.])", t) for v in registered)]
+                    if terms:
+                        step["when"] = " && ".join(terms)
+                    else:
+                        step.pop("when")
+                out += _take_uploads(parsed, body, {ld["src"] for ld in dest_loads})
+                out += _overwritten_steps(k, step, dest_loads, src.rstrip("/"), node_dir, path)
+                step["send"] = (f"if [[ -s {node_dir}/overwritten.list ]]; then tar -czvf {path} -C {src.rstrip('/')} "
+                                f"$(cat {node_dir}/overwritten.list) && ls -1 {path}; else echo {NOTHING_TO_BACK_UP}; fi")
+                regs = [{"regex": f"(?<{v}>{re.escape(basename)})"} for v in sorted(dropped)]
+                step["register"] = regs + [{"regex": f"(?<ncArchived{k}>/\\S+)"}]
+                success = listed + "|" + NOTHING_TO_BACK_UP
+            else:
+                if archive != path:
+                    stem = re.escape(archive.rsplit("/", 1)[-1].split("$(")[0].split("${")[0])
+                    # listings the LLM or the DEP-58 autofix appended for the old name go with it
+                    send = re.sub(r"\s*&&\s*ls\s+-1\s+\S*" + stem + r"\S*", "", send).replace(archive, path)
+                if not send.lstrip().startswith(f"mkdir -p {node_dir}"):
+                    send = f"mkdir -p {node_dir} && {send.strip()}"
+                if f"ls -1 {path}" not in send:
+                    send += f" && ls -1 {path}"
+                step["send"] = send
+                if dropped:
+                    step["register"] = [{"regex": f"(?<{v}>{re.escape(basename)})"} for v in sorted(dropped)]
+                success = listed
             for criteria in _success_criteria(step):
                 if "regex" in criteria:
-                    criteria["regex"] = listed
-            node = str(step.get("node"))
+                    criteria["regex"] = success
+            out.append(step)
             when = str(step.get("when") or "")
             repo_path = ""
-            k = len(backups) + 1
             if repo_route:
+                copy_when = " && ".join(x for x in (when, f"ncArchived{k} != ''" if dest_loads else "") if x)
                 repo = _repo_node(parsed, cfg)
                 who = node_name_ref(node, requirements)
                 if who:
                     repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/{who}{mirror}"
                 else:  # no node name column in the CIQ: the node's hostname
-                    out.append(_hostname_step(f"{AUTO_ID}bk{k}_host", node, f"bkHost{k}", when))
+                    out.append(_hostname_step(f"{AUTO_ID}bk{k}_host", node, f"bkHost{k}", copy_when))
                     repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/${{bkHost{k}}}{mirror}"
                 repo_path = f"{repo_dir}/{basename}"
                 out += [
-                    _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", when,
+                    _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", copy_when,
                           send=f"mkdir -p {repo_dir}"),
                     *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
-                                    file_transfer(requirements, node), path, repo_path, True, when,
+                                    file_transfer(requirements, node), path, repo_path, True, copy_when,
                                     f"{node} copies the backup {basename} to the repo server"),
                 ]
-            absolute = bool(sources) and all(x.startswith(("/", "${")) for x in sources)
-            backups.append((node, path, repo_path, dropped, absolute))
+            absolute = not dest_loads and bool(sources) and all(x.startswith(("/", "${")) for x in sources)
+            backups.append((node, path, repo_path, dropped, absolute, src.rstrip("/") if dest_loads else ""))
         body["steps"] = out
     for k, b in enumerate(backups, 1):
         _rollback_by_convention(parsed, cfg, b, k, requirements)
@@ -543,13 +664,15 @@ def _success_criteria(step: dict) -> list[dict]:
 
 
 def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requirements: dict | None) -> None:
-    node, path, repo_path, dropped, absolute = backup
+    node, path, repo_path, dropped, absolute, dest = backup
     flag = f"ncBackup{k}"
     basename = path.rsplit("/", 1)[-1]
+    lst = path.rsplit("/", 1)[0]
     names = [re.escape(basename)] + [r"\$\{" + re.escape(v) + r"\}" for v in dropped]
     extract = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S*(?:" + "|".join(names) + r"))(\s+-C\s+\S+)?")
     var_ref = re.compile(r"\$\{(" + "|".join(map(re.escape, dropped)) + r")\}|(?<![\w.$])(" +
                          "|".join(map(re.escape, dropped)) + r")(?![\w.])") if dropped else None
+    wipe = re.compile(r"^rm\s+-\w+\s+" + re.escape(dest) + r"/\*?$") if dest else None
     bodies = _rollback_bodies(parsed)
     if not bodies:
         return
@@ -558,6 +681,10 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
                   f"Is there a backup of this order to restore? ({basename})",
                   send=f"ls -1 {repo_path or path} 2>/dev/null || true",
                   register=[{"regex": f"(?<{flag}>\\S+)"}])
+    # remove exactly what the activity loaded (its list), never the folder's other files
+    remove = _step(f"{AUTO_ID}rb{k}_remove", node, f"Remove the files the activity loaded into {dest}",
+                   send=(f"if [[ -f {lst}/items.list ]]; then rm -f $(cat {lst}/items.list | grep -v '/$' "
+                         f"| sed 's#^#{dest}/#'); fi")) if dest else None
     placed = False
     for body in bodies:
         out = []
@@ -565,6 +692,8 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
             if not isinstance(step, dict) or _is_auto(step):
                 out.append(step)
                 continue
+            if wipe is not None and str(step.get("node", "")) == node and wipe.match(str(step.get("send") or "").strip()):
+                continue  # `rm -rf <dest>/*` deletes files the activity never touched: nc_rb<k>_remove
             if var_ref is not None:
                 # what the backup step registered is unknown in a rollback-only run: the file
                 for key in ("when", "skip_when"):
@@ -577,25 +706,27 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
             text = str(step.get("send") or "")
             m = extract.search(text) if str(step.get("node", "")) == node else None
             if m and not placed:
-                tail = " -C /" if absolute else (m.group(2) or "")
+                tail = f" -C {dest}" if dest else (" -C /" if absolute else (m.group(2) or ""))
                 step["send"] = text[:m.start(1)] + path + tail + text[m.end():]
                 when = str(step.get("when") or "")
                 if f"{flag} != ''" not in when:
                     when = " && ".join(x for x in (when, f"{flag} != ''") if x)
                 step["when"] = when
+                if remove:
+                    out.append(remove)
                 out.append(check)
                 if repo_path:
                     # a rollback-only run: nothing of this order exists on the node yet
                     out.append(_step(f"{AUTO_ID}rs{k}_dir", node, "Create the restore folder on the node", when,
-                                     send=f"mkdir -p {path.rsplit('/', 1)[0]}"))
+                                     send=f"mkdir -p {lst}"))
                     out += _repo_transfer(f"rs{k}", check_on, node, node_login(parsed, check_on),
                                           file_transfer(requirements, node), path, repo_path, False, when,
                                           f"{node} copies the backup {basename} back from the repo server")
                 placed = True
             out.append(step)
         body["steps"] = out
-    if not placed:  # no restore step: the check still decides the rollback's conditions
-        bodies[0]["steps"].insert(0, check)
+    if not placed:  # no restore step: remove what was loaded; the check still decides the rest
+        bodies[0]["steps"][0:0] = [x for x in (remove, check) if x]
 
 
 def _hostname_step(sid: str, node: str, var: str, when: str) -> dict:
@@ -710,6 +841,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     from . import contract
     flatten(parsed)
     changes = select_phases(parsed, requirements)
+    changes += loaded_members_only(parsed)
     changes += backups_by_convention(parsed, requirements)
     changes += files_via_repo(parsed, requirements)
     changes += loop_record_steps(parsed)
