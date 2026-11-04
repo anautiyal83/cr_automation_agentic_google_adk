@@ -35,10 +35,9 @@ not declare a `LOCAL` node (step 6's autofix keeps dropping an unused one).
 - **Flags** (workflow `globals.vars`, default `'false'`): `ROLLBACK_ONLY` (runtime parameter, step 9 passes it as
   `--var`), `PRECHECK_FAILED`, `BACKUP_FAILED`, `CHANGES_MADE`, `ROLLBACK_REQUIRED`. Set by the steps' failure /
   success branches (`vars`), read by the phases' `when`.
-- **A change on the node** = a step that modifies it: file transfer to the node, `cp`/`mv`/`rm`/`chmod`/`chown`/
-  `mkdir`/`ln`, archive extraction, output redirection into a file, `sed -i`, `ldapmodify`, a request dropped into an
-  inbox, service restarts… Its success sets `CHANGES_MADE=true`; its failure sets `ROLLBACK_REQUIRED=true` (it may
-  have changed part of the node). Any other activity step's failure sets `ROLLBACK_REQUIRED=${CHANGES_MADE}`.
+- **A change on the node** (E-D3): a step that writes outside a temporary directory or changes configuration. Its
+  success sets `CHANGES_MADE=true`; its failure sets `ROLLBACK_REQUIRED=true` (it may have changed part of the node).
+  Any other activity step's failure sets `ROLLBACK_REQUIRED=${CHANGES_MADE}`.
 - **Dependent commands**: a user switch (`su`) and a step whose registered value later steps use — if it fails, the
   steps that depend on it are not run (the phase stops / they are skipped).
 - **Rollback only**: with `ROLLBACK_ONLY=true` only the Rollback phase runs; it restores from the backup of the
@@ -55,10 +54,10 @@ not declare a `LOCAL` node (step 6's autofix keeps dropping an unused one).
   `loop` + `count_var`, `expr: ok == total && total > 0`).
 - Answers that already are regexes are treated as text-with-hints, never pasted into the workflow.
 
-## Open points (proposed defaults)
+## Decisions (2026-11-04, user)
 
-| ID | Question | Proposed default |
-|----|----------|------------------|
-| E-Q1 | PostNodeHealthCheck failure | Reported only (no rollback) unless the MOP says it triggers rollback |
-| E-Q2 | Rollback when nothing was changed | Not run (rule 4); a run with `ROLLBACK_ONLY` always runs it |
-| E-Q3 | Which steps "change the node" | Deterministic list (above) + the step 6 LLM may mark a step `changes_node: true`; the list is extended per UC as found |
+| ID | Topic | Decision |
+|----|-------|----------|
+| E-D1 | PostNodeHealthCheck failure | Reported only (no rollback) unless the MOP says it triggers rollback |
+| E-D2 | Rollback when nothing was changed | Not run (rule 4); a `ROLLBACK_ONLY` run always runs it |
+| E-D3 | "A change on the node" | Something that can affect how the node / network element works: files written into the **actual** (non-temporary) directories, configuration changed partly or completely — anything showing the activity has (partly) happened on the node. **Staging in a temporary directory (`/tmp`, `/var/tmp`) is not a change.** Detection: a modifying command (`cp`/`mv`/`rm`/`chmod`/`chown`/`mkdir`/`ln`/`touch`, archive extraction, `> file`, `sed -i`, `ldapmodify`/`ldapadd`/`ldapdelete`, service start/stop/restart, a file upload) whose destination is outside a temporary directory; configuration commands always; an unknown destination counts as a change (safe side). Steps on the local server never change the node |
