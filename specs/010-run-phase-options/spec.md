@@ -1,6 +1,6 @@
 # Feature Specification: Run phase options — choose the phases, move files through the repo server
 
-**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Draft — two details to confirm
+**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Decided — implementation step 1 (probes)
 
 ## Request (2026-11-04, user)
 
@@ -26,6 +26,8 @@ production stages every file on the repo server; the pipeline sends them straigh
 | O-D2 | Backup without the repo server | The backup **stays on the node in `/tmp`**; rollback restores it from there (no transfer) |
 | O-D3 | Rollback without Backup | Allowed — an activity may have nothing to restore (e.g. configuration only: rollback re-applies or removes the configuration the MOP describes) |
 | O-D4 | Transfer protocol | **Per node: SFTP where the node supports it, otherwise SCP** |
+| O-D5 | Checkboxes | **Every phase and sub-phase is a checkbox**, Activity / ActivityConfiguration / RollbackConfiguration included (a run may be checks only). A group (Activity, Rollback) ticks/clears its sub-phases; a group stays ticked while one of its sub-phases is; at least one phase must be selected to start |
+| O-D6 | SFTP support | Per node type in Settings → Vendor profiles: `File transfer: SFTP / SCP` (default SFTP); a node type without a profile is asked once in step 1 |
 
 ## Behaviour
 
@@ -36,14 +38,14 @@ Phases
  [x] PreNodeHealthCheck
  [x] Backup
        [ ] via repo server     — every file (input files, backups, restores) goes through the repo server
- [x] Activity                  (always)
+ [x] Activity
        [x] ActivityPrecheck
-        ■  ActivityConfiguration (always)
+       [x] ActivityConfiguration
        [x] ActivityPostCheck
  [x] PostNodeHealthCheck
  [x] Rollback                  (runs only when a step failed — spec 009 P009-03)
        [x] RollbackPrecheck
-        ■  RollbackConfiguration (always, while Rollback is on)
+       [x] RollbackConfiguration
        [x] RollbackPostCheck
 ```
 
@@ -76,13 +78,6 @@ Every hop keeps the `sha256sum` check on both ends. Repo paths follow the produc
 - **Step 8** simulates the repo server; a node-side transfer from/to the repo must work in MockWire (cross-instance
   file copy, password prompt).
 - **Cache**: the options are part of step 6's cache key, not of steps 1–4.
-
-## To confirm
-
-| ID | Question | Proposed |
-|----|----------|----------|
-| O-Q6 | Are the sub-phases checkboxes too (as drawn above: ActivityPrecheck / ActivityPostCheck / RollbackPrecheck / RollbackPostCheck optional, the Configuration ones always on), or only the top-level phases? | Sub-phases are checkboxes, Configuration always on |
-| O-Q7 | Where does "node supports SFTP" come from? | A setting per node type in Settings → Vendor profiles (`File transfer: SFTP / SCP`, default SFTP); a node type without a profile asks once in step 1 |
 
 ## Out of scope
 

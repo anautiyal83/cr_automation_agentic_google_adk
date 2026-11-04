@@ -2,7 +2,7 @@
 
 ## Step 0: Decisions
 - [X] T000 O-D1 … O-D4 decided (user, 2026-11-04)
-- [ ] T000b Confirm O-Q6 (sub-phase checkboxes), O-Q7 (SFTP support per node type)
+- [X] T000b O-D5 every phase and sub-phase a checkbox; O-D6 SFTP support per node type (user, 2026-11-04)
 
 ## Step 1: Probes
 - [ ] T001 JAR: `scp` with `expect_reply` password (node side and LOCAL side); 9-phase workflow; workflow without some phases
@@ -10,8 +10,8 @@
 
 ## Step 2: Options end to end (phase selection)
 - [ ] T003 `uc_document_sets.run_options`; runner keeps it through queue / resume / re-run
-- [ ] T004 New Run Activity step: phase / sub-phase checkboxes (O-D1), "via repo server", summary, pre-fill
-- [ ] T004b Vendor profile node type: `File transfer: SFTP / SCP` (O-D4, O-Q7)
+- [ ] T004 New Run Activity step: phase / sub-phase checkboxes (O-D1, O-D5), "via repo server", summary, pre-fill
+- [ ] T004b Vendor profile node type: `File transfer: SFTP / SCP` (O-D4, O-D6)
 - [ ] T005 Step 1 `run_options` in the requirements; phases = selection
 - [ ] T006 Step 6 prompt + `structure.py` drop + validator; cache key
 - [ ] T007 Tests
