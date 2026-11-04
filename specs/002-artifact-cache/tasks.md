@@ -12,10 +12,10 @@
 
 ## Phase 2: Bug Fixes (open)
 
-- [ ] T006 [C-1] `clear_from_step()`: resolve `from_agent`'s position in the **full** pipeline order and clear only cacheable agents at or after it; no-op for steps 8/9; never fall back to index 0
+- [X] T006 [C-1] `clear_from_step()`: resolve `from_agent`'s position in the **full** pipeline order and clear only cacheable agents at or after it; no-op for steps 8/9; never fall back to index 0 — done earlier (no fallback to index 0; non-cached agents clear nothing), test 2026-11-04
 - [X] T007 [C-2] (done with OB-14, `save_cache` reads the script files) Cache helper scripts by **content**: either store contents in `artifacts["helper_scripts"]` or have `save_cache` read files when values are paths; on hit, keep `artifacts["helper_scripts"]` as `{name: path}` for downstream
-- [ ] T008 [C-3] `save_cache()`: count files actually written; mark `passed` only if every entry was written non-empty; log the real count
-- [ ] T009 [C-4] Save only when display-step status is explicitly `passed`; make `helper_script_gen` set `step_6_status`/`step_6_error.json` on failure (see 003 H-1); log save errors at ERROR
-- [ ] T010 [C-5] Resolve cache dir from project root, not CWD
+- [X] T008 [C-3] `save_cache()`: count files actually written; mark `passed` only if every entry was written non-empty; log the real count — done 2026-11-04: a missing / empty entry saves as `incomplete` (never a hit), log `written/total`
+- [X] T009 [C-4] Save only when display-step status is explicitly `passed`; make `helper_script_gen` set `step_6_status`/`step_6_error.json` on failure (see 003 H-1); log save errors at ERROR — done (`_step_ok` per display step, OB-8); save errors now logged at ERROR (2026-11-04)
+- [X] T010 [C-5] Resolve cache dir from project root, not CWD — done 2026-11-04 (`_ROOT / data/cache` unless absolute)
 - [ ] T011 Verify SC-001..SC-003: two consecutive runs of PGW_RDS_1058 + a step 8 re-run; check `flow.log` and `_cache_meta.json`
-- [ ] T012 Unit tests for `ArtifactCache` (`tests/test_artifact_cache.py`): save/load round-trip, scripts dir, clear_from_step for every agent name
+- [X] T012 Unit tests for `ArtifactCache` (`tests/test_artifact_cache.py`): save/load round-trip, scripts dir, clear_from_step for every agent name — done 2026-11-04

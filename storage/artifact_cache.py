@@ -119,7 +119,8 @@ class ArtifactCache:
     """Manages UC-level artifact caching."""
 
     def __init__(self, cache_dir: str = "data/cache"):
-        self._cache_dir = Path(cache_dir)
+        # relative to the project, not the working directory (spec 002 C-5)
+        self._cache_dir = Path(cache_dir) if Path(cache_dir).is_absolute() else _ROOT / cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def uc_cache_dir(self, uc_name: str) -> Path:
@@ -194,9 +195,11 @@ class ArtifactCache:
         uc_dir = self.uc_cache_dir(uc_name)
         uc_dir.mkdir(parents=True, exist_ok=True)
 
+        written, missing = 0, []
         for cache_file, artifact_key in entries:
             content = artifacts.get(artifact_key)
-            if content is None:
+            if content is None or not str(content).strip() or (isinstance(content, dict) and not content):
+                missing.append(artifact_key)
                 continue
 
             path = uc_dir / cache_file
@@ -212,9 +215,15 @@ class ArtifactCache:
                         if source is not None and source.is_file():
                             text = source.read_text(encoding="utf-8")
                         (path / fname).write_text(str(text), encoding="utf-8")
+                    written += 1
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(content), encoding="utf-8")
+                written += 1
+        if missing and status == "passed":
+            # a partial entry must never be served as a hit (spec 002 C-3)
+            logger.warning("Cache of %s/%s incomplete — missing or empty: %s", uc_name, agent_name, ", ".join(missing))
+            status = "incomplete"
 
         # Update metadata
         meta = self._read_meta(uc_name)
@@ -237,8 +246,8 @@ class ArtifactCache:
                 meta.get("agent_status", {}).pop(later, None)
         self._write_meta(uc_name, meta)
 
-        logger.info("Cached %d artifacts for %s/%s (status=%s)",
-                     len(entries), uc_name, agent_name, status)
+        logger.info("Cached %d/%d artifacts for %s/%s (status=%s)",
+                    written, len(entries), uc_name, agent_name, status)
 
     def clear_cache(self, uc_name: str, agent_name: str | None = None) -> None:
         """Clear cache for a UC. If agent_name given, clear only that agent's cache."""

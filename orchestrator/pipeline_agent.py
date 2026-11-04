@@ -335,7 +335,7 @@ class PipelineAgent(BaseAgent):
                 _settle_deferred_cache(ArtifactCache(), uc_name, pending_cache, display_steps,
                                        ctx.session.state, run_dir)
             except Exception as e:
-                logger.debug("Cache save failed for %s: %s", agent.name, e)
+                logger.error("Cache save failed for %s: %s", agent.name, e)
 
             # ----- PUBLISH step_completed -----
             for sn in display_steps:

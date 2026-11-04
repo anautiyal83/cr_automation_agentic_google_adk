@@ -4,7 +4,7 @@
 
 - [X] P009-01 Logical comparison local vs production, gap causes → [uc-mrf-announcement-loading.md](uc-mrf-announcement-loading.md)
 - [X] P009-02 Requirement guideline draft → [requirement-guidelines.md](requirement-guidelines.md)
-- [ ] P009-03 Rollback contract (M-1, M-2; OB-25): rollback / rollback post-check phases `when: ROLLBACK_REQUIRED == 'true'`;
+- [X] P009-03 Rollback contract (M-1, M-2; OB-25): rollback / rollback post-check phases `when: ROLLBACK_REQUIRED == 'true'`; — done by spec 011 (contract.py rules 4–5, OB-25)
   failure branches of activity, activity post-check and post-health steps set `vars: {ROLLBACK_REQUIRED: 'true'}`;
   JAR probe first (phase `when` on a branch var, string compare). Deterministic in `structure.py` + prompt + validator
 - [ ] P009-04 Per-row failure flags (M-2): transfer/apply failure sets a row flag; later steps of the row gate on it
@@ -24,7 +24,7 @@
 ## PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION (analysis 2026-11-04 — fixes proposed, awaiting go-ahead)
 
 - [X] P009-11 Logical comparison → [uc-pgw-rds-1058-ifc-capability-modification.md](uc-pgw-rds-1058-ifc-capability-modification.md); guideline extended
-- [ ] P009-12 Health-check gate (G-1): a failed pre-health check stops before the activity (flag + gate, or phase `on_failure: stop`) — generic
+- [X] P009-12 Health-check gate (G-1): a failed pre-health check stops before the activity (flag + gate, or phase `on_failure: stop`) — generic — done by spec 011 (contract.py rule 2, `PRECHECK_FAILED`)
 - [ ] P009-13 NIAM failover pattern (G-2) when the CIQ has several NIAM entries per node
 - [ ] P009-14 Step 1 question: subscriber/target guard (G-3) — "which targets may this activity touch and how is that checked?"
 - [ ] P009-15 One request per I/O sample type (G-4): each XML sample = its own request, upload, response check
