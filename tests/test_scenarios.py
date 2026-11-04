@@ -605,3 +605,24 @@ def test_fault_injection_keeps_long_regex_keys_valid_yaml():
     out = inject_fault(config, Fault(kind="validation", node="APP", send="uptime", lines=["load 99"]))
     parsed = yaml.safe_load(out)                                   # valid YAML
     assert key in parsed and parsed["uptime"]["lines"] == ["load 99"]
+
+
+def test_or_conditions_on_registered_values_are_not_false_positives():
+    """DEP-56: `Test IMSI != '' || resolvedImsi != ''` held for EAST (IMSI resolved from the MSISDN at run
+    time), but the check read it as one column and failed a correct PGW workflow."""
+    from skills.network_config_gen.validator import check_row_variables
+    col = "configSequences.0.records.0.data."
+    steps = [
+        {"node": "DB", "when": f"{col}Test IMSI == ''", "send": "lookup ${" + col + "Test MSISDN}",
+         "register": [{"regex": r"provisionedIMSI: (?<resolvedImsi>\d+)"}]},
+        {"node": "DB", "when": f"{col}Test IMSI != ''", "send": "echo ${" + col + "Test IMSI}",
+         "register": [{"regex": r"(?<resolvedImsi>\d+)"}]},                      # rows that give the IMSI
+        {"node": "DB", "when": f"{col}Test IMSI != '' || resolvedImsi != ''", "send": "ldapsearch imsi=${resolvedImsi}",
+         "register": [{"regex": r"(?<preFields>[\s\S]+)"}]},
+        {"node": "LOCAL", "send": "python report.py --pre '${preFields}'"},
+    ]
+    assert not check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
+    # a CIQ-only alternative that is false for EAST still is reported
+    steps[2]["when"] = f"{col}Test IMSI != '' || {col}Zone == 'NORTH'"
+    problems = check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
+    assert problems and "EAST" in problems[0]

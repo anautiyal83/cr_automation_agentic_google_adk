@@ -471,14 +471,22 @@ def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] 
     defined_always |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
 
     def runs(guard: str, row: dict) -> bool:
-        for term in guard.split("&&"):
-            m = _WHEN_TERM.match(term)
-            if not m:
-                continue
-            value = str(row.get(m.group(1).strip()) or "").strip()
-            if (value == m.group(3)) != (m.group(2) == "=="):
-                return False
-        return True
+        """The step may run for ``row``: some ``||`` alternative can hold. A term on a CIQ
+        column is decided by the row; any other term (a registered value such as
+        ``resolvedImsi != ''``) is known only at run time and counts as possibly true (DEP-56)."""
+        for alternative in guard.split("||"):
+            holds = True
+            for term in alternative.split("&&"):
+                m = _WHEN_TERM.match(term)
+                if not m:
+                    continue
+                value = str(row.get(m.group(1).strip()) or "").strip()
+                if (value == m.group(3)) != (m.group(2) == "=="):
+                    holds = False
+                    break
+            if holds:
+                return True
+        return False
 
     problems: dict[str, dict] = {}
     for rows in sheets.values():
