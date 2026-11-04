@@ -1330,8 +1330,14 @@ def tar_create_success(parsed: dict) -> int:
             continue
         archive, sources = found
         dynamic = r"_?\$\{[^}]*\}|" + _SHELL_SUBST.pattern  # ${var}, $(date …): a value at run time
+        # a name made at run time ($(date …)) is listed by a glob: running date again misses it
+        ls_path = re.sub(dynamic, "*", archive)
+        # tar -v lists the members, never the archive: its name is printed only by an `ls` of it
+        # (run e47b5409: `.*\.tar\.gz` was kept and the backup failed on the simulator)
+        listed = [re.sub(dynamic, "_1", archive)] if any(
+            re.search(r"\bls\b[^;&|]*" + re.escape(p), send) for p in (archive, ls_path)) else []
         sample = "\n".join(["tar: Removing leading `/' from member names",
-                            *(s.lstrip("/").rstrip("/") + "/" for s in sources), re.sub(dynamic, "_1", archive)])
+                            *(s.lstrip("/").rstrip("/") + "/" for s in sources), *listed])
         name = r"\S*".join(re.escape(p) for p in re.split(dynamic, archive))
         for criteria in blocks:
             try:
@@ -1340,7 +1346,7 @@ def tar_create_success(parsed: dict) -> int:
                 ok = None
             if ok:
                 continue
-            listing = f" && ls -1 {archive}"
+            listing = f" && ls -1 {ls_path}"
             if listing not in send:
                 step["send"] = send = send + listing
             criteria["regex"] = f"^{name}$"

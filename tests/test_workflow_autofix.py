@@ -469,7 +469,12 @@ def test_tar_backup_success_regex_matches_gnu_tar():
     local = {"node": "LOCAL", "send": "tar -czf /tmp/l.tgz /x", "validation": {"success": {"criteria": {"regex": "nope"}}}}
     wf = {"nodes": {"MRF": {"type": "remote"}, "LOCAL": {"type": "local"}},
           "phases": {"backup": {"steps": [wrong, dated, good, local]}}}
-    assert tar_create_success(wf) == 2
+    # run e47b5409: tar -v never prints the archive name, so this regex can only match an `ls` of it
+    e47 = step("tar -czvf /tmp/announcement_backup_$(date +%Y%m%d%H%M%S).tar.gz ${rec.data.DEST}/", r".*\.tar\.gz")
+    wf["phases"]["backup"]["steps"].append(e47)
+    assert tar_create_success(wf) == 3
+    assert e47["send"].endswith(" && ls -1 /tmp/announcement_backup*.tar.gz")   # a glob: date runs once
+    assert re.search(e47["validation"]["success"]["criteria"]["regex"], "/tmp/announcement_backup_20261104230136.tar.gz")
     assert wrong["send"].endswith(" && ls -1 /tmp/announcement_backup.tar.gz")
     regex = wrong["validation"]["success"]["criteria"]["regex"]
     assert re.search(regex, "tar: Removing leading `/' from member names\n/tmp/announcement_backup.tar.gz", re.M)

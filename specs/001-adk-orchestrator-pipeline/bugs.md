@@ -785,3 +785,17 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   the same way). Step 9 routes it to step 6. The workflow branches on VER only; the MOP rule (G-15) combined file
   type and version (`endsWith('.tar') && VER == '13.X.X.X'`). Needs the user: branch on the file type, or fix the
   CIQ test row (non-13 nodes get .tar files, guideline M-12).
+
+### DEP-61 — UI run e47b5409: every backup failed after MockWire f5928df (High, Fixed 2026-11-04)
+- `tar -czvf /tmp/announcement_backup_$(date +%Y%m%d%H%M%S).tar.gz …`: f5928df expands `$(…)`; the inner
+  `date +%Y%m%d%H%M%S` was answered by the config's plain `date` key (MockWire prefix fallback) → "Tue Oct 26 …
+  2023", and tar got its words as file names (`tar: Jan: Cannot stat`, `InvalidPathException`). My DEP-59
+  verification workflow had no `$(date)`.
+- **Fix** MockWire b393ac3: a YAML prefix match never answers a pure builtin (date, echo, basename, dirname,
+  true, false, :); builtin `date +FORMAT` (strftime subset).
+- Second cause, DEP-58 autofix: its tar sample always held the archive name, so `.*\.tar\.gz` was kept — but
+  `tar -v` lists members only. Now the name is in the sample only when an `ls` of the archive follows; a name
+  made at run time is listed by a glob (`&& ls -1 /tmp/announcement_backup*.tar.gz`: running date again would
+  miss the file on a real node too).
+- Replay of e47b5409 steps 8 + 9 (DB copy): MRF1 / MRF2 pass; MRF3 fails for real (DEP-60: VER 17 untars a .3gp);
+  TC-R01 rollback-only extracts `/tmp/` — `${backupTarName}` is registered in the backup phase only (E014, open).
