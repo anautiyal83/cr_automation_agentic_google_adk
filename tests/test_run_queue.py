@@ -346,3 +346,55 @@ def test_second_server_leaves_the_live_run_alone(tmp_path, monkeypatch):
         other.kill()
         other.wait()
     assert started is None and statuses == {"UC_A": "running", "UC_B": "queued"} and launched == ["UC_A"]
+
+
+def _hanging_runner(tmp_path, monkeypatch):
+    """A runner whose pipeline waits forever (paused at a review) with a checkpoint saved."""
+    import types as _t
+    from orchestrator import runner as runner_mod
+
+    async def forever(**kw):
+        await asyncio.Event().wait()
+        yield None
+
+    async def no_sim(run_id):
+        return None
+    monkeypatch.setattr(runner_mod, "stop_simulator", no_sim)
+    monkeypatch.setattr(runner_mod, "_shutting_down", False)
+
+    async def make():
+        r = PipelineRunner(config={}, db=await init_database(str(tmp_path / "p.db")))
+        r._runner = _t.SimpleNamespace(run_async=forever)
+        return r
+    return make
+
+
+def test_server_stop_keeps_the_run_resumable(tmp_path, monkeypatch):
+    """A server stop cancels the pipeline task: the run must stay live with its checkpoint so the
+    next start resumes it (run e47b5409 came back as "cancelled — Pipeline task stopped")."""
+    from orchestrator import checkpoints
+    from orchestrator import runner as runner_mod
+    make = _hanging_runner(tmp_path, monkeypatch)
+
+    async def scenario(stop: bool):
+        r = await make()
+        run_id = "e47b5409-8db6-4445-bd5f-5c3cc59f926f" if stop else "5dcb049c-49ed-4676-8e54-8a13e2163e6e"
+        await r._db.execute("INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at) "
+                            "VALUES (?, ?, 'paused_milestone', 9, '2026-11-04')", (run_id, run_id))
+        await checkpoints.save(run_id, 7, "network_config_qa", "milestone", {"run_id": run_id}, {})
+        r._active_runs[run_id] = {"status": "paused_milestone"}
+        task = asyncio.ensure_future(r._run_pipeline(run_id, "u"))
+        await asyncio.sleep(0.05)
+        if stop:
+            runner_mod.mark_shutdown()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        rows = await r._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (run_id,))
+        return rows[0]["status"], await checkpoints.load(r._db, run_id) is not None
+    assert asyncio.run(scenario(stop=True)) == ("paused_milestone", True)   # resumes at the next start
+    monkeypatch.setattr(runner_mod, "_shutting_down", False)
+    status, kept = asyncio.run(scenario(stop=False))                           # a task stopped otherwise
+    assert status == "cancelled" and not kept

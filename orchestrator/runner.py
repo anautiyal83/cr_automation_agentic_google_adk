@@ -35,6 +35,16 @@ _LIVE_SQL = ", ".join(f"'{s}'" for s in (*_LIVE, "PipelineStatus.RUNNING", "Pipe
                                           "PipelineStatus.PAUSED_MILESTONE"))
 
 
+# The server is stopping (set by the UI's shutdown hook before the event loop cancels the
+# pipeline task): an interrupted run keeps its status and checkpoint and resumes at the next start
+_shutting_down = False
+
+
+def mark_shutdown() -> None:
+    global _shutting_down
+    _shutting_down = True
+
+
 def _utc_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
@@ -505,13 +515,19 @@ class PipelineRunner:
             # The pipeline is free: the next queued run starts (spec 007). A task cancelled outright
             # never reached a final status — without one it would hold the queue forever
             info = self._active_runs.get(run_id, {})
-            if info.get("status") in _LIVE:
-                info["status"] = "cancelled"
-                await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
-            if self._db:  # the run is over: nothing to resume
-                from orchestrator import checkpoints
-                await checkpoints.delete(self._db, run_id)
-            asyncio.ensure_future(self.dispatch())
+            if _shutting_down and info.get("status") in _LIVE:
+                # a server stop, not the end of the run: resume_queue() continues it at the next start
+                # (it was marked cancelled and its checkpoint deleted — nothing came back, run e47b5409)
+                flow.flow("RUN INTERRUPTED by server stop — run_id=%s resumes at the next start", run_id[:8])
+            else:
+                if info.get("status") in _LIVE:
+                    flow.flow("RUN STOPPED — run_id=%s: pipeline task ended without a final status", run_id[:8])
+                    info["status"] = "cancelled"
+                    await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
+                if self._db:  # the run is over: nothing to resume
+                    from orchestrator import checkpoints
+                    await checkpoints.delete(self._db, run_id)
+                asyncio.ensure_future(self.dispatch())
 
     async def _monitor_milestones(self, run_id: str):
         """Monitor session state for milestone pauses and update runner status."""

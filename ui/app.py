@@ -1556,8 +1556,10 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
 def run() -> None:
     create_app()
 
+    from orchestrator.runner import mark_shutdown
     from shared.state import stop_simulator
     app.on_startup(_resume_runs)
+    app.on_shutdown(mark_shutdown)  # first: the run being stopped must stay resumable (spec 007)
     app.on_shutdown(stop_simulator)
 
     ui.run(
