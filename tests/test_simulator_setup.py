@@ -305,3 +305,20 @@ def test_invented_exact_key_never_hides_real_output():
                              {"Test MSISDN": "1234567890"})
     assert 'ldapsearch -b "imsi=123,dc=IMSI" objectclass=*' not in merged          # real output answers it
     assert 'ldapsearch -b "msisdn=1234567890,dc=MSISDN" objectclass=*' in merged   # nothing real covers it
+
+
+def test_shell_pipes_in_regex_keys_never_make_a_catch_all():
+    """E030 run 2: the step 8 LLM keyed a response `regex:ls -ltrh \\S+/announcements/ | grep "\\S+" || true`;
+    as a regex `||` has an empty alternative, so it answered EVERY command of MRF — the backup `tar` got the
+    ls output, no archive was created and the transfer failed."""
+    import re
+
+    from skills.network_simulator_setup.autofix import safe_regex_key
+    key = safe_regex_key(r'regex:ls -ltrh \S+/announcements/ | grep "\S+" || true')
+    pattern = re.compile(key[len("regex:"):])
+    assert not pattern.search("tar -czvf /tmp/announcement_backup.tar.gz /var/opt/x/")
+    assert pattern.search('ls -ltrh /var/opt/announcements/ | grep "DOC_5003" || true')
+    assert safe_regex_key(r"regex:(start|stop) swms") == r"regex:(start|stop) swms"   # a real alternation stays
+    assert safe_regex_key("regex:.*") is None                                          # matches anything
+    assert safe_regex_key("regex:(unclosed") is None                                    # invalid
+    assert safe_regex_key("ls -l | wc -l") == "ls -l | wc -l"                          # exact keys untouched

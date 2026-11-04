@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import parse_llm_yaml, salvage_yaml_entries
+from .autofix import parse_llm_yaml, safe_regex_key, salvage_yaml_entries
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -328,7 +328,9 @@ class NetworkSimulatorSetupSkill:
         from .topology import RESERVED_KEYS, _is_builtin_key
         entries = dict(entries)
         for key, new in (fixed.items() if isinstance(fixed, dict) else []):
-            key = str(key)
+            key = safe_regex_key(str(key))
+            if key is None:
+                continue
             if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs) or key in recorded:
                 continue
             if isinstance(new, dict) and isinstance(new.get("lines"), str):
@@ -396,7 +398,11 @@ class NetworkSimulatorSetupSkill:
             if isinstance(val, dict) and isinstance(val.get("lines"), str):
                 val = {**val, "lines": val["lines"].splitlines()}
             if isinstance(val, dict) and ("lines" in val or "file" in val):
-                entries[str(key)] = dict(val)
+                safe = safe_regex_key(str(key))
+                if safe is None:
+                    logger.warning("Phase 2: %s — dropped response key %r: it matches any command", node.name, str(key)[:80])
+                    continue
+                entries[safe] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
 

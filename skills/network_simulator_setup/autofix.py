@@ -244,3 +244,39 @@ def _leaf_steps(steps):
             yield from _leaf_steps(s["steps"])
         else:
             yield s
+
+
+_UNRELATED_COMMAND = "zz_netconfig_unrelated_probe_command --x"
+
+
+def safe_regex_key(key: str) -> str | None:
+    """A response key the LLM wrote as ``regex:<shell command>``: a ``|`` outside a group is the
+    shell's pipe, never an alternation — ``ls x | grep y || true`` as a regex has an EMPTY
+    alternative and answered every command of the node (E030: the backup ``tar`` got the
+    ``ls`` output, no archive was created). Such pipes are escaped; a key that still matches an
+    unrelated command is dropped (None). Exact keys are returned unchanged."""
+    if not key.startswith("regex:"):
+        return key
+    body, out, depth, i = key[6:], [], 0, 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            out.append(body[i:i + 2])
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            ch = "\\|"
+        out.append(ch)
+        i += 1
+    fixed = "".join(out)
+    try:
+        pattern = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", fixed))
+    except re.error:
+        return None
+    if pattern.search(_UNRELATED_COMMAND):
+        return None  # matches anything: it would answer every command of the node
+    return "regex:" + fixed
