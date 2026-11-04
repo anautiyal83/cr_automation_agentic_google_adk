@@ -522,7 +522,7 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 | DEP-51 | — | `${node}` in any step empties the whole MOP of a node group with several nodes (cli-automation generate; MRF CR1 MRF1+MRF2 → 0 commands, no error); execute resolves it | Fixed: validator rejects `${node}`, prompt says register `hostname` instead; the repo path uses a registered hostname |
 | S8-30 | — | Simulator could not verify checksums or serve backups: YAML answered `sha256sum`/`tar -c` with invented text, the archive never existed for the download, the repo node had no YAML entries and was refused | Fixed: MockWire a025dec builtins `sha256sum`/`md5sum` over the VFS (real bytes from SFTP) and `tar -c` (real ustar/gzip in the VFS); step 8 leaves them (and `mkdir`) to the builtins (`topology.file_builtin`), seeds the backup sources per CIQ record (`guards.backup_seed_files`), accepts a node answered only by builtins |
 | S8-31 | — | With every record executed, PGW NORTH's 2nd record (IFC 40453) ran the guarded `org … \| grep -i 40453` — the simulator answered nothing (responses were written for the 1st record) | Fixed: guard responses per (node, record); a holding guard without its own response answers the first stage filtered by the grep, else a line built from the step's success/register regexes holding the grepped value |
-| OB-25 | — | A rollback phase runs in a successful execution too: the JAR only protects rollback phases after a stop (`isPostFailurePhase`); a sunny-day run therefore restores the backup over the new files | Open — needs a way to run a phase on failure only (`then:` targets / `on_failure: run`) |
+| OB-25 | — | A rollback phase runs in a successful execution too: the JAR only protects rollback phases after a stop (`isPostFailurePhase`); a sunny-day run therefore restores the backup over the new files | Fixed by spec 011 (E004, contract.py rule 5): rollback phases carry `when: ROLLBACK_REQUIRED == 'true' \|\| ROLLBACK_ONLY == 'true'` |
 | S8-32 | — | Fresh MRF step 6 (LLM): a rollback guard on a registered value (`if [[ '${backupFileName}' == '' …`) ran with an empty value; the response key `'\S+'` cannot match `''`, MockWire split the command at `;` → "command not found" for `if [[ '' == ''`, `then rm …`, `fi` | Fixed: a quoted placeholder `'${…}'` keys as `[^']*` (empty or with spaces) |
 | G-19 | — | Fresh MRF step 6 (LLM) put the backup `tar` in the pre-checks phase and registered the archive name from tar's output (never printed); the rollback's "no backup taken" checks used that variable | Fixed: backup archives are recognised by phase, step description or archive name; the tar step lists its archive (`&& ls -1 <archive>`) and the LLM's variable registers the file name from it; the rollback extract stays in the record loop (files moved in a pass keep later steps in it) |
 | S8-33 | — | UI run f8d64fe0 step 9: 3/3 failed at `cd /tmp` — the step waits for `[root@rjjvrmr03 tmp]#` (the real prompt shows the working directory) but the simulator prompt was fixed (`[root@rjjvrmr03 ]#`) and a YAML `cd` did not move the directory | Fixed: MockWire renders bash `\W`/`\w` in prompts from the session directory (`~` where it started) and a `cd` answered from YAML still changes it; step 8 writes prompts that show a directory as templates (`topology.cwd_prompt`), the overlay's prompt alternative accepts any directory, `cd` is no longer left to the builtin (refuses directories the sandbox lacks). Steps 8-9 on f8d64fe0: 3/3 PASS |
@@ -693,8 +693,10 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### OB-5 — Continue on a failed QA milestone still auto-retries (Medium, Suspected)
 - After `_milestone_pause` returns `continue`, the loop falls through to the auto-retry block, which pops `_retry_target` set by the QA agent and jumps back. "Skip & Continue" on a failed step 5/7/9 therefore re-runs generation instead of continuing. Needs confirmation in the UI.
 
-### OB-7 — Cached helper scripts contain file paths, not code (High, Open)
+### OB-7 — Cached helper scripts contain file paths, not code (High, Fixed — see OB-14)
 - `artifacts["helper_scripts"]` is `{name: path}`; `save_cache()` writes `str(value)`, so a cache hit writes path strings into `run_dir/scripts/*.py`. Tracked as [002](../002-artifact-cache/spec.md) C-2 / [003](../003-helper-script-gen/spec.md) H-3.
+- **Fixed** with OB-14: `storage/artifact_cache.save_cache` reads the script file when the value is a run-dir path
+  and caches its content; a cache hit writes the contents back to `run_dir/scripts/` (`pipeline_agent`).
 
 ### OB-8 — helper_script_gen failure shows as passed (High, Fixed 2026-11-02)
 - The agent never sets `step_6_status` or writes `step_6_error.json`, so a failed or partial script generation passes the step 6 milestone and can be cached. Tracked as [003](../003-helper-script-gen/spec.md) H-1.
@@ -717,8 +719,11 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### UI-3 — Developer notes retyped every run (Medium, Fixed 2026-11-02)
 - Notes are per use case; run c43f64ef was started without them, so the IMSI/MSISDN lookup was unknown. The New Run wizard now pre-fills empty notes from the last run of the same UC.
 
-### OB-6 — Resume after server restart not implemented (Medium, Open)
+### OB-6 — Resume after server restart not implemented (Medium, Fixed by spec 007)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.
+- **Fixed** by [spec 007](../007-run-queue/spec.md): checkpoints before every agent and at review pauses
+  (`orchestrator/checkpoints.py`), `PipelineRunner.resume_queue()` at server start (T023 E2E passed). A CLI
+  `--resume` flag was not added: interrupted runs resume by themselves.
 
 ### DEP-57 — Prose answer became the repo host (Medium, Fixed 2026-11-04)
 - Run 3d75c561: the `orch_repo_server` answer "repo server is an intermittent server which will just keep the backup

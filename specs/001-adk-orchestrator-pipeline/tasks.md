@@ -257,8 +257,8 @@
 - [ ] BF-071 Fix `clear_from_step()` wiping the whole UC cache on step 5/7/8/9 re-run — OB-1 (tracked in [002-artifact-cache](../002-artifact-cache/tasks.md))
 - [ ] BF-072 Fail run on MAX_RETRIES exhaustion — OB-4 (= T051)
 - [ ] BF-073 Continue on failed QA milestone must not auto-retry — OB-5 (= T052)
-- [ ] BF-074 Implement resume after restart — OB-6 (= T021)
-- [ ] BF-076 Cache helper scripts by content — OB-7 (002 T007 / 003 T009)
+- [X] BF-074 Implement resume after restart — OB-6 (= T021) — done by spec 007 (`resume_queue`)
+- [X] BF-076 Cache helper scripts by content — OB-7 (002 T007 / 003 T009) — done with OB-14
 - [ ] BF-077 helper_script_gen must report failure — OB-8 (003 T007)
 - [ ] BF-075 Step 8 issues S8-01..S8-12, DEP-1..DEP-5 — tracked in [004-simulator-setup](../004-simulator-setup/spec.md)
 
