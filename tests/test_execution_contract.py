@@ -141,3 +141,38 @@ def test_combine_and_split_round_trip():
         for own in ("", "x != ''", "x != '' || y == 'a'", "x != '' && z == '1'"):
             assert split_own(combine(expr, own)) == (expr, own), (kind, own)
     assert split_own("x != ''") is None                     # not a contract condition
+
+
+def test_every_item_checks_are_counts_built_from_real_output():
+    """Spec 011 E022 (MRF M-6, PGW G-6): "every remote node Link UP" is a count check, verified on the
+    real output; count_var names are registered values; regex-looking answers are hints."""
+    from skills.network_config_gen.skill import _hint_if_pattern
+    from skills.network_config_gen.validator import (
+        check_against_samples, check_expr_vars, check_scope_every, count_check)
+    ss = "  Local DSA 1 NODE 1 is Primary   Link UP\n  Local DSA 2 NODE 2 is Standby   Link UP\n"
+    samples = [{"command": "ss", "output": ss}]
+    one_line = {"node": "RDS", "send": "ss", "validation": {
+        "description": "All remote nodes should show Link UP",
+        "success": {"criteria": {"regex": "Link UP"}}}}
+    wf = {"phases": {"pre": {"steps": [one_line]}}}
+    errors = check_scope_every(wf)
+    assert len(errors) == 1 and "count_var" in errors[0]
+    counted = {"node": "RDS", "send": "ss",
+               "register": [{"regex": r"(?m)^\s+Local DSA \d+ NODE \d+", "loop": True, "count_var": "TOTAL"},
+                            {"regex": r"(?m)^\s+Local DSA \d+ NODE \d+.*Link UP", "loop": True, "count_var": "OKN"}],
+               "validation": {"description": "All remote nodes should show Link UP",
+                              "success": {"criteria": {"expr": "OKN == TOTAL && TOTAL > 0"}}}}
+    wf = {"phases": {"pre": {"steps": [counted]}}}
+    assert count_check(counted) and not check_scope_every(wf)
+    assert not check_expr_vars(wf, runtime_params=[])               # count_var names are registered
+    assert not check_against_samples(wf, samples)                  # the healthy output passes the count
+    wrong = {**counted, "register": [counted["register"][0],
+                                     {"regex": r"(?m)^\s+Local DSA \d+ NODE \d+.*Link DOWN", "loop": True,
+                                      "count_var": "OKN"}]}
+    problems = check_against_samples({"phases": {"pre": {"steps": [wrong]}}}, samples)
+    assert any("OKN=0 of TOTAL=2" in p for p in problems)          # catches a wrong count regex
+    # "one file exists" is not an every-item check
+    assert not check_scope_every({"phases": {"a": {"steps": [{"node": "MRF", "send": "ls -l x", "validation": {
+        "description": "The file should be listed", "success": {"criteria": {"regex": "x"}}}}]}}})
+    assert "HINT" in _hint_if_pattern(r"Updates Rejected:\s*0\s*Queries Rejected:\s*0")
+    assert _hint_if_pattern("Link UP for every remote node") == "Link UP for every remote node"

@@ -155,6 +155,16 @@ def _expected_coverage(requirements: dict) -> dict:
             "record_columns": _record_columns(requirements)}
 
 
+def _hint_if_pattern(answer):
+    """A developer answer written as a regex is a hint, not a check (spec 011 — users cannot write
+    patterns; PGW's `Updates Rejected:\\s*0…` did not match the real output)."""
+    from skills.requirement_gathering.questionnaire import looks_like_regex
+    if isinstance(answer, str) and looks_like_regex(answer):
+        return (f"{answer}   [written as a pattern — a HINT of the text to check; build the check from "
+                "the real output]")
+    return answer
+
+
 def _record_columns(requirements: dict) -> dict:
     """{"sheet", "columns", "node_fields"} of the CIQ JSON as step 3's json-output builder writes
     it: record columns (``configSequences.N.records.M.data``) and node fields
@@ -197,11 +207,11 @@ def _request_columns(requirements: dict) -> dict[str, str]:
 class NetworkConfigGenSkill:
     """Generates execution workflow YAML from requirements.
 
-    The workflow uses ${...} placeholders for runtime values:
-    - ${nodeGroups.<Node>.<field>} — node properties
-    - ${configData.tables.<Sheet>.<Column>} — CIQ data
-    - ${register.<varName>} — command output captures
-    - ${env.<key>} — environment variables
+    The workflow uses ${...} placeholders for runtime values (CLAUDE.md, spec 004):
+    - ${configSequences.0.records.0.data.<Column>} — CIQ data (record loops: ${rec.data.<Column>})
+    - ${<NODE>.niamID-<n>} / ${<NODE>.<field>} — NIAM IDs / node values of the CIQ node
+    - ${varName} — command output captures (register) and runtime parameters
+    - ${SECRET.key} / ${ENV.NAME} — secrets / environment
 
     Stateful: retains context between generate() and regenerate() calls.
     """
@@ -499,6 +509,7 @@ class NetworkConfigGenSkill:
         answers = req.get("developer_answers", {})
         asked = req.get("developer_questions") or {}
         if answers and asked:  # question + answer: an answer alone often makes no sense
+            answers = {k: _hint_if_pattern(v) for k, v in answers.items()}
             answers_text = "\n".join(f"- Q: {asked[k]}\n  A: {v}" if k in asked else f"- {k}: {v}"
                                      for k, v in answers.items())
         else:

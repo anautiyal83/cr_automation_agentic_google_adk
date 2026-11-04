@@ -20,8 +20,8 @@
 ## Step 3: Text, not patterns (step 1 + step 6)
 - [X] E020 Step 1: prompt asks for the expected text (+ scope every/one), never a regex, never a secret value, no placeholder syntax, nothing the default rules decide; `questionnaire.clean_questions` enforces it after the LLM (pattern questions → text questions, regex / placeholder defaults cleaned, password → secret name, questions already answered under another id or repeated in the round dropped — word overlap with stemming)
 - [X] E021 Step 1 prompts: framework placeholders instead of `${nodeGroups}` / `${node_row…}` / `${configData}`; CIQ columns by name in the XML template mapping
-- [ ] E022 Step 6: build check regexes from the text + real output; "every" scope → count pattern; regex-looking answers are hints
-- [~] E023 Tests: step 1 hygiene (`test_requirements_gaps.py`) done; step 6 part pending E022
+- [X] E022 Step 6: prompt builds checks from the expected text + real output; "every" scope → count pattern (register `loop` + `count_var`, `expr OKN == TOTAL && TOTAL > 0`); validator: `check_scope_every` (a check described for every/all/each line/node/file/… must count), the count check must pass on the real output, `count_var` names are registered values; regex-looking developer answers reach step 6 marked as hints
+- [X] E023 Tests: step 1 hygiene (`test_requirements_gaps.py`), step 6 counts / hints (`test_execution_contract.py`)
 
 ## Step 4: Check
 - [ ] E030 MRF + PGW re-run: success run (no rollback), injected activity failure (rollback runs only after a change), precheck failure (nothing after it), `ROLLBACK_ONLY` run
