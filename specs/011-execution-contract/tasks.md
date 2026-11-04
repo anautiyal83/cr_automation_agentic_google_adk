@@ -13,7 +13,7 @@
   success branch `vars`; change detection (`CHANGES_MADE`); dependants of `su` / used registers
 - [X] E011 Prompt: the pipeline adds failure handling (no flags / `when` / `on_failure` from the LLM); rollback phases named "rollback"; rollback steps must work in a rollback-only run
 - [X] E012 Tests `tests/test_execution_contract.py` (phase kinds, change detection E-D3, every rule, idempotence, strip round trip, condition combine); validator unchanged (checks the flat form); JAR `generate` accepts the result (E009)
-- [ ] E013 Step 9 passes `ROLLBACK_ONLY` (`execution.runtime_params`) and runs a rollback-only case
+- [X] E013 Step 9: one rollback-only execution per run (TC-R01, `--var ROLLBACK_ONLY=true`, on a node group whose sunny day passed): only rollback steps ran, they passed, run PASS; phase kinds pre/backup/activity/post/rollback (contract's); negative expectations follow the contract (pre-health: rest of phase runs, nothing later; activity: stop, rollback iff changed; post: reported); report KPI "Rollback only"
 
 - [ ] E014 Rollback-only: rollback steps that read values registered in earlier phases (MRF `backupFileName`) cannot run with `ROLLBACK_ONLY` — validator warning + structure/route support (spec 010 backup location per order)
 

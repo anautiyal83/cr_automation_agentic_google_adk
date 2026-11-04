@@ -14,6 +14,8 @@ LOCAL = {"LOCAL"}
 @pytest.mark.parametrize("key,name,kind", [
     ("preNodeHealthCheck", "Pre-activity health checks", "pre_health"),
     ("PRE_NODE_HEALTH_CHECK", "", "pre_health"),
+    ("pre_checks", "Pre checks", "pre_health"),
+    ("postcheck", "", "post_health"),
     ("postNodeHealthCheck", "Post-activity health checks", "post_health"),
     ("backup", "Backup existing announcement files", "backup"),
     ("activity_configuration", "Announcement file loading", "activity"),

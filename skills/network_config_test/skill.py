@@ -240,7 +240,7 @@ class NetworkConfigTestSkill:
         ).run()
         duration = time.monotonic() - t0
         # Commands of failing sunny-day cases feed the step 6 / step 8 retry
-        failing_cmds = [c for r in suite.results if r.status == "FAIL" and r.scenario.kind == "positive"
+        failing_cmds = [c for r in suite.results if r.status == "FAIL" and r.scenario.kind in ("positive", "rollback")
                         for c in r.commands]
         status = "passed" if suite.results and suite.failed == 0 else "failed"
         logger.info("Scenario tests: %d/%d passed (%.1fs)", suite.passed, len(suite.results), duration)

@@ -38,7 +38,9 @@ def test_steps_carry_phase_kind_and_effective_policy():
     steps = workflow_steps(WORKFLOW)
     assert [(s.phase_kind, s.on_failure) for s in steps] == [
         ("pre", "continue"), ("pre", "stop"), ("activity", "continue"), ("activity", "continue"), ("post", "stop")]
-    assert phase_kind("prepare") == "pre" and phase_kind("rollback") == "activity"
+    # the execution contract's kinds (spec 011)
+    assert phase_kind("pre_checks") == "pre" and phase_kind("prepare") == "activity"
+    assert phase_kind("rollback") == "rollback" and phase_kind("backup") == "backup"
 
 
 def test_sunny_day_is_one_case_per_cr_and_node_group():
@@ -505,3 +507,89 @@ def test_execution_report_needs_the_configured_jar(tmp_path):
     rep = asyncio.run(generate_execution_report(str(tmp_path / "missing.jar"), tmp_path, tmp_path / "out",
                                                 "UC_TC-P01_EAST", {"node_type": "PGW_RDS", "activity": "X"}))
     assert rep["files"] == [] and "not found" in rep["error"]
+
+
+def _contract_workflow():
+    from skills.network_config_gen import contract
+    wf = yaml.safe_load(r"""
+phases:
+  preNodeHealthCheck:
+    steps:
+    - {node: APP, send: uptime, validation: {success: {criteria: {regex: 'load'}}}}
+    - {node: APP, send: systemctl is-active app, validation: {success: {criteria: {regex: '^active$'}}}}
+  activity_configuration:
+    steps:
+    - {node: APP, send: ls /tmp/a.tar, validation: {success: {criteria: {regex: 'a.tar'}}}}
+    - {node: APP, send: cp /tmp/a.tar /opt/app/, validation: {success: {criteria: {regex: ''}}}}
+    - {node: APP, send: chmod 777 /opt/app/a.tar, validation: {success: {criteria: {regex: ''}}}}
+  postNodeHealthCheck:
+    steps:
+    - {node: APP, send: systemctl is-active app, validation: {success: {criteria: {regex: '^active$'}}}}
+  rollback:
+    name: Rollback files
+    steps:
+    - {node: APP, send: rm -f /opt/app/a.tar}
+""")
+    contract.apply(wf)
+    return wf
+
+
+def test_rollback_only_execution_is_one_case_and_runs_only_the_rollback():
+    """Spec 011 rule 5: step 9 runs one execution with ROLLBACK_ONLY=true."""
+    from skills.network_config_test.scenarios import has_contract, rollback_only_scenario
+    wf = _contract_workflow()
+    steps = workflow_steps(wf)
+    assert has_contract(wf) and [s.phase_kind for s in steps][-1] == "rollback"
+    sc = rollback_only_scenario(steps, TARGETS[0])
+    assert sc.id == "TC-R01" and sc.runtime_vars == {"ROLLBACK_ONLY": "true"} and sc.kind == "rollback"
+    ok = ScenarioResult(scenario=sc, overall_status="SUCCESS", commands=[
+        CommandResult(command="rm -f /opt/app/a.tar", node="APP", success=True, validation_status="success")])
+    evaluate(ok, steps, {"APP": "APP"})
+    assert ok.status == "PASS", [(c.description, c.ok) for c in ok.checks]
+    leaked = ScenarioResult(scenario=sc, overall_status="SUCCESS", commands=[
+        CommandResult(command="uptime", node="APP", success=True, validation_status="success"),
+        CommandResult(command="rm -f /opt/app/a.tar", node="APP", success=True, validation_status="success")])
+    evaluate(leaked, steps, {"APP": "APP"})
+    assert leaked.status == "FAIL" and not next(c for c in leaked.checks if c.description == "Only the rollback phase ran").ok
+    nothing = ScenarioResult(scenario=sc, overall_status="SUCCESS", commands=[])
+    evaluate(nothing, steps, {"APP": "APP"})
+    assert nothing.status == "FAIL"                                   # a rollback that does nothing
+    no_rollback = workflow_steps({"phases": {"a": {"steps": [{"node": "APP", "send": "uptime"}]}}})
+    assert rollback_only_scenario(no_rollback, TARGETS[0]) is None
+
+
+def test_contract_negatives_follow_the_rules():
+    """Spec 011: pre-health fault → rest of the phase runs, nothing later; activity fault after a
+    change → rollback runs; before any change → no rollback."""
+    wf = _contract_workflow()
+    steps = workflow_steps(wf)
+    negs, _ = negative_scenarios(steps, TARGETS[0], {"APP"}, contract=True)
+    by = {n.category: n for n in negs}
+    assert "every later phase is skipped" in by["pre_check"].expected
+    ok = lambda c, n="APP": CommandResult(command=c, node=n, success=True, validation_status="success")  # noqa: E731
+    bad = lambda c, n="APP": CommandResult(command=c, node=n, success=True, validation_status="failed")  # noqa: E731
+
+    pre = by["pre_check"]                    # uptime fails; systemctl still runs; nothing later
+    r = ScenarioResult(scenario=pre, overall_status="FAIL", commands=[bad("uptime"), ok("systemctl is-active app")])
+    evaluate(r, steps, {"APP": "APP"})
+    assert r.status == "PASS", [(c.description, c.ok, c.detail) for c in r.checks]
+    r = ScenarioResult(scenario=pre, overall_status="FAIL", commands=[bad("uptime"), ok("systemctl is-active app"),
+                                                                     ok("ls /tmp/a.tar")])
+    evaluate(r, steps, {"APP": "APP"})
+    assert r.status == "FAIL"                # the activity must not run after a pre-health failure
+
+    act = by["activity"]                     # the first validated activity step: ls (no change yet)
+    assert act.fault.send == "ls /tmp/a.tar" and "no rollback" in act.expected
+    r = ScenarioResult(scenario=act, overall_status="FAIL", commands=[
+        ok("uptime"), ok("systemctl is-active app"), bad("ls /tmp/a.tar")])
+    evaluate(r, steps, {"APP": "APP"})
+    assert r.status == "PASS", [(c.description, c.ok, c.detail) for c in r.checks]
+    # a fault in the chmod (after the cp changed the node) must start the rollback
+    chmod = next(s for s in steps if s.send.startswith("chmod"))
+    sc = Scenario(id="TC-N9", title="t", kind="negative", category="activity", target=TARGETS[0], contract=True,
+                  fault=Fault(kind="validation", node="APP", step_index=chmod.index, send=chmod.send), policy="stop")
+    r = ScenarioResult(scenario=sc, overall_status="FAIL", commands=[
+        ok("uptime"), ok("systemctl is-active app"), ok("ls /tmp/a.tar"), ok("cp /tmp/a.tar /opt/app/"),
+        bad("chmod 777 /opt/app/a.tar"), ok("rm -f /opt/app/a.tar")])
+    evaluate(r, steps, {"APP": "APP"})
+    assert r.status == "PASS", [(c.description, c.ok, c.detail) for c in r.checks]

@@ -59,7 +59,8 @@ def phase_kind(key: str, body: dict) -> str:
         return ROLLBACK
     if re.search(r"backup", text, re.I):
         return BACKUP
-    if re.search(r"health", text, re.I):
+    # a health check, or a pre/post check that is not the activity's own (ActivityPrecheck)
+    if re.search(r"health", text, re.I) or (re.search(r"check", text, re.I) and not re.search(r"activity", text, re.I)):
         if re.search(r"post", text, re.I):
             return POST
         if re.search(r"pre", text, re.I):
