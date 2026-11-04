@@ -19,10 +19,28 @@
 ## Step 3: Backup kept on the node (/tmp)
 - [X] T008 Backup without "via repo server": `backup_to_repo` does nothing (the archive stays in the node's /tmp where the backup step wrote it, the rollback restores from there); the step 6 prompt says where backups go; test
 
-## Step 4: Via repo server
-- [ ] T009 `structure.py` route "via repo": LOCAL → REPO upload, node pull/push with `scp` + `expect_reply`, checksums, `${ORDER_NO}` path
-- [ ] T010 Step 8 / MockWire node-side `scp`
-- [ ] T011 MRF E2E both routes (step 9 green)
+- [X] T004c O-D8 (user, 2026-11-04): phases fixed per activity — Settings → Vendor Profiles → Activity dialog has the
+  checkboxes (`ui.components.PhaseOptions`, replaces the free-text "Default Phases"; no phase → not saved);
+  `Activity.run_options` (column `default_phases`, old lists → all phases); `build_profile_context` puts `run_options`
+  + the selected phases in the profile; New Run shows the activity's phases read-only, no last-run pre-fill (preview
+  on a DB copy: saved `{…activityPrecheck: false…, backup_via_repo: true}`, New Run "Without ActivityPrecheck · backup
+  via repo server"); test `test_activity_holds_the_run_phases`
+
+## Step 4: Via repo server (O-D7 corrected: the repo server runs the copies)
+- [X] T009 `structure.py`: `backup_to_repo` — the repo fetches the archive from the node and copies it back before
+  the rollback extracts it; `files_via_repo` — every LLM sftp upload / download to a node is staged on the repo
+  (`nc_xr<k>_stage`, framework sftp) and copied by the repo; `repo_copy` (`scp` / `sftp` per node type
+  `file_transfer`, vendor profile wins in `merge_vendor_profile`), `expect_reply` with the node password secret,
+  `sha256sum` both ends; `flatten` restores staged steps (`_unstage`); `_moved_files` knows the repo copies (the
+  restore stays in its record loop); contract: on a repo node only a copy onto the node outside `/tmp` is a change;
+  without run options = default (backup on the node). Tests in `test_workflow_structure.py`
+- [X] T010 MockWire 49cee9b + b748860: in-shell scp / sftp to `transfer.peers` instances, both directions,
+  password prompt, `user@[addr]:path`; step 8 writes the peers into the repo instance (`topology.add_peers`), peer
+  copies are builtins (`file_builtin`), the overlay names the node and answers the simulator password
+  (`overlay._peer_copies`)
+- [ ] T011 MRF E2E both routes — fast check done (steps 8 + 9 on run 3d75c561 via repo, research.md T011a): SCP and
+  SFTP 4/4 each; open: full pipeline run (step 6 LLM with the options), negatives (rollback restore from the repo)
+- [ ] T013 O-Q8 node address for the repo route (NIAM nodes) — user decision
 
 ## Step 5: Docs
 - [ ] T012 README / CLAUDE.md / guideline

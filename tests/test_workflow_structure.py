@@ -51,9 +51,13 @@ phases:
 """
 
 
-def _applied() -> dict:
+VIA_REPO = {"run_options": {"backup_via_repo": True},
+            "category_1_node_activity": {"nodes": [{"name": "MRF", "ssh": {"file_transfer": "scp"}}]}}
+
+
+def _applied(requirements: dict | None = None) -> dict:
     parsed = parse_yaml(WORKFLOW)
-    structure.apply(parsed)
+    structure.apply(parsed, requirements)
     return parsed
 
 
@@ -83,40 +87,84 @@ def test_every_transfer_is_checksummed_on_both_ends():
 
 
 def test_backup_goes_to_repo_server_and_rollback_fetches_it():
-    parsed = _applied()
+    """O-D7: the repo server runs the copies from / to the node (scp per the node type), checked
+    with sha256sum on both ends, the node password answered by expect_reply."""
+    parsed = _applied(VIA_REPO)
     assert parsed["nodes"]["REPO"]["ssh"]["auth"]["password"] == "${SECRET.repo_password}"
     backup = _leaves(parsed, "backup")
     tar = next(s for s in backup if s.get("send", "").startswith("tar"))
     # no $(date): the archive is fetched again; its name registered under the LLM's variable
     assert tar["send"] == "tar -czvf /tmp/clips_backup.tar.gz ${rec.data.DEST}/ && ls -1 /tmp/clips_backup.tar.gz"
     assert tar["register"] == [{"regex": "(?<backupFileName>clips_backup\.tar\.gz)"}]
-    put = next(s for s in backup if s.get("id") == "nc_bk1_put")
-    assert put["node"] == "REPO" and put["when"] == "totalFiles != '0'"
-    assert put["sftp"]["remote_path"] == "/backup/netconfig/${crGroup}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
+    ids = [s.get("id") for s in backup]
+    assert ids.index("nc_bk1_sum_node") < ids.index("nc_bk1_copy") < ids.index("nc_bk1_sum_repo")
+    copy_ = backup[ids.index("nc_bk1_copy")]
+    repo_file = "/backup/netconfig/${crGroup}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
+    assert copy_["node"] == "REPO" and copy_["when"] == "totalFiles != '0'"
+    assert copy_["send"] == f"scp oamsys@[${{MRF.niamID-1}}]:/tmp/clips_backup.tar.gz {repo_file}"
+    assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${SECRET.password}\n", "timeout_sec": 30}]
+    check = backup[ids.index("nc_bk1_sum_repo")]
+    assert check["send"] == f"sha256sum {repo_file}" and check["validation"]["success"]["criteria"]["expr"] == "bk1Dst == bk1Src"
+    assert not any("sftp" in s for s in backup)  # nothing through the automation server
     assert not any("${node}" in json.dumps(s) for s in backup)  # empties multi-node MOPs
     rollback = _leaves(parsed, "rollbackConfiguration")
     ids = [s.get("id") for s in rollback]
-    assert ids.index("nc_rs1_get") < ids.index("nc_rs1_put") < ids.index(None)
+    assert ids.index("nc_rs1_sum_repo") < ids.index("nc_rs1_copy") < ids.index("nc_rs1_sum_node") < ids.index(None)
+    assert rollback[ids.index("nc_rs1_copy")]["send"] == \
+        "scp /backup/netconfig/${crGroup}/${rsHost1}/${rec.data.DEST}/clips_backup.tar.gz oamsys@[${MRF.niamID-1}]:/tmp/clips_backup.tar.gz"
     restore = rollback[ids.index(None)]
     assert restore["send"] == "tar -xzvf /tmp/clips_backup.tar.gz -C /" and restore["when"] == "backupFileName != ''"
     loop = parsed["phases"]["rollbackConfiguration"]["steps"]
     assert len(loop) == 1 and restore in loop[0]["steps"]  # extracted in the same record pass
 
 
+def test_input_files_go_through_the_repo_server():
+    """O-D2 "via repo server" moves every file: automation server → repo (framework sftp) → node (the
+    repo's copy); the copy into the node's /tmp changes nothing on the node (contract E-D3)."""
+    steps = _leaves(_applied(VIA_REPO), "activityConfiguration")
+    ids = [s.get("id") for s in steps]
+    stage = steps[ids.index("nc_xr1_stage")]
+    assert stage["node"] == "REPO"
+    assert stage["sftp"]["remote_path"] == "/backup/netconfig/${crGroup}/files/${rec.data.FILE}"
+    copy_ = steps[ids.index("nc_xr1_copy")]
+    assert copy_["send"] == "scp /backup/netconfig/${crGroup}/files/${rec.data.FILE} oamsys@[${MRF.niamID-1}]:/tmp/${rec.data.FILE}"
+    assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # into /tmp
+    assert ids.index("nc_xr1_stage") < ids.index("nc_xr1_copy") < ids.index("nc_xr1_sum_node")
+    assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE}"
+    assert not any(s.get("node") == "MRF" and "sftp" in s for s in steps)
+
+
+def test_sftp_node_types_and_node_changes_through_the_repo():
+    from skills.network_config_gen.contract import changes_node
+    sftp_reqs = {**VIA_REPO, "category_1_node_activity": {"nodes": [{"name": "MRF", "ssh": {"file_transfer": "sftp"}}]}}
+    backup = _leaves(_applied(sftp_reqs), "backup")
+    assert next(s for s in backup if s.get("id") == "nc_bk1_copy")["send"].startswith(
+        "sftp oamsys@[${MRF.niamID-1}]:/tmp/clips_backup.tar.gz ")
+    assert structure.repo_copy("sftp", "u", "n", "/opt/a/f.wav", "/r/f.wav", False) == \
+        "sftp u@[n]:/opt/a <<< 'put /r/f.wav f.wav'"
+    assert changes_node({"node": "REPO", "send": "sftp u@[n]:/opt/a <<< 'put /r/f.wav f.wav'"}, {"LOCAL"}, {"REPO"})
+    assert not changes_node({"node": "REPO", "send": "mkdir -p /backup/x"}, {"LOCAL"}, {"REPO"})
+    assert not changes_node({"node": "REPO", "send": "scp u@[n]:/opt/f /backup/f"}, {"LOCAL"}, {"REPO"})
+
+
 def test_apply_is_idempotent_and_flatten_gives_the_llm_form():
-    once = dump_yaml(_applied())
-    again = parse_yaml(once)
-    structure.apply(again)
-    assert dump_yaml(again) == once
-    flat = structure.flattened(parse_yaml(once))
-    assert "REPO" not in flat["nodes"]
-    text = dump_yaml(flat)
-    assert "nc_" not in text and "rec.data" not in text and REC + "FILE" in text
+    for reqs in (None, VIA_REPO):
+        once = dump_yaml(_applied(reqs))
+        again = parse_yaml(once)
+        structure.apply(again, reqs)
+        assert dump_yaml(again) == once
+        flat = structure.flattened(parse_yaml(once))
+        assert "REPO" not in flat["nodes"]
+        text = dump_yaml(flat)
+        assert "nc_" not in text and "rec.data" not in text and REC + "FILE" in text
+        upload = flat["phases"]["activityConfiguration"]["steps"][0]  # back on its node and path
+        assert upload["node"] == "MRF" and upload["sftp"]["remote_path"] == f"/tmp/${{{REC}FILE}}"
 
 
 def test_validator_checks_the_flat_form_and_rejects_node_placeholder():
-    errors = validate_workflow(dump_yaml(_applied()))
-    assert not [e for e in errors if "rec." in e or "bkHost" in e or "xfer" in e], errors
+    for reqs in (None, VIA_REPO):
+        errors = validate_workflow(dump_yaml(_applied(reqs)))
+        assert not [e for e in errors if "rec." in e or "bkHost" in e or "xfer" in e or "xr1" in e], errors
     assert check_placeholders({"phases": {"p": {"steps": [{"node": "X", "send": "echo ${node}"}]}}})
 
 
@@ -154,6 +202,11 @@ def test_repo_server_answer_parsed():
     from skills.requirement_gathering.questionnaire import parse_repo_server, repo_server_question
     assert parse_repo_server("backup@10.1.2.3:2222 /srv/backups/") == {
         "backup_dir": "/srv/backups", "host": "10.1.2.3", "user": "backup", "port": "2222"}
+    assert parse_repo_server("repo.example.net") == {"host": "repo.example.net"}
+    assert parse_repo_server("repo01") == {"host": "repo01"}
+    # DEP-57: a sentence is no address (the last word "rollback." became the repo host)
+    assert parse_repo_server("repo server is an intermittent server which will just keep the backup files "
+                             "in case we need to perform a rollback.") == {}
     assert repo_server_question([{"phase": "Backup", "command": "take a backup of the clips"}])
     assert not repo_server_question([{"phase": "Activity", "command": "copy the file"}])
 
@@ -191,3 +244,20 @@ def test_condition_variables_register_one_token():
     assert single_token_condition_vars(parsed) == 1  # "total 16K" in a when is always false (JAR)
     regs = parsed["phases"]["b"]["steps"][0]["register"]
     assert regs == [{"regex": "(?<files>\S+)"}, {"regex": "x(?<other>.*)"}]
+
+
+def test_step8_repo_copies_reach_the_node_instance():
+    """Spec 010 O-D7 in the simulator: the repo's copies are MockWire builtins (peer transfer), the
+    repo instance lists the node instances as peers, the overlay names the node and answers the
+    simulator password."""
+    from skills.network_simulator_setup.overlay import build_overlay
+    from skills.network_simulator_setup.topology import NodeSpec, add_peers, file_builtin
+    assert file_builtin("scp /r/a.tgz u@[${MRF.niamID-1}]:/tmp/a.tgz")
+    assert file_builtin(r"regex:^scp\ u@\[x\]:/tmp/a\.tgz\ /r/") and not file_builtin("scp a.txt host:/tmp/")
+    cfg = parse_yaml(add_peers("config: {prompt: '$ '}\n", {"MRF": {"root": "/sim/vfs/MRF", "password": "pw"}}))
+    assert cfg["transfer"]["peers"] == {"MRF": {"root": "/sim/vfs/MRF", "password": "pw"}}
+    specs = [NodeSpec(name="MRF", instance="MRF", prompt="mrf:~ # "), NodeSpec(name="REPO", instance="REPO", prompt="$ ")]
+    overlay = parse_yaml(build_overlay(dump_yaml(_applied(VIA_REPO)), specs, {"MRF": 22200, "REPO": 22201}))
+    copy_ = next(s for s in _leaves(overlay, "backup") if s.get("id") == "nc_bk1_copy")
+    assert copy_["send"].startswith("scp oamsys@[MRF]:/tmp/clips_backup.tar.gz ")
+    assert copy_["expect_reply"][0]["reply"] == "netconf-sim\n"

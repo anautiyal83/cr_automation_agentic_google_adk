@@ -30,9 +30,11 @@ production stages every file on the repo server; the pipeline sends them straigh
 | O-D6 | SFTP support | Per node type in Settings → Vendor profiles: `File transfer: SFTP / SCP` (default SFTP); a node type without a profile is asked once in step 1 |
 | O-D7 | Repo route (user, 2026-11-04, corrected) | **The repo server runs the transfers**: the automation server uploads an input file to the repo (framework SFTP); on the repo server an `sftp` (node type supports SFTP) or `scp` command **uploads** it to the node; backups: the repo server **downloads** them from the node; rollback: the repo server uploads them back. The node's login password is answered by `expect_reply` on the repo step (JAR-verified for a password prompt, research.md). Repo paths `<backup_dir>/${ORDER_NO}/<node>/…` |
 
+| O-D8 | Where the phases are chosen (user, 2026-11-04) | **Fixed per activity, not per run**: Settings → Vendor Profiles → Activity has the phase checkboxes (they replace the free-text "Default Phases"); New Run shows the selected activity's phases read-only (with where to change them) and no longer asks or pre-fills them from the last run. Stored in `activities.default_phases` as the options JSON; an old free-text list reads as all phases |
+
 ## Behaviour
 
-### New Run → Activity step (proposed layout)
+### Settings → Vendor Profiles → Activity (O-D8)
 
 ```
 Phases
@@ -52,8 +54,10 @@ Phases
 
 - "via repo server" is shown only while Backup is checked; unchecking Backup clears it. Unchecking Rollback hides and
   clears its sub-phases.
-- The options are saved with the run (document set) and pre-filled from the UC's last run (as the notes are).
-  Run History → Re-run keeps them. The Notes & review summary lists them.
+- An activity without any phase is not saved. The Activities list shows a one-line summary.
+- New Run → Activity step: "Phases: <summary>" of the selected activity (read-only, info tooltip "Set per activity
+  in Settings → Vendor Profiles → Activities"); without an activity (manual entry) all phases. The options are saved
+  with the run (document set); Run History → Re-run keeps them; the Notes & review summary lists them.
 
 ### Routes
 
@@ -64,10 +68,13 @@ otherwise SCP (`scp` command with the password answered by `expect_reply`) — O
 |--------|----------|-------------------------|-------------|--------------------|
 | off | — | automation server → node (node transfer) | — | nothing to restore; rollback runs the MOP's rollback configuration |
 | on | off | automation server → node (node transfer) | node `/tmp` (copy on the node) | from node `/tmp` |
-| on | on | automation server → repo (SFTP upload), then the node downloads it from the repo (node transfer) | repo server (the node uploads it) | the node downloads it from the repo |
+| on | on | automation server → repo (framework SFTP, `<backup_dir>/${crGroup}/files/`), then **the repo server** copies it to the node (`scp` / `sftp` per node type) | repo server: **the repo server** fetches it from the node (`<backup_dir>/${crGroup}/<host>/<source path>/`) | **the repo server** copies it back to the node |
 
-Every hop keeps the `sha256sum` check on both ends. Repo paths follow the production convention
-`<backup_dir>/${ORDER_NO}/<node>/<destination path>` (spec 009 M-9).
+Every hop keeps the `sha256sum` check on both ends (`criteria.expr: dst == src`). The repo's copy logs in to the node
+as `<node ssh.user>@[<address>]` and answers its password secret with `expect_reply` (O-Q8). Files downloaded from a
+node (node → automation server) also go node → repo → automation server. A copy onto the node outside `/tmp` counts
+as a node change (contract E-D3); everything else on the repo does not. The production `${ORDER_NO}` path
+convention (spec 009 M-9) is not applied yet (`${crGroup}`).
 
 ### Pipeline
 
@@ -84,7 +91,7 @@ Every hop keeps the `sha256sum` check on both ends. Repo paths follow the produc
 
 | ID | Question | Proposed |
 |----|----------|----------|
-| O-Q8 | How does the repo server reach a node (address, user, password)? | Address: a node value of the CIQ (Node_Details / IP sheet column with the node's IP or host name, `${<NODE>.<field>}`); user: the node type's SSH user (vendor profile); password: secret `${SECRET.<node>_password}`. Step 1 asks once which CIQ column holds the address when none is obvious |
+| O-Q8 | How does the repo server reach a node (address, user, password)? | **Implemented default (2026-11-04)**: the workflow node's own `ssh.user`, `ssh.host` and password secret; `requirements.node_addresses` (node → e.g. `${MRF.OAM_IP}`) overrides the address. **Open**: for NIAM nodes `ssh.host` is the NIAM ID (`${MRF.niamID-1}`), which a repo server cannot connect to; the MRF CIQ has no node address column (production avoids it: the node runs the copy against `${REPO_IP}`). Needs the user's answer: a CIQ / vendor-profile address field, or the node-side route |
 
 ## Out of scope
 

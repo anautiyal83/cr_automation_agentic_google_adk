@@ -528,6 +528,7 @@ def filter_vendor_profile_questions(
 
 
 _BACKUP = re.compile(r"\bback\s?-?up\b", re.I)
+_HOST_NAME = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}|[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+")
 _REPO_ANSWER = re.compile(r"(?:(?P<user>[\w.-]+)@)?(?P<host>\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][\w.-]*)(?::(?P<port>\d+))?")
 
 
@@ -562,15 +563,20 @@ def parse_repo_server(answer: str) -> dict:
     if path:
         out["backup_dir"] = path.group(1).rstrip("/") or "/"
         text = text.replace(path.group(1), " ")
+    words = text.split()
     for m in _REPO_ANSWER.finditer(text):
-        token = m.group(0)
-        if m.group("user") or m.group("port") or "." in m.group("host") or m.group("host").startswith("["):
-            out["host"] = m.group("host").strip("[]")
+        token, host = m.group(0), m.group("host")
+        # a host is an address (IP, dotted name) or comes with user@ / :port; a sentence ending in
+        # "… perform a rollback." named "rollback." the repo host (DEP-57)
+        if m.group("user") or m.group("port") or _HOST_NAME.fullmatch(host) or host.startswith("["):
+            out["host"] = host.strip("[]")
             if m.group("user"):
                 out["user"] = m.group("user")
             if m.group("port"):
                 out["port"] = m.group("port")
             break
-        if token.lower() not in {"user", "host", "port", "dir", "directory", "backup", "and", "the", "on"}:
-            out.setdefault("host", m.group("host"))
+        # a bare name only when the answer is just that (one or two words), never from prose
+        if len(words) <= 2 and token.lower() not in {"user", "host", "port", "dir", "directory", "backup",
+                                                     "and", "the", "on"}:
+            out.setdefault("host", host)
     return out

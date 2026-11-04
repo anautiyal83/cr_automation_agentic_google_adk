@@ -30,6 +30,7 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
     if not isinstance(workflow, dict):
         raise ValueError("workflow YAML could not be parsed")
     wf_nodes = workflow.get("nodes") or {}
+    _peer_copies(workflow, nodes)
 
     for spec in nodes:
         node = wf_nodes.get(spec.name)
@@ -54,6 +55,33 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         ssh["strict_host_key_checking"] = SingleQuotedScalarString("no")
     _shorten_polls(workflow.get("phases") or {})
     return dump_yaml(workflow)
+
+
+def _peer_copies(workflow: dict, nodes: list[NodeSpec]) -> None:
+    """The repo server's copies to / from a node (spec 010 O-D7) name the node by its production
+    address and answer its password secret: in the overlay they name the node's instance (a
+    ``transfer.peers`` key of the repo instance) and answer the simulator password."""
+    from skills.network_config_gen.structure import node_login  # same address / password as step 6
+    logins = {spec.name: node_login(workflow, spec.name, None) for spec in nodes}
+
+    def walk(steps) -> None:
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict):
+                continue
+            walk(step.get("steps"))
+            send = str(step.get("send") or "")
+            for spec in nodes:
+                _, address, password = logins[spec.name]
+                if f"@[{address}]:" not in send:
+                    continue
+                step["send"] = send = send.replace(f"@[{address}]:", f"@[{spec.name}]:")
+                for reply in step.get("expect_reply") or []:
+                    if isinstance(reply, dict) and password and password in str(reply.get("reply", "")):
+                        reply["reply"] = str(reply["reply"]).replace(password, spec.password)
+
+    for body in (workflow.get("phases") or {}).values():
+        if isinstance(body, dict):
+            walk(body.get("steps"))
 
 
 # The simulator answers at once (trigger files appear on upload): a poll that has not

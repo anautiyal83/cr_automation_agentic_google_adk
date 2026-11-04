@@ -719,3 +719,16 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 
 ### OB-6 — Resume after server restart not implemented (Medium, Open)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.
+
+### DEP-57 — Prose answer became the repo host (Medium, Fixed 2026-11-04)
+- Run 3d75c561: the `orch_repo_server` answer "repo server is an intermittent server which will just keep the backup
+  files in case we need to perform a rollback." gave `repo_server.host = "rollback."` (any token with a dot counted as a
+  host; a bare word too). Fix: `questionnaire.parse_repo_server` — a host is an IP or dotted name (`_HOST_NAME`) or comes
+  with `user@` / `:port`; a bare name only when the answer is one or two words; prose → nothing (configured defaults).
+
+### DEP-58 — LLM backup regex never matches GNU tar (Medium, Open)
+- MRF workflow (run 3d75c561): backup step success regex `tar: Removing '.*'`; GNU tar (and MockWire's builtin `tar -c`)
+  prints ``tar: Removing leading `/' from member names``. It passed only while a catch-all simulator key answered the
+  tar command; with the builtin the backup fails. Step 6 has no real-output sample for `tar` to check the regex
+  against. Candidate fix: a validator / autofix rule for `tar -c` success regexes (archive listing or "Removing
+  leading"), or a built-in sample of tar's output.

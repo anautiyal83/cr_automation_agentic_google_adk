@@ -196,7 +196,29 @@ def file_builtin(cmd: str) -> bool:
     k = cmd.strip()
     if k.lower().startswith("regex:"):
         k = k[len("regex:"):].lstrip("^").replace("\\ ", " ").replace("\\-", "-")
-    return k.split(" ", 1)[0].rstrip("\\") in _FILE_BUILTINS or bool(_TAR_CREATE.match(k))
+    first = k.split(" ", 1)[0].rstrip("\\")
+    return first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
+
+
+_PEER = re.compile(r"\S@\\?\[")
+
+
+def is_peer_copy(cmd: str) -> bool:
+    """The repo server's copy to / from a node (``scp … user@[node]:…``, spec 010 O-D7): MockWire
+    moves the file between the two instances' VFS (``transfer.peers``)."""
+    return bool(_PEER.search(cmd))
+
+
+def add_peers(config_yaml: str, peers: dict[str, dict]) -> str:
+    """``transfer.peers`` (workflow node name → that instance's VFS root and login password) in an
+    instance config: its in-shell scp / sftp to ``user@[<node>]:`` really reach the node's files."""
+    cfg = parse_yaml(config_yaml)
+    if not isinstance(cfg, dict) or not peers:
+        return config_yaml
+    transfer = cfg.get("transfer") if isinstance(cfg.get("transfer"), dict) else {}
+    transfer["peers"] = peers
+    cfg["transfer"] = transfer
+    return dump_yaml(cfg)
 
 
 # ---------------------------------------------------------------------------

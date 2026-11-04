@@ -80,3 +80,77 @@ def confirm(title: str, message: str, on_confirm, ok_label: str = "Delete", ok_i
             ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
             ui.button(ok_label, icon=ok_icon, on_click=ok).props("unelevated color=negative no-caps")
     dialog.open()
+
+
+class PhaseOptions:
+    """The run phase checkboxes of an activity (spec 010): every phase and sub-phase a checkbox
+    with its purpose, a group ticks / clears its sub-phases and stays ticked while one is, "via
+    repo server" only under Backup."""
+
+    def __init__(self, options: dict | None = None, hint: str = ""):
+        from shared import run_options
+        self._boxes: dict[str, ui.checkbox] = {}
+        self._groups: dict[str, ui.checkbox] = {}
+        self._syncing = False
+        with ui.column().classes("cr-phase-options w-full gap-0"):
+            if hint:
+                ui.label(hint).classes("text-caption cr-text-dim")
+            done: set[str] = set()
+            for key, label, group in run_options.PHASES:
+                if group and group not in done:
+                    done.add(group)
+                    self._groups[group] = ui.checkbox(run_options.GROUPS[group], value=True,
+                                                      on_change=lambda e, g=group: self._on_group(g, e.value))
+                with ui.row().classes("items-center gap-1 no-wrap" + (" cr-phase-sub" if group else "")):
+                    self._boxes[key] = ui.checkbox(label, value=True,
+                                                   on_change=lambda e, g=group: self._on_phase(g))
+                    ui.label(run_options.PURPOSE[key]).classes("text-caption cr-text-dim")
+                if key == "backup":
+                    with ui.row().classes("cr-phase-sub") as self._repo_row:
+                        self._via_repo = ui.checkbox(
+                            "via repo server — every file (input files, backups, restores) goes through "
+                            "the repo server", value=False)
+            self._error = ui.label("Select at least one phase").classes("text-caption") \
+                .style("color: var(--cr-error)")
+        self.set(options)
+
+    def _on_group(self, group: str, value: bool) -> None:
+        from shared import run_options
+        if self._syncing:
+            return
+        self._syncing = True
+        for key, _, g in run_options.PHASES:
+            if g == group:
+                self._boxes[key].value = value
+        self._syncing = False
+        self._on_phase(group)
+
+    def _on_phase(self, group: str) -> None:
+        from shared import run_options
+        if not self._syncing and group:
+            self._syncing = True
+            self._groups[group].value = any(self._boxes[k].value for k, _, g in run_options.PHASES if g == group)
+            self._syncing = False
+        backup = self._boxes["backup"].value
+        self._repo_row.set_visibility(backup)
+        if not backup:
+            self._via_repo.value = False
+        self._error.set_visibility(not any(b.value for b in self._boxes.values()))
+
+    @property
+    def value(self) -> dict:
+        from shared import run_options
+        return run_options.normalize({"phases": {k: b.value for k, b in self._boxes.items()},
+                                      "backup_via_repo": self._via_repo.value})
+
+    def set(self, options: dict | None) -> None:
+        from shared import run_options
+        opts = run_options.normalize(options)
+        self._syncing = True
+        for k, b in self._boxes.items():
+            b.value = opts["phases"][k]
+        for g, box in self._groups.items():
+            box.value = any(opts["phases"][k] for k, _, gg in run_options.PHASES if gg == g)
+        self._via_repo.value = opts["backup_via_repo"]
+        self._syncing = False
+        self._on_phase("")

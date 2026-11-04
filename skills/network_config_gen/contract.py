@@ -117,10 +117,27 @@ def _segment_changes(segment: str) -> bool:
     return False
 
 
-def changes_node(step: dict, local_nodes: set[str]) -> bool:
-    """A step on a remote node that changes how the node works (E-D3)."""
+_REPO_NODE = re.compile(r"repo|backup", re.I)
+_TO_NODE = re.compile(r"^\s*(?:scp\b.*\s|sftp\s+)\S*@(?:\[[^\]]*\]|[^\s:@]+):(\S+)(?:\s+<<<\s*'put\s+\S+(?:\s+(\S+))?')?\s*$")
+
+
+def _copy_to_node(send: str) -> str | None:
+    """The node path a repo-server ``scp <src> user@[node]:<path>`` / ``sftp user@[node]:<dir> <<<
+    'put <src> [<name>]'`` writes; None for anything else (a download, a command on the repo)."""
+    m = _TO_NODE.match(send)
+    if not m or (send.lstrip().startswith("sftp") and "<<<" not in send):
+        return None
+    return f"{m.group(1).rstrip('/')}/{m.group(2)}" if m.group(2) else m.group(1)
+
+
+def changes_node(step: dict, local_nodes: set[str], repo_nodes: set[str] = frozenset()) -> bool:
+    """A step on a remote node that changes how the node works (E-D3). On the repo server only a
+    copy onto a node outside the temp directories does (spec 010 O-D7)."""
     if not isinstance(step, dict) or str(step.get("node", "")) in local_nodes:
         return False
+    if str(step.get("node", "")) in repo_nodes:
+        target = _copy_to_node(str(step.get("send") or ""))
+        return target is not None and not _is_temp(target)
     sftp = step.get("sftp")
     if isinstance(sftp, dict):
         return str(sftp.get("operation", "")).lower() == "upload" and not _is_temp(str(sftp.get("remote_path", "")))
@@ -225,6 +242,7 @@ def apply(parsed: dict) -> int:
     local_nodes = {str(n) for n, v in nodes.items()
                    if isinstance(v, dict) and "local" in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
     local_nodes |= {"LOCAL", "local"}
+    repo_nodes = {str(n) for n in nodes if _REPO_NODE.search(str(n)) and str(n) not in local_nodes}
     flags = parsed.setdefault("globals", {}).setdefault("vars", {})
     if not isinstance(flags, dict):
         flags = parsed["globals"]["vars"] = {}
@@ -264,7 +282,7 @@ def apply(parsed: dict) -> int:
             _put(body, "on_failure", "stop")
             for step in _leaves(steps):
                 _put(step, "on_failure", "stop")
-                if changes_node(step, local_nodes):
+                if changes_node(step, local_nodes, repo_nodes):
                     _add_vars(step, "success", {"CHANGES_MADE": "true"})
                     _add_vars(step, "failure", {"ROLLBACK_REQUIRED": "true"})
                 else:

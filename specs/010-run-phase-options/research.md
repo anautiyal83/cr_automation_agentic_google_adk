@@ -13,3 +13,11 @@
 - Step 8 / MockWire: in-shell `scp` / `sftp` with a `user@host:` side resolve `host` to a peer instance's VFS
   (`transfer.peers` in the instance config, written by step 8 from the topology), copy in both directions, and ask
   for the password first when the instance config says so.
+
+## Repo route probes (2026-11-04, O-D7 corrected)
+
+| Probe | Setup | Result |
+|-------|-------|--------|
+| T002b MockWire peers | REPO + MRF instances, REPO `transfer.peers: {rjjvrmr03: {root: <MRF vfs>, password}}`; JAR steps on REPO: `scp f user@rjjvrmr03:/tmp/`, `scp user@rjjvrmr03:/tmp/bk.tar.gz /repo/`, `sftp user@rjjvrmr03:/opt <<< 'put f'`, each with `expect_reply` | All copies land in the other instance's VFS (seen with `ls` on MRF / `cat` on REPO) ✔; wrong password → `Permission denied`, nothing copied ✔ |
+| T009a unknown step key | a step with an extra key `nc_origin` | **Rejected** by the JAR (`Unable to find property 'nc_origin' on class StepDefinition`) — `flatten` rebuilds the staged step from the `nc_` checksum step instead |
+| T011a steps 8 + 9 via repo | run 3d75c561 (MRF) copied, `run_options.backup_via_repo`, node type `file_transfer` scp / sftp, current `structure.apply` (test_step `--agents 8,9 --refix-workflow`, DB copy) | SCP 4/4, SFTP 4/4 (TC-P01..03, TC-R01): backups node → repo and inputs automation server → repo → node, every checksum comparison ✔. The first attempt failed on the LLM's backup regex (DEP-58, not the route) — patched in the copy |

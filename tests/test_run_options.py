@@ -83,3 +83,26 @@ def test_backup_stays_on_the_node_unless_via_repo():
     via_repo = copy.deepcopy(wf)
     assert backup_to_repo(via_repo, {"run_options": {"backup_via_repo": True}}) > 0
     assert "REPO" in via_repo["nodes"]
+
+
+def test_activity_holds_the_run_phases(tmp_path):
+    """The phases are fixed per activity (Settings → Vendor Profiles), not asked on every New Run."""
+    import asyncio
+
+    from shared.profiles import Activity, ProfileManager, Vendor
+    from storage.db import init_database
+
+    async def go():
+        pm = ProfileManager(await init_database(str(tmp_path / "p.db")))
+        vid = await pm.save_vendor(Vendor(name="V"))
+        opts = {"phases": {"activityPrecheck": False, "rollbackPostCheck": False}, "backup_via_repo": True}
+        await pm.save_activity(Activity(vendor_id=vid, name="LOAD", run_options=opts))
+        act = (await pm.get_vendor(vid)).activities[0]
+        assert act.run_options == normalize(opts) and act.run_options["backup_via_repo"]
+        profile = await pm.build_profile_context(vid, [], "LOAD")
+        assert profile["run_options"] == normalize(opts)
+        assert "activityPrecheck" not in profile["category_3_orchestration"]["phases"]
+    asyncio.run(go())
+    # an old free-text phase list never shaped a run: all phases
+    assert ProfileManager._row_to_activity({"id": "1", "vendor_id": "v", "name": "n",
+                                            "default_phases": '["activity"]'}).run_options == run_options.default()
