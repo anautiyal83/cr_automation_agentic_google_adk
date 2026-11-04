@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 from nicegui import ui, context
 
-from ui.access import action, requires, scope
+from ui.access import action, download, record, record_document, record_later, requires, scope
 
 from core.events import PipelineEvent
 from core.events import event_bus
@@ -466,7 +466,7 @@ class ProgressSection:
                     ui.label(_size(f.stat().st_size)).classes("text-caption cr-text-dim")
             ui.button("View", icon="visibility", on_click=lambda _, p=f: _open_view(p)) \
                 .props("flat dense color=primary size=sm no-caps")
-            ui.button("Download", icon="download", on_click=lambda _, p=f: ui.download(str(p))) \
+            ui.button("Download", icon="download", on_click=lambda _, p=f: download(p)) \
                 .props("flat dense color=primary size=sm no-caps")
 
     def _render_tests(self):
@@ -1169,10 +1169,12 @@ class ProgressSection:
                         ui.label(ef_name).classes("text-body2 font-mono")
                         if serve_url:
                             ui.button("View", icon="visibility",
-                                      on_click=lambda u=serve_url: ui.navigate.to(u, new_tab=True)) \
+                                      on_click=lambda u=serve_url, f=fpath: (record_document("document.view", f),
+                                                                       ui.navigate.to(u, new_tab=True))) \
                                 .props("flat color=primary size=sm no-caps")
                             ui.button("Download", icon="download",
-                                      on_click=lambda u=serve_url: ui.download(u)) \
+                                      on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
+                                                                       ui.download(u))) \
                                 .props("flat color=positive size=sm no-caps")
             self.ms_extra_files_row.set_visibility(True)
         else:
@@ -1472,6 +1474,9 @@ class ProgressSection:
         self.runner.respond_milestone(run_id_str, 0, answer_str)
 
         logger.info("Questionnaire submitted: %d answers for run %s", len(answers), run_id_str[:8])
+        record_later("questionnaire.submit", target_type="run", target_id=run_id_str, run_id=run_id_str,
+                         details={"defaults": bool(use_defaults), "answered": len(answers),
+                                  "answers": {k: str(v)[:300] for k, v in answers.items()}})
 
         self.status_icon.name = "sync"
         self.status_icon.classes(replace="cr-text-accent cr-spin")
@@ -1507,7 +1512,8 @@ class ProgressSection:
                     if fpath and Path(fpath).exists():
                         dl_url = app.add_media_file(local_file=fpath)
                         ui.button("Download", icon="download",
-                                  on_click=lambda u=dl_url: ui.download(u)) \
+                                  on_click=lambda u=dl_url, f=fpath: (record_document("document.download", f),
+                                                           ui.download(u))) \
                             .props("flat color=positive size=sm no-caps")
                     ui.button(icon="close", on_click=dialog.close) \
                         .props("flat round size=sm color=grey-6")
@@ -1562,6 +1568,8 @@ class ProgressSection:
                 return
 
         self.runner.respond_milestone(run_id_str, step_num, decision)
+        await record("milestone.decision", target_type="run", target_id=run_id_str, run_id=run_id_str,
+                     details={"step": step_num, "decision": decision})
 
         if decision == "continue":
             self.status_icon.name = "sync"
@@ -1670,6 +1678,7 @@ class ProgressSection:
             self._reset_to_default()
             await self.runner.cancel_run(run_id)
             ui.notify("Pipeline cancelled — start a new run from Upload section", type="warning")
+            await record("run.restart", target_type="run", target_id=run_id, run_id=run_id)
         except Exception as exc:
             ui.notify(f"Restart failed: {exc}", type="negative")
 
@@ -1703,6 +1712,7 @@ class ProgressSection:
 
         self._reset_to_default()
         ui.notify("Pipeline stopped", type="warning")
+        await record("run.stop", target_type="run", target_id=run_id, run_id=run_id)
 
     @requires("progress", "run.cancel")
     @_own_run("run.cancel")
@@ -1736,6 +1746,7 @@ class ProgressSection:
 
         self._reset_to_default()
         ui.notify("Pipeline cancelled", type="negative")
+        await record("run.cancel", target_type="run", target_id=run_id, run_id=run_id)
 
     async def _go_details(self):
         if self.active_run_id and self.on_view_details:

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import action, may_start_run, requires, scope
+from ui.access import action, download, may_start_run, record, requires, scope
 
 from ui.components import status_cells
 
@@ -372,7 +372,7 @@ class HistorySection:
                                     ui.button("View", icon="visibility",
                                               on_click=lambda _, f=fpath: OutputViewerSection._view_dialog(f))                                 .props("flat dense size=xs color=primary no-caps")
                                     ui.button("Download", icon="download",
-                                              on_click=lambda _, f=fpath: ui.download(str(f)))                                 .props("flat dense size=xs color=primary no-caps")
+                                              on_click=lambda _, f=fpath: download(f))                                 .props("flat dense size=xs color=primary no-caps")
 
             # --- Output Artifacts ---
             try:
@@ -477,6 +477,8 @@ class HistorySection:
 
             new_run_id = await self.runner.start(doc, started_by=self._scope.user.id)
             ui.notify(f"Pipeline started for {uc_name}", type="positive")
+            await record("run.rerun", target_type="run", target_id=new_run_id, run_id=new_run_id, uc_name=uc_name,
+                         details={"from_run": run_id})
             if self.on_rerun:
                 await self.on_rerun(new_run_id)
         except Exception as exc:
@@ -573,6 +575,7 @@ class HistorySection:
                 pass
 
         ui.notify(f"Cleaned up {deleted_count} runs ({disk_cleaned} disk directories removed)", type="positive")
+        await record("runs.cleanup", details={"kept": keep, "deleted": deleted_count})
         self._current_page = 1
         await self._refresh()
 

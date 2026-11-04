@@ -15,6 +15,8 @@ import asyncio
 import functools
 import inspect
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from nicegui import app, ui
@@ -203,3 +205,44 @@ def run_later(coro) -> None:
         asyncio.ensure_future(coro)
     except RuntimeError:
         pass
+
+
+# ------------------------------------------------------------------ activity trail (spec 006 D8)
+
+_RUN_IN_PATH = re.compile(r"[\\/]runs[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I)
+
+
+async def record(action_name: str, **kwargs) -> None:
+    """Record a done action of the page's user (outcome, target, run, details as AuditTrail)."""
+    access = current()
+    if access is not None:
+        await access.audit.record(action_name, user=access.user, **kwargs)
+
+
+def run_of(path) -> str:
+    """The run id of a file under ``data/runs/<run_id>/``, else ""."""
+    m = _RUN_IN_PATH.search(str(Path(path).resolve()))
+    return m.group(1) if m else ""
+
+
+def record_later(action_name: str, **kwargs) -> None:
+    """``record`` from sync code: the page's user is taken now (a scheduled task has no page
+    context any more), the write happens in the background."""
+    access = current()
+    if access is not None:
+        run_later(access.audit.record(action_name, user=access.user, **kwargs))
+
+
+def record_document(action_name: str, path) -> None:
+    """``document.view`` / ``document.download`` of a run file (sync, see ``record_later``)."""
+    run_id = run_of(path)
+    full = str(Path(path).resolve()).replace("\\", "/")
+    inside = full.split(f"/{run_id}/", 1)[1] if run_id and f"/{run_id}/" in full else Path(path).name
+    record_later(action_name, target_type="document", target_id=Path(path).name, run_id=run_id,
+                 details={"file": inside})
+
+
+def download(path) -> None:
+    """``ui.download`` of a run file, recorded in the trail."""
+    ui.download(str(path))
+    record_document("document.download", path)

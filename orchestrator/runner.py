@@ -153,8 +153,11 @@ class PipelineRunner:
             "started_by": started_by or "cli",
         }
 
-        # Subscribe to own events to persist step results to DB
+        # Subscribe to own events to persist step results to DB and to the activity trail
+        uc_name = document_set.get("uc_name", "")
+
         async def _persist_events(event: PipelineEvent):
+            await self._trail_event(run_id, uc_name, event)
             try:
                 if event.event_type in ("step_completed", "step_failed") and event.step_number:
                     step_status = event.payload.get("status", "passed")
@@ -386,6 +389,28 @@ class PipelineRunner:
         if session and session.state:
             return dict(session.state)
         return {}
+
+    # Pipeline progress in the activity trail (actor "system", spec 006 D8)
+    _TRAIL_EVENTS = {
+        "step_started": "step.started", "step_completed": "step.passed",
+        "step_failed": "step.failed", "retry_started": "step.retry", "milestone_reached": "milestone.reached",
+        "run_completed": "run.completed", "run_failed": "run.failed", "run_cancelled": "run.cancelled",
+    }
+
+    async def _trail_event(self, run_id: str, uc_name: str, event: PipelineEvent) -> None:
+        action = self._TRAIL_EVENTS.get(event.event_type)
+        if not action or not self._db:
+            return
+        from core.audit import FAILED, AuditTrail
+        payload = dict(event.payload or {})
+        details = {k: v for k, v in payload.items() if k in ("status", "error", "decision", "attempt", "reason")}
+        if event.step_number:
+            details["step"] = event.step_number
+        if action == "step.passed" and payload.get("status") not in (None, "passed"):
+            details["status"] = payload.get("status")
+        outcome = FAILED if action in ("step.failed", "run.failed") else "done"
+        await AuditTrail(self._db).record(action, outcome=outcome, target_type="run", target_id=run_id,
+                                          run_id=run_id, uc_name=uc_name, details=details)
 
     def active_run(self) -> dict | None:
         """The run in progress (``{"run_id", "started_by", "status"}``), if any. Only one pipeline

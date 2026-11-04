@@ -130,3 +130,14 @@ def test_one_pipeline_at_a_time(tmp_path, monkeypatch):
     assert not asyncio.run(ui_access.may_start_run(Runner({"run_id": "r2", "started_by": "u2",
                                                            "status": "running"}), db))
     assert trail.entries == [("run.start", "refused", "r2")]
+
+
+def test_document_views_recorded_with_run_and_relative_file(monkeypatch):
+    trail = _page(monkeypatch, CurrentUser("u1", "ana@x.io", "Ana", "analyst", {"outputs": VIEW}))
+    scheduled = []
+    monkeypatch.setattr(ui_access, "run_later", lambda coro: scheduled.append(coro))
+    ui_access.record_document("document.view",
+                              "data/runs/aac54518-d059-4a82-9dfc-f551c8f9fd4f/exec_report/x_summary.html")
+    assert len(scheduled) == 1  # the user is taken now, the write runs later
+    asyncio.run(scheduled[0])
+    assert trail.entries == [("document.view", None, "x_summary.html")]

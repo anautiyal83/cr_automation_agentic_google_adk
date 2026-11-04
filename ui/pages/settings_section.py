@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
-from ui.access import action, requires
+from ui.access import action, record, requires
 
 AVAILABLE_MODELS = [
     # Tier 1: Best value (paid)
@@ -281,6 +281,7 @@ class SettingsSection:
         if self.config_manager and self.api_key_input.value:
             await self.config_manager.update_config({"openrouter_api_key": self.api_key_input.value})
         ui.notify("API key saved", type="positive")
+        await record("settings.save", target_type="setting", target_id="api_key", details={"api_key": "changed"})
 
     @requires("settings", "settings.save")
     async def _save_all(self):
@@ -319,3 +320,11 @@ class SettingsSection:
                 "exec_failure_template": self.exec_failure_template.value,
             })
         ui.notify("All settings saved", type="positive")
+        await record("settings.save", target_type="setting", target_id="all", details={
+            "default_model": self.model_select.value, "test_retry_limit": self.test_retry.value,
+            "infra_retry_limit": self.infra_retry.value, "backoff_multiplier": self.backoff.value,
+            "ciq_processor_jar": self.ciq_jar.value, "cli_automation_jar": self.cli_jar.value,
+            "execution_report_jar": self.exec_report_jar.value, "mop_template": self.mop_template.value,
+            "exec_summary_template": self.exec_summary_template.value,
+            "exec_failure_template": self.exec_failure_template.value, "step_models": step_data,
+            "api_key": "unchanged" if not self.api_key_input.value else "set"})

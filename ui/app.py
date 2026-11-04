@@ -49,6 +49,7 @@ from ui.pages.vendor_section import VendorSection
 from ui.pages.output_viewer_section import OutputViewerSection
 from ui.pages import login_page
 from ui.pages.users_section import UsersSection
+from ui.pages.audit_section import AuditSection
 from core.audit import AuditTrail
 from core.auth import SCREENS, ADMIN_SCREENS, AuthService, storage_secret
 from ui import access as ui_access
@@ -977,6 +978,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 ("cleanup", "Artifact Cleanup", "cleaning_services"),
                 ("settings", "Settings", "settings"),
                 ("users", "Users & Roles", "manage_accounts"),
+                ("audit", "Audit Trail", "fact_check"),
             ]),
         ]
         section_labels = {key: (group, label) for group, items in menu_groups for key, label, _ in items}
@@ -1029,6 +1031,11 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 if not await ui_access.may_start_run(_runner, _db):
                     return
                 run_id = await _runner.start(doc_dict, review_milestones=review_milestones, started_by=user.id)
+                await _audit.record("run.start", user=user, target_type="run", target_id=run_id, run_id=run_id,
+                                    uc_name=doc_dict.get("uc_name", ""), details={
+                                        "review_milestones": review_milestones,
+                                        "documents": {k: Path(str(v)).name for k, v in doc_dict.items()
+                                                      if k.endswith("_path") and v}})
                 if progress:
                     from uuid import UUID
                     await progress.start_tracking(UUID(run_id))
@@ -1445,6 +1452,17 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                     with ui.card().classes("cr-section w-full p-4"):
                         users_section = UsersSection(_auth, _audit, user)
                         on_navigate_hooks.setdefault("users", []).append(users_section.refresh)
+
+            # Audit Trail (administrator only, spec 006 D8)
+            if user.can_view("audit"):
+                with ui.column().classes("cr-page") as panel:
+                    content_panels["audit"] = panel
+                    panel.set_visibility(False)
+                    page_header("Audit Trail", "Who did what and when — every action, refused attempt and "
+                                               "pipeline step")
+                    with ui.card().classes("cr-section w-full p-4"):
+                        audit_section = AuditSection(_audit, user)
+                        on_navigate_hooks.setdefault("audit", []).append(audit_section.refresh)
 
             # Deep link: /?page=history opens that section (before the first await, so the page is
             # sent already showing it)

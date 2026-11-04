@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from nicegui import ui
 
-from ui.access import action, requires, scope
+from ui.access import action, record, requires, scope
 
 from ui.components import card_title, stat_card
 
@@ -62,6 +62,7 @@ class UsageSection:
         from shared.llm import clear_usage_stats
         await clear_usage_stats(owner=self._scope.owner)
         ui.notify("Usage stats cleared", type="info")
+        await record("usage.clear", details={"scope": "own runs" if self._scope.owner else "all runs"})
         await self._refresh()
 
     async def _refresh(self):

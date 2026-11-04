@@ -7,7 +7,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import action, requires, scope
+from ui.access import action, record, requires, scope
 
 from ui.components import status_cells
 
@@ -217,6 +217,7 @@ class CleanupSection:
                     shutil.rmtree(run_dir, ignore_errors=True)
                 self.table.rows = [r for r in self.table.rows if r.get("id") != rid]
                 ui.notify(f"Deleted {uc}", type="positive")
+                await record("run.delete", target_type="run", target_id=rid, run_id=rid, uc_name=uc)
             except Exception as exc:
                 ui.notify(f"Delete failed: {exc}", type="negative")
 
@@ -308,6 +309,7 @@ class CleanupSection:
                 pass
 
         ui.notify(f"Cleaned up {deleted} runs", type="positive")
+        await record("runs.bulk_cleanup", details={"kept": keep, "deleted": deleted})
         self._current_page = 1
         await self._refresh()
 

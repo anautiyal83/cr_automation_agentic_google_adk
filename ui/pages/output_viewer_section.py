@@ -6,7 +6,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import requires_admin, scope
+from ui.access import download, record, record_document, requires_admin, scope
 
 from ui.components import card_title
 
@@ -273,11 +273,12 @@ class OutputViewerSection:
                       on_click=lambda _, p=fpath: self._view_dialog(p)) \
                 .props("flat dense size=xs color=primary no-caps")
             ui.button("Download", icon="download",
-                      on_click=lambda _, p=fpath: ui.download(str(p))) \
+                      on_click=lambda _, p=fpath: download(p)) \
                 .props("flat dense size=xs color=primary no-caps")
 
     @staticmethod
     def _view_dialog(fpath: Path):
+        record_document("document.view", fpath)  # activity trail (spec 006)
         import html as html_mod
         content = ""
         is_binary = fpath.suffix.lower() in (".xlsx", ".xls", ".pdf", ".zip", ".jar", ".docx")
@@ -298,7 +299,7 @@ class OutputViewerSection:
                 ui.label(fpath.name).classes("text-subtitle2 font-bold font-mono")
                 with ui.row().classes("gap-1"):
                     ui.button("Download", icon="download",
-                              on_click=lambda: ui.download(str(fpath))) \
+                              on_click=lambda: download(fpath)) \
                         .props("flat size=sm color=primary no-caps")
                     ui.button(icon="close", on_click=dialog.close) \
                         .props("flat round size=sm color=grey-6")
@@ -354,6 +355,7 @@ class OutputViewerSection:
             from storage.artifact_cache import ArtifactCache
             ArtifactCache().clear_cache(uc)
             ui.notify(f"Cache cleared for {uc}", type="positive")
+            await record("cache.clear", target_type="use_case", target_id=uc, uc_name=uc)
             await self._refresh_cache()
         except Exception as ex:
             ui.notify(f"Failed: {ex}", type="negative")
@@ -368,6 +370,7 @@ class OutputViewerSection:
                 shutil.rmtree(cache._cache_dir, ignore_errors=True)
                 cache._cache_dir.mkdir(parents=True, exist_ok=True)
             ui.notify("All cache cleared", type="positive")
+            await record("cache.clear_all")
             await self._refresh_cache()
         except Exception as e:
             ui.notify(f"Failed: {e}", type="negative")

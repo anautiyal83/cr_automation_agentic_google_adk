@@ -45,3 +45,28 @@ def test_record_never_raises():
 def test_mask_secrets():
     assert mask_secrets({"token": "", "Password": "x", "list": [{"secret_key": "y"}]}) == \
         {"token": "", "Password": "***", "list": [{"secret_key": "***"}]}
+
+
+def test_pipeline_events_recorded_as_system(tmp_path):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from core.events import PipelineEvent
+    from orchestrator.runner import PipelineRunner
+
+    async def scenario():
+        db = await init_database(str(tmp_path / "p.db"))
+        fake = SimpleNamespace(_db=db, _TRAIL_EVENTS=PipelineRunner._TRAIL_EVENTS)
+        rid = uuid4()
+        for etype, step, payload in (("step_started", 6, {}), ("step_failed", 9, {"status": "failed", "error": "x"}),
+                                     ("retry_started", 6, {}), ("run_completed", 0, {"duration": 12}),
+                                     ("milestone_waiting_ignored", 1, {})):
+            await PipelineRunner._trail_event(fake, str(rid), "MRF_X",
+                                              PipelineEvent(run_id=rid, event_type=etype, step_number=step,
+                                                            payload=payload))
+        return await AuditTrail(db).query(run_id=str(rid))
+    rows = asyncio.run(scenario())
+    assert [(r["action"], r["outcome"], r["details"].get("step")) for r in reversed(rows)] == [
+        ("step.started", "done", 6), ("step.failed", "failed", 9), ("step.retry", "done", 6),
+        ("run.completed", "done", None)]
+    assert {r["email"] for r in rows} == {"system"} and {r["uc_name"] for r in rows} == {"MRF_X"}

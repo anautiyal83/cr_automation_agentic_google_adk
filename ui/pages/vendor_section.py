@@ -7,7 +7,7 @@ from typing import Any
 
 from nicegui import ui
 
-from ui.access import action, requires
+from ui.access import action, record, requires
 
 from shared.profiles import ProfileManager, Vendor, NodeType, Activity
 
@@ -291,6 +291,7 @@ class VendorSection:
         await self._pm.save_vendor(vendor)
         dialog.close()
         ui.notify(f"Vendor '{vendor.name}' saved", type="positive")
+        await record("vendor.save", target_type="vendor", target_id=vendor.name)
         await self._refresh()
 
     async def _confirm_delete(self, vendor_id: str, vendor_name: str):
@@ -310,6 +311,7 @@ class VendorSection:
         await self._pm.delete_vendor(vendor_id)
         dialog.close()
         ui.notify("Vendor deleted", type="warning")
+        await record("vendor.delete", target_type="vendor", target_id=str(vendor_id))
         await self._refresh()
 
     # ------------------------------------------------------------------
@@ -405,6 +407,7 @@ class VendorSection:
         await self._pm.save_node_type(nt)
         dialog.close()
         ui.notify(f"Node type '{nt.name}' saved", type="positive")
+        await record("vendor.node_type.save", target_type="node_type", target_id=nt.name, details={"vendor": str(vendor_id)})
         await self._refresh()
 
     @requires("settings", "vendor.node_type.delete")
@@ -412,6 +415,7 @@ class VendorSection:
         self._ensure_pm()
         await self._pm.delete_node_type(node_id)
         ui.notify("Node type deleted", type="warning")
+        await record("vendor.node_type.delete", target_type="node_type", target_id=str(node_id))
         await self._refresh()
 
     # ------------------------------------------------------------------
@@ -563,6 +567,7 @@ class VendorSection:
         await self._pm.save_activity(act)
         dialog.close()
         ui.notify(f"Activity '{act.display_name}' saved", type="positive")
+        await record("vendor.activity.save", target_type="activity", target_id=act.display_name, details={"vendor": str(vendor_id)})
         await self._refresh()
 
     @requires("settings", "vendor.activity.delete")
@@ -570,4 +575,5 @@ class VendorSection:
         self._ensure_pm()
         await self._pm.delete_activity(activity_id)
         ui.notify("Activity deleted", type="warning")
+        await record("vendor.activity.delete", target_type="activity", target_id=str(activity_id))
         await self._refresh()

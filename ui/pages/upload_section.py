@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nicegui import events, ui
 
-from ui.access import action, requires
+from ui.access import action, record, requires
 
 from models.domain import UCDocumentSet
 
@@ -386,6 +386,7 @@ class UploadSection:
         dest = UPLOAD_DIR / f"{uid}_{e.file.name}"
         await e.file.save(dest)
         doc_entry = {"name": e.file.name, "path": str(dest)}
+        await record("document.upload", target_type="document", target_id=e.file.name, details={"slot": "additional"})
         self.additional_docs.append(doc_entry)
         self._render_additional_docs_list()
 
@@ -428,6 +429,7 @@ class UploadSection:
                 card.classes(add="uploaded")
 
             ui.notify(f"Uploaded: {fname}", type="info")
+            await record("document.upload", target_type="document", target_id=fname, details={"slot": doc_key})
         except Exception as exc:
             ui.notify(f"Upload failed for {doc_key}: {exc}", type="negative")
             return

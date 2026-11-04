@@ -38,11 +38,11 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T016 Roles tab: table (role, description, screens summary, users); Add/Edit role with None/View/Update per screen grouped like the sidebar; Delete (not admin, not in use); built-in admin row read-only. Admin-only screen in the sidebar (Admin group), all handlers `@requires_admin`
 - [X] T017 Preview (DB copy): admin creates role "auditor" (Run History View, Output Documents Update) and user carol@example.com (weak password refused); Carol forced to set her password, sees Output Documents + Run History only, Users & Roles link refused; admin adds Dashboard → Carol has it on reload; admin disables Carol → her session ends; default admin Delete disabled; trail: role.create, user.create (failed + done), screen.open refused, role.update (before/after), user.update (before/after)
 
-## Step 6: Activity trail
-- [ ] T019 Recording points: sessions, users/roles, runs, milestone decisions, step 1 answers, documents, settings/vendors/cleanup/cache/usage, refused attempts
-- [ ] T020 Pipeline events as `system` (step started/passed/failed, retries, run end)
-- [ ] T021 `ui/pages/audit_section.py`: admin-only Audit Trail screen with filters, details, CSV export
-- [ ] T022 Check SC-006
+## Step 6: Activity trail — done 2026-11-04
+- [X] T019 Recording points (after success, with details): run.start (UC, documents, review flag), run.rerun (from run), run.restart / stop / cancel, milestone.decision (step, decision), questionnaire.submit (answers / defaults), run.delete, runs.bulk_cleanup, runs.cleanup, usage.clear, cache.clear(_all), settings.save (values; API key only "changed"/"set"), vendor / node type / activity save + delete, document.upload, document.view / document.download (run + file inside the run) — besides step 1–5 entries (logins, users, roles, refusals). Sync callers take the user at once (`record_later`): a scheduled task has no page context
+- [X] T020 Pipeline events as `system` from the runner's own subscriber (`PipelineRunner._trail_event`): step.started, step.passed / step.failed, step.retry (target step), milestone.reached, run.completed / failed / cancelled, with run and use case
+- [X] T021 `ui/pages/audit_section.py`: admin-only Audit Trail (Admin group) — filters date range (last 7 days by default), user, action, outcome, run id / use case, text; newest first, 50 per page; outcome pills; row → details dialog (JSON); Export CSV of the filter (recorded as audit.export)
+- [X] T022 Preview (DB copy): Ana views and downloads documents of her run and follows two refused links → admin's Audit Trail filtered by Ana shows login, document.view, document.download (run aac54518, file), screen.open refused ×2; details dialog; CSV export (5 rows); Ana cannot open the screen. `tests/test_audit.py` (system events), `tests/test_access.py` (document entries)
 
 ## Step 7: Wrap-up
 - [ ] T018 CLAUDE.md (login, env vars, secret, set-password CLI), README, cross-links
