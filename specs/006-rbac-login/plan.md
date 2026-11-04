@@ -13,7 +13,7 @@ Browser ──► FastAPI/NiceGUI (port 8000)
               │     (media files /_nicegui/auto/media/… are NOT exempt)
               │
               ├─ /login  (ui/pages/login_page.py)
-              │     username + password → AuthService.authenticate (lockout)
+              │     email + password → AuthService.authenticate (lockout)
               │     must_change_password → "Set a new password" form first
               │     success → app.storage.user = {user_id, login_at} → redirect (local paths only)
               │
@@ -40,8 +40,8 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 
 | # | Component | File | Notes |
 |---|-----------|------|-------|
-| C1 | Schema | `storage/db.py` | `roles(id, name UNIQUE, description, permissions JSON {screen: level}, is_system, created_at)`; `users(id, username UNIQUE NOCASE, display_name, password_hash, role_id, active, must_change_password, created_at, last_login_at, password_changed_at)`; `pipeline_runs.started_by` added by migration |
-| C2 | Auth service | `core/auth.py` | Screen registry `SCREENS` (key → label, group) shared by sidebar, role editor and checks; levels `view`/`update`; PBKDF2-SHA256 310k hashing; password policy; `storage_secret()`; `AuthService`: `ensure_defaults` (admin role + `admin` user, password from `NETCONFIG_ADMIN_PASSWORD` else `admin` + must-change), `authenticate` (lockout, dummy-hash timing), `current_user`, users CRUD, roles CRUD, admin/last-admin rules; `CurrentUser.can_view/can_update/owns_run`; CLI `python -m core.auth set-password <user>` |
+| C1 | Schema | `storage/db.py` | `roles(id, name UNIQUE, description, permissions JSON {screen: level}, is_system, created_at)`; `users(id, email UNIQUE NOCASE, display_name, password_hash, role_id, active, must_change_password, created_at, last_login_at, password_changed_at)`; `pipeline_runs.started_by` added by migration |
+| C2 | Auth service | `core/auth.py` | Screen registry `SCREENS` (key → label, group) shared by sidebar, role editor and checks; levels `view`/`update`; PBKDF2-SHA256 310k hashing; password policy; `storage_secret()`; `AuthService`: `ensure_defaults` (admin role + administrator account: email `NETCONFIG_ADMIN_EMAIL` else `admin@netconfig.local`, password `NETCONFIG_ADMIN_PASSWORD` else `admin` + must-change), `authenticate` (lockout, dummy-hash timing), `current_user`, users CRUD, roles CRUD, admin/last-admin rules; `CurrentUser.can_view/can_update/owns_run`; email validation; CLI `python -m core.auth set-password <email>` |
 | C3 | Session + middleware | `ui/app.py` | `ui.run(storage_secret=…)`; Starlette `BaseHTTPMiddleware` on `app.storage.user` |
 | C4 | Login page | `ui/pages/login_page.py` | Login form; forced new-password form (FR-013); theme of the app |
 | C5 | Screen gating | `ui/app.py` | Filter `menu_groups`; build only permitted panels; guard `navigate()`, deep links, in-page jumps; first permitted screen as landing page |
@@ -49,7 +49,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | C7 | Run ownership | `orchestrator/runner.py`, sections | Runner stores `started_by`; a `RunScope` (user) gives the SQL filter (`started_by = ?` unless admin) and `check(run_id)`; applied in dashboard queries, Live Run (active-run restore, view_run), Output Documents run list, Run History, LLM Usage (per run), Artifact Cleanup; file View/Download only through owned runs |
 | C8 | Header user menu | `ui/app.py` | Display name + role pill; Change password dialog; Logout |
 | C9 | Users & Roles screen | `ui/pages/users_section.py` | Users tab (add, role, enable/disable, reset password → must change, delete) and Roles tab (add/edit: None/View/Update per screen grouped like the sidebar, delete); `AuthError` messages as notifications |
-| C11 | Audit trail | `storage/db.py`, `core/audit.py` | `audit_log(id, at, user_id, username, role, action, target_type, target_id, run_id, uc_name, outcome, details JSON)` + indexes (at, user_id, run_id, action); `record()` never raises (a failed write is logged, the action goes on); secrets masked; no update/delete API |
+| C11 | Audit trail | `storage/db.py`, `core/audit.py` | `audit_log(id, at, user_id, email, role, action, target_type, target_id, run_id, uc_name, outcome, details JSON)` + indexes (at, user_id, run_id, action); `record()` never raises (a failed write is logged, the action goes on); secrets masked; no update/delete API |
 | C12 | Recording points | `ui/*`, `orchestrator/runner.py`, `orchestrator/pipeline_agent.py`, `core/auth.py` | Sessions + users/roles in AuthService/login page; run start/cancel/restart/delete and milestone decisions + step 1 answers in the runner/progress section; step and retry events as `system` in PipelineAgent; view/download in the shared file helpers; settings/vendors/cleanup/cache/usage clear in their sections; refused attempts in `Access.require` / `RunScope.check` |
 | C13 | Audit Trail screen | `ui/pages/audit_section.py` | Admin only; filters (dates, user, action, run/UC, outcome, text), paged table newest first, row details, CSV export of the filter |
 | C10 | Tests | `tests/test_auth.py`, `tests/test_access.py` | Service rules; level checks; run scope filter/check; button disabling on a View panel |
@@ -81,10 +81,11 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
   buttons enabled on reload; another user's run id refused; logout.
 
 ## Rollout
-1. On the first start after the upgrade: tables created, `admin` user created; existing runs get no
+1. On the first start after the upgrade: tables created, administrator account created; existing runs get no
    owner (admin-only).
-2. Set the admin password with `NETCONFIG_ADMIN_PASSWORD` before the first start, or log in with
-   `admin`/`admin` and set it, or `python -m core.auth set-password admin` on the server.
+2. Set `NETCONFIG_ADMIN_EMAIL` / `NETCONFIG_ADMIN_PASSWORD` before the first start, or log in with
+   `admin@netconfig.local` / `admin` and set a new password, or run
+   `python -m core.auth set-password <email>` on the server.
 
 ## Risks
 - NiceGUI 3.17.1 middleware + `app.storage.user` to be probed first (T004).

@@ -6,6 +6,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 ## Step 0: Decisions
 - [X] T000 Decisions D1–D7 (2026-11-04)
+- [X] T000d D9: login with email address
 - [X] T000c D8: activity trail of every action, admin-only separate screen
 - [X] T000b Q1: only action buttons (start / delete / update) are disabled on View screens; reading buttons stay enabled
 
@@ -13,7 +14,8 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [~] T001 Schema: `roles`, `users` tables (drafted before the spec) — add `must_change_password`,
   levels per screen in `roles.permissions`, `pipeline_runs.started_by` migration
 - [~] T002 `core/auth.py` (drafted before the spec) — rework for D1/D2/D6: screen levels, only the
-  admin role, default `admin` user + forced change, `admin` user protected, `set-password` CLI
+  admin role, email login (D9), default administrator account + forced change, account protected,
+  `set-password` CLI
 - [ ] T003 `tests/test_auth.py`
 - [ ] T003a `audit_log` table + `core/audit.py` (record, query, CSV) + `tests/test_audit.py`
 

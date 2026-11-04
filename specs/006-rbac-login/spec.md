@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-04
 
-**Status**: Decisions D1–D8 taken (2026-11-04); implementation step by step
+**Status**: Decisions D1–D9 taken (2026-11-04); implementation step by step
 
 **Input**: "Let's implement a login system so we add security. We want a role-based login: an
 admin who has access to all sections and who creates users and roles and assigns permissions to
@@ -15,10 +15,11 @@ add or create specs and plan for this, then we will implement step by step"; the
 
 | # | Question | Decision |
 |---|----------|----------|
-| D1 | First administrator | A default user **`admin`** with admin rights is created on first start, and its password can be set (no setup form) |
+| D1 | First administrator | A default administrator is created on first start, and its password can be set (no setup form) |
+| D9 | Login name | Users log in with their **email address** (unique, case-insensitive); there is no separate username |
 | D2 | Starting roles | Only the built-in **`admin`** role; the admin creates every other role |
 | D3 | Which runs a normal user sees | **Only the runs they started** |
-| D4 | Session length / lockout | 12 h sessions; 5 failed logins lock the username for 5 min |
+| D4 | Session length / lockout | 12 h sessions; 5 failed logins lock the email for 5 min |
 | D5 | Run ownership | Every run records who started it; the **admin sees all runs**, every other user only their own |
 | D6 | Permission levels | A permission is per screen and is either **View** or **Update**. View: the user can only look. Update: the user can look and change things on that screen. Only the admin has Update on every screen |
 | D8 | Activity trail | Every action is recorded — who did what, when, on which run — so activities can be tracked. The trail is **visible to the admin only**, on a **separate screen** |
@@ -60,7 +61,8 @@ to everyone.
 - A **role** = name + description + a level for each screen. A **user** has exactly one role.
 - Built-in role **`admin`**: Update on every screen (screens added later included) plus Users &
   Roles; cannot be edited or deleted. It is the only role at first start (D2).
-- Built-in user **`admin`** (role `admin`), created on first start (D1); cannot be deleted,
+- Built-in administrator account (role `admin`), created on first start (D1) with the email
+  `NETCONFIG_ADMIN_EMAIL`, default `admin@netconfig.local`; cannot be deleted,
   disabled or moved to another role.
 
 ### View vs Update per screen (D6, D7)
@@ -147,10 +149,11 @@ locked account) are recorded too.
 3. A crafted event for a disabled action is refused on the server.
 
 ### US3 — Administrator manages users (P1)
-1. Create a user: username, display name, initial password, role.
+1. Create a user: email (the login), display name, initial password, role. The email must be a
+   valid address and not used by another user.
 2. Change a user's role, disable/enable, reset the password (the user must change it at next
    login), delete.
-3. The `admin` user and the last active administrator cannot be deleted, disabled or demoted;
+3. The default administrator account and the last active administrator cannot be deleted, disabled or demoted;
    nobody can delete their own account.
 4. A disabled or deleted user cannot log in; an open session ends on the next page load.
 
@@ -160,10 +163,11 @@ locked account) are recorded too.
 3. A role still assigned to users cannot be deleted; `admin` cannot be edited or deleted.
 
 ### US5 — Default administrator (P1)
-1. First start creates user `admin`. Initial password: `NETCONFIG_ADMIN_PASSWORD` when set,
+1. First start creates the administrator account: email `NETCONFIG_ADMIN_EMAIL` (default
+   `admin@netconfig.local`). Initial password: `NETCONFIG_ADMIN_PASSWORD` when set,
    otherwise `admin` — and then the password must be changed at the first login before any screen
    opens.
-2. The password can be set any time on the server — `python -m core.auth set-password admin`
+2. The password can be set any time on the server — `python -m core.auth set-password admin@netconfig.local`
    (prompts twice; also recovers a lost password) — or in the UI (own password via the user menu).
 
 ### US6 — Only my runs (P1)
@@ -182,7 +186,7 @@ locked account) are recorded too.
 ### US7 — Account hygiene (P2)
 1. Every user can change their own password (header → user menu), confirming the current one.
 2. Logout from the user menu ends the session; sessions expire after 12 h.
-3. Five failed logins for a username lock it for 5 minutes.
+3. Five failed logins for an email lock it for 5 minutes.
 
 ## Requirements
 
@@ -198,10 +202,11 @@ locked account) are recorded too.
   the server.
 - **FR-005** Passwords MUST be stored only as salted PBKDF2-SHA256 hashes (≥ 310 000 iterations);
   plain passwords are never logged or stored. Policy: ≥ 8 characters, not only letters or only digits.
-- **FR-006** Login failures MUST NOT reveal whether the username exists (same message, same work).
+- **FR-006** Login is by email + password. Failures MUST NOT reveal whether the email exists (same
+  message, same work). Emails are stored lower-case and compared case-insensitively.
 - **FR-007** The session cookie MUST be signed with `NETCONFIG_STORAGE_SECRET`, else a random secret
   generated once into `data/.storage_secret` (git-ignored).
-- **FR-008** The `admin` role, the `admin` user and the last active administrator MUST be protected
+- **FR-008** The `admin` role, the default administrator account and the last active administrator MUST be protected
   (US3.3, US4.3).
 - **FR-009** The header MUST show the logged-in user and role, with Change password and Logout.
 - **FR-010** CLI entry points (`main.py`, `test_run.py`, `test_step.py`) need no login.
