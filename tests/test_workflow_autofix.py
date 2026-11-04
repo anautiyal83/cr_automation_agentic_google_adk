@@ -483,3 +483,24 @@ def test_tar_backup_success_regex_matches_gnu_tar():
     assert good["validation"]["success"]["criteria"]["regex"] == "tar: Removing leading" and "ls -1" not in good["send"]
     assert local["validation"]["success"]["criteria"]["regex"] == "nope"
     assert tar_create_success(wf) == 0  # idempotent
+
+
+def test_no_output_check_passes_on_empty_output():
+    """The JAR rejects any regex with ^ on empty output (probed, run c89f65c2): a silent cp failed
+    `(?:^$)|SKIPPED_BY_CONDITION`. Empty-only alternatives become `.*`; others stay."""
+    from skills.network_config_gen.autofix import empty_output_success
+    from skills.network_config_test.scenarios import java_regex_matches
+
+    def step(rx):
+        return {"node": "MRF", "send": "cp a b", "validation": {"success": {"criteria": {"regex": rx}}}}
+    steps = [step(r"(?:^$)|SKIPPED_BY_CONDITION"), step(r"^\s*$"), step(r"(?:^$|SKIPPED_BY_CONDITION)"),
+             step(r"^(?!.*error).*$"), step(r"(?:.*)|SKIPPED_BY_CONDITION"), step(r"^total \d+")]
+    wf = {"phases": {"activity": {"steps": steps}}}
+    assert empty_output_success(wf) == 3
+    rx = [s["validation"]["success"]["criteria"]["regex"] for s in steps]
+    assert rx[:3] == [r".*|SKIPPED_BY_CONDITION", ".*", r"(?:.*|SKIPPED_BY_CONDITION)"]
+    assert rx[3:] == [r"^(?!.*error).*$", r"(?:.*)|SKIPPED_BY_CONDITION", r"^total \d+"]   # kept
+    assert all(java_regex_matches(r, "") for r in rx[:3]) and java_regex_matches(rx[0], "SKIPPED_BY_CONDITION")
+    assert not java_regex_matches(r"^$", "") and java_regex_matches(r"$", "")       # the JAR's rule
+    assert java_regex_matches(r"[^x]*", "")                                          # a class, no anchor
+    assert empty_output_success(wf) == 0

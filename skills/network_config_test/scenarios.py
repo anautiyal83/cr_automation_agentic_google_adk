@@ -167,8 +167,34 @@ def run_passed(overall_status: str) -> bool:
     return str(overall_status or "").strip().upper() in _PASSING_RUN
 
 
+def _has_caret(regex: str) -> bool:
+    """An unescaped ``^`` / ``\\A`` anchor outside a character class."""
+    i, in_class = 0, False
+    while i < len(regex):
+        ch = regex[i]
+        if ch == "\\":
+            if regex[i + 1:i + 2] == "A" and not in_class:
+                return True
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+            if regex[i + 1:i + 2] == "^":   # negated class, not an anchor
+                i += 1
+        elif ch == "^":
+            return True
+        i += 1
+    return False
+
+
 def java_regex_matches(regex: str, text: str) -> bool:
-    """The JAR's validation semantics: find(), ^/$ per line, '.' does not cross lines."""
+    """The JAR's validation semantics: find(), ^/$ per line, '.' does not cross lines; on EMPTY
+    output a regex with a ``^`` anchor never matches (``^$`` fails, ``.*`` / ``$`` pass — probed
+    2026-11-04, run c89f65c2)."""
+    if not text.strip("\r\n") and _has_caret(regex):
+        return False
     py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
     try:
         return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE) is not None

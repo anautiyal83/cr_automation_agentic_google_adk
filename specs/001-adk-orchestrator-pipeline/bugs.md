@@ -799,3 +799,22 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   miss the file on a real node too).
 - Replay of e47b5409 steps 8 + 9 (DB copy): MRF1 / MRF2 pass; MRF3 fails for real (DEP-60: VER 17 untars a .3gp);
   TC-R01 rollback-only extracts `/tmp/` — `${backupTarName}` is registered in the backup phase only (E014, open).
+
+### DEP-62 — UI run c89f65c2: step 9 failed on three simulator / check mismatches (High, Fixed 2026-11-04)
+- `time` answered `36000`: step 8 wrote `- 10:00:00` unquoted and MockWire (SnakeYAML, YAML 1.1) reads it as a
+  base-60 int. **Fix**: both `dump_yaml`s (MockWire configs, overlay, workflow for the JAR) double-quote plain
+  strings YAML 1.1 would read as non-strings (`yaml11_safe`: sexagesimal, yes/no/on/off, ~, octal, 1_000), key
+  order kept.
+- Rollback `cd` waited forever: its step-level `prompt_regex` (`user@host:…#`) replaces the node's and lacks the
+  simulator prompt (`mrf:~ #`). **Fix**: `overlay._step_prompts` extends step prompt regexes like the node's.
+- A silent `cp` failed `(?:^$)|SKIPPED_BY_CONDITION`: the JAR rejects every regex with `^` on EMPTY output
+  (probed: `^`, `^$`, `(?m)^$`, `\A` fail; `$`, `.*`, `x*`, `[^x]*` pass). **Fix**: `java_regex_matches` models it;
+  autofix `empty_output_success` turns empty-only alternatives of a success regex into `.*` (a failing command
+  still fails by its exit code first).
+- Replay (steps 8 + 9, DB copy): TC-R01 passes; MRF1 / MRF2 now stop at DEP-63; MRF3 = DEP-60.
+
+### DEP-63 — Step 6: a chmod step checked by counting `ls -l` lines (Medium, Open)
+- c89f65c2: `if [[ ! VER == 13.* ]]; then chmod 777 <dest>/*; else echo SKIPPED_BY_CONDITION; fi` registers
+  `TOTAL_FILES` / `OK_PERMISSIONS` from its output and succeeds on `OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0`.
+  chmod prints nothing → 0 == 0 && 0 > 0 is false on every node; and the guard autofix lets SKIPPED_BY_CONDITION
+  pass only regex checks, not `expr` ones, so the skipped branch (VER 13) fails too.

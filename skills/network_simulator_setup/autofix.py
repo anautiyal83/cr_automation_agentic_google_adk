@@ -120,8 +120,39 @@ def dump_yaml(data: dict) -> str:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.width = 1_000_000  # never fold: a folded long regex KEY is invalid YAML (MockWire exits)
-    yaml.dump(data, stream)
+    yaml.dump(yaml11_safe(data), stream)
     return stream.getvalue()
+
+
+# Plain scalars YAML 1.1 (SnakeYAML in MockWire and cli-automation) reads as something else than
+# the string: "10:00:00" is the base-60 int 36000 (`time` answered 36000, run c89f65c2), yes/no/on/
+# off are booleans, "~" is null, "0755" octal, "1_000" an int
+_YAML11_NOT_STR = __import__("re").compile(
+    r"^(?:[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?"
+    r"|y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF"
+    r"|~|null|Null|NULL|[-+]?0[0-7_]+|[-+]?[0-9][0-9_]*_[0-9_]*(?:\.[0-9_]*)?)$")
+
+
+def yaml11_safe(data):
+    """``data`` with every plain string YAML 1.1 would not read back as that string quoted."""
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString, ScalarString
+    if isinstance(data, dict):
+        items = []
+        for key, value in list(data.items()):
+            if isinstance(key, str) and not isinstance(key, ScalarString) and _YAML11_NOT_STR.match(key):
+                key = DoubleQuotedScalarString(key)
+            items.append((key, yaml11_safe(value)))
+        data.clear()  # rebuilt in order: MockWire tries regex keys in file order
+        for key, value in items:
+            data[key] = value
+        return data
+    if isinstance(data, list):
+        for i, item in enumerate(data):
+            data[i] = yaml11_safe(item)
+        return data
+    if isinstance(data, str) and not isinstance(data, ScalarString) and _YAML11_NOT_STR.match(data):
+        return DoubleQuotedScalarString(data)
+    return data
 
 
 def _repair_truncated_yaml(yaml_text: str) -> str:

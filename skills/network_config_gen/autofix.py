@@ -219,7 +219,8 @@ def dump_yaml(data: dict) -> str:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.width = 200
-    yaml.dump(data, stream)
+    from skills.network_simulator_setup.autofix import yaml11_safe  # the JAR reads YAML 1.1 too
+    yaml.dump(yaml11_safe(data), stream)
     return stream.getvalue()
 
 
@@ -287,6 +288,7 @@ def fix_workflow(yaml_text: str) -> str:
     drop_session_exits(parsed)
     fix_single_file_listings(parsed)
     tar_create_success(parsed)
+    empty_output_success(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1351,6 +1353,47 @@ def tar_create_success(parsed: dict) -> int:
                 step["send"] = send = send + listing
             criteria["regex"] = f"^{name}$"
             changed += 1
+    return changed
+
+
+def empty_output_success(parsed: dict) -> int:
+    """A "no output" alternative (``^$``, ``^\\s*$``) in a success regex can never pass: on empty
+    output the JAR rejects every regex with a ``^`` (probed 2026-11-04 — a silent ``cp`` failed its
+    ``(?:^$)|SKIPPED_BY_CONDITION`` check, run c89f65c2). Such an alternative becomes ``.*``; a
+    command that fails still fails the step by its exit code before any regex."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    from skills.network_simulator_setup.topology import _split_alternatives
+
+    def empty_only(alt: str) -> bool:
+        py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", alt)
+        try:
+            return re.fullmatch(py, "", re.M) is not None and re.search(py, "abc", re.M) is None
+        except re.error:
+            return False
+
+    def fixed(regex: str) -> str:
+        alts = _split_alternatives(regex)
+        wrapped = len(alts) == 1 and regex.startswith("(?:") and regex.endswith(")") \
+            and _split_alternatives(regex[3:-1]) != [regex[3:-1]]
+        if wrapped:
+            alts = _split_alternatives(regex[3:-1])
+        new = [".*" if empty_only(a) else a for a in alts]
+        if new == alts:
+            return regex
+        return f"(?:{'|'.join(new)})" if wrapped else "|".join(new)
+
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+        for criteria in (validation.get("criteria"), success.get("criteria")):
+            regex = criteria.get("regex") if isinstance(criteria, dict) else None
+            if not isinstance(regex, str) or not regex or java_regex_matches(regex, ""):
+                continue
+            new = fixed(regex)
+            if new != regex:
+                criteria["regex"] = new
+                changed += 1
     return changed
 
 
