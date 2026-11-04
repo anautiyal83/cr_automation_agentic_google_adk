@@ -67,3 +67,19 @@ def test_cache_entry_of_step6_needs_the_same_options(tmp_path):
     cache.save_cache("UC", "network_config_gen", {"workflow_yaml": "phases: {}"}, inputs="i", options="")
     assert cache.has_cache("UC", "network_config_gen", inputs="i", options="")
     assert not cache.has_cache("UC", "network_config_gen", inputs="i", options="abc")
+
+
+def test_backup_stays_on_the_node_unless_via_repo():
+    """O-D2: Backup without "via repo server" keeps the archive on the node (/tmp); with it, the repo route."""
+    import copy
+
+    from skills.network_config_gen.structure import backup_to_repo
+    wf = {"nodes": {"MRF": {"type": "remote", "plugin": "ssh"}}, "phases": {
+        "backup": {"steps": [{"node": "MRF", "send": "tar -czvf /tmp/b.tar.gz /var/opt/x/",
+                              "register": [{"regex": "(?<backupName>b\.tar\.gz)"}]}]},
+        "rollbackConfiguration": {"name": "Rollback", "steps": [{"node": "MRF", "send": "tar -xzvf /tmp/b.tar.gz -C /"}]}}}
+    node_only = copy.deepcopy(wf)
+    assert backup_to_repo(node_only, {"run_options": {}}) == 0 and node_only == wf          # default: on the node
+    via_repo = copy.deepcopy(wf)
+    assert backup_to_repo(via_repo, {"run_options": {"backup_via_repo": True}}) > 0
+    assert "REPO" in via_repo["nodes"]

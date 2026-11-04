@@ -11,13 +11,13 @@
 ## Step 2: Options end to end (phase selection)
 - [X] T003 `uc_document_sets.run_options` (JSON, migration), `UCDocumentSet.run_options`; runner saves / restores it (queue dispatch, resume, `_document_set_from_row`), Run History re-run keeps it
 - [X] T004 New Run Activity step: every phase / sub-phase a checkbox with its purpose, groups tick/clear their sub-phases and stay ticked while one is, "via repo server" only under Backup, no phase → Start refused; review summary line; pre-filled from the UC's last run (preview-checked)
-- [ ] T004b Vendor profile node type: `File transfer: SFTP / SCP` (O-D4, O-D6)
+- [X] T004b Vendor profile node type: "File transfer" SFTP / SCP select (`ssh_config.file_transfer`, default sftp), shown in the node type summary; reaches the run through the vendor profile
 - [X] T005 The step 6 agent passes the run's `run_options` (from the run's document set — cached requirements stay valid); the step 6 prompt lists exactly the selected phase keys with their purpose
 - [X] T006 `structure.select_phases` (first in `apply`): generated phases mapped to the nine model phases (`run_options.canonical_phase`, same-phase bodies merged), model order, deselected phases dropped; cache: `run_options` out of the inputs fingerprint (steps 1–4 keep their cache), a per-agent options fingerprint for step 6
 - [X] T007 Tests `tests/test_run_options.py` (14)
 
 ## Step 3: Backup kept on the node (/tmp)
-- [ ] T008 `structure.py` route "backup, not via repo": backup copy in node `/tmp`, restore from there; tests
+- [X] T008 Backup without "via repo server": `backup_to_repo` does nothing (the archive stays in the node's /tmp where the backup step wrote it, the rollback restores from there); the step 6 prompt says where backups go; test
 
 ## Step 4: Via repo server
 - [ ] T009 `structure.py` route "via repo": LOCAL → REPO upload, node pull/push with `scp` + `expect_reply`, checksums, `${ORDER_NO}` path

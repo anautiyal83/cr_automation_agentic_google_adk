@@ -334,7 +334,15 @@ def tar_archive(send: str) -> tuple[str, list[str]] | None:
 
 
 def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
-    """Move every backup archive to the repo server; restore it from there on rollback."""
+    """Move every backup archive to the repo server; restore it from there on rollback.
+
+    Only when the run chose Backup "via repo server" (spec 010 O-D2); otherwise the backup stays
+    on the node (``/tmp``) where the backup step wrote it and the rollback restores it from there.
+    Callers without run options (no ``run_options`` key) keep the repo route."""
+    if isinstance(requirements, dict) and "run_options" in requirements:
+        from shared import run_options
+        if not run_options.normalize(requirements.get("run_options"))["backup_via_repo"]:
+            return 0
     cfg = _repo_config(requirements)
     local = _local_node(parsed)
     backups = []  # (node, archive, repo_path, dropped vars)

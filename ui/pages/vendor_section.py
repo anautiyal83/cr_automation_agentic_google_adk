@@ -136,6 +136,8 @@ class VendorSection:
                                 parts.append("elevate_to_root")
                             if prompt:
                                 parts.append(f'prompt={prompt[:30]}')
+                            if str(ssh_cfg.get("file_transfer", "sftp")).lower() == "scp":
+                                parts.append("files via SCP")
                             ui.label(", ".join(parts) if parts else "default") \
                                 .classes("text-[11px] cr-text-dim font-mono")
                             action(ui.button(icon="edit", on_click=lambda nid=nt.id, vid=v.id: self._show_edit_node_dialog(vid, nid)) \
@@ -375,11 +377,17 @@ class VendorSection:
                 "Sets elevate_to_root in the generated YAML node SSH config."
             ).classes("text-[11px] cr-text-dim ml-7")
 
+            # How files reach / leave this node (spec 010 O-D4)
+            ui.label("File transfer").classes("text-caption font-semibold mt-2")
+            file_transfer = ui.select({"sftp": "SFTP (node supports it)", "scp": "SCP (no SFTP on the node)"},
+                                      value=str(ssh.get("file_transfer", "sftp")).lower()
+                                      if str(ssh.get("file_transfer", "sftp")).lower() in ("sftp", "scp") else "sftp")                 .props("outlined dense").classes("w-full")
+
             with ui.row().classes("w-full justify-end gap-2 mt-3"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
                 action(ui.button("Save", icon="save", on_click=lambda: self._save_node_from_dialog(
                     dialog, nt, vendor_id, name, login_method, node_prompt,
-                    elevate_root,
+                    elevate_root, file_transfer,
                 )).props("unelevated color=primary no-caps"), "settings")
 
         dialog.open()
@@ -387,7 +395,7 @@ class VendorSection:
     @requires("settings", "vendor.node_type.save")
     async def _save_node_from_dialog(self, dialog, nt, vendor_id,
                                       name, login_method, node_prompt,
-                                      elevate_root):
+                                      elevate_root, file_transfer=None):
         self._ensure_pm()
         nt.vendor_id = vendor_id
         nt.name = name.value.strip().upper()
@@ -395,6 +403,7 @@ class VendorSection:
             "login_via_pam": "PAM" in (login_method.value or ""),
             "prompt_pattern": node_prompt.value.strip(),
             "elevate_to_root": elevate_root.value,
+            "file_transfer": (file_transfer.value if file_transfer is not None else "sftp") or "sftp",
         }
         nt.escalation = {
             "method": "ctrl_p_e" if elevate_root.value else "none",

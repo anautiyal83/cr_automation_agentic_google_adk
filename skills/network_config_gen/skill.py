@@ -160,9 +160,16 @@ def _phases_text(requirements: dict, phases: list) -> str:
     phase list only when the run has no options (older runs)."""
     from shared import run_options
     if "run_options" in requirements:
-        keys = run_options.selected(requirements.get("run_options"))
-        return ("use exactly these phase keys, in this order (no others): "
+        opts = run_options.normalize(requirements.get("run_options"))
+        keys = run_options.selected(opts)
+        text = ("use exactly these phase keys, in this order (no others): "
                 + "; ".join(f"{k} — {run_options.PURPOSE[k]}" for k in keys))
+        if opts["phases"]["backup"]:
+            text += (". Backups go through the repo server (the pipeline adds the transfers): write the backup "
+                     "archive in /tmp on the node" if opts["backup_via_repo"] else
+                     ". Backups stay on the node: write the backup archive in /tmp on the node and restore it "
+                     "from there in the rollback")
+        return text
     return ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck"
 
 
