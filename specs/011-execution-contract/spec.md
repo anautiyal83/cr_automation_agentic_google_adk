@@ -1,6 +1,6 @@
 # Feature Specification: Execution contract — default failure, abort and rollback rules for every workflow
 
-**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Rules decided — probing the JAR
+**Feature Branch**: `feature/skill-packages` | **Created**: 2026-11-04 | **Status**: Rules decided, JAR-verified ([research.md](research.md)) — implementing
 
 ## Request (2026-11-04, user)
 
@@ -27,7 +27,7 @@ pipeline builds the pattern from that text and the real command output (spec 009
 | Backup | stop | `BACKUP_FAILED=true` → every next phase skipped | not rollback-only, no precheck failure |
 | Activity (Precheck, Configuration, PostCheck) | stop | `ROLLBACK_REQUIRED=true` **if a change was made** (`CHANGES_MADE`) → Rollback | not rollback-only, no precheck/backup failure |
 | PostNodeHealthCheck | continue (dependants as above) | reported | activity completed |
-| Rollback (Precheck, Configuration, PostCheck) | stop | reported | `ROLLBACK_REQUIRED == 'true'` **or** `ROLLBACK_ONLY == 'true'` |
+| Rollback (Precheck, Configuration, PostCheck) | stop | reported | `ROLLBACK_REQUIRED == 'true'` **or** `ROLLBACK_ONLY == 'true'`; phase `name` must contain "Rollback" (the JAR runs only those after a stop) |
 
 - **Flags** (workflow `globals.vars`, default `'false'`): `ROLLBACK_ONLY` (runtime parameter, step 9 passes it as
   `--var`), `PRECHECK_FAILED`, `BACKUP_FAILED`, `CHANGES_MADE`, `ROLLBACK_REQUIRED`. Set by the steps' failure /
