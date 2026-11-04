@@ -17,6 +17,12 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T002 `PipelineRunner.submit()` (always through the queue; refuses — `QueueRefused` — when the use case already has a waiting/running/paused job or the user has `max_queued_per_user` waiting), `dispatch()` (one lock; starts the oldest queued run when nothing runs; a run that cannot start is marked failed and the next one goes), `_launch()` (the former start path), `queue_position()`, `remove_queued()` (status `removed`), `resume_queue()` (interrupted runs failed — to become "resumed", see restart recovery — then dispatch); every run end dispatches the next; `start()` = `submit()`; no DB (CLI) → runs start directly (CLI runs are outside the queue: separate process)
 - [X] T003 `tests/test_run_queue.py` (7): FIFO + automatic next start, failed run frees the pipeline, review choice kept, one job per use case, per-user limit, removal, restart, single start under concurrent dispatch, unstartable run skipped, no-DB path
 
+## Step 1b: Restart recovery
+- [ ] T020 `run_checkpoints` table; checkpoint after every agent and at milestone pauses (PipelineAgent)
+- [ ] T021 `_launch(resume=True)`: session from checkpoint, requirements restored, start index (live-chain rule 9 → 8), restored milestone pause
+- [ ] T022 `resume_queue()`: interrupted runs → `resuming`, first in the queue; attempt limit; trail run.interrupted / run.resumed
+- [ ] T023 Tests (checkpoint round trip, resume index rules, attempts) + E2E: kill the server during step 6, during step 9, while paused at step 5 → each resumes as specified (SC-006)
+
 ## Step 2: Timing and estimates
 - [ ] T004 Step start times, milestone wait times, `work_seconds` at run end
 - [ ] T005 `orchestrator/run_queue.py`: estimates + `snapshot(viewer)`; tests

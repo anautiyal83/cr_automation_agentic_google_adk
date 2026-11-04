@@ -26,6 +26,7 @@ have to keep retrying and cannot tell when the pipeline will be free.
 | Q-D1 | Parallel runs or a queue | **Queue**: one pipeline at a time, the other starts wait in a queue (parallel runs later) |
 | Q-D2 | Queue visibility | Users **see the queue** and can **estimate when their run starts** |
 | Q-D4 | Job status in the queue | The queue shows each job's status — waiting, running, paused, completed, failed, cancelled, removed — including recently finished jobs |
+| Q-D5 | Server restart | "A server restart clears everything but it should not … pipeline should also survive a run in case of restart. A step should re-run in case of server start" — interrupted runs **resume**, re-running the step they were in |
 | Q-D3 | Phases | **Phase 1**: the queue, one run at a time. **Phase 2**: several runs in parallel, **always taken from the queue** (the queue stays the only way in) |
 
 ## Phases
@@ -47,10 +48,41 @@ handle "N running + queued". Phase 2 adds what concurrent runs need (below).
   starts automatically — no one has to be logged in.
 - **The active run holds the pipeline while it waits at a milestone** (the review is part of the run).
 - **Leaving the queue**: the owner removes their own queued run; the administrator removes any.
-- **Server restart**: queued runs stay queued and the queue resumes when the server starts (the run that
-  was executing is marked failed, as today).
+- **Server restart**: queued runs stay queued; the run that was executing **resumes** (see Restart
+  recovery) ahead of the queue.
 - Runs from the command line (`main.py`, `test_run.py`) run in their own process without the database: they
   start directly, outside the queue (developer tools).
+
+## Restart recovery (phase 1)
+
+Everything a run needs is in the database and its run folder, so a server restart must not end it:
+
+- **Checkpoint after every step**: when an agent finishes, the run's state is saved to the DB — the
+  pipeline session state (artifacts, step statuses, feedback, retry counters, document set, run folder),
+  the requirements (also in `requirements.json`), and the position in the pipeline (next agent).
+- **On server start** a run that was **running** is not failed: it gets status **resuming**, goes to the
+  **front of the queue**, and starts from its last checkpoint — the step it was in **runs again**.
+- **Steps that need a live resource resume earlier**: step 9 (and a step 8 → 9 retry) needs the simulator
+  step 8 started → the run resumes at step 8. Rule: resume at the first step of the interrupted step's
+  "live chain" (today only 8 → 9).
+- A run **paused at a milestone** (review, step 1 questions) resumes paused at the **same milestone**
+  (the step it reviews is not re-run); the owner reviews it again.
+- A run that cannot resume (no checkpoint, run folder gone, a second restart while resuming the same step
+  — max 2 attempts) is marked **failed** with the reason; the queue goes on.
+- Trail: `run.interrupted` and `run.resumed` (system) with the step; Live Run / queue show
+  "Resumed after a server restart — step n runs again".
+
+### Requirements
+- **FR-010** After every completed agent the run's checkpoint is saved (DB), overwriting the previous one.
+- **FR-011** On server start interrupted runs resume first (before waiting jobs), from their checkpoint;
+  the interrupted step runs again; live-resource chains resume at their first step; milestone pauses are
+  restored as pauses.
+- **FR-012** At most 2 resume attempts per step, then the run fails with the reason.
+
+### Success criteria
+- **SC-006** A run killed during step 6 resumes after a restart at step 6 with steps 1–5 kept (no LLM calls
+  for them) and ends normally; one killed during step 9 resumes at step 8; one paused at the step 5
+  milestone comes back paused there.
 
 ## The queue view
 
@@ -66,6 +98,7 @@ with its **status**:
 | **Failed** | Ended with an error | ended at, failed step |
 | **Cancelled** | Stopped / cancelled by a user | ended at, by whom (admin) |
 | **Removed** | Taken out of the queue before it started | removed at |
+| **Resuming** | Interrupted by a server restart, starts again from its checkpoint ahead of the queue | the step that runs again |
 
 Order: running/paused first, then waiting (by position), then the **recently finished** jobs (completed,
 failed, cancelled, removed — last 24 h, at most 10) so users see how the queue moved and how long jobs took.

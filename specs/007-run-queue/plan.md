@@ -34,6 +34,8 @@ queue view ◄── RunQueue.snapshot(viewer)  →  [{position, run_id, uc, own
 | C6 | Start paths | `ui/app.py`, `history_section.py`, `main.py`, `test_run.py` | call `submit()`; message "Started" or "Queued — position n, est. start ~hh:mm"; `may_start_run` refusal removed; Live Run follows the run when it starts |
 | C7 | Status `queued` | Run History, Dashboard, Output Documents, Live Run restore | pill colour, counts, no outputs yet; Live Run shows "Queued — position n" for a queued run |
 | C8 | Trail | `core/audit.py` users | run.queued (user), run.dequeued (system), queue.remove (user, refused when not owner) |
+| C10 | Checkpoints | `storage/db.py`, `orchestrator/pipeline_agent.py`, `orchestrator/runner.py` | table `run_checkpoints(run_id PK, agent_index, step, state_json, requirements_json, saved_at, resume_attempts)`; PipelineAgent saves one after every agent (and on a milestone pause: `paused_at`); `_launch(resume=True)` builds the session from the checkpoint, restores `requirements_store`, sets `resume_index` (live-chain rule: index of step 8's agent when the interrupted step is 9) and, for a pause, `resume_milestone`; the agent loop starts at `resume_index` |
+| C11 | Resume on start | `runner.resume_queue()` | interrupted runs → status `resuming` at the front of the queue (dispatcher prefers `resuming`), attempts counted; no checkpoint / too many attempts → failed with reason; trail run.interrupted / run.resumed |
 | C9 | Tests | `tests/test_run_queue.py` | FIFO; second submit queued; end of run starts next; removal re-numbers; non-owner removal refused; resume after restart; estimates (median, fallbacks, waiting-for-review); one start even when two runs end together |
 
 ## Phase 2 — Parallel runs (picked from the queue)
