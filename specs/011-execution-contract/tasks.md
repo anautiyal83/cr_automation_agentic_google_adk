@@ -24,4 +24,4 @@
 - [X] E023 Tests: step 1 hygiene (`test_requirements_gaps.py`), step 6 counts / hints (`test_execution_contract.py`)
 
 ## Step 4: Check
-- [ ] E030 MRF + PGW re-run: success run (no rollback), injected activity failure (rollback runs only after a change), precheck failure (nothing after it), `ROLLBACK_ONLY` run
+- [~] E030 MRF + PGW full check (DB copy, own cache, negatives on). **Run 1** (2026-11-04 18:22–18:42): sunny day passed first time (MRF 3/3, PGW 2/2) with the contract; MRF rollback-only (TC-R01) failed — after `cd <dir>` the prompt shows the directory and the prompt_regex allowed only `~` (fixed: autofix `generalize_prompt_cwd`); every negative case failed to start — the fault-injected MockWire config folded a long regex key (invalid YAML; fixed: no folding); those failures sent step 6 into 3 regenerations per UC. **Run 2** with the fixes + E022 + spec 010 step 2: running
