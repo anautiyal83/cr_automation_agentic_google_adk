@@ -37,8 +37,11 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 > completely; a failed pre-health check or backup aborts everything after it; a failed activity step stops the activity
 > and starts rollback if the node was changed; `ROLLBACK_ONLY=true` runs only the rollback. State only the exceptions.
 
-- **Phases, in this order and with these names**: Pre-health check · Backup · Activity · Activity post-check ·
-  Post-health check · Rollback · Rollback post-check. Do not list rollback steps under another phase heading (M-1).
+- **Phases, in this order and with these names**: PreNodeHealthCheck · Backup · Activity (ActivityPrecheck,
+  ActivityConfiguration, ActivityPostCheck) · PostNodeHealthCheck · Rollback (RollbackPrecheck, RollbackConfiguration,
+  RollbackPostCheck). Do not list rollback steps under another phase heading (M-1). Which phases run is ticked per
+  activity in Settings → Vendor Profiles → Activity ([spec 010](../010-run-phase-options/spec.md)), not in the MOP —
+  describe every phase the activity can have.
 - **Every step**: the exact command (no prose like "copy each file"), the node and the user it runs as, the
   expected output and the pass criterion, what a failure means (stop / continue / **trigger rollback**) (M-2, M-7).
 - **Health checks have commands**: e.g. `systemctl status swms --no-pager` → `Active: active (running)`; say whether a
@@ -74,9 +77,13 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 
 - **Where input files come from** (OM shared directory, file repository such as GitLab — project, ref, auth method)
   and how their presence is verified before the activity (M-3).
-- **Routes**: which host pushes/pulls files to which (automation server → node directly, or via a repo/staging
-  server; protocol `sftp`/`scp`; jump host) (M-8).
-- **Repo server**: host, user, base path and the directory convention (`/tmp/${ORDER_NO}/${NODE_NAME}/<path>`) (M-9).
+- **Routes** are not a MOP question ([spec 010](../010-run-phase-options/spec.md) O-D7): Backup *via repo server*
+  (Settings → Vendor Profiles → Activity) sends every file through the repo server — automation server ↔ repo by the
+  framework's SFTP, node ↔ repo by `scp` / `sftp` that the node itself runs (node type → *File transfer*: SCP when the
+  node has no SFTP). State only a jump host or another route the node needs (M-8).
+- **Repo server**: host, user, password secret *name*, base path and the directory convention
+  (`/tmp/${ORDER_NO}/${NODE_NAME}/<path>`; the pipeline uses `${crGroup}` for now), and whether the nodes reach the repo
+  by the same address as the automation server (M-9).
 - **Runtime parameters** the platform passes (`ORDER_NO`, `PARENT_REQ_ID`, …) and their meaning.
 - **Shared paths and naming**: where request files, evidence (pre/post values) and reports are written, and the file naming convention (e.g. `<type>_${CHILD_REQ_ID}_<configSeq>_<nodeGroup>.xml`) (G-12).
 - **Pre-installed scripts**: whether helper scripts exist centrally (path) or must be generated (G-12).
@@ -95,7 +102,8 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 - [ ] Every phase of §3 present, rollback with its trigger
 - [ ] Every MOP command has a transcript with prompts
 - [ ] Every branch has a CIQ column/node value, test rows and transcripts for each side
-- [ ] Input-file source, transfer route and repo path convention stated
+- [ ] Input-file source and repo server (host, user, path convention) stated; phases and *via repo server* ticked
+  for the activity in Settings, node type *File transfer* (SFTP / SCP) set
 - [ ] Verification scope stated ("every" / "exists")
 - [ ] Backup = what will be overwritten; rollback = remove loaded + restore backup
 - [ ] No answer or note contradicts the MOP or the test data
@@ -108,4 +116,5 @@ without a citation come from the pipeline's verified framework facts (CLAUDE.md,
 | Date | UC | Rules added |
 |------|----|-------------|
 | 2026-11-04 | PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION | Health-check gate, target guard, compare-before-apply, referenced-entity checks, special values (UNCHANGED/blank/multi), NIAM failover entries, one request per I/O sample, no regexes from users, environment names not test values, shared paths/naming, central scripts |
+| 2026-11-04 | spec 010 | Phase names per O-D1; phases and the repo route chosen per activity in Settings (not the MOP); the node runs scp / sftp with the repo (File transfer per node type) |
 | 2026-11-04 | MRF_ANNOUNCEMENT_LOADING | Phase order and rollback trigger, step failure semantics, health-check commands, branch syntax, verification scope, backup/rollback contracts, input source/route/repo convention, test data per branch, run modes, report |

@@ -48,4 +48,6 @@
   address (bracketed or not); `is_peer_copy` accepts `user@host:`. Steps 8 + 9 on run 3d75c561: see research.md T013a
 
 ## Step 5: Docs
-- [ ] T012 README / CLAUDE.md / guideline
+- [X] T012 README "Run Phases & File Routes" (phases per activity, route table, node-side scp / sftp, repo server
+  config, simulator peers); CLAUDE.md step 6 / step 8 notes; requirement guideline (spec 009) §3 phase names, §5
+  routes + repo server, checklist, changelog
