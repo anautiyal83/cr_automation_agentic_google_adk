@@ -289,3 +289,19 @@ def test_real_output_wins_over_invented_responses():
     assert keys[0].startswith(r'regex:^ldapsearch -b "imsi=')                     # real output first
     assert r'regex:ldapsearch -b "imsi=\S+,dc=IMSI"' not in merged                # invented duplicate dropped
     assert r'regex:ldapsearch -b "msisdn=\S+' in merged and "uptime" in merged
+
+
+def test_invented_exact_key_never_hides_real_output():
+    """DEP-54: MockWire tries exact keys before regex keys. An invented exact answer for an IMSI
+    the simulator made up hid the real-output template (made-up format → the workflow's regex,
+    written from the real output, failed)."""
+    from skills.network_simulator_setup.skill import merge_responses
+    dump = "ldapsearch -b \"imsi=${resolvedImsi},dc=IMSI\" objectclass=*"
+    lookup = "ldapsearch -b \"msisdn=${configSequences.0.records.0.data.Test MSISDN},dc=MSISDN\" objectclass=*"
+    recorded = {r'regex:^ldapsearch -b "imsi=(?<resolvedImsi>.+?),dc=IMSI" objectclass=\*$': {"lines": ["dn: uid=1"]}}
+    synthetic = {'ldapsearch -b "msisdn=1234567890,dc=MSISDN" objectclass=*': {"lines": ["provisionedIMSI: 123"]},
+                 'ldapsearch -b "imsi=123,dc=IMSI" objectclass=*': {"lines": ["dn: imsi=123,dc=IMSI"]}}
+    merged = merge_responses(recorded, synthetic, [{"cmd": lookup}, {"cmd": dump}], {dump},
+                             {"Test MSISDN": "1234567890"})
+    assert 'ldapsearch -b "imsi=123,dc=IMSI" objectclass=*' not in merged          # real output answers it
+    assert 'ldapsearch -b "msisdn=1234567890,dc=MSISDN" objectclass=*' in merged   # nothing real covers it

@@ -404,3 +404,28 @@ def test_ciq_path_column_replaces_mop_example_directory():
     s = [st["send"] for st in wf["phases"]["a"]["steps"]]
     ref = "${configSequences.0.records.0.data.DEST}"
     assert s == ["cp /tmp/f " + ref + "/", "chmod 777 " + ref + "/${x}", "tar -czf /tmp/b.tgz /var/opt/swms/backup/a/b/c"]
+
+
+def test_missing_column_is_fixed_by_step_6_not_asked(tmp_path):
+    """DEP-53: the error names the node values and the shell derivation; the correction prompt
+    carries the CIQ section; a framework error is never a step 1 question."""
+    import yaml
+    from skills.network_config_gen import prompts
+    from skills.network_config_gen.validator import behaviour_issues, check_record_columns, validate_workflow
+    d = "configSequences.0.records.0.data."
+    rec = {"sheet": "ANNOUNCEMENT_FILES", "columns": ["GROUP", "INPUT_FILE"], "node_fields": {"MRF": ["VER", "Circle"]}}
+    wf = {"nodes": {"MRF": {"type": "remote", "plugin": "ssh", "ssh": {"host": "${MRF.niamID-1}"}}},
+          "phases": {"a": {"steps": [
+              {"node": "MRF", "send": f"if [[ '${{{d}MRF_VERSION}}' == '13' ]]; then cp /tmp/${{{d}INPUT_FILE}} /x/; fi"},
+              {"node": "MRF", "send": f"rm -rf /x/${{{d}INPUT_FILE_BASENAME}}*"}]}}}
+    errs = check_record_columns(wf, rec)
+    assert len(errs) == 2 and all("${MRF.VER}" in e and "$(basename" in e for e in errs)
+    text = yaml.safe_dump(wf)
+    expected = {"record_columns": rec}
+    all_errors = validate_workflow(text, None, None, expected)
+    assert any("MRF_VERSION" in e for e in all_errors)
+    assert not [e for e in behaviour_issues(text, None, expected) if "MRF_VERSION" in e or "BASENAME" in e]
+    filled = prompts.WORKFLOW_REGENERATE.format(current_yaml="x", test_failures="y", reviewer_analysis="", nodes_summary="",
+                                                phases="", developer_answers="", developer_notes="", runtime_params="",
+                                                ciq="  Node values of the current MRF node: ${MRF.VER}")
+    assert "=== CIQ DATA" in filled and "${MRF.VER}" in filled and "${node}" not in filled.replace("Never ${node}", "")

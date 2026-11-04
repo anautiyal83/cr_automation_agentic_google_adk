@@ -65,6 +65,37 @@ _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "network_config_exec_qa": (9, "Execution QA"),
 }
 
+# Cached only once this step has executed their artifacts and passed: step 6 passing its
+# validator is not proof — a workflow that failed step 9 stayed cached and the next run reused it (DEP-55)
+_CACHE_AFTER_STEP: dict[str, int] = {"network_config_gen": 9, "helper_script_gen": 9}
+
+
+def _step_ok(state: dict, run_dir: str, step: int) -> bool:
+    """A display step passed: not failed in the state and no error file on disk (the disk is
+    authoritative — ADK session state written by an agent is not always visible here)."""
+    if state.get(f"step_{step}_status") == "failed":
+        return False
+    return not (run_dir and (Path(run_dir) / f"step_{step}_error.json").exists())
+
+
+def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: list[int], state: dict,
+                           run_dir: str) -> None:
+    """The step that executes deferred artifacts (step 9) ended: cache what it proved; when it
+    failed, drop them — also a cached copy this run reused — so the next run generates again."""
+    for proof in sorted(set(_CACHE_AFTER_STEP.values()) & set(display_steps)):
+        proven = [a for a, s in _CACHE_AFTER_STEP.items() if s == proof]
+        if _step_ok(state, run_dir, proof):
+            for name in proven:
+                if name in pending:
+                    data, inputs = pending.pop(name)
+                    cache.save_cache(uc_name, name, data, inputs=inputs)
+        else:
+            for name in proven:
+                pending.pop(name, None)
+                cache.clear_cache(uc_name, name)
+            flow.flow("CACHE DROPPED %s — step %d failed with them", ", ".join(proven), proof)
+
+
 # Maps agent name → index for retry routing
 _AGENT_NAMES = [
     "requirements_gatherer",       # 0
@@ -129,6 +160,7 @@ class PipelineAgent(BaseAgent):
         # milestone checkpoint the agent is not re-run, its review pause is shown again
         index = int(ctx.session.state.pop("_resume_index", 0) or 0)
         resume_pause_at = ctx.session.state.pop("_resume_milestone_at", None)
+        pending_cache: dict[str, tuple[dict, str]] = {}  # agent → artifacts waiting for step 9 (DEP-55)
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
@@ -277,11 +309,9 @@ class PipelineAgent(BaseAgent):
             # ----- SAVE TO CACHE (on success) -----
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                run_dir = ctx.session.state.get("run_dir", "")
                 if agent.name in CACHEABLE_AGENTS:
-                    all_passed = all(
-                        ctx.session.state.get(f"step_{sn}_status", "passed") != "failed"
-                        for sn in display_steps
-                    )
+                    all_passed = all(_step_ok(ctx.session.state, run_dir, sn) for sn in display_steps)
                     if all_passed:
                         cache = ArtifactCache()
                         artifacts = ctx.session.state.get("artifacts", {})
@@ -293,8 +323,15 @@ class PipelineAgent(BaseAgent):
                             req = requirements_store.get(run_id_str)
                             if req:
                                 cache_data["requirements_json"] = _json.dumps(req, indent=2)
-                        cache.save_cache(uc_name, agent.name, cache_data,
-                                         inputs=inputs_fingerprint(ctx.session.state.get("document_set")))
+                        inputs = inputs_fingerprint(ctx.session.state.get("document_set"))
+                        proof = _CACHE_AFTER_STEP.get(agent.name)
+                        if proof:  # kept until the step that executes them passes (DEP-55)
+                            pending_cache[agent.name] = (cache_data, inputs)
+                            flow.flow("CACHE DEFERRED %s — saved when step %d passes", agent.name, proof)
+                        else:
+                            cache.save_cache(uc_name, agent.name, cache_data, inputs=inputs)
+                _settle_deferred_cache(ArtifactCache(), uc_name, pending_cache, display_steps,
+                                       ctx.session.state, run_dir)
             except Exception as e:
                 logger.debug("Cache save failed for %s: %s", agent.name, e)
 

@@ -585,10 +585,26 @@ def merge_responses(recorded: dict, synthetic: dict, commands: list[dict], cover
                 break  # it also answers a command nobody recorded: keep it, behind the real one
             kept.pop(key)
             logger.info("Dropped invented response %r: real output covers %r", str(key)[:80], cmd[:80])
+    # MockWire tries EXACT keys before any regex key, whatever the order: an invented exact key a
+    # real-output regex also answers (``ldapsearch … imsi=123456789012345 …`` for an IMSI the
+    # simulator made up) hides the real output (DEP-54) — the real output answers it instead
+    real_patterns = [_py_regex(str(k)[6:]) for k in recorded if str(k).startswith("regex:")]
+    for key in [k for k in kept if not str(k).startswith("regex:")]:
+        if any(p is not None and p.search(str(key)) for p in real_patterns):
+            kept.pop(key)
+            logger.info("Dropped invented exact response %r: a real-output rule answers it", str(key)[:80])
     merged = dict(recorded)
     for key, entry in kept.items():
         merged.setdefault(key, entry)
     return merged
+
+
+def _py_regex(java: str) -> re.Pattern | None:
+    """A MockWire (Java) regex key for Python: ``(?<name>…)`` → ``(?P<name>…)``; None if invalid."""
+    try:
+        return re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", java))
+    except re.error:
+        return None
 
 
 def _find_entry(entries: dict, cmd: str, resolved: str):
@@ -597,11 +613,9 @@ def _find_entry(entries: dict, cmd: str, resolved: str):
             return key, entries[key]
     for key, entry in entries.items():
         if str(key).startswith("regex:"):
-            try:
-                if re.search(str(key)[6:], resolved):
-                    return key, entry
-            except re.error:
-                continue
+            pattern = _py_regex(str(key)[6:])
+            if pattern is not None and pattern.search(resolved):
+                return key, entry
     # MockWire's longest-prefix fallback ("cmd" answers "cmd -x"), not across | ; > &
     for key, entry in entries.items():
         k = str(key)

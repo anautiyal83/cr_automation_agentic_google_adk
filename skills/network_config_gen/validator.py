@@ -112,6 +112,25 @@ _SAMPLE_EXCERPT_LINES = 8
 _CIQ_COLUMN = re.compile(r"\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}")
 
 
+def behaviour_issues(yaml_text: str, ciq_sheets: dict | None = None, expected: dict | None = None) -> list[str]:
+    """The errors of ``validate_workflow`` about WHAT the activity does (requirements coverage, CIQ
+    rows and columns the activity needs, request inputs) — a developer can answer those. All other
+    errors are about HOW the framework is used (placeholders, regexes, quoting, conditions): step 6
+    fixes them itself and they are never asked as questions (DEP-53)."""
+    parsed = parse_yaml(yaml_text)
+    if parsed is None:
+        return []
+    from .structure import flatten
+    flatten(parsed)
+    issues = list(check_unused_record_columns(parsed, (expected or {}).get("record_columns")))
+    issues += check_completeness(parsed, expected)
+    if ciq_sheets:
+        issues += check_ciq_coverage(parsed, ciq_sheets)
+        issues += check_alternative_columns(parsed, ciq_sheets)
+        issues += check_request_inputs(parsed, ciq_sheets, (expected or {}).get("request_columns") or {})
+    return issues
+
+
 def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
     """Steps that use a CIQ column which is empty for some rows, without a ``when`` guard.
 
@@ -275,8 +294,13 @@ def check_record_columns(parsed: dict, record_columns: dict | None) -> list[str]
                 col = m.group(1).strip()
                 if col not in cols:
                     bad.setdefault(col, f"{phase_name}: {str(step.get('send') or step.get('command_description'))[:60]}")
+    node_values = [f"${{{ntype}.{f}}}" for ntype, fields in ((record_columns or {}).get("node_fields") or {}).items()
+                   for f in fields]
+    other = (f"node values {', '.join(node_values)}, " if node_values else "") + \
+        "a value derived in the command (e.g. $(basename ${configSequences.0.records.0.data.<Column>} .tar)) " \
+        "or a value registered from the node"
     return [f"CIQ column '{c}' (step {where}) is not in the CIQ JSON records — they hold only {sheet} columns "
-            f"{cols}; any other column resolves to empty. Use those columns (or a value registered from the node)."
+            f"{cols}; any other column resolves to empty. Use those columns, {other}."
             for c, where in bad.items()]
 
 

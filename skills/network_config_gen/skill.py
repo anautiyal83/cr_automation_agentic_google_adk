@@ -21,7 +21,7 @@ from core.config import runtime_params
 
 from . import prompts
 from .autofix import clean_yaml_response, fix_workflow
-from .validator import validate_workflow
+from .validator import behaviour_issues, validate_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,8 @@ class SkillOutput:
     workflow_yaml: str = ""
     helper_scripts: dict[str, str] = field(default_factory=dict)  # filename → script content
     validation_errors: list[str] = field(default_factory=list)
+    # the validation errors a developer can answer (asked in step 1); the rest step 6 must fix
+    developer_issues: list[str] = field(default_factory=list)
     status: str = "pending"  # "passed" | "failed" | "pending"
     error: str = ""
 
@@ -274,6 +276,7 @@ class NetworkConfigGenSkill:
         return SkillOutput(
             workflow_yaml=yaml_text,
             validation_errors=errors,
+            developer_issues=self._developer_issues(yaml_text, errors),
             status=status,
         )
 
@@ -300,6 +303,7 @@ class NetworkConfigGenSkill:
             developer_answers=ctx["answers"],
             developer_notes=ctx["notes"],
             runtime_params=ctx["runtime_params"],
+            ciq=ctx["ciq"],  # record columns + node values: what a correction may read (DEP-53)
         )
 
         logger.info("Regenerating workflow YAML with feedback (%d char prompt)", len(user_prompt))
@@ -319,8 +323,15 @@ class NetworkConfigGenSkill:
         return SkillOutput(
             workflow_yaml=yaml_text,
             validation_errors=errors,
+            developer_issues=self._developer_issues(yaml_text, errors),
             status=status,
         )
+
+    def _developer_issues(self, yaml_text: str, errors: list[str]) -> list[str]:
+        if not errors:
+            return []
+        behaviour = set(behaviour_issues(yaml_text, self._ciq_sheets, self._expected))
+        return [e for e in errors if e in behaviour]
 
     def _ciq_fixes(self, yaml_text: str) -> str:
         """Autofix steps that need the CIQ (the MOP's example directory → the CIQ path column),

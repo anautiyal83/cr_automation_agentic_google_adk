@@ -184,7 +184,9 @@ Use these runtime variable patterns in the workflow YAML:
 
   ${{configSequences.0.records.0.data.<Column>}} — CIQ value (exact CIQ column name; spaces allowed)
   ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE> (e.g. ${{RDS.niamID-1}})
-  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{email}}      — current node group (zone) and CR group
+  ${{nodeGroup}} ${{crGroup}} ${{email}}              — current node group (zone) and CR group
+                                                    (never ${{node}}: register the node's `hostname`)
+  ${{<NODE>.<field>}}                             — node value of the CIQ node (see CIQ: "Node values")
   ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}}               — provided by the framework at runtime
   ${{varName}}                                    — value registered by an earlier step's (?<varName>...) group
   ${{SECRET.key}} / ${{ENV.NAME}}                    — globals.secrets / OS environment
@@ -355,7 +357,7 @@ The framework provides these at runtime — reference them, do not define them:
   ${{NODE_TYPE}}              — e.g. "PGW_RDS"
   ${{SUB_ACTIVITY_NAME}}      — e.g. "1058_IFC_CAPABILITY_MODIFICATION"
   ${{crGroup}}                — CR group of the node group being executed (e.g. "CR1")
-  ${{nodeGroup}} / ${{node}}    — node group (zone) being executed (e.g. "EAST")
+  ${{nodeGroup}}               — node group (zone) being executed (e.g. "EAST")
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
@@ -376,6 +378,9 @@ The execution workflow YAML below was tested and has failures. Fix the issues.
 Nodes: {nodes_summary}
 Phases: {phases}
 
+=== CIQ DATA (what the placeholders can read) ===
+{ciq}
+
 === DEVELOPER ANSWERS (AUTHORITATIVE) ===
 {developer_answers}
 
@@ -383,9 +388,13 @@ Phases: {phases}
 {developer_notes}
 
 === VARIABLE PATTERNS ===
-  ${{configSequences.0.records.0.data.<Column>}} — CIQ value
+  ${{configSequences.0.records.0.data.<Column>}} — CIQ value (only the record columns listed under CIQ DATA)
   ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE>
-  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
+  ${{<NODE>.<field>}}                             — node value listed under CIQ DATA (e.g. a version)
+  A value derived from a column (base name, extension, …): compute it in the shell command,
+  e.g. $(basename ${{configSequences.0.records.0.data.<Column>}} .tar) — never invent a column
+  ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
+  Never ${{node}} (it empties the MOP of a node group with several nodes): register `hostname`
   ${{varName}}                                    — registered (?<varName>...) output
   ${{<PARAM>}}                                    — framework runtime parameter (never register it): {runtime_params}
   NOT supported: configData.*, nodeGroups.*, node_row.*, register.*, env.*
