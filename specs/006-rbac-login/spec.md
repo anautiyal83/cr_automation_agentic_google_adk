@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-04
 
-**Status**: Decisions D1–D7 taken (2026-11-04, D7 refined: action buttons only); implementation step by step
+**Status**: Decisions D1–D8 taken (2026-11-04); implementation step by step
 
 **Input**: "Let's implement a login system so we add security. We want a role-based login: an
 admin who has access to all sections and who creates users and roles and assigns permissions to
@@ -21,6 +21,7 @@ add or create specs and plan for this, then we will implement step by step"; the
 | D4 | Session length / lockout | 12 h sessions; 5 failed logins lock the username for 5 min |
 | D5 | Run ownership | Every run records who started it; the **admin sees all runs**, every other user only their own |
 | D6 | Permission levels | A permission is per screen and is either **View** or **Update**. View: the user can only look. Update: the user can look and change things on that screen. Only the admin has Update on every screen |
+| D8 | Activity trail | Every action is recorded — who did what, when, on which run — so activities can be tracked. The trail is **visible to the admin only**, on a **separate screen** |
 | D7 | View permission in the UI | On a screen with View permission **only action buttons are disabled** — those that start an activity, delete something, or update the pipeline configuration / a run. Reading buttons (View, Download, Refresh, details, navigation) stay enabled |
 
 ## Problem
@@ -53,6 +54,7 @@ to everyone.
   | `cleanup` | Artifact Cleanup | Admin |
   | `settings` | Settings (incl. Vendor Profiles) | Admin |
   | `users` | Users & Roles (new) | Admin — **admin role only**, not assignable to other roles |
+| `audit` | Audit Trail (new) | Admin — **admin role only**, not assignable to other roles |
 
 - **Level per screen**: *none* (screen hidden), **View**, or **Update** (D6).
 - A **role** = name + description + a level for each screen. A **user** has exactly one role.
@@ -79,6 +81,7 @@ user's own runs (see Run Visibility).
 | Artifact Cleanup | Delete, Delete Old Runs, Bulk Cleanup | Refresh |
 | Settings | Save Key, Save All Settings; Vendor Profiles: Add Vendor, Add Field, Add, Save, Delete | Export Seed (read-only export) |
 | Users & Roles | admin only | admin only |
+| Audit Trail | admin only (read-only screen) | admin only |
 
 Server-side: every handler that changes something checks the user's level for that screen (and
 run ownership), so a disabled button cannot be bypassed by a crafted event.
@@ -102,6 +105,30 @@ Runs created before this feature have no owner: only the admin sees them. Runs s
 CLI record `cli` (admin only). Ownership is checked on the server for every action that takes a
 run id (open, re-run, cancel, delete, milestone decision, view/download a file), not only by
 filtering lists.
+
+## Activity Trail (D8)
+
+Every action is written to an append-only trail: **when**, **who** (user, role), **what**
+(action), **on what** (run id / use case / user / role / setting), **outcome** (done, refused,
+failed) and the details needed to understand it. Refused attempts (no permission, not the owner,
+locked account) are recorded too.
+
+| Area | Recorded actions |
+|------|------------------|
+| Sessions | login, failed login, account locked, logout, session expired, password changed |
+| Users & roles | user created / role changed / enabled / disabled / password reset / deleted; role created / edited (old → new levels) / deleted |
+| Pipeline runs | run started (UC, documents), cancelled, stopped, restarted, re-run of a step, deleted |
+| Pipeline decisions | milestone decision per step (approve & continue, skip & continue, re-run, clarify in requirements), step 1 questions answered / defaults used |
+| Pipeline progress (actor `system`) | step started / passed / failed, automatic retry and its target step, run completed / failed — so a run's trail shows what the pipeline did between user actions |
+| Documents | document viewed or downloaded (run, file) |
+| Configuration | settings saved (changed keys; secrets such as the API key are never written, only "changed"), vendor profile added / changed / deleted, cache cleared, artifacts / old runs deleted, LLM usage cleared |
+
+- **Screen**: *Audit Trail* (Admin group), admin only. Table newest first with filters (date range,
+  user, action, run / use case, outcome) and free-text search; a row expands to its details;
+  export of the filtered rows as CSV. A run's trail is reachable from the filter (run id).
+- **Integrity**: the UI and the service offer no way to edit or delete trail entries; entries are
+  kept (no automatic purge in this iteration).
+- Normal users never see the trail, not even for their own runs.
 
 ## User Scenarios
 
@@ -145,6 +172,13 @@ filtering lists.
 2. A acting on R2's id (crafted event or URL) is refused.
 3. The admin sees R1, R2 and the runs without an owner.
 
+### US8 — Activity trail (P1)
+1. User A logs in, starts a run, approves a milestone and downloads the MOP; the pipeline retries
+   step 6 → the admin's Audit Trail shows each of these with time, user (or `system`), run and details.
+2. A View user's refused attempt to cancel a run appears as *refused*.
+3. The admin filters by user A and a date range and exports the rows as CSV.
+4. A normal user cannot open the Audit Trail (not in the sidebar, deep link refused).
+
 ### US7 — Account hygiene (P2)
 1. Every user can change their own password (header → user menu), confirming the current one.
 2. Logout from the user menu ends the session; sessions expire after 12 h.
@@ -173,6 +207,10 @@ filtering lists.
 - **FR-010** CLI entry points (`main.py`, `test_run.py`, `test_step.py`) need no login.
 - **FR-011** Every run MUST record `started_by` (user id; `cli` from the CLI).
 - **FR-012** Non-admin users MUST see and act on only their own runs (US6); the admin sees all.
+- **FR-014** Every action in the Activity Trail table MUST be recorded with time, user, role,
+  action, target, run, outcome and details; refused attempts included; secrets never recorded.
+- **FR-015** The trail MUST be append-only (no edit/delete in UI or service) and visible only to the
+  admin on the separate Audit Trail screen, with filters and CSV export.
 - **FR-013** A user with the default password, or whose password the admin reset, MUST set a new one
   at the next login before any screen opens.
 
@@ -185,7 +223,6 @@ filtering lists.
 - Sharing runs between users; per-use-case permissions.
 - Finer levels than View/Update (e.g. per button).
 - HTTPS termination (deploy behind a TLS proxy; see plan).
-- Audit log of admin actions (candidate for a later iteration).
 
 ## Success Criteria
 - **SC-001** Without a login, every page and file URL redirects to `/login`.
@@ -195,5 +232,7 @@ filtering lists.
   at the role's levels; after the admin edits the role, the user sees the new levels on reload.
 - **SC-004** User A sees only A's runs on every screen; actions on B's run id are refused; the admin
   sees all runs.
+- **SC-006** Every action of US8 appears in the Audit Trail with the right user, run and outcome; a
+  normal user cannot reach the screen; there is no way to change or delete an entry.
 - **SC-005** The DB contains no plain-text password; unit tests cover hashing, policy, lockout,
   default admin, forced password change, level checks, ownership checks, last-admin and role rules.

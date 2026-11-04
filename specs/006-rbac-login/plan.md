@@ -26,6 +26,11 @@ Browser ──► FastAPI/NiceGUI (port 8000)
                     run lists/queries: RunScope.filter(...)  (admin: all; others: started_by = user)
                     header: user · role · Change password · Logout
                     admin → Users & Roles panel (ui/pages/users_section.py)
+                    admin → Audit Trail panel (ui/pages/audit_section.py)
+                    every action → audit.record(user, action, target, run, outcome, details)
+
+core/audit.py ── append-only trail (audit_log table); record() / query() / export_csv()
+                 pipeline events (actor "system") from PipelineRunner / PipelineAgent
 
 core/auth.py ── AuthService(db), CurrentUser(levels, can_view, can_update, owns_run)
 storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
@@ -44,6 +49,9 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | C7 | Run ownership | `orchestrator/runner.py`, sections | Runner stores `started_by`; a `RunScope` (user) gives the SQL filter (`started_by = ?` unless admin) and `check(run_id)`; applied in dashboard queries, Live Run (active-run restore, view_run), Output Documents run list, Run History, LLM Usage (per run), Artifact Cleanup; file View/Download only through owned runs |
 | C8 | Header user menu | `ui/app.py` | Display name + role pill; Change password dialog; Logout |
 | C9 | Users & Roles screen | `ui/pages/users_section.py` | Users tab (add, role, enable/disable, reset password → must change, delete) and Roles tab (add/edit: None/View/Update per screen grouped like the sidebar, delete); `AuthError` messages as notifications |
+| C11 | Audit trail | `storage/db.py`, `core/audit.py` | `audit_log(id, at, user_id, username, role, action, target_type, target_id, run_id, uc_name, outcome, details JSON)` + indexes (at, user_id, run_id, action); `record()` never raises (a failed write is logged, the action goes on); secrets masked; no update/delete API |
+| C12 | Recording points | `ui/*`, `orchestrator/runner.py`, `orchestrator/pipeline_agent.py`, `core/auth.py` | Sessions + users/roles in AuthService/login page; run start/cancel/restart/delete and milestone decisions + step 1 answers in the runner/progress section; step and retry events as `system` in PipelineAgent; view/download in the shared file helpers; settings/vendors/cleanup/cache/usage clear in their sections; refused attempts in `Access.require` / `RunScope.check` |
+| C13 | Audit Trail screen | `ui/pages/audit_section.py` | Admin only; filters (dates, user, action, run/UC, outcome, text), paged table newest first, row details, CSV export of the filter |
 | C10 | Tests | `tests/test_auth.py`, `tests/test_access.py` | Service rules; level checks; run scope filter/check; button disabling on a View panel |
 
 ## Key Decisions
@@ -57,6 +65,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | K5 | Stdlib PBKDF2 (310k, OWASP 2023) | No new dependency |
 | K6 | NiceGUI `app.storage.user` for the session; lockout in memory | Built in; single server process |
 | K7 | Ownership by `started_by` on `pipeline_runs`; ownerless/CLI runs admin-only | D3/D5 without a sharing model |
+| K8 | One append-only `audit_log` table for user actions and pipeline (`system`) events | D8: one place to follow who did what in a run; recording must never break the action it records |
 
 ## Security Notes
 - Serve behind HTTPS (reverse proxy) in production.
@@ -65,7 +74,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 - Default password `admin` is only usable to set a new one (forced change).
 
 ## Testing
-- Unit: C10.
+- Unit: C10 + `tests/test_audit.py` (record/query/filters/CSV, secrets masked, no delete API, refused attempts recorded).
 - UI (preview server on a DB copy, headless browser): redirect to `/login` for `/`, a deep link and a
   media URL; forced password change for `admin`; admin creates role (Run History = View) + user;
   that user sees only Run History, only own runs, action buttons disabled, View/Download working; role changed to Update →

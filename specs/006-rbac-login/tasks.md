@@ -6,6 +6,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 ## Step 0: Decisions
 - [X] T000 Decisions D1–D7 (2026-11-04)
+- [X] T000c D8: activity trail of every action, admin-only separate screen
 - [X] T000b Q1: only action buttons (start / delete / update) are disabled on View screens; reading buttons stay enabled
 
 ## Step 1: Data + service (no UI change)
@@ -14,6 +15,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [~] T002 `core/auth.py` (drafted before the spec) — rework for D1/D2/D6: screen levels, only the
   admin role, default `admin` user + forced change, `admin` user protected, `set-password` CLI
 - [ ] T003 `tests/test_auth.py`
+- [ ] T003a `audit_log` table + `core/audit.py` (record, query, CSV) + `tests/test_audit.py`
 
 ## Step 2: Login gate
 - [ ] T004 Probe NiceGUI 3.17.1: middleware + `app.storage.user` + `storage_secret`; media URL blocked without session
@@ -37,5 +39,11 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [ ] T016 Roles tab (None/View/Update per screen, delete rules)
 - [ ] T017 Check SC-003 end to end
 
-## Step 6: Wrap-up
+## Step 6: Activity trail
+- [ ] T019 Recording points: sessions, users/roles, runs, milestone decisions, step 1 answers, documents, settings/vendors/cleanup/cache/usage, refused attempts
+- [ ] T020 Pipeline events as `system` (step started/passed/failed, retries, run end)
+- [ ] T021 `ui/pages/audit_section.py`: admin-only Audit Trail screen with filters, details, CSV export
+- [ ] T022 Check SC-006
+
+## Step 7: Wrap-up
 - [ ] T018 CLAUDE.md (login, env vars, secret, set-password CLI), README, cross-links
