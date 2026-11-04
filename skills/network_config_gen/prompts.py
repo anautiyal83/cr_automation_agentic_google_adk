@@ -62,6 +62,13 @@ CRITICAL RULES:
   cross lines). Test only the condition the validation describes, on the line that shows
   it (e.g. just the status line or the counter value); never reproduce headers, dates or
   the layout of the whole output. Where real output is given, the regex MUST match it.
+- Checks come from the TEXT the requirements say the output shows (e.g. "Link UP",
+  "result=success") — write the regex for that text against the real output. Developer
+  answers that look like regexes are hints only: never copy them unless they match the real
+  output. When the text must hold for EVERY line / item (every remote node, all files, each
+  sample), count: register [{regex: '<line of one item>', loop: true, count_var: TOTAL},
+  {regex: '<line of one item showing the text>', loop: true, count_var: OKN}] and success
+  criteria {expr: 'OKN == TOTAL && TOTAL > 0'} — a plain regex passes when ONE line matches.
 - Never put ${...} placeholders inside a validation or register regex: regexes are not
   interpolated (only send is). Match the shape of the value instead (digits, a word).
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
@@ -414,6 +421,9 @@ Phases: {phases}
 - register uses {{regex: '... (?<varName>...) ...'}} — Java named groups, letters/digits only
 - Validation regexes are searched (^/$ per line, '.' does not cross lines): test only the
   condition the validation describes, on the line that shows it — never the whole layout
+- Checks come from the expected TEXT and the real output; regex-looking developer answers are hints.
+  "Every line / item" = count: register {{regex: '<item line>', loop: true, count_var: TOTAL}} and
+  {{regex: '<item line showing the text>', loop: true, count_var: OKN}}, expr 'OKN == TOTAL && TOTAL > 0'
 - No ${{...}} inside regexes (only send is interpolated)
 - Files move with sftp steps (sftp: {{operation: upload|download, local_path, remote_path}}),
   never put/get in a shell; download a node's file before a LOCAL step reads it
