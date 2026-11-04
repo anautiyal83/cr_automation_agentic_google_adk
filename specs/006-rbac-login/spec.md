@@ -4,31 +4,43 @@
 
 **Created**: 2026-11-04
 
-**Status**: Draft — spec and plan for review; implementation step by step after approval
+**Status**: Decisions D1–D7 taken (2026-11-04); implementation step by step
 
 **Input**: "Let's implement a login system so we add security. We want a role-based login: an
 admin who has access to all sections and who creates users and roles and assigns permissions to
-other users. Only screens with permission should be visible to normal users." Follow-up: "first
-add or create specs and plan for this, then we will implement step by step".
+other users. Only screens with permission should be visible to normal users." Follow-ups: "first
+add or create specs and plan for this, then we will implement step by step"; the decisions below.
+
+## Decisions (2026-11-04, user)
+
+| # | Question | Decision |
+|---|----------|----------|
+| D1 | First administrator | A default user **`admin`** with admin rights is created on first start, and its password can be set (no setup form) |
+| D2 | Starting roles | Only the built-in **`admin`** role; the admin creates every other role |
+| D3 | Which runs a normal user sees | **Only the runs they started** |
+| D4 | Session length / lockout | 12 h sessions; 5 failed logins lock the username for 5 min |
+| D5 | Run ownership | Every run records who started it; the **admin sees all runs**, every other user only their own |
+| D6 | Permission levels | A permission is per screen and is either **View** or **Update**. View: the user can only look. Update: the user can look and change things on that screen. Only the admin has Update on every screen |
+| D7 | View permission in the UI | On a screen with View permission **all buttons are disabled** |
 
 ## Problem
 
 The NiceGUI UI (port 8000) has no authentication. Anyone who can reach the server can start
 pipelines, read every run's documents (CIQ data, node addresses, MOPs), change settings
-(including the OpenRouter API key and JAR paths), and delete artifacts. All nine screens are
-visible to everyone.
+(including the OpenRouter API key and JAR paths), and delete artifacts. All screens are visible
+to everyone.
 
-## Users and Roles
+## Actors
 
-| Actor | What they need |
-|-------|----------------|
-| **Administrator** | Every screen, plus a **Users & Roles** screen: create/disable/delete users, reset passwords, create roles, choose each role's screens, assign a role to each user |
-| **Normal user** | Logs in and sees only the screens their role grants — in the sidebar *and* by URL (`/?page=settings` must not open a screen they lack) |
-| **Anyone not logged in** | Sees only the login page; no page, file or download is reachable |
+| Actor | What they get |
+|-------|---------------|
+| **Administrator** (`admin` role) | Every screen with Update, every run, and the **Users & Roles** screen |
+| **Normal user** | Only the screens their role grants — View or Update per screen — and on them only the runs they started |
+| **Not logged in** | Only the login page; no page, file or download is reachable |
 
 ## Permission Model
 
-- A **permission** = access to one screen. Screens today:
+- **Screens** (one permission each):
 
   | Key | Screen | Sidebar group |
   |-----|--------|---------------|
@@ -40,69 +52,127 @@ visible to everyone.
   | `usage` | LLM Usage | Admin |
   | `cleanup` | Artifact Cleanup | Admin |
   | `settings` | Settings (incl. Vendor Profiles) | Admin |
-  | `users` | Users & Roles (new) | Admin |
+  | `users` | Users & Roles (new) | Admin — **admin role only**, not assignable to other roles |
 
-- A **role** = a name, a description and a set of permissions. A **user** has exactly one role.
-- Built-in role **`admin`**: always every permission (screens added later included); it cannot be
-  edited or deleted.
-- Default roles created on first start (editable by the admin): **`operator`** — Dashboard, New
-  Run, Live Run, Output Documents, Run History; **`viewer`** — Dashboard, Live Run, Output
-  Documents, Run History.
+- **Level per screen**: *none* (screen hidden), **View**, or **Update** (D6).
+- A **role** = name + description + a level for each screen. A **user** has exactly one role.
+- Built-in role **`admin`**: Update on every screen (screens added later included) plus Users &
+  Roles; cannot be edited or deleted. It is the only role at first start (D2).
+- Built-in user **`admin`** (role `admin`), created on first start (D1); cannot be deleted,
+  disabled or moved to another role.
+
+### View vs Update per screen (D6, D7)
+
+With **View**, the screen is shown with **every button disabled** (D7) — its data is visible,
+nothing can be started, changed, deleted or decided. With **Update**, the buttons work, limited
+to the user's own runs (see Run Visibility).
+
+| Screen | Update enables (disabled with View) |
+|--------|-------------------------------------|
+| Dashboard | — (no actions) |
+| New Run | Wizard navigation (Next/Back) and starting a run |
+| Live Run | Cancel pipeline / Stop, Restart, Re-run step, milestone decisions (Approve & continue, Skip & continue, Clarify in requirements), Answer Questions / Submit Answers / Use All Defaults, View / Download artifact, Browse outputs |
+| Output Documents | View, Download, Refresh, Clear All Cache (cache: admin only, it is shared) |
+| Run History | View, Download, Delete, Cancel, Cleanup Old Runs, re-run / open run |
+| LLM Usage | Refresh, Clear |
+| Artifact Cleanup | Refresh, Delete, Delete Old Runs, Bulk Cleanup |
+| Settings | Save Key, Save All Settings; Vendor Profiles: Add Vendor/Field, Save, Delete, Export Seed |
+| Users & Roles | admin only |
+
+Server-side: every handler that changes something checks the user's level for that screen (and
+run ownership), so a disabled button cannot be bypassed by a crafted event.
+
+## Run Visibility (D3, D5)
+
+Every run records the user who started it (`started_by`). The **admin** sees every run; any other
+user sees **only their own runs** on every screen that shows runs:
+
+| Screen | What a normal user sees |
+|--------|-------------------------|
+| Dashboard | Totals, charts, use-case table, LLM usage and recent runs over their own runs |
+| Live Run | Their running run only; another user's live run is not shown |
+| Output Documents | Run list and documents of their runs; the artifact-cache panel is admin-only |
+| Run History | Their runs |
+| LLM Usage | Usage of their runs |
+| Artifact Cleanup | Their runs |
+| Settings | Global settings (the screen permission decides) |
+
+Runs created before this feature have no owner: only the admin sees them. Runs started from the
+CLI record `cli` (admin only). Ownership is checked on the server for every action that takes a
+run id (open, re-run, cancel, delete, milestone decision, view/download a file), not only by
+filtering lists.
 
 ## User Scenarios
 
 ### US1 — Log in and see only my screens (P1)
-1. Given I am not logged in, when I open any URL, then I am sent to `/login`.
-2. Given valid credentials, when I log in, then I land on my first permitted screen and the
-   sidebar lists only my permitted screens (empty groups hidden).
-3. Given my role lacks Settings, when I open `/?page=settings`, then the screen is not built and
-   I land on my first permitted screen.
-4. Given a screen offers a jump to another screen (e.g. Run History → "Open" → Live Run), when I
-   lack the target screen, then the jump is refused with a message.
+1. Not logged in → any URL redirects to `/login`.
+2. Valid credentials → I land on my first permitted screen; the sidebar lists only my permitted
+   screens (empty groups hidden).
+3. My role lacks Settings → `/?page=settings` does not build the screen and I land on my first
+   permitted screen.
+4. An in-page jump (e.g. Run History → Open → Live Run) to a screen I lack is refused with a message.
 
-### US2 — Administrator manages users (P1)
-1. The admin creates a user with username, display name, initial password and role.
-2. The admin changes a user's role, disables/enables them, resets their password, deletes them.
-3. The admin cannot delete themselves, and the last active admin cannot be disabled, deleted or
-   moved to another role.
-4. A disabled user cannot log in; their open session ends on the next page load.
+### US2 — View vs Update (P1)
+1. My role has View on Run History → I see my runs and their details; Delete, Cancel, View,
+   Download and every other button are disabled.
+2. My role has Update on Run History → the buttons work, on my runs only.
+3. A crafted event for a disabled action is refused on the server.
 
-### US3 — Administrator manages roles and permissions (P1)
-1. The admin creates a role and ticks the screens it may see.
-2. The admin edits a role's screens; users of that role get the new set on their next page load.
+### US3 — Administrator manages users (P1)
+1. Create a user: username, display name, initial password, role.
+2. Change a user's role, disable/enable, reset the password (the user must change it at next
+   login), delete.
+3. The `admin` user and the last active administrator cannot be deleted, disabled or demoted;
+   nobody can delete their own account.
+4. A disabled or deleted user cannot log in; an open session ends on the next page load.
+
+### US4 — Administrator manages roles (P1)
+1. Create a role: for each screen choose None / View / Update.
+2. Edit a role; its users get the new levels on their next page load.
 3. A role still assigned to users cannot be deleted; `admin` cannot be edited or deleted.
 
-### US4 — First start (P1)
-1. Given no user exists, the login page asks to create the first administrator (username,
-   password twice) — or the admin is created from `NETCONFIG_ADMIN_USER` /
-   `NETCONFIG_ADMIN_PASSWORD` when set (headless deployments).
-2. After that, the setup form is never shown again.
+### US5 — Default administrator (P1)
+1. First start creates user `admin`. Initial password: `NETCONFIG_ADMIN_PASSWORD` when set,
+   otherwise `admin` — and then the password must be changed at the first login before any screen
+   opens.
+2. The password can be set any time on the server — `python -m core.auth set-password admin`
+   (prompts twice; also recovers a lost password) — or in the UI (own password via the user menu).
 
-### US5 — Account hygiene (P2)
+### US6 — Only my runs (P1)
+1. User A started R1, user B started R2 → A sees only R1 on Dashboard, Live Run, Output Documents,
+   Run History, LLM Usage and Artifact Cleanup.
+2. A acting on R2's id (crafted event or URL) is refused.
+3. The admin sees R1, R2 and the runs without an owner.
+
+### US7 — Account hygiene (P2)
 1. Every user can change their own password (header → user menu), confirming the current one.
-2. Logout from the user menu ends the session.
-3. Sessions expire after 12 hours.
-4. Five failed logins for a username lock it for 5 minutes.
+2. Logout from the user menu ends the session; sessions expire after 12 h.
+3. Five failed logins for a username lock it for 5 minutes.
 
 ## Requirements
 
 ### Functional
 - **FR-001** Every HTTP route except `/login` and NiceGUI's static assets MUST require a logged-in
-  session — this includes served files (`/_nicegui/auto/media/…`, used by View/Download).
-- **FR-002** The main page MUST build only the screens the user's role permits; the sidebar MUST
-  list only those; navigation (sidebar, deep link, in-page jumps) MUST refuse others.
-- **FR-003** Permissions MUST be read from the database on every page load, so role changes,
-  disabling and deletion take effect without a server restart.
-- **FR-004** Passwords MUST be stored only as salted PBKDF2-SHA256 hashes (≥ 310 000 iterations);
-  plain passwords are never logged or stored.
-- **FR-005** Password policy: ≥ 8 characters, not only letters or only digits.
+  session — including served files (`/_nicegui/auto/media/…`, used by View/Download).
+- **FR-002** The main page MUST build only the screens the user's role grants (View or Update);
+  the sidebar MUST list only those; navigation (sidebar, deep link, in-page jumps) MUST refuse others.
+- **FR-003** Levels and run ownership MUST be read from the database on every page load, so role
+  edits, disabling and deletion apply without a server restart.
+- **FR-004** On a View screen every button MUST be disabled (D7); every changing handler MUST check
+  Update (and run ownership) on the server.
+- **FR-005** Passwords MUST be stored only as salted PBKDF2-SHA256 hashes (≥ 310 000 iterations);
+  plain passwords are never logged or stored. Policy: ≥ 8 characters, not only letters or only digits.
 - **FR-006** Login failures MUST NOT reveal whether the username exists (same message, same work).
-- **FR-007** The session cookie MUST be signed with a secret from `NETCONFIG_STORAGE_SECRET`, else
-  a random secret generated once into `data/.storage_secret` (git-ignored).
-- **FR-008** The admin role and the last active administrator MUST be protected (US2.3, US3.3).
+- **FR-007** The session cookie MUST be signed with `NETCONFIG_STORAGE_SECRET`, else a random secret
+  generated once into `data/.storage_secret` (git-ignored).
+- **FR-008** The `admin` role, the `admin` user and the last active administrator MUST be protected
+  (US3.3, US4.3).
 - **FR-009** The header MUST show the logged-in user and role, with Change password and Logout.
-- **FR-010** CLI entry points (`main.py`, `test_run.py`, `test_step.py`) are unaffected — the
-  login guards the UI only.
+- **FR-010** CLI entry points (`main.py`, `test_run.py`, `test_step.py`) need no login.
+- **FR-011** Every run MUST record `started_by` (user id; `cli` from the CLI).
+- **FR-012** Non-admin users MUST see and act on only their own runs (US6); the admin sees all.
+- **FR-013** A user with the default password, or whose password the admin reset, MUST set a new one
+  at the next login before any screen opens.
 
 ### Non-functional
 - No new third-party dependency (stdlib `hashlib`/`hmac`/`secrets` + NiceGUI user storage).
@@ -110,28 +180,23 @@ visible to everyone.
 
 ## Out of Scope (this iteration)
 - Single sign-on / LDAP / OAuth, multi-factor authentication.
-- Per-run or per-use-case data permissions (who may see which runs) — every permitted screen
-  shows all runs.
-- Action-level permissions inside a screen (e.g. view runs but not cancel them) — a screen is
-  all or nothing.
+- Sharing runs between users; per-use-case permissions.
+- Finer levels than View/Update (e.g. per button).
 - HTTPS termination (deploy behind a TLS proxy; see plan).
 - Audit log of admin actions (candidate for a later iteration).
 
-## Open Questions (please confirm)
-
+## Open Question
 | # | Question | Proposed default |
 |---|----------|------------------|
-| Q1 | First administrator: setup form on the login page when no user exists, or only from env vars / a CLI command? | Setup form **and** env vars |
-| Q2 | Default roles `operator` and `viewer` (above) — keep, rename or start with `admin` only? | Keep both |
-| Q3 | Should normal users see all runs, or only the runs they started? | All runs (per-user runs out of scope) |
-| Q4 | Session length 12 h and lockout 5 failures / 5 min — OK? | Yes |
-| Q5 | Should a run record who started it (shown in Run History)? | Yes — small addition, useful for accountability |
+| Q1 | D7 disables *all* buttons on a View screen, which includes the reading ones (View, Download, Refresh on Output Documents / Run History / Live Run). Should those stay enabled for View users? | Keep the reading buttons enabled (View, Download, Refresh, Browse outputs), disable everything that starts, changes, deletes or decides |
 
 ## Success Criteria
-- **SC-001** Without a login, every page and file URL redirects to `/login` (checked per route).
-- **SC-002** A user with role `viewer` sees exactly Dashboard, Live Run, Output Documents and Run
-  History, and `/?page=settings|new_run|cleanup|usage|users` opens none of those screens.
-- **SC-003** The admin creates a user and a role in the UI; that user logs in and sees exactly the
-  role's screens; after the admin edits the role, the user sees the new set on reload.
-- **SC-004** The DB contains no plain-text password; unit tests cover hashing, policy, lockout,
-  last-admin protection, role deletion rules.
+- **SC-001** Without a login, every page and file URL redirects to `/login`.
+- **SC-002** A role with View on Run History and nothing else: the user sees only Run History, with
+  only their runs, and every button disabled; `/?page=<other screen>` opens nothing else.
+- **SC-003** The admin creates a role and a user in the UI; the user sees exactly the role's screens
+  at the role's levels; after the admin edits the role, the user sees the new levels on reload.
+- **SC-004** User A sees only A's runs on every screen; actions on B's run id are refused; the admin
+  sees all runs.
+- **SC-005** The DB contains no plain-text password; unit tests cover hashing, policy, lockout,
+  default admin, forced password change, level checks, ownership checks, last-admin and role rules.
