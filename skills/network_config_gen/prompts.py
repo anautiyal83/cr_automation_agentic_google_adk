@@ -107,6 +107,9 @@ CRITICAL RULES:
   Conditions only COMPARE values (==, !=, <, >): no method calls (.endsWith(), .matches()) and no
   `!` — such a condition is always false. Decide inside the command instead:
   case "${configSequences.0.records.0.data.<Col>}" in *.tar) tar -xf …;; *) cp …;; esac
+- After `tar -xf <archive> -C <dir>` the directory holds the archive's MEMBERS, not the archive:
+  verify every member — `ls -ld $(tar -tf <archive> | sed 's#^#<dir>/#')` — never grep <dir> for
+  the archive's own name (a copied plain file is checked by its name).
 - ${configSequences.0.records.0.data.<Col>} exists only for the CIQ JSON RECORD columns listed in
   the CIQ section; columns of other sheets (node details, index) resolve to empty.
 - An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an

@@ -293,6 +293,7 @@ def fix_workflow(yaml_text: str) -> str:
     loop_count_nonempty(parsed)
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
+    untar_member_check(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1517,6 +1518,88 @@ def guard_skip_expr(parsed: dict) -> int:
             regs.append({"regex": f"(?<ncSkipped>{SKIPPED_BY_CONDITION})"})
         changed += 1
     return changed
+
+
+_TAR_EXTRACT = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+)")
+_LS_GREP = re.compile(r"""^ls(?:\s+-\w+)*\s+(\S+?)/?\s*\|\s*grep(?:\s+-\w+)*\s+["']?([^"'|]+?)["']?\s*$""")
+_MODE_LITERAL = re.compile(r"-[r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-]")
+
+
+def _extracts(parsed: dict) -> list[tuple[int, str, str, str]]:
+    """(step position, archive, destination, guard test or '') of every ``tar -x … -C <dest>``."""
+    out = []
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = str(step.get("send") or "").strip()
+        guard = _GUARD_THEN.match(send)
+        m = _TAR_EXTRACT.search(guard.group(2) if guard else send)
+        if m:
+            test = re.match(r"if (\[\[.+?\]\]); then", guard.group(1)).group(1) if guard else ""
+            out.append((pos, m.group(1), m.group(2).rstrip("/"), test))
+    return out
+
+
+def _archive_check(send: str, extracts: list, pos: int):
+    """The extract a ``ls <dest> | grep <archive name>`` after it refers to, else None."""
+    m = _LS_GREP.match(send.strip())
+    if not m:
+        return None
+    for epos, archive, dest, test in extracts:
+        if epos < pos and m.group(1).rstrip("/") == dest and m.group(2).strip() == archive.rsplit("/", 1)[-1]:
+            return archive, dest, test
+    return None
+
+
+def untar_member_check(parsed: dict) -> int:
+    """After ``tar -xf <archive> -C <dest>`` the destination holds the archive's MEMBERS, not the
+    archive: a later ``ls <dest> | grep <archive name>`` finds nothing (run 9de5fcb8). The check
+    lists every member instead (user decision A, 2026-11-04) — on the branch that extracts; a copy
+    branch keeps its own check — and passes when every listed line has the mode the step expects:
+    ``if [[ … ]]; then ls -ld $(tar -tf A | sed 's#^#D/#'); else <copy check>; fi``. A missing
+    member fails ``ls`` (exit code) before the count."""
+    extracts = _extracts(parsed)
+    if not extracts:
+        return 0
+    changed = 0
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = step.get("send")
+        if not isinstance(send, str) or "tar -tf" in send:
+            continue
+        found = _archive_check(send, extracts, pos)
+        if not found:
+            continue
+        archive, dest, test = found
+        members = f"ls -ld $(tar -tf {archive} | sed 's#^#{dest}/#')"
+        step["send"] = f"if {test}; then {members}; else {send.strip()}; fi" if test else members
+        mode = next((m.group(0) for c in _criteria_blocks(step) for m in [_MODE_LITERAL.search(str(c.get("regex") or ""))]
+                     if m), "")
+        regs = [r for r in step.get("register") or [] if "ncListed" not in str(r) and "ncModeOk" not in str(r)]
+        regs += [{"regex": "(?<ncListed>.+)", "loop": True, "count_var": "ncFilesListed"},
+                 {"regex": f"^{re.escape(mode)}.*" if mode else r"^[-dl]\S{9}.*", "loop": True,
+                  "count_var": "ncFilesOk"}]
+        step["register"] = regs
+        validation = step.setdefault("validation", {})
+        success = validation.setdefault("success", {})
+        success["criteria"] = {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+        validation.pop("criteria", None)
+        changed += 1
+    return changed
+
+
+def untar_check_issues(parsed: dict) -> list[str]:
+    """Checks that still look for an extracted archive by its name in the destination (validator)."""
+    extracts = _extracts(parsed)
+    issues = []
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = str(step.get("send") or "")
+        for epos, archive, dest, _ in extracts:
+            name = archive.rsplit("/", 1)[-1]
+            if epos < pos and "tar -tf" not in send and dest in send and name in send \
+                    and re.match(r"^\s*ls\b", send) and "|| true" not in send:
+                issues.append(
+                    f"Step '{send[:80]}' checks {dest} for the archive {name}, but `tar -x … -C {dest}` puts the "
+                    f"archive's MEMBERS there, not the archive: verify every member — "
+                    f"`ls -ld $(tar -tf {archive} | sed 's#^#{dest}/#')` on the branch that extracts")
+    return issues
 
 
 def json_text(value) -> str:

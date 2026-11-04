@@ -94,6 +94,8 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_condition_syntax(parsed))
     errors.extend(check_record_columns(parsed, (expected or {}).get("record_columns")))
     errors.extend(check_scope_every(parsed))
+    from .autofix import untar_check_issues  # option A: verify an extracted archive's members
+    errors.extend(untar_check_issues(parsed))
     errors.extend(check_unused_record_columns(parsed, (expected or {}).get("record_columns")))
     errors.extend(check_completeness(parsed, expected))
     if command_samples:

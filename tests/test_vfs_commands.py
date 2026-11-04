@@ -104,3 +104,11 @@ def test_invented_response_repaired_from_any_regex():
                     commands=[{"cmd": "date", "validation": {"success": {"criteria": {"regex": regex}}}}])
     fixed = repair_literal_mismatches(node, {"date": {"lines": ["Tue Oct 26 10:30:00 CEST 2023"]}}, set(), {})
     assert re.search(regex, "\n".join(fixed["date"]["lines"]))
+
+
+def test_if_else_member_check_runs_on_the_vfs():
+    """Run 9de5fcb8: `if …; then ls -ld $(tar -tf …); else ls … | grep …; fi` got a canned key."""
+    check = (f"if [[ ! '${{MRF.VER}}' == '13.'* ]]; then ls -ld $(tar -tf /tmp/{FILE} | sed 's#^#{DEST}/#'); "
+             f"else ls -ltrh {DEST}/ | grep \"{FILE}\"; fi")
+    assert vfs_handled(check, _prefixes())
+    assert not vfs_handled("if [[ 'a' == 'a' ]]; then systemctl status x; else echo no; fi", _prefixes())

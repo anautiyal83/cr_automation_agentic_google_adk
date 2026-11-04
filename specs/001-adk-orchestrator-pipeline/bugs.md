@@ -824,3 +824,19 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   output), `loop_count_nonempty` (`.*` → `.+`), `expr_without_parentheses` (groups without `||`),
   `guard_skip_expr` (`|| ncSkipped == 'SKIPPED_BY_CONDITION'` + its register). Replay of c89f65c2 steps 8 + 9:
   MRF1, MRF2, rollback-only PASS; MRF3 = DEP-60.
+
+### DEP-60 — resolved 2026-11-04 (user): VER 13.X.X.X gets plain files (copy), every other version tar files (untar)
+- The workflow branch was right; the step 1 answer saying the opposite was wrong and is corrected in
+  `data/knowledge/MRF_ANNOUNCEMENT_LOADING/requirements.json`, the step 1 cache and run c89f65c2 (requirements,
+  summary, checkpoint). The CIQ test data was wrong (the user fixed it: MRF1/MRF2 VER 17 + .tar, MRF3 VER 13 + .3gp).
+  Open: step 3 should reject such rows (`conditionalPattern` VER → INPUT_FILE type; stripped by
+  `_sanitize_rules_for_jar` today).
+
+### DEP-64 — After an untar the check looked for the archive's name in the destination (High, Fixed 2026-11-04)
+- Run 9de5fcb8: `ls -ltrh <dest>/ | grep "<INPUT_FILE>"` after `tar -xf /tmp/<INPUT_FILE> -C <dest>/` — the
+  destination holds the archive's members, so grep found nothing on every untar node. User decision A: verify every
+  member. **Fix**: autofix `untar_member_check` → `if <extract test>; then ls -ld $(tar -tf <archive> | sed
+  's#^#<dest>/#'); else <copy check>; fi`, counted (`ncFilesOk == ncFilesListed && ncFilesListed > 0`, mode from
+  the step's regex); validator `untar_check_issues` + step 6 prompt rule for other shapes; MockWire 36a1476 `ls -d`;
+  step 8 `vfs_commands` treats any `if [[ ]]; then A; else B; fi` by both branches (a canned key had answered it).
+- Replay of 9de5fcb8 steps 8 + 9: 4/4 — MRF1/MRF2 list their extracted members at 777, MRF3 its copied .3gp.

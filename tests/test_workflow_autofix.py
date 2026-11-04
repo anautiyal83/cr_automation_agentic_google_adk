@@ -529,3 +529,28 @@ def test_chmod_check_reads_a_listing_and_a_skip_passes():
     assert step["validation"]["success"]["criteria"]["expr"] == \
         "OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0 || ncSkipped == 'SKIPPED_BY_CONDITION'"
     assert plain_cp["send"] == "cp /tmp/a /opt/x/"     # its check needs no output
+
+
+def test_untar_branch_verifies_the_archive_members():
+    """Run 9de5fcb8, user decision A: after `tar -xf A -C D`, D holds A's members — the check
+    `ls D/ | grep <A's name>` becomes a member listing on the extract branch, counted for 777."""
+    import re
+    from skills.network_config_gen.autofix import untar_check_issues, untar_member_check
+    from skills.network_config_test.scenarios import java_regex_matches
+    REC = "${configSequences.0.records.0.data."
+    dest, file = f"{REC}DEST}}", f"{REC}INPUT_FILE}}"
+    extract = {"node": "MRF", "send": f"if [[ ! '${{MRF.VER}}' == '13.'* ]]; then tar -xf /tmp/{file} -C {dest}/; "
+                                      "else echo SKIPPED_BY_CONDITION; fi"}
+    precheck = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{file}" || true'}
+    check = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{file}"',
+             "validation": {"success": {"criteria": {"regex": "-rwxrwxrwx.*.+?"}}}}
+    wf = {"phases": {"activity": {"steps": [precheck, extract, check]}}}
+    assert untar_check_issues(wf) and untar_member_check(wf) == 1 and untar_member_check(wf) == 0
+    assert not untar_check_issues(wf)
+    assert precheck["send"].endswith("|| true")                       # before the extract: unchanged
+    assert check["send"] == (f"if [[ ! '${{MRF.VER}}' == '13.'* ]]; then ls -ld $(tar -tf /tmp/{file} | "
+                             f"sed 's#^#{dest}/#'); else ls -ltrh {dest}/ | grep \"{file}\"; fi")
+    assert check["validation"]["success"]["criteria"] == {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+    ok = next(r["regex"] for r in check["register"] if r["count_var"] == "ncFilesOk")
+    lines = ["-rwxrwxrwx 1 root root 1 Nov 4 a.wav", "-rw-r--r-- 1 root root 1 Nov 4 b.wav"]
+    assert java_regex_matches(ok, lines[0]) and not java_regex_matches(ok, lines[1])

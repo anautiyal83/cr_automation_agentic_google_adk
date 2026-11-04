@@ -25,11 +25,20 @@ _FD = re.compile(r"\s*\d?>&\d|\s*2>\s*/dev/null")
 _PEER_SIDE = re.compile(r"^\S*@(?:\[[^\]]*\]|[^\s:@/]+):")
 
 
+_IF = re.compile(r"^if \[\[.+?\]\]; then\s*(.+?)(?:\s*;\s*else\s+(.+?))?\s*;\s*fi$", re.S)
+
+
 def _simple_commands(cmd: str) -> list[str]:
-    """Split at | && || ; outside quotes and $(…); a guard yields its then-branch."""
+    """Split at | && || ; outside quotes and $(…); ``if [[ … ]]; then A; [else B;] fi`` yields the
+    commands of both branches (MockWire evaluates the test itself; run 9de5fcb8's member check
+    `if …; then ls -ld $(tar -tf …); else ls … | grep …; fi` got a canned key)."""
     m = _GUARD.match(cmd.strip())
     if m:
         cmd = m.group(2)
+    else:
+        m = _IF.match(cmd.strip())
+        if m:
+            return _simple_commands(m.group(1)) + (_simple_commands(m.group(2)) if m.group(2) else [])
     parts, depth, quote, start = [], 0, "", 0
     i = 0
     while i < len(cmd):
