@@ -1,6 +1,7 @@
 """Pipeline queue view (spec 007): every job with its status, position and estimated start.
 
-Full panel on the Pipeline Queue page; compact one (in the pipeline + waiting jobs) on Dashboard and New Run.
+Full panel on the Pipeline Queue page; compact one on Dashboard and New Run (status as a coloured dot
+with a legend, the detail in its tooltip).
 Refreshes every few seconds. Owners remove their own waiting jobs (administrator: any); other
 users' jobs show "Another user" (the administrator sees the email).
 """
@@ -18,6 +19,9 @@ from ui.components import card_title, confirm
 logger = logging.getLogger(__name__)
 
 REFRESH_SECONDS = 4
+COMPACT_FINISHED = 5  # finished jobs the compact view lists under the live ones
+# Compact view: one dot per status (colours in app.CUSTOM_CSS .cr-dot-*), legend in this order
+_DOT_LEGEND = ("running", "paused", "resuming", "waiting", "completed", "failed", "cancelled", "removed")
 _STATUS_LABELS = {"waiting": "Waiting", "running": "Running", "paused": "Paused", "resuming": "Resuming",
                   "completed": "Completed", "failed": "Failed", "cancelled": "Cancelled", "removed": "Removed"}
 
@@ -100,15 +104,23 @@ class QueuePanel:
             ]
             if self.compact:
                 columns = [c for c in columns if c["name"] in ("pos", "uc", "owner", "status", "estimate")]
+                next(c for c in columns if c["name"] == "status").update(align="center", style="width: 64px")
             else:
                 columns.append({"name": "actions", "label": "", "field": "actions", "align": "right"})
             self.table = ui.table(columns=columns, rows=[], row_key="run_id") \
                 .props("dense flat bordered").classes("w-full")
-            self.table.add_slot("body-cell-status", r'''
-                <q-td :props="props" style="white-space: nowrap">
-                    <span :class="'cr-status cr-status-' + props.row.status">{{ props.row.detail }}</span>
-                    <q-tooltip v-if="props.row.error">{{ props.row.error }}</q-tooltip>
-                </q-td>''')
+            if self.compact:
+                self.table.add_slot("body-cell-status", r'''
+                    <q-td :props="props" style="text-align: center">
+                        <span :class="'cr-dot cr-dot-' + props.row.status"></span>
+                        <q-tooltip>{{ props.row.detail }}{{ props.row.error ? ' — ' + props.row.error : '' }}</q-tooltip>
+                    </q-td>''')
+            else:
+                self.table.add_slot("body-cell-status", r'''
+                    <q-td :props="props" style="white-space: nowrap">
+                        <span :class="'cr-status cr-status-' + props.row.status">{{ props.row.detail }}</span>
+                        <q-tooltip v-if="props.row.error">{{ props.row.error }}</q-tooltip>
+                    </q-td>''')
             if not self.compact:
                 self.table.add_slot("body-cell-actions", r'''
                     <q-td :props="props">
@@ -119,6 +131,12 @@ class QueuePanel:
                 self.table.on("remove", self._remove)
             self.empty = ui.label("The pipeline is free — no jobs running or waiting.") \
                 .classes("text-caption cr-text-dim")
+            if self.compact:
+                with ui.row().classes("cr-dot-legend"):
+                    for status in _DOT_LEGEND:
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            ui.element("span").classes(f"cr-dot cr-dot-{status}")
+                            ui.label(_STATUS_LABELS[status]).classes("text-caption cr-text-dim")
 
     async def refresh(self):
         try:
@@ -129,15 +147,15 @@ class QueuePanel:
             logger.warning("Queue view refresh failed: %s", e)
             return
         live = [j for j in jobs if j["status"] in ("running", "paused", "resuming", "waiting")]
-        shown = live if self.compact else jobs
+        shown = live + [j for j in jobs if j not in live][:COMPACT_FINISHED] if self.compact else jobs
         try:
             self.table.rows = job_rows(shown)
             self.table.update()
             in_pipeline = sum(1 for j in live if j["status"] != "waiting")
             waiting = sum(1 for j in live if j["status"] == "waiting")
             self.summary.text = (f"{in_pipeline} in the pipeline · {waiting} waiting"
-                                 + ("" if self.compact else f" · {len(jobs) - len(live)} finished in 24 h"))
-            self.empty.set_visibility(not shown)
+                                 f" · {len(jobs) - len(live)} finished in 24 h")
+            self.empty.set_visibility(not jobs)
         except RuntimeError:
             pass  # the page was closed
 
