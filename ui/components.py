@@ -8,7 +8,7 @@ STATUS_CELL_SLOT = r'''
     <q-td :props="props">
         <span :class="'cr-status cr-status-' + String(props.value || '').toLowerCase()
                        .replace('pipelinestatus.', '').replace(/[^a-z]+/g, '-')">
-            {{ String(props.value || '—').replace('PipelineStatus.', '').replace(/_/g, ' ') }}
+            {{ String(props.value || '—').replace('PipelineStatus.', '').replace(/^queued$/, 'waiting').replace(/_/g, ' ') }}
         </span>
     </q-td>
 '''

@@ -35,6 +35,11 @@ _LIVE_SQL = ", ".join(f"'{s}'" for s in (*_LIVE, "PipelineStatus.RUNNING", "Pipe
                                           "PipelineStatus.PAUSED_MILESTONE"))
 
 
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _status_word(status: str) -> str:
     s = str(status or "").replace("PipelineStatus.", "").lower()
     return {"queued": "waiting", "resuming": "resuming", "paused_milestone": "paused",
@@ -223,6 +228,9 @@ class PipelineRunner:
             await self._db.execute("UPDATE pipeline_runs SET status = 'removed', completed_at = ? WHERE id = ?",
                                    (datetime.now(timezone.utc).isoformat(), run_id))
         flow.flow("RUN REMOVED FROM QUEUE — run_id=%s", run_id[:8])
+        # a Live Run page following the waiting run clears it, as for a cancel
+        await event_bus.publish(PipelineEvent(run_id=UUID(run_id), event_type="run_cancelled",
+                                              payload={"run_id": run_id, "removed": True}))
         return True
 
     async def resume_queue(self) -> str | None:
@@ -493,6 +501,9 @@ class PipelineRunner:
                     if mw and mw.get("waiting"):
                         if self._active_runs[run_id].get("status") != "paused_milestone":
                             self._active_runs[run_id]["status"] = "paused_milestone"
+                            # review time is not working time (queue estimates, spec 007)
+                            self._active_runs[run_id]["paused_since"] = time.monotonic()
+                            self._active_runs[run_id]["paused_at"] = _utc_now()
                             self._active_runs[run_id]["milestone_step"] = step_num
 
                             # Resolve artifact file for this milestone
@@ -541,6 +552,9 @@ class PipelineRunner:
         milestone_decisions[step_num] = decision
 
         run_info = self._active_runs.get(run_id, {})
+        if run_info.get("paused_since"):
+            run_info["paused_total"] = run_info.get("paused_total", 0.0) + time.monotonic() - run_info["paused_since"]
+            run_info["paused_since"] = None
         if decision == "cancel":
             run_info["status"] = "cancelled"
         else:
@@ -588,6 +602,15 @@ class PipelineRunner:
         if session and session.state:
             return dict(session.state)
         return {}
+
+    def work_seconds(self, run_id: str) -> float:
+        """Time the run has been working: since its start, without review pauses (spec 007)."""
+        info = self._active_runs.get(run_id, {})
+        if not info.get("started_at"):
+            return 0.0
+        now = time.monotonic()
+        paused = info.get("paused_total", 0.0) + (now - info["paused_since"] if info.get("paused_since") else 0.0)
+        return max(0.0, now - info["started_at"] - paused)
 
     def active_run(self) -> dict | None:
         """The run in progress (``{"run_id", "started_by", "status"}``), if any. Only one pipeline
@@ -779,10 +802,13 @@ class PipelineRunner:
             return
         try:
             from datetime import datetime, timezone
-            elapsed = time.monotonic() - self._active_runs.get(run_id, {}).get("started_at", time.monotonic())
+            info = self._active_runs.get(run_id, {})
+            elapsed = time.monotonic() - info.get("started_at", time.monotonic())
             await self._db.execute_insert(
-                "UPDATE pipeline_runs SET status=?, completed_at=?, duration_seconds=?, error_summary=? WHERE id=?",
-                (status, datetime.now(timezone.utc).isoformat(), elapsed, error or None, run_id),
+                "UPDATE pipeline_runs SET status=?, completed_at=?, duration_seconds=?, work_seconds=?, "
+                "error_summary=? WHERE id=?",
+                (status, datetime.now(timezone.utc).isoformat(), elapsed,
+                 self.work_seconds(run_id) if info else None, error or None, run_id),
             )
         except Exception:
             logger.exception("Failed to persist run status")

@@ -179,26 +179,6 @@ def scope() -> RunScope:
     return RunScope(current())
 
 
-async def may_start_run(runner, db) -> bool:
-    """One pipeline runs at a time (milestone state is global) and a new start cancels the active
-    run: refuse when that run belongs to another user, instead of cancelling it silently."""
-    access = current()
-    active = runner.active_run() if hasattr(runner, "active_run") else None
-    if not active or (access is not None and active["started_by"] == access.user.id):
-        return True
-    who = "another user"
-    if access is not None and access.user.is_admin:
-        rows = await db.execute("SELECT email FROM users WHERE id = ?", (active["started_by"],))
-        who = rows[0]["email"] if rows else ("the command line" if active["started_by"] == "cli" else who)
-    ui.notify(f"A pipeline is already running (started by {who}). Only one pipeline runs at a time — "
-              "start yours when it has finished.", type="warning", timeout=8000)
-    if access is not None:
-        await access.audit.record("run.start", user=access.user, outcome=REFUSED, target_type="run",
-                                  target_id=active["run_id"], run_id=active["run_id"],
-                                  details={"reason": "another user's run is in progress"})
-    return False
-
-
 def run_later(coro) -> None:
     """Fire-and-forget for sync callers (navigation refusals)."""
     try:

@@ -228,3 +228,53 @@ def test_checkpoint_progress_resets_attempts_and_resume_positions(tmp_path):
     assert pos(idx("network_config_exec_qa"), "agent") == (idx("network_simulator_setup"), False)  # 9 → 8
     assert pos(idx("ciq_validation_json_qa"), "milestone") == (idx("ciq_validation_json_qa"), True)  # review
     assert pos(idx("network_simulator_setup"), "milestone") == (idx("network_simulator_setup"), False)  # 8 again
+
+
+def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
+    import time as _time
+    from core.auth import ADMIN_ROLE, CurrentUser
+    from orchestrator.run_queue import estimate_duration, snapshot
+    from ui.pages.queue_panel import job_rows
+    runner, _ = _runner(tmp_path, monkeypatch)
+    ana = CurrentUser("u1", "ana@x.io", "Ana", "ops")
+    admin = CurrentUser("a", "admin@x.io", "Admin", ADMIN_ROLE)
+
+    async def scenario():
+        db = runner._db
+        # history: UC_B completed twice (working 300 s / 500 s), UC_C once without work_seconds
+        for rid, uc, work, dur in (("h1", "UC_B", 300, 900), ("h2", "UC_B", 500, 600), ("h3", "UC_C", None, 240)):
+            await db.execute_insert("INSERT INTO uc_document_sets (id, uc_name, ciq_file_path, mop_file_path, "
+                                    "command_outputs_path, uploaded_at) VALUES (?, ?, '', '', '', '2026-11-04')",
+                                    (rid, uc))
+            await db.execute_insert("INSERT INTO pipeline_runs (id, document_set_id, status, started_at, completed_at, "
+                                    "duration_seconds, work_seconds, started_by) VALUES (?, ?, 'completed', "
+                                    "'2026-11-04T00:00:00+00:00', ?, ?, ?, 'u2')",
+                                    (rid, rid, "2099-01-01T00:00:00+00:00", dur, work))
+        est = (await estimate_duration(db, "UC_B"), await estimate_duration(db, "UC_C"),
+               await estimate_duration(db, "UC_NEW"))
+        a = await runner.submit(_doc("UC_A"), started_by="u2")      # running, another user
+        b = await runner.submit(_doc("UC_B"), started_by="u1")      # waiting #1, Ana's
+        c = await runner.submit(_doc("UC_C"), started_by="u2")      # waiting #2
+        runner._active_runs[a["run_id"]].update(started_at=_time.monotonic() - 60, current_step=6)
+        running = await snapshot(runner, ana)
+        runner._active_runs[a["run_id"]].update(status="paused_milestone", milestone_step=5,
+                                                paused_since=_time.monotonic(), paused_at="2026-11-04T10:00:00+00:00")
+        paused = await snapshot(runner, ana)
+        as_admin = await snapshot(runner, admin)
+        return est, a, b, c, running, paused, as_admin
+    est, a, b, c, running, paused, as_admin = asyncio.run(scenario())
+    assert est == (400.0, 240.0, 300.0)  # median of working time; UC_C falls back to its duration; new UC: all UCs
+    live = [j for j in running if j["status"] in ("running", "waiting")]
+    assert [(j["uc_name"], j["status"], j["position"], j["owner"], j["can_remove"]) for j in live] == [
+        ("UC_A", "running", 0, "Another user", False), ("UC_B", "waiting", 1, "You", True),
+        ("UC_C", "waiting", 2, "Another user", False)]
+    assert running[0]["step"] == 6 and running[1]["est_start"] < running[2]["est_start"]
+    assert not running[1]["after_review"] and running[1]["est_seconds"] == 400.0
+    assert {j["status"] for j in running[3:]} == {"completed"}             # recent finished jobs
+    assert paused[0]["status"] == "paused" and paused[0]["step"] == 5 and paused[1]["after_review"]
+    assert as_admin[0]["can_remove"] is False and "Another user" not in [j["owner"] for j in as_admin]
+    assert as_admin[1]["can_remove"] and as_admin[2]["can_remove"]          # the admin removes any waiting job
+    rows = job_rows(paused[:3])
+    assert rows[0]["detail"] == "Paused — review of step 5" and rows[0]["estimate"] == "now"
+    assert rows[1]["estimate"].startswith("after the review") and rows[1]["pos"] == "1"
+    assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"

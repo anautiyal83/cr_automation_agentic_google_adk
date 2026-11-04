@@ -25,18 +25,18 @@ Implement step by step; each step is reviewed (and committed) before the next.
 - [X] T024 Live Run keeps showing the user's latest run unless it was cancelled/removed (`_show_latest_run`), also when it is not executing in this process (Q-D6)
 - [X] T025 No system entries in the trail (Q-D7, spec 006 D11)
 
-## Step 2: Timing and estimates
-- [ ] T004 Step start times, milestone wait times, `work_seconds` at run end
-- [ ] T005 `orchestrator/run_queue.py`: estimates + `snapshot(viewer)`; tests
+## Step 2: Timing and estimates — done 2026-11-04
+- [X] T004 Review pause time per run (`paused_since` / `paused_total` in `_active_runs`), `runner.work_seconds()` (run time without review pauses), stored in `pipeline_runs.work_seconds` at run end
+- [X] T005 `orchestrator/run_queue.py`: `estimate_duration` (median working time of the UC's last 5 completed runs → all UCs → 10 min) + `snapshot(runner, user)`; test `test_queue_snapshot_statuses_positions_estimates` (estimates, order, positions, owners, after-review, Remove rights, row texts)
 
-## Step 3: UI
-- [ ] T006 Start paths use `submit()` (New Run, Re-run, CLI) with "queued — position, estimate" messages; remove `may_start_run`
-- [ ] T007 Queue panel (Live Run; compact on Dashboard and New Run): status per job (Waiting, Running — step n/10, Paused — milestone, Completed, Failed — step, Cancelled, Removed), positions, use case, owner (You / Another user / admin: email), since, estimates / durations, recently finished jobs (24 h, max 10), Remove; live refresh
-- [ ] T008 Status `queued` in Run History, Dashboard, Output Documents, Live Run
-- [ ] T009 Trail: run.queued, run.dequeued, queue.remove
+## Step 3: UI — done 2026-11-04
+- [X] T006 Start paths use `submit()` (New Run, Re-run via `ui/pages/queue_panel.submit_run`; CLI: `start()` = `submit()`) with "waiting in the queue — position n, estimated start" / refusal messages; `may_start_run` removed
+- [X] T007 Queue panel (Live Run; compact on Dashboard and New Run): status per job (Waiting, Running — step n/10, Paused — milestone, Completed, Failed — step, Cancelled, Removed), positions, use case, owner (You / Another user / admin: email), since, estimates / durations, recently finished jobs (24 h, max 10), Remove; live refresh
+- [X] T008 Status `queued` (shown "Waiting") in Run History (pill, filter Waiting/Removed, sorted by queue time), Dashboard (donut "Waiting", removed counted with cancelled), Live Run ("Waiting in the queue — position n" / "Resuming after a server restart", switches to live on `run_started`, cleared on remove); Delete / Cleanup Old Runs skip waiting and resuming jobs
+- [X] T009 Trail (user actions only, Q-D7): `run.start` / `run.rerun` with `queued` + `position` (or `refused` + reason), `queue.remove`; no system run.queued / run.dequeued entries
 
 ## Step 4: Check + docs
-- [ ] T010 E2E on the preview (spec plan "Testing")
+- [~] T010 E2E on the preview (DB copy, dispatch disabled, one fake running job + 2 waiting): ana / bob / admin see the queue on Dashboard, New Run, Live Run; owners "You" / "Another user" (admin: emails); Remove only on own waiting jobs (admin: all); ana removed hers → notified, positions and estimates moved up, Live Run back to idle. Open: a real queued run starting after another ends
 - [ ] T011 README / CLAUDE.md; spec 006 note (one pipeline at a time → queue)
 
 # Phase 2 — Parallel runs (picked from the queue)

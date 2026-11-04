@@ -313,7 +313,7 @@ class ProgressSection:
     _STATE_BADGES = {
         "running": ("LIVE", "is-running"), "review": ("REVIEW", "is-review"),
         "completed": ("DONE", "is-completed"), "failed": ("FAILED", "is-failed"),
-        "idle": ("IDLE", "is-idle"), "history": ("RUN", "is-idle"),
+        "idle": ("IDLE", "is-idle"), "history": ("RUN", "is-idle"), "waiting": ("WAITING", "is-idle"),
     }
 
     def _set_run_state(self, state: str) -> None:
@@ -554,6 +554,25 @@ class ProgressSection:
         if rows and str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
             await self.view_run(rows[0]["id"])
 
+    async def _show_waiting(self, run_id) -> None:
+        """Banner of a run that waits in the queue: its position; it starts by itself."""
+        position = await self.runner.queue_position(str(run_id)) if self.runner else 0
+        resuming = False
+        if self.runner and self.runner._db and not position:
+            rows = await self.runner._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (str(run_id),))
+            resuming = bool(rows) and rows[0]["status"] == "resuming"
+        self._set_run_state("waiting")
+        self.action_btns.set_visibility(False)
+        self.progress_bar.set_visibility(False)
+        self.status_icon.name = "schedule"
+        self.status_icon.classes(replace="cr-text-dim")
+        self.status_label.text = ("Resuming after a server restart" if resuming
+                                  else f"Waiting in the queue — position {position}" if position
+                                  else "Waiting in the queue")
+        self.status_detail.text = ("It starts by itself when the pipeline is free — see the Pipeline queue "
+                                   "below for the estimated start")
+        self.banner.style(replace="background: var(--cr-surface-light); border: 1px solid var(--cr-border)")
+
     async def _restore_active_run(self):
         """Check runner's live state (or DB) for any running/paused pipeline and restore the progress view."""
         try:
@@ -761,7 +780,11 @@ class ProgressSection:
         except Exception:
             return time.monotonic()
 
-    async def start_tracking(self, run_id: UUID):
+    async def start_tracking(self, run_id: UUID, queued: bool | None = None):
+        """Follow a run live. ``queued``: it waits in the run queue (spec 007) — shown as waiting
+        until the pipeline starts it (event ``run_started``); None = find out."""
+        if queued is None:
+            queued = bool(self.runner) and str(run_id) not in self.runner._active_runs
         self.active_run_id = run_id
         self._run_t0, self._run_elapsed = time.monotonic(), ""
         self._run_since = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -782,6 +805,9 @@ class ProgressSection:
         # Reset all steps to pending first
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
+
+        if queued:
+            await self._show_waiting(run_id)
 
         # Subscribe to events FIRST (before any steps can complete)
         event_bus.subscribe(self._on_event, run_id)
@@ -809,6 +835,11 @@ class ProgressSection:
         """Open a finished (or any) run on the run page: steps, artifacts, test cases, logs."""
         if self.runner and not await self._scope.check(self.runner._db, str(run_id), "run.open", "progress"):
             return
+        if self.runner and self.runner._db and str(run_id) not in self.runner._active_runs:
+            rows = await self.runner._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (str(run_id),))
+            if rows and rows[0]["status"] in ("queued", "resuming"):  # follow it until it starts
+                await self.start_tracking(UUID(str(run_id)), queued=True)
+                return
         live = self.runner._active_runs.get(str(run_id), {}) if self.runner else {}
         if live.get("status") in ("running", "paused_milestone", "paused_hil"):
             await self.start_tracking(UUID(str(run_id)))
@@ -998,6 +1029,19 @@ class ProgressSection:
                 self._show_milestone_review(event.step_number, milestone, artifact_file,
                                             has_failures=has_failures,
                                             extra_artifact_files=extra_files)
+        elif event.event_type == "run_started":
+            # a run that waited in the queue starts now (spec 007)
+            self._set_run_state("running")
+            self.action_btns.set_visibility(True)
+            self.progress_bar.set_visibility(True)
+            self.progress_bar.props("color=primary indeterminate")
+            self._run_t0 = time.monotonic()
+            self.status_icon.name = "hourglass_top"
+            self.status_icon.classes(replace="cr-text-accent cr-spin")
+            self.status_label.text = "Pipeline Starting..."
+            self.status_detail.text = "Your run left the queue — initializing agents"
+            self.banner.style(replace="background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)")
+
         elif event.event_type == "run_completed":
             self.status_icon.name = "check_circle"
             self.status_icon.classes(replace="cr-text-success")

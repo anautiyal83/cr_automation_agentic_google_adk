@@ -204,6 +204,12 @@ class CleanupSection:
             return
         if not await self._scope.check(self.runner._db, rid, "run.delete", "cleanup"):
             return
+        live = await self.runner._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (rid,))
+        status = str(live[0]["status"] if live else "").replace("PipelineStatus.", "").lower()
+        if status in ("queued", "resuming", "running", "paused_milestone", "paused_hil"):
+            ui.notify(f"{uc} is {'waiting in the queue' if status == 'queued' else 'in the pipeline'} — "
+                      f"{'remove it from the queue' if status == 'queued' else 'cancel it'} first", type="warning")
+            return
 
         async def do_delete():
             try:
@@ -247,7 +253,7 @@ class CleanupSection:
         try:
             rows = await db.execute(
                 "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN "
-                "('running', 'paused_milestone', 'paused_hil', "
+                "('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
                 f"AND {self._scope.where('r')[0]}", self._scope.where('r')[1]
             )
@@ -282,7 +288,7 @@ class CleanupSection:
         try:
             runs = await db.execute(
                 "SELECT r.id FROM pipeline_runs r "
-                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
                 f"AND {self._scope.where('r')[0]} "
                 "ORDER BY r.started_at DESC", self._scope.where('r')[1]

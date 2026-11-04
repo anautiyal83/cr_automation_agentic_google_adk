@@ -7,7 +7,7 @@ from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import action, download, may_start_run, record, requires, scope
+from ui.access import action, download, record, requires, scope
 
 from ui.components import status_cells
 
@@ -50,7 +50,8 @@ class HistorySection:
                     ).props("outlined dense").classes("min-w-32")
                     self.status_filter = ui.select(
                         {"all": "All Statuses", "completed": "Completed",
-                         "failed": "Failed", "cancelled": "Cancelled", "running": "Running"},
+                         "failed": "Failed", "cancelled": "Cancelled", "running": "Running",
+                         "queued": "Waiting", "removed": "Removed"},
                         value="all", label="Status",
                         on_change=lambda _: self._go_page(1),
                     ).props("outlined dense").classes("min-w-32")
@@ -168,11 +169,12 @@ class HistorySection:
 
         try:
             runs = await db.execute(
-                f"SELECT r.id, r.status, r.started_at, r.duration_seconds, r.error_summary, d.uc_name "
+                f"SELECT r.id, r.status, COALESCE(r.started_at, r.queued_at) AS started_at, r.duration_seconds, "
+                f"r.error_summary, d.uc_name "
                 f"FROM pipeline_runs r "
                 f"LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
                 f"{where_clause} "
-                f"ORDER BY r.started_at DESC",
+                f"ORDER BY COALESCE(r.started_at, r.queued_at) DESC",
                 params,
             )
         except Exception:
@@ -460,11 +462,8 @@ class HistorySection:
             return
         if not await self._scope.check(self.runner._db, run_id, "run.rerun", "history"):
             return
-        if not await may_start_run(self.runner, self.runner._db):
-            return
 
         uc_name = row.get("uc_name", "UC")
-        ui.notify(f"Starting re-run for {uc_name}...", type="info")
 
         try:
             doc = await self._find_document_set(run_id, uc_name)
@@ -475,12 +474,10 @@ class HistorySection:
             from uuid import uuid4
             doc["document_set_id"] = str(uuid4())
 
-            new_run_id = await self.runner.start(doc, started_by=self._scope.user.id)
-            ui.notify(f"Pipeline started for {uc_name}", type="positive")
-            await record("run.rerun", target_type="run", target_id=new_run_id, run_id=new_run_id, uc_name=uc_name,
-                         details={"from_run": run_id})
-            if self.on_rerun:
-                await self.on_rerun(new_run_id)
+            from ui.pages.queue_panel import submit_run
+            result = await submit_run(self.runner, doc, True, "run.rerun", details={"from_run": run_id})
+            if result and self.on_rerun:
+                await self.on_rerun(result["run_id"])
         except Exception as exc:
             ui.notify(f"Re-run failed: {exc}", type="negative")
 
@@ -499,7 +496,7 @@ class HistorySection:
         db = self.runner._db
         try:
             rows = await db.execute(
-                "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "SELECT COUNT(*) as cnt FROM pipeline_runs r WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
                 f"AND {self._scope.where('r')[0]}", self._scope.where('r')[1]
             )
@@ -537,7 +534,7 @@ class HistorySection:
             runs = await db.execute(
                 "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
-                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', "
+                "WHERE r.status NOT IN ('running', 'paused_milestone', 'paused_hil', 'queued', 'resuming', "
                 "'PipelineStatus.RUNNING', 'PipelineStatus.PAUSED_HIL', 'PipelineStatus.PAUSED_MILESTONE') "
                 f"AND {self._scope.where('r')[0]} "
                 "ORDER BY r.started_at DESC", self._scope.where('r')[1]

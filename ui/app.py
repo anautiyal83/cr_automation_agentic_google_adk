@@ -50,6 +50,7 @@ from ui.pages.output_viewer_section import OutputViewerSection
 from ui.pages import login_page
 from ui.pages.users_section import UsersSection
 from ui.pages.audit_section import AuditSection
+from ui.pages.queue_panel import QueuePanel, submit_run
 from core.audit import AuditTrail
 from core.auth import SCREENS, ADMIN_SCREENS, AuthService, storage_secret
 from ui import access as ui_access
@@ -427,8 +428,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-status-completed, .cr-status-passed, .cr-status-success { background: rgba(22,163,74,0.12); color: var(--cr-success); }
 .cr-status-failed, .cr-status-error { background: rgba(220,38,38,0.12); color: var(--cr-error); }
-.cr-status-running, .cr-status-in-progress, .cr-status-started { background: rgba(79,70,229,0.12); color: var(--cr-primary); }
-.cr-status-paused, .cr-status-waiting, .cr-status-retrying, .cr-status-awaiting-review { background: rgba(217,119,6,0.12); color: var(--cr-warning); }
+.cr-status-running, .cr-status-in-progress, .cr-status-started, .cr-status-resuming { background: rgba(79,70,229,0.12); color: var(--cr-primary); }
+.cr-status-paused, .cr-status-paused-milestone, .cr-status-retrying, .cr-status-awaiting-review { background: rgba(217,119,6,0.12); color: var(--cr-warning); }
 /* Responsive card grids */
 .cr-grid-3 { display: grid; width: 100%; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 1100px) { .cr-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -642,7 +643,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
     font: 12px/1.5 "JetBrains Mono", Consolas, monospace; max-height: 520px; overflow: auto; white-space: pre-wrap;
 }
 .cr-empty { padding: 40px 12px; gap: 4px !important; text-align: center; }
-.cr-status-pending, .cr-status-skipped { background: rgba(102,112,133,0.12); color: var(--cr-text-dim); }
+.cr-status-pending, .cr-status-skipped, .cr-status-waiting, .cr-status-queued, .cr-status-cancelled,
+.cr-status-removed { background: rgba(102,112,133,0.12); color: var(--cr-text-dim); }
 /* --- New Run wizard --- */
 .cr-wizard { width: 100%; background: transparent !important; box-shadow: none !important; }
 .cr-wizard .q-stepper__header { border-bottom: 1px solid var(--cr-border); }
@@ -706,8 +708,8 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 }
 .cr-status-completed, .cr-status-passed, .cr-status-success { border-color: rgba(3,152,85,0.3); }
 .cr-status-failed, .cr-status-error { border-color: rgba(217,45,32,0.3); }
-.cr-status-running, .cr-status-in-progress, .cr-status-started { border-color: rgba(11,95,255,0.35); }
-.cr-status-paused, .cr-status-waiting, .cr-status-retrying, .cr-status-awaiting-review { border-color: rgba(220,104,3,0.3); }
+.cr-status-running, .cr-status-in-progress, .cr-status-started, .cr-status-resuming { border-color: rgba(11,95,255,0.35); }
+.cr-status-paused, .cr-status-paused-milestone, .cr-status-retrying, .cr-status-awaiting-review { border-color: rgba(220,104,3,0.3); }
 /* Header + sidebar */
 .cr-nav-group { font: 700 10px/1.4 var(--cr-mono); letter-spacing: 0.12em; padding: 14px 16px 6px; }
 .cr-sidebar-item { font-size: 11.5px; padding: 6px 14px 6px 13px; }
@@ -1038,20 +1040,15 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                 # PipelineRunner.start() takes a dict, not a UCDocumentSet
                 doc_dict = doc_set.model_dump() if hasattr(doc_set, 'model_dump') else doc_set
                 doc_dict["document_set_id"] = str(doc_dict.get("id", doc_dict.get("document_set_id", "")))
-                if not await ui_access.may_start_run(_runner, _db):
+                result = await submit_run(_runner, doc_dict, review_milestones, "run.start", details={
+                    "review_milestones": review_milestones,
+                    "documents": {k: Path(str(v)).name for k, v in doc_dict.items() if k.endswith("_path") and v}})
+                if result is None:  # refused (same use case already in the pipeline, queue limit)
                     return
-                run_id = await _runner.start(doc_dict, review_milestones=review_milestones, started_by=user.id)
-                await _audit.record("run.start", user=user, target_type="run", target_id=run_id, run_id=run_id,
-                                    uc_name=doc_dict.get("uc_name", ""), details={
-                                        "review_milestones": review_milestones,
-                                        "documents": {k: Path(str(v)).name for k, v in doc_dict.items()
-                                                      if k.endswith("_path") and v}})
                 if progress:
                     from uuid import UUID
-                    await progress.start_tracking(UUID(run_id))
+                    await progress.start_tracking(UUID(result["run_id"]), queued=result["status"] == "queued")
                 navigate("progress")
-                uc_name = doc_dict.get("uc_name", "UC")
-                ui.notify(f"Pipeline started for {uc_name}", type="positive")
             except Exception as exc:
                 navigate("progress")
                 ui.notify(f"Pipeline start failed: {exc}", type="negative")
@@ -1096,6 +1093,10 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                         duration_label = stat_card("Avg Duration", "\u2014", "timer", "#0891B2")
                         tokens_label = stat_card("LLM Tokens", "0", "token", "#8B5CF6")
                         cost_label = stat_card("Est. Cost", "$0", "attach_money", "#D97706")
+
+                    # Pipeline queue (spec 007): what runs now and what waits
+                    with ui.card().classes("cr-card-inner w-full p-3"):
+                        QueuePanel(_runner, compact=True)
 
                     # Charts row
                     with ui.element("div").classes("cr-grid-2"):
@@ -1186,18 +1187,21 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                         try:
                             # --- DB data ---
                             runs = await _db.execute(
-                                "SELECT r.id, r.status, r.started_at, r.duration_seconds, "
+                                "SELECT r.id, r.status, COALESCE(r.started_at, r.queued_at) AS started_at, "
+                                "r.duration_seconds, "
                                 "r.error_summary, d.uc_name "
                                 "FROM pipeline_runs r "
                                 "LEFT JOIN uc_document_sets d ON r.document_set_id = d.id "
                                 f"WHERE {run_scope.where('r')[0]} "
-                                "ORDER BY r.started_at DESC", run_scope.where('r')[1]
+                                "ORDER BY COALESCE(r.started_at, r.queued_at) DESC", run_scope.where('r')[1]
                             )
                             total = len(runs)
                             completed = sum(1 for r in runs if 'completed' in str(r.get('status') or '').lower())
                             failed = sum(1 for r in runs if 'failed' in str(r.get('status') or '').lower())
-                            cancelled = sum(1 for r in runs if 'cancelled' in str(r.get('status') or '').lower())
-                            running = total - completed - failed - cancelled
+                            cancelled = sum(1 for r in runs if any(
+                                s in str(r.get('status') or '').lower() for s in ('cancelled', 'removed')))
+                            waiting = sum(1 for r in runs if r.get('status') == 'queued')  # run queue (spec 007)
+                            running = total - completed - failed - cancelled - waiting
                             durations = [r['duration_seconds'] for r in runs
                                          if r.get('duration_seconds') and 'completed' in str(r.get('status') or '').lower()]
 
@@ -1221,6 +1225,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                             if failed: pie_data.append({"value": failed, "name": "Failed", "itemStyle": {"color": "#F04438"}})
                             if cancelled: pie_data.append({"value": cancelled, "name": "Cancelled", "itemStyle": {"color": "#98A2B3"}})
                             if running: pie_data.append({"value": running, "name": "Running", "itemStyle": {"color": "#0B5FFF"}})
+                            if waiting: pie_data.append({"value": waiting, "name": "Waiting", "itemStyle": {"color": "#D0D5DD"}})
                             status_chart.options["series"][0]["data"] = pie_data or [{"value": 0, "name": "No runs"}]
                             status_chart.update()
 
@@ -1305,6 +1310,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                     panel.set_visibility(False)
                     page_header("New Run", "Set up a pipeline run in three steps: activity, documents, notes & review")
                     with ui.card().classes("cr-section w-full p-4"):
+                        QueuePanel(_runner, compact=True)
+                    with ui.card().classes("cr-section w-full p-4"):
                         upload_section = UploadSection(on_start_pipeline=on_start_pipeline, db=_db)
                         on_navigate_hooks.setdefault("new_run", []).append(upload_section._load_vendors)
 
@@ -1332,6 +1339,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
                             on_view_details=_progress_view_details,
                             on_view_outputs=_progress_view_outputs,
                         )
+                    with ui.card().classes("cr-section w-full p-4 mt-3"):
+                        QueuePanel(_runner)  # every job, status, position, estimate (spec 007)
 
             # Forward refs container
             class _refs:

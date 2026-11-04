@@ -114,24 +114,6 @@ def test_usage_by_owner(tmp_path):
         llm.set_usage_db(None)
 
 
-def test_one_pipeline_at_a_time(tmp_path, monkeypatch):
-    db = _db_with_runs(tmp_path)
-
-    class Runner:
-        def __init__(self, active):
-            self.active = active
-
-        def active_run(self):
-            return self.active
-
-    trail = _page(monkeypatch, CurrentUser("u1", "ana@x.io", "Ana", "analyst", {"new_run": UPDATE}))
-    assert asyncio.run(ui_access.may_start_run(Runner(None), db))
-    assert asyncio.run(ui_access.may_start_run(Runner({"run_id": "r1", "started_by": "u1", "status": "running"}), db))
-    assert not asyncio.run(ui_access.may_start_run(Runner({"run_id": "r2", "started_by": "u2",
-                                                           "status": "running"}), db))
-    assert trail.entries == [("run.start", "refused", "r2")]
-
-
 def test_document_views_recorded_with_run_and_relative_file(monkeypatch):
     trail = _page(monkeypatch, CurrentUser("u1", "ana@x.io", "Ana", "analyst", {"outputs": VIEW}))
     scheduled = []
