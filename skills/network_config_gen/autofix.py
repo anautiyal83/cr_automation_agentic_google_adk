@@ -289,6 +289,7 @@ def fix_workflow(yaml_text: str) -> str:
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
+    generalize_prompt_cwd(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -320,6 +321,41 @@ def fix_workflow(yaml_text: str) -> str:
 
 
 _REGEX_PLACEHOLDER = re.compile(r"\$\{[^{}]*\}")
+
+# `[user@host dir]#` prompts show the current directory: after a `cd` the prompt is
+# `[root@node POSTPAID]#`, and a prompt_regex written for `~` never matches (MRF rollback-only,
+# spec 011 E030). The directory part matches any directory.
+_CWD_PROMPT = re.compile(r"(\\\[[A-Za-z0-9_.()|-]+@[A-Za-z0-9_.()|-]+ )(?:~|[A-Za-z0-9_./~-]+|\(\.\*\?\)|\.\*\??)(\\?\])")
+
+
+def generalize_prompt_cwd(parsed: dict) -> int:
+    r"""Node and step ``prompt_regex``: the directory of a ``[user@host dir]`` prompt → ``[^\]]*``."""
+    changed = 0
+
+    def fix(regex: Any) -> Any:
+        nonlocal changed
+        if not isinstance(regex, str):
+            return regex
+        new = _CWD_PROMPT.sub(lambda m: m.group(1) + r"[^\]]*" + m.group(2), regex)
+        changed += new != regex
+        return new
+
+    for node in (parsed.get("nodes") or {}).values() if isinstance(parsed.get("nodes"), dict) else []:
+        if isinstance(node, dict) and "prompt_regex" in node:
+            node["prompt_regex"] = fix(node["prompt_regex"])
+
+    def walk(steps):
+        for step in steps or []:
+            if isinstance(step, dict):
+                if "prompt_regex" in step:
+                    step["prompt_regex"] = fix(step["prompt_regex"])
+                walk(step.get("steps"))
+    for body in (parsed.get("phases") or {}).values() if isinstance(parsed.get("phases"), dict) else []:
+        if isinstance(body, dict):
+            walk(body.get("steps"))
+    if changed:
+        logger.info("Prompt regexes: the directory of %d [user@host dir] prompt(s) matches any directory", changed)
+    return changed
 
 
 def fix_regex_placeholders(phases: Any) -> int:

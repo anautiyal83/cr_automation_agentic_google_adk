@@ -625,6 +625,7 @@ def inject_fault(config_text: str, fault: Fault) -> str:
     from ruamel.yaml.comments import CommentedMap
     yaml = YAML()
     yaml.preserve_quotes = True
+    yaml.width = 1_000_000  # never fold: a folded long regex KEY is invalid YAML and MockWire exits
     cfg = yaml.load(StringIO(config_text)) or CommentedMap()
 
     if fault.kind == "login":

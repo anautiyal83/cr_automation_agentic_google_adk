@@ -119,7 +119,7 @@ def dump_yaml(data: dict) -> str:
     stream = StringIO()
     yaml = YAML()
     yaml.default_flow_style = False
-    yaml.width = 200
+    yaml.width = 1_000_000  # never fold: a folded long regex KEY is invalid YAML (MockWire exits)
     yaml.dump(data, stream)
     return stream.getvalue()
 

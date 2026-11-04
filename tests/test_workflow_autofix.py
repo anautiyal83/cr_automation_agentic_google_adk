@@ -429,3 +429,26 @@ def test_missing_column_is_fixed_by_step_6_not_asked(tmp_path):
                                                 phases="", developer_answers="", developer_notes="", runtime_params="",
                                                 ciq="  Node values of the current MRF node: ${MRF.VER}")
     assert "=== CIQ DATA" in filled and "${MRF.VER}" in filled and "${node}" not in filled.replace("Never ${node}", "")
+
+
+def test_cwd_prompts_match_any_directory():
+    """E030: after `cd /var/opt/.../POSTPAID/` the MRF prompt is `[root@rjjvrmr03 POSTPAID]#`; a prompt_regex
+    written for `~` never matched and the rollback-only run failed ("prompt not ready")."""
+    import re
+
+    from skills.network_config_gen.autofix import generalize_prompt_cwd
+    wf = {"nodes": {
+        "MRF": {"prompt_regex": r"(?m)\[swmsuser@rjjvrmr03 ~]\$|\[root@rjjvrmr03 ~]#"},
+        "X": {"prompt_regex": r"(?m)\[(swmsuser|root)@rjjvrmr03 (.*?)\][#$]\s*$"},
+        "PGW": {"prompt_regex": r"pgwggn01:~ #|\[provgw@pgwggn01 ~]\$"},
+    }, "phases": {"a": {"steps": [{"node": "MRF", "send": "su - swmsuser",
+                                    "prompt_regex": r"\[swmsuser@rjjvrmr03 tmp\]\$"}]}}}
+    assert generalize_prompt_cwd(wf) == 4
+    mrf = wf["nodes"]["MRF"]["prompt_regex"]
+    for prompt in ("[root@rjjvrmr03 POSTPAID]#", "[root@rjjvrmr03 ~]#", "[swmsuser@rjjvrmr03 tmp]$"):
+        assert re.search(mrf, prompt), prompt
+    assert re.search(wf["nodes"]["X"]["prompt_regex"], "[root@rjjvrmr03 POSTPAID]#")
+    pgw = wf["nodes"]["PGW"]["prompt_regex"]
+    assert re.search(pgw, "[provgw@pgwggn01 inbox]$") and re.search(pgw, "pgwggn01:~ #")
+    assert re.search(wf["phases"]["a"]["steps"][0]["prompt_regex"], "[swmsuser@rjjvrmr03 ~]$")
+    assert generalize_prompt_cwd(wf) == 0                                       # idempotent

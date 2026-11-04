@@ -593,3 +593,15 @@ def test_contract_negatives_follow_the_rules():
         bad("chmod 777 /opt/app/a.tar"), ok("rm -f /opt/app/a.tar")])
     evaluate(r, steps, {"APP": "APP"})
     assert r.status == "PASS", [(c.description, c.ok, c.detail) for c in r.checks]
+
+
+def test_fault_injection_keeps_long_regex_keys_valid_yaml():
+    """E030: a long `regex:` key was folded over two lines by the YAML dump — MockWire could not
+    parse the config and every negative case failed to start."""
+    key = ("regex:if \[\[ '\S+' == '13\.'\* \]\]; then cp /tmp/\S+ \S+/; chmod 777 \S+/\S+; "
+           "else echo SKIPPED_BY_CONDITION; fi")
+    config = yaml.safe_dump({"config": {"prompt": "# "}, key: {"lines": ["ok"]}, "uptime": {"lines": ["up"]}},
+                            width=1_000_000)
+    out = inject_fault(config, Fault(kind="validation", node="APP", send="uptime", lines=["load 99"]))
+    parsed = yaml.safe_load(out)                                   # valid YAML
+    assert key in parsed and parsed["uptime"]["lines"] == ["load 99"]
