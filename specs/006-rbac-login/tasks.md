@@ -6,7 +6,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 ## Step 0: Decisions
 - [X] T000 Decisions D1–D7 (2026-11-04)
-- [ ] T000b Q1: reading buttons (View, Download, Refresh) on View screens — enabled or disabled?
+- [X] T000b Q1: only action buttons (start / delete / update) are disabled on View screens; reading buttons stay enabled
 
 ## Step 1: Data + service (no UI change)
 - [~] T001 Schema: `roles`, `users` tables (drafted before the spec) — add `must_change_password`,
@@ -23,7 +23,7 @@ Implement step by step; each step is reviewed (and committed) before the next.
 
 ## Step 3: Screens and levels
 - [ ] T008 Main page: user per load (disabled/deleted → logout), sidebar filter, only permitted panels, guarded navigation and deep links, landing screen
-- [ ] T009 `ui/access.py`: disable all buttons on View panels (after build and after refreshes); `require(update)` in every changing handler of the sections
+- [ ] T009 `ui/access.py`: mark action buttons in every section, disable them on View panels (after build and after refreshes); `require(update)` in every changing handler
 - [ ] T010 Header: user + role, Change password, Logout
 - [ ] T011 Check SC-002
 

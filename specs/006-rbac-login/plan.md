@@ -21,7 +21,7 @@ Browser ──► FastAPI/NiceGUI (port 8000)
                     user = AuthService.current_user(user_id)        ← DB, every page load
                     user.levels = {screen: "view" | "update"}       (admin: update everywhere)
                     sidebar + panels: only screens in user.levels
-                    View screens: every button disabled (Access.apply)
+                    View screens: action buttons disabled (Access.apply)
                     changing handlers: Access.require(screen, "update") + RunScope.check(run_id)
                     run lists/queries: RunScope.filter(...)  (admin: all; others: started_by = user)
                     header: user · role · Change password · Logout
@@ -40,7 +40,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | C3 | Session + middleware | `ui/app.py` | `ui.run(storage_secret=…)`; Starlette `BaseHTTPMiddleware` on `app.storage.user` |
 | C4 | Login page | `ui/pages/login_page.py` | Login form; forced new-password form (FR-013); theme of the app |
 | C5 | Screen gating | `ui/app.py` | Filter `menu_groups`; build only permitted panels; guard `navigate()`, deep links, in-page jumps; first permitted screen as landing page |
-| C6 | View = read-only | `ui/access.py` (new) | `Access(user, screen)`: after a section is built, disable every `ui.button` in its panel when the level is View (one generic pass — no per-section edits for D7); `require(screen, "update")` guard for the sections' changing handlers |
+| C6 | View = read-only | `ui/access.py` (new) | Action buttons are marked where they are created (`action(btn)` → CSS class `cr-action`); `Access(user, screen)` disables every marked button in a View panel after it is built and after refreshes (reading buttons are not marked, stay enabled); `require(screen, "update")` guard in the sections' changing handlers |
 | C7 | Run ownership | `orchestrator/runner.py`, sections | Runner stores `started_by`; a `RunScope` (user) gives the SQL filter (`started_by = ?` unless admin) and `check(run_id)`; applied in dashboard queries, Live Run (active-run restore, view_run), Output Documents run list, Run History, LLM Usage (per run), Artifact Cleanup; file View/Download only through owned runs |
 | C8 | Header user menu | `ui/app.py` | Display name + role pill; Change password dialog; Logout |
 | C9 | Users & Roles screen | `ui/pages/users_section.py` | Users tab (add, role, enable/disable, reset password → must change, delete) and Roles tab (add/edit: None/View/Update per screen grouped like the sidebar, delete); `AuthError` messages as notifications |
@@ -53,7 +53,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 | K1 | Permission = (screen, level) with levels View/Update | D6; matches the UI's sections |
 | K2 | Levels and ownership re-read from the DB on each page load | Role edits / disabling apply without logout (FR-003) |
 | K3 | Screens without permission are not built at all | Hidden NiceGUI elements still exist and their handlers are callable |
-| K4 | View enforced twice: buttons disabled generically after a panel is built (D7) **and** a server-side `require(update)` in changing handlers | Disabled buttons are a UI hint; the server check is the security boundary |
+| K4 | View enforced twice: action buttons (explicitly marked) disabled (D7) **and** a server-side `require(update)` in changing handlers | Disabled buttons are a UI hint; the server check is the security boundary; explicit marking keeps reading buttons enabled |
 | K5 | Stdlib PBKDF2 (310k, OWASP 2023) | No new dependency |
 | K6 | NiceGUI `app.storage.user` for the session; lockout in memory | Built in; single server process |
 | K7 | Ownership by `started_by` on `pipeline_runs`; ownerless/CLI runs admin-only | D3/D5 without a sharing model |
@@ -68,7 +68,7 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 - Unit: C10.
 - UI (preview server on a DB copy, headless browser): redirect to `/login` for `/`, a deep link and a
   media URL; forced password change for `admin`; admin creates role (Run History = View) + user;
-  that user sees only Run History, only own runs, every button disabled; role changed to Update →
+  that user sees only Run History, only own runs, action buttons disabled, View/Download working; role changed to Update →
   buttons enabled on reload; another user's run id refused; logout.
 
 ## Rollout
@@ -79,6 +79,6 @@ storage/db.py ── tables roles, users; pipeline_runs.started_by (migration)
 
 ## Risks
 - NiceGUI 3.17.1 middleware + `app.storage.user` to be probed first (T004).
-- Disabling buttons generically must also catch buttons a section creates later (dialogs, refreshed
+- Action buttons a section creates later (dialogs, refreshed
   lists): the server-side `require(update)` covers those; the generic pass runs after each refresh.
 - The preview/screenshot harness needs the storage secret and a login step.

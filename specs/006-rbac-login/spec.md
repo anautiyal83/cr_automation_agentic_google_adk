@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-04
 
-**Status**: Decisions D1–D7 taken (2026-11-04); implementation step by step
+**Status**: Decisions D1–D7 taken (2026-11-04, D7 refined: action buttons only); implementation step by step
 
 **Input**: "Let's implement a login system so we add security. We want a role-based login: an
 admin who has access to all sections and who creates users and roles and assigns permissions to
@@ -21,7 +21,7 @@ add or create specs and plan for this, then we will implement step by step"; the
 | D4 | Session length / lockout | 12 h sessions; 5 failed logins lock the username for 5 min |
 | D5 | Run ownership | Every run records who started it; the **admin sees all runs**, every other user only their own |
 | D6 | Permission levels | A permission is per screen and is either **View** or **Update**. View: the user can only look. Update: the user can look and change things on that screen. Only the admin has Update on every screen |
-| D7 | View permission in the UI | On a screen with View permission **all buttons are disabled** |
+| D7 | View permission in the UI | On a screen with View permission **only action buttons are disabled** — those that start an activity, delete something, or update the pipeline configuration / a run. Reading buttons (View, Download, Refresh, details, navigation) stay enabled |
 
 ## Problem
 
@@ -63,21 +63,22 @@ to everyone.
 
 ### View vs Update per screen (D6, D7)
 
-With **View**, the screen is shown with **every button disabled** (D7) — its data is visible,
-nothing can be started, changed, deleted or decided. With **Update**, the buttons work, limited
-to the user's own runs (see Run Visibility).
+With **View**, the screen and its data are shown and the **action buttons are disabled** (D7):
+anything that starts an activity, deletes something, or updates the pipeline configuration or a
+run. Reading buttons stay enabled. With **Update**, the action buttons work too, limited to the
+user's own runs (see Run Visibility).
 
-| Screen | Update enables (disabled with View) |
-|--------|-------------------------------------|
-| Dashboard | — (no actions) |
-| New Run | Wizard navigation (Next/Back) and starting a run |
-| Live Run | Cancel pipeline / Stop, Restart, Re-run step, milestone decisions (Approve & continue, Skip & continue, Clarify in requirements), Answer Questions / Submit Answers / Use All Defaults, View / Download artifact, Browse outputs |
-| Output Documents | View, Download, Refresh, Clear All Cache (cache: admin only, it is shared) |
-| Run History | View, Download, Delete, Cancel, Cleanup Old Runs, re-run / open run |
-| LLM Usage | Refresh, Clear |
-| Artifact Cleanup | Refresh, Delete, Delete Old Runs, Bulk Cleanup |
-| Settings | Save Key, Save All Settings; Vendor Profiles: Add Vendor/Field, Save, Delete, Export Seed |
-| Users & Roles | admin only |
+| Screen | Action buttons — disabled with View | Reading buttons — always enabled |
+|--------|-------------------------------------|----------------------------------|
+| Dashboard | — | — |
+| New Run | Start the run; file uploads | Wizard Next / Back |
+| Live Run | Cancel pipeline, Stop, Restart, Re-run step, milestone decisions (Approve & continue, Skip & continue, Clarify in requirements), Answer Questions, Submit Answers, Use All Defaults | View / Download artifact, View artifact, Browse outputs, View full details, tabs, step selection |
+| Output Documents | Clear All Cache (admin only — the cache is shared) | View, Download, Refresh, run selection |
+| Run History | Delete, Cancel, Cleanup Old Runs, re-run | View, Download, Open, details |
+| LLM Usage | Clear | Refresh |
+| Artifact Cleanup | Delete, Delete Old Runs, Bulk Cleanup | Refresh |
+| Settings | Save Key, Save All Settings; Vendor Profiles: Add Vendor, Add Field, Add, Save, Delete | Export Seed (read-only export) |
+| Users & Roles | admin only | admin only |
 
 Server-side: every handler that changes something checks the user's level for that screen (and
 run ownership), so a disabled button cannot be bypassed by a crafted event.
@@ -113,8 +114,8 @@ filtering lists.
 4. An in-page jump (e.g. Run History → Open → Live Run) to a screen I lack is refused with a message.
 
 ### US2 — View vs Update (P1)
-1. My role has View on Run History → I see my runs and their details; Delete, Cancel, View,
-   Download and every other button are disabled.
+1. My role has View on Run History → I see my runs, their details, and can View/Download their
+   documents; Delete, Cancel, Cleanup Old Runs and re-run are disabled.
 2. My role has Update on Run History → the buttons work, on my runs only.
 3. A crafted event for a disabled action is refused on the server.
 
@@ -158,8 +159,9 @@ filtering lists.
   the sidebar MUST list only those; navigation (sidebar, deep link, in-page jumps) MUST refuse others.
 - **FR-003** Levels and run ownership MUST be read from the database on every page load, so role
   edits, disabling and deletion apply without a server restart.
-- **FR-004** On a View screen every button MUST be disabled (D7); every changing handler MUST check
-  Update (and run ownership) on the server.
+- **FR-004** On a View screen every action button MUST be disabled (D7: start, delete, update);
+  reading buttons stay enabled; every changing handler MUST check Update (and run ownership) on
+  the server.
 - **FR-005** Passwords MUST be stored only as salted PBKDF2-SHA256 hashes (≥ 310 000 iterations);
   plain passwords are never logged or stored. Policy: ≥ 8 characters, not only letters or only digits.
 - **FR-006** Login failures MUST NOT reveal whether the username exists (same message, same work).
@@ -185,15 +187,10 @@ filtering lists.
 - HTTPS termination (deploy behind a TLS proxy; see plan).
 - Audit log of admin actions (candidate for a later iteration).
 
-## Open Question
-| # | Question | Proposed default |
-|---|----------|------------------|
-| Q1 | D7 disables *all* buttons on a View screen, which includes the reading ones (View, Download, Refresh on Output Documents / Run History / Live Run). Should those stay enabled for View users? | Keep the reading buttons enabled (View, Download, Refresh, Browse outputs), disable everything that starts, changes, deletes or decides |
-
 ## Success Criteria
 - **SC-001** Without a login, every page and file URL redirects to `/login`.
 - **SC-002** A role with View on Run History and nothing else: the user sees only Run History, with
-  only their runs, and every button disabled; `/?page=<other screen>` opens nothing else.
+  only their runs, action buttons disabled and View/Download working; `/?page=<other screen>` opens nothing else.
 - **SC-003** The admin creates a role and a user in the UI; the user sees exactly the role's screens
   at the role's levels; after the admin edits the role, the user sees the new levels on reload.
 - **SC-004** User A sees only A's runs on every screen; actions on B's run id are refused; the admin
