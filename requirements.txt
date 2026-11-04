@@ -1,6 +1,7 @@
 google-adk>=2.11.0
 litellm
 nicegui>=2.0
+psutil>=5.9
 ruamel.yaml
 pydantic>=2.0
 openpyxl

@@ -708,8 +708,16 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 - The agent never sets `step_6_status` or writes `step_6_error.json`, so a failed or partial script generation passes the step 6 milestone and can be cached. Tracked as [003](../003-helper-script-gen/spec.md) H-1.
 - **Fix**: the agent sets `step_6_status=failed` and merges its error into `step_6_error.json`. A second bug turned up while fixing it (**OB-9**): `PipelineAgent` deleted the step's error file before *every* agent, so `helper_script_gen` wiped `network_config_gen`'s step 6 error. Now only the first agent of a shared display step clears it (`_first_agent_of_step`). Test: `tests/test_generation_contracts.py`.
 
-### OB-10 — A second UI instance marks live runs as failed (High, Open)
+### OB-10 — A second UI instance marks live runs as failed (High, Fixed 2026-11-04)
 - `ProgressSection._restore_active_run` marks any `running` DB run that its own runner does not hold as "Server restarted — pipeline lost". A second server (or a preview) on the same `data/pipeline.db` therefore fails the first server's live run. Happened 2026-11-02 with a UI preview on :8001 (row restored). Mitigation: previews use a DB copy; fix: record the owning process (pid/port) on the run and only recover runs whose owner is gone.
+- 2026-11-04: the old code is gone, but spec 007 made it worse — a second server's `resume_queue()` at its start
+  resumed every running / paused run it did not hold itself, i.e. ran the first server's live job a second time, and
+  its `dispatch()` could start a second pipeline next to it.
+- **Fix**: `pipeline_runs.owner` = `<host>:<pid>:<process start>` (`orchestrator/ownership.py`, psutil — the start
+  time tells a live owner from a reused pid); `dispatch()` claims a row atomically (`UPDATE … WHERE status IN
+  ('queued','resuming') RETURNING id`) with this process as owner and starts nothing while another live process holds
+  a run; `resume_queue()` skips runs whose owner is another live process (a run of another host counts as live). Runs
+  from before the column have no owner and resume as before. Tests: `tests/test_run_queue.py`.
 
 ### UI-1 — Inconsistent layout across pages (Medium, Fixed 2026-11-02)
 - Step boxes sized by their labels (2px border on the active one), connectors painted as blocks, dashboard banner/KPIs at half width, nested cards, mixed button cases, Settings without a title, sidebar labels wrapping.

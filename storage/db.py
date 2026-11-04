@@ -281,6 +281,8 @@ class Database:
                 # A completed run the user marked finished leaves Live Run (spec 008 U-D7)
                 ("pipeline_runs", "finished_at", "TEXT"),
                 ("pipeline_runs", "finished_by", "TEXT"),
+                # The server process executing the run (OB-10, orchestrator/ownership.py)
+                ("pipeline_runs", "owner", "TEXT"),
                 ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 try:

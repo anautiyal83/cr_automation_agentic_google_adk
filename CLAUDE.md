@@ -236,4 +236,6 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - UI (spec 008): Run Artifacts = screen `outputs`; Artifact Cache page = admin screen `cache`; destructive buttons go through `ui.components.confirm`
 - Checkpoints (`orchestrator/checkpoints.py`, table `run_checkpoints`): before every agent and at review pauses;
   `resume_queue()` at startup; step 9 resumes at step 8; `MAX_RESUME_ATTEMPTS = 2`
+- `pipeline_runs.owner` (`orchestrator/ownership.py`): a server never resumes or runs beside a run another live
+  process owns (OB-10); still use a DB copy for previews
 - Audit trail: user actions only (`ui/access.record`) — the runner writes no trail entries

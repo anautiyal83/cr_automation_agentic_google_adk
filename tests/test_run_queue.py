@@ -298,3 +298,51 @@ def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
     results, row = asyncio.run(scenario())
     assert results == [True, False, False, False, False]
     assert row["status"] == "completed" and row["finished_at"] and row["finished_by"] == "u1"
+
+
+def test_owner_liveness():
+    """OB-10: a run's owner is <host>:<pid>:<process start>; a reused pid is not the owner."""
+    import socket
+    import subprocess
+    import sys
+    from orchestrator.ownership import owner_alive, this_owner
+    import psutil
+    assert owner_alive(this_owner())
+    assert not owner_alive(None) and not owner_alive("garbage")
+    assert owner_alive("other-host:1:1")                     # cannot be checked: left alone
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        started = int(psutil.Process(child.pid).create_time())
+        host = socket.gethostname()
+        assert owner_alive(f"{host}:{child.pid}:{started}")
+        assert not owner_alive(f"{host}:{child.pid}:{started - 100}")  # same pid, another process
+    finally:
+        child.kill()
+        child.wait()
+    assert not owner_alive(f"{socket.gethostname()}:{child.pid}:{started}")
+
+
+def test_second_server_leaves_the_live_run_alone(tmp_path, monkeypatch):
+    """OB-10: a server starting on the same database neither resumes the run another live server
+    executes nor starts a second pipeline next to it."""
+    import socket
+    import subprocess
+    import sys
+    import psutil
+    runner, launched = _runner(tmp_path, monkeypatch)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    owner = f"{socket.gethostname()}:{other.pid}:{int(psutil.Process(other.pid).create_time())}"
+
+    async def scenario():
+        a = await runner.submit(_doc("UC_A"), started_by="u1")
+        await runner.submit(_doc("UC_B"), started_by="u2")
+        await runner._db.execute("UPDATE pipeline_runs SET owner = ? WHERE id = ?", (owner, a["run_id"]))
+        runner._active_runs.clear()                  # this is the second server: it holds nothing
+        started = await runner.resume_queue()
+        return started, await _statuses(runner)
+    try:
+        started, statuses = asyncio.run(scenario())
+    finally:
+        other.kill()
+        other.wait()
+    assert started is None and statuses == {"UC_A": "running", "UC_B": "queued"} and launched == ["UC_A"]

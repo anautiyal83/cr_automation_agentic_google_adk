@@ -173,7 +173,7 @@ class PipelineRunner:
         if not self._db:
             return None
         async with self._queue_lock:
-            if self.active_run():
+            if self.active_run() or await self._held_elsewhere():
                 return None
             rows = await self._db.execute(
                 "SELECT r.id AS run_id, r.status, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
@@ -194,11 +194,18 @@ class PipelineRunner:
                 await self._persist_run_status(run_id, "failed", "Server restart: no checkpoint to resume from")
                 asyncio.ensure_future(self.dispatch())
                 return None
+            # Claimed atomically with this process as owner: another server on the same database
+            # may dispatch the same row (OB-10)
+            from orchestrator.ownership import this_owner
+            claim = ("UPDATE pipeline_runs SET status = 'running', owner = ?{} WHERE id = ? "
+                     "AND status IN ('queued', 'resuming') RETURNING id")
             if resume is None:  # a resumed run keeps its original start time
-                await self._db.execute("UPDATE pipeline_runs SET status = 'running', started_at = ? WHERE id = ?",
-                                       (datetime.now(timezone.utc).isoformat(), run_id))
+                claimed = await self._db.execute(claim.format(", started_at = ?"),
+                                                 (this_owner(), datetime.now(timezone.utc).isoformat(), run_id))
             else:
-                await self._db.execute("UPDATE pipeline_runs SET status = 'running' WHERE id = ?", (run_id,))
+                claimed = await self._db.execute(claim.format(""), (this_owner(), run_id))
+            if not claimed:
+                return None
             try:
                 await self._launch(run_id, _document_set_from_row(row), bool(row["review_milestones"]),
                                    row["started_by"] or "cli", resume=resume)
@@ -209,6 +216,14 @@ class PipelineRunner:
                 return None
         flow.flow("RUN %s — run_id=%s", "RESUMED" if resume else "DEQUEUED", run_id[:8])
         return run_id
+
+    async def _held_elsewhere(self) -> bool:
+        """Another live server process executes a run on this database (OB-10)."""
+        from orchestrator.ownership import owner_alive, this_owner
+        rows = await self._db.execute(
+            f"SELECT owner FROM pipeline_runs WHERE status IN ({_LIVE_SQL}) "
+            "AND status NOT IN ('queued', 'resuming') AND owner IS NOT NULL AND owner != ?", (this_owner(),))
+        return any(owner_alive(r["owner"]) for r in rows)
 
     async def queue_position(self, run_id: str) -> int:
         """1-based position of a queued run (0 when it is not waiting)."""
@@ -256,12 +271,17 @@ class PipelineRunner:
             return None
         from orchestrator import checkpoints
         # interrupted = was executing (running / paused / resuming), never the waiting ones
+        from orchestrator.ownership import owner_alive, this_owner
         lost = await self._db.execute(
-            "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
+            "SELECT r.id, r.status, r.owner, d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
             f"ON d.id = r.document_set_id WHERE r.status IN ({_LIVE_SQL}) AND r.status != 'queued'")
         for row in lost:
             run_id = row["id"]
             if run_id in self._active_runs:
+                continue
+            if row["status"] != "resuming" and row["owner"] != this_owner() and owner_alive(row["owner"]):
+                # another server on this database executes it (OB-10): not interrupted
+                flow.flow("RUN %s belongs to live server %s — not resumed", run_id[:8], row["owner"])
                 continue
             cp = await checkpoints.load(self._db, run_id)
             reason = ""
