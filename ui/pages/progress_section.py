@@ -819,6 +819,9 @@ class ProgressSection:
         # Subscribe to events FIRST (before any steps can complete)
         event_bus.subscribe(self._on_event, run_id)
         self._run_dir, self._uc_name, self._follow_live = "", "", True
+        # Steps that finished before the subscription (a re-run's cached steps 1-2 take
+        # milliseconds): replayed, so step 1 is not left "pending" until a page refresh
+        await event_bus.replay(self._on_event, run_id)
         ui.timer(0.5, self._load_run_info, once=True)
 
         # Periodic sync: catch up with steps that completed before subscription

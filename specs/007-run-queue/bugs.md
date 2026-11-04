@@ -54,3 +54,12 @@ per-row Delete says "remove it from the queue / cancel it first".
   interrupted run keeps its status and checkpoint (flow log "RUN INTERRUPTED by server stop") and `resume_queue()`
   continues it at the next start; other task ends log "RUN STOPPED". Test:
   `tests/test_run_queue.py::test_server_stop_keeps_the_run_resumable`.
+
+### Q-R2 — Re-run: step 1 stays "pending" on Live Run until a page refresh (Medium, Fixed 2026-11-04)
+- Run History → Re-run submits the run, then Live Run subscribes to its events. Steps 1-2 come from the
+  artifact cache in milliseconds, so `step_started` / `step_completed` for step 1 were published before the
+  subscription; the catch-up timers read ADK session state, which does not hold the cache-hit statuses.
+  Step 2 showed because its review pause came later.
+- **Fix**: `core.events.EventBus` keeps each run's step events (step started / completed / failed, retry,
+  and a review pause while it is the latest event; 20 runs); `ProgressSection.start_tracking` replays them right
+  after subscribing (`event_bus.replay`). Test: `tests/test_event_replay.py`. Not yet checked in a browser.
