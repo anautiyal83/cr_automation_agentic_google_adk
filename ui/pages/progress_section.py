@@ -406,18 +406,23 @@ class ProgressSection:
         with self.artifacts_box:
             files = _step_files(self._run_dir, self._uc_name, self._selected_step)
             labels: dict = {}
+            headers: dict = {}  # file → category heading shown above it (step 10)
             if self._selected_step == 10:
-                # The run's deliverables, in order, after the final report itself
-                from skills.report_generation.deliverables import collect_deliverables
-                items = collect_deliverables(self._run_dir, self._uc_name)
-                labels = {f: ("Final Report" + (" (Excel)" if f.suffix == ".xlsx" else "")) for f in files}
-                labels.update({d.path: d.label for d in items})
-                files = files + [d.path for d in items]
+                # The run's final documents by category, in the order the pipeline produced them
+                from skills.report_generation.deliverables import collect_deliverables, group_deliverables
+                groups = group_deliverables(collect_deliverables(self._run_dir, self._uc_name))
+                listed = [d for _, docs in groups for d in docs]
+                labels = {d.path: d.label for d in listed}
+                headers = {docs[0].path: (cat, len(docs)) for cat, docs in groups}
+                files = [d.path for d in listed] + [f for f in files if f not in labels]
             if not files:
                 _empty_state("description", "No artifacts yet",
                              "Files this step writes to the run folder appear here.")
                 return
             for f in files:
+                if f in headers:
+                    from ui.pages.output_viewer_section import _category_header
+                    _category_header(*headers[f])
                 with ui.row().classes("cr-file-row items-center no-wrap"):
                     ui.icon(_file_icon(f), size="18px").classes("cr-text-accent")
                     with ui.column().classes("gap-0 flex-1 min-w-0"):

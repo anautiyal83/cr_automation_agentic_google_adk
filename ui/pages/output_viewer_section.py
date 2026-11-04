@@ -229,8 +229,10 @@ class OutputViewerSection:
             final = _final_documents(run_root, self._uc_name(run_id))
             if final:
                 with ui.expansion("Final Documents", icon="verified", value=True)                         .classes("w-full").props("dense header-class='text-body2 font-semibold'"):
-                    for label, fpath in final:
-                        self._file_row(fpath, label)
+                    for category, docs in final:
+                        _category_header(category, len(docs))
+                        for label, fpath in docs:
+                            self._file_row(fpath, label)
             for group_name in sorted(groups.keys()):
                 group_files = groups[group_name]
                 label = group_name.replace("_", " ").title()
@@ -366,15 +368,21 @@ class OutputViewerSection:
         self._load_file_tree(str(run_id))
 
 
-def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, Path]]:
-    """The final report, then the run's deliverables in step 10 order."""
+def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, list[tuple[str, Path]]]]:
+    """[(category, [(label, file)])]: Requirement, CIQ Validation, Execution, General — each in
+    the order the pipeline produced its documents (deliverables.py)."""
     if not uc_name or not run_root.is_dir():
         return []
-    from skills.report_generation.deliverables import collect_deliverables
-    docs = [(label, run_root / f"{uc_name}_report{ext}")
-            for label, ext in (("Final Report", ".html"), ("Final Report (Excel)", ".xlsx"))]
-    docs = [(label, f) for label, f in docs if f.is_file()]
-    return docs + [(d.label, d.path) for d in collect_deliverables(run_root, uc_name)]
+    from skills.report_generation.deliverables import collect_deliverables, group_deliverables
+    return [(cat, [(d.label, d.path) for d in docs])
+            for cat, docs in group_deliverables(collect_deliverables(run_root, uc_name))]
+
+
+def _category_header(category: str, count: int) -> None:
+    """Sub-heading of a final-documents category (Requirement, CIQ Validation, …)."""
+    with ui.row().classes("w-full items-center gap-2 px-2 pt-2 pb-1"):
+        ui.label(category.upper()).classes("text-caption font-semibold cr-text-dim")             .style("letter-spacing: .06em")
+        ui.label(str(count)).classes("text-caption cr-text-dim")
 
 
 def _format_size(size: int) -> str:

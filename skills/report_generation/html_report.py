@@ -46,7 +46,8 @@ def generate_pipeline_report(
             for f in sorted(rd.iterdir()):
                 if f.is_file() and f.suffix in (".yaml", ".html", ".json", ".xlsx", ".txt"):
                     artifact_files.append({"name": f.name, "size": f.stat().st_size, "path": str(f)})
-    deliverables = collect_deliverables(run_dir, uc_name) if run_dir else []
+    # the final report lists the documents before it (it is written now)
+    deliverables = collect_deliverables(run_dir, uc_name, include_final=False) if run_dir else []
 
     return f"""\
 <!DOCTYPE html>
@@ -169,7 +170,12 @@ def _artifact_table(files: list[dict]) -> str:
 
 def _deliverable_table(items: list, run_dir: str) -> str:
     rows = []
+    category = None
     for i, d in enumerate(items, 1):
+        if d.category != category:
+            category = d.category
+            rows.append(f'<tr><td colspan="4" style="background:#f8fafc;font-weight:700;color:#334155;'
+                        f'text-transform:uppercase;font-size:0.72rem;letter-spacing:.06em">{_e(category)}</td></tr>')
         size = d.path.stat().st_size
         size_str = f"{size:,} bytes" if size < 10240 else f"{size/1024:.1f} KB"
         rel = d.rel(run_dir)
