@@ -431,6 +431,17 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-status-failed, .cr-status-error { background: rgba(220,38,38,0.12); color: var(--cr-error); }
 .cr-status-running, .cr-status-in-progress, .cr-status-started, .cr-status-resuming { background: rgba(79,70,229,0.12); color: var(--cr-primary); }
 .cr-status-paused, .cr-status-paused-milestone, .cr-status-retrying, .cr-status-awaiting-review { background: rgba(217,119,6,0.12); color: var(--cr-warning); }
+/* LLM Usage tree (spec 008): each use case a bordered box like the tables, its steps separated by rules */
+.cr-usage-uc { border: 1px solid var(--cr-border); border-radius: 4px !important; background: var(--cr-surface);
+               margin-bottom: 6px !important; }
+.cr-usage-uc > .q-expansion-item__container > .q-expansion-item__content { padding: 0 !important; }
+.cr-usage-uc > .q-expansion-item__container > .q-expansion-item__content > .nicegui-expansion-content {
+    gap: 0 !important; padding: 4px 12px 12px 36px !important; }
+.cr-usage-step { border: 1px solid var(--cr-border); border-radius: 0 !important; margin: 0 !important; }
+.cr-usage-step + .cr-usage-step { border-top: none; }
+.cr-usage-step:first-child { border-radius: 4px 4px 0 0 !important; }
+.cr-usage-step:last-child { border-radius: 0 0 4px 4px !important; }
+.cr-usage-step:only-child { border-radius: 4px !important; }
 /* Responsive card grids */
 .cr-grid-3 { display: grid; width: 100%; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 1100px) { .cr-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

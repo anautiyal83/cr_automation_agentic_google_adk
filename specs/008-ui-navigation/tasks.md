@@ -7,6 +7,7 @@
 - [X] U005 `ui.components.confirm` + confirmations: queue Remove, cache Clear / Clear All, LLM Usage Clear
 - [X] U006 LLM Usage tree: use case → step → calls (lazy)
 - [X] U007 Tests (`queue` level derivation, labels) + preview check (admin, analyst)
+- [X] U008 LLM Usage: each use case a bordered box like the tables, its steps one bordered list (user request)
 
 ## Check 2026-11-04 (preview, DB copy)
 - ana (analyst role stored before spec 008): sidebar Dashboard, Live Run, Pipeline Queue | Run Artifacts, Run History | LLM Usage, Artifact Cleanup — queue level derived from Live Run (Update): Remove on her waiting job; Cancel keeps it, confirm removes it; `/?page=cache` refused (recorded)
