@@ -48,6 +48,7 @@ class NodeSpec:
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
     vfs: dict | None = None      # sandbox dirs + triggers for file flows (file_flows.py, S8-16)
+    vfs_commands: set[str] = field(default_factory=set)  # answered from the VFS, no key (DEP-59)
     prompt_templates: dict[str, str] = field(default_factory=dict)  # prompt → with \W (cwd, S8-33)
     warnings: list[str] = field(default_factory=list)
 

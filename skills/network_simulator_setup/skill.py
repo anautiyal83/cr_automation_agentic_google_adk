@@ -146,6 +146,17 @@ class NetworkSimulatorSetupSkill:
                 n.vfs = n.vfs or {"dirs": []}
                 n.vfs.setdefault("files", {}).update(seeds)
                 logger.info("Topology node %s: %d backup sources seeded in the VFS", n.name, len(seeds))
+            # File commands on paths the workflow fills run on the VFS, not from keys (DEP-59)
+            from .file_flows import node_steps
+            from .vfs_commands import resolved_dirs, vfs_handled, workflow_prefixes
+            prefixes = workflow_prefixes(n.commands, node_steps(workflow_doc, n.name)
+                                         if isinstance(workflow_doc, dict) else [], n.vfs)
+            n.vfs_commands = {str(c.get("cmd") or "").strip() for c in n.commands
+                              if vfs_handled(str(c.get("cmd") or ""), prefixes)}
+            if n.vfs_commands:
+                n.vfs = n.vfs or {"dirs": []}
+                n.vfs["dirs"] = sorted(set(n.vfs.get("dirs") or []) | set(resolved_dirs(prefixes, inp.ciq_json_files)))
+                logger.info("Topology node %s: %d commands answered from the VFS", n.name, len(n.vfs_commands))
             if n.vfs:
                 logger.info("Topology node %s: vfs dirs=%s triggers=%d", n.name, n.vfs["dirs"],
                             len(n.vfs.get("triggers", [])))
@@ -164,7 +175,7 @@ class NetworkSimulatorSetupSkill:
         hints = str(inp.generation_hints.get("step_8", "") or "")
         results = await asyncio.gather(
             *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
-                                            skip=covered[n.name]) for n in nodes),
+                                            skip=covered[n.name] | n.vfs_commands) for n in nodes),
             return_exceptions=True,
         )
         errors: list[str] = []
@@ -193,7 +204,8 @@ class NetworkSimulatorSetupSkill:
             merged = merge_responses(recorded[node.name], result, node.commands, covered[node.name], row)
             # Bash-guarded commands: evaluated per CIQ target, ahead of the generic keys (S8-29)
             from .guards import guarded_responses
-            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files), **merged}
+            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
+            merged = drop_vfs_answers(node, merged, row)
             instance_configs[node.instance] = build_instance_config(node, merged)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
@@ -427,7 +439,8 @@ def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row:
     for c in node.commands:
         cmd = str(c.get("cmd", "")).strip()
         regex = _validation_regex(c)
-        if not cmd or not regex or cmd in recorded or re.match(r"^(su(\s+-)?\s+\S+|exit|logout)$", cmd):
+        if not cmd or not regex or cmd in recorded or cmd in node.vfs_commands \
+                or re.match(r"^(su(\s+-)?\s+\S+|exit|logout)$", cmd):
             continue
         if len(expectations.get(cmd, ())) > 1:
             # Checked again later with another expectation (file absent → present): one
@@ -453,7 +466,8 @@ def _builtins_only(node: NodeSpec) -> bool:
     """Every command of the node is answered by MockWire itself (sftp steps send nothing)."""
     from .topology import file_builtin
     cmds = [str(c.get("cmd") or "").strip() for c in node.commands]
-    return all(not c or c.split(" ", 1)[0] in _SIM_BUILTINS or file_builtin(c) for c in cmds)
+    return all(not c or c.split(" ", 1)[0] in _SIM_BUILTINS or file_builtin(c) or c in node.vfs_commands
+               for c in cmds)
 
 
 def command_key_regex(cmd: str) -> str:
@@ -511,9 +525,16 @@ def repair_literal_mismatches(node: NodeSpec, entries: dict, recorded: set[str],
     text as its line: the MRF backup answered ``…`/\\' from member names`` (a literal backslash)
     where tar prints ``…`/' …`` and the step checks for it, three regenerations in a row (S8-27)."""
     import difflib
+    from skills.network_config_test.scenarios import java_regex_matches
+    from .topology import _regex_examples
     entries = dict(entries)
     for b in synthetic_mismatches(node, entries, recorded, row):
-        text = _regex_literal(str(b.get("regex") or ""))
+        regex = str(b.get("regex") or "")
+        text = _regex_literal(regex)
+        if not text:
+            # any other regex: a string generated from it — `date` answered "… CEST 2023" where the
+            # step wants a 3-letter zone, twice in a row (DEP-59 verification run)
+            text = next((c for c in _regex_examples(regex) if java_regex_matches(regex, c)), None)
         entry = entries.get(b.get("key"))
         if not text or not isinstance(entry, dict) or not isinstance(entry.get("lines"), list):
             continue
@@ -555,7 +576,7 @@ def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: 
         cmd = str(c.get("cmd", "")).strip()
         first = cmd.split(" ", 1)[0] if cmd else ""
         if (not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or file_builtin(cmd)
-                or is_vfs_command(cmd, node.vfs)):
+                or is_vfs_command(cmd, node.vfs) or cmd in node.vfs_commands):
             continue
         seen.add(cmd)
         resolved = resolve_command(cmd, row)
@@ -620,6 +641,32 @@ def _py_regex(java: str) -> re.Pattern | None:
         return re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", java))
     except re.error:
         return None
+
+
+def drop_vfs_answers(node: NodeSpec, entries: dict, row: dict) -> dict:
+    """No key may answer a command the VFS answers (MockWire matches YAML first): a canned
+    ``cp`` copied nothing and the post-check ``ls … | grep`` returned what the LLM wrote (DEP-59).
+    A key that also answers another command of the node stays."""
+    entries = dict(entries)
+    others = [(c, resolve_command(c, row)) for c in
+              (str(x.get("cmd") or "").strip() for x in node.commands) if c and c not in node.vfs_commands]
+    kept: set = set()
+    dropped = 0
+    for cmd in sorted(node.vfs_commands):
+        resolved = resolve_command(cmd, row)
+        while True:
+            key, _ = _find_entry({k: v for k, v in entries.items() if k not in kept}, cmd, resolved)
+            if key is None:
+                break
+            if any(_find_entry({key: entries[key]}, o, r)[0] is not None for o, r in others):
+                kept.add(key)
+                node.warnings.append(f"key {str(key)[:60]!r} answers a VFS command and another command: kept")
+                continue
+            entries.pop(key)
+            dropped += 1
+    if dropped:
+        logger.info("Phase 2: %s — %d keys dropped: their commands run on the VFS", node.name, dropped)
+    return entries
 
 
 def _find_entry(entries: dict, cmd: str, resolved: str):

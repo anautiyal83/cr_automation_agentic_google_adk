@@ -183,14 +183,17 @@ def _inner_response(inner: str, entries: dict, command: dict) -> list[str]:
     return lines
 
 
-def guarded_responses(commands: list[dict], entries: dict, ciq_json_files: list[str]) -> dict:
-    """{key: entry} answering each guarded command per CIQ target (to be placed first)."""
+def guarded_responses(commands: list[dict], entries: dict, ciq_json_files: list[str],
+                      skip: set[str] = frozenset()) -> dict:
+    """{key: entry} answering each guarded command per CIQ target (to be placed first). MockWire
+    evaluates the guard itself (f5928df); a key is still needed when the guarded command is not
+    one the VFS answers (``skip``: those are, DEP-59)."""
     from .skill import _find_entry, command_key_regex
     out: dict = {}
     tgts = targets(ciq_json_files)
     for c in commands:
         cmd = str(c.get("cmd", "")).strip()
-        if SKIPPED not in cmd or not _GUARD.match(cmd):
+        if SKIPPED not in cmd or not _GUARD.match(cmd) or cmd in skip:
             continue
         for t in tgts:
             resolved = _resolve(cmd, t)

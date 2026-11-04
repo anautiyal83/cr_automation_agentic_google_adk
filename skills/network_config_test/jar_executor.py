@@ -536,9 +536,31 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
             if produced or target.exists():
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(f"test input staged by step 9 for {path}\n", encoding="utf-8")
+            _write_test_input(target, path)
             created.append(str(target))
     return created
+
+
+def _write_test_input(target: Path, path: str) -> None:
+    """A staged input file. An archive name gets a real archive with one member: the simulated
+    node extracts it (``tar -xf … -C <dir>``, MockWire f5928df); a text placeholder fails there
+    like on a real node (DEP-59)."""
+    import io
+    import re
+    import tarfile
+    body = f"test input staged by step 9 for {path}\n"
+    name = target.name.lower()
+    mode = ("w:gz" if name.endswith((".tar.gz", ".tgz")) else "w:bz2" if name.endswith(".tar.bz2")
+            else "w" if name.endswith(".tar") else "")
+    if not mode:
+        target.write_text(body, encoding="utf-8")
+        return
+    stem = re.sub(r"\.(tar(\.(gz|bz2))?|tgz)$", "", target.name, flags=re.I)
+    data = body.encode("utf-8")
+    with tarfile.open(target, mode, format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo(f"{stem}.dat")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
 
 
 def _parse_uc_name(uc_name: str) -> tuple[str, str]:

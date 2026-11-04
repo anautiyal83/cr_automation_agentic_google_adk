@@ -759,7 +759,7 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 - Found with it: `test_step --refix-workflow` validated without step 6's context (CIQ sheets, samples, expected
   coverage) and reported `${MRF.VER}` as unresolvable — now passes the same context as step 6.
 
-### DEP-59 — Simulated post-check answers vary per step 8 run (Medium, Open)
+### DEP-59 — Simulated post-check answers vary per step 8 run (Medium, Fixed 2026-11-04)
 - MRF run 3d75c561 copy (`data/step_tests/3d75c561_20261104_214717`, spec 010 T013a): the final check
   `ls -ltrh <dest>/ | grep "$(basename <file> .tar)"` (success regex `-rwxrwxrwx.*`) got the step 8 LLM key
   `regex:ls -ltrh \S+/ \| grep ".+?"` → `''`; an earlier step 8 on the same workflow answered a `-rwxrwxrwx.` line
@@ -767,3 +767,21 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   reaches the VFS and a VFS `ls` would not find it either. Candidate fix: unwrap `if [[ <literal> ]]; then <file cmd>;
   else echo SKIPPED_BY_CONDITION; fi` into the file builtin, or check step 8 keys of a post-check `ls | grep` against
   the step's success regex.
+- **Fix**: MockWire f5928df runs `if [[ … ]]; then …; [else …;] fi`, `$(…)`, `cp mv chmod chown basename dirname`
+  and `tar -x/-t` itself on its VFS. Step 8 (`network_simulator_setup/vfs_commands.py`) gives no response key to a
+  command whose paths all lie where the workflow puts files (`/tmp`, uploads, node-side copies, backup sources,
+  archives, copy / extract targets; never `/`), drops LLM / recorded / guard keys that answer one
+  (`drop_vfs_answers`), creates those folders per CIQ record; step 9 stages `.tar` inputs as real archives.
+  Found on the way: an invented answer that still fails a non-literal success regex after the LLM retry gets a
+  string generated from the regex (`repair_literal_mismatches`; `date` answered "… CEST 2023" for `\w{3} \d{4}`).
+- Verified (steps 8 + 9, run 3d75c561 copy, repo route): SCP and SFTP 3/4 each — MRF1 / MRF2 load, chmod and
+  post-check all on the VFS; MRF3 fails for real (DEP-60). Workflow without its `cp`: MRF1 / MRF2 now fail (the
+  `chmod` of the missing file) — the false green is gone. PGW 6db86ff8: 2/2.
+
+### DEP-60 — MRF3 untars a .3gp file (Medium, Open — step 6 / test data)
+- Found by DEP-59's VFS simulation (was a canned green before): MRF3 has VER 17.0.3.7, so the workflow takes the
+  "not 13" branch `tar -xf /tmp/<INPUT_FILE> -C <dest>/`, but its CIQ INPUT_FILE is
+  `DOC_VERIFICATION_PROMPT_7999_AMRWB_Mode1.3gp` → "tar: This does not look like a tar archive" (a real node fails
+  the same way). Step 9 routes it to step 6. The workflow branches on VER only; the MOP rule (G-15) combined file
+  type and version (`endsWith('.tar') && VER == '13.X.X.X'`). Needs the user: branch on the file type, or fix the
+  CIQ test row (non-13 nodes get .tar files, guideline M-12).
