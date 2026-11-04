@@ -5,8 +5,8 @@
 - [X] T000b O-D5 every phase and sub-phase a checkbox; O-D6 SFTP support per node type (user, 2026-11-04)
 
 ## Step 1: Probes
-- [ ] T001 JAR: `scp` with `expect_reply` password (node side and LOCAL side); 9-phase workflow; workflow without some phases
-- [ ] T002 MockWire: node-side `scp` between instances (design) → `research.md`
+- [X] T001 JAR: node-side `scp` with `expect_reply` answers the password and passes; without it the step hangs and fails ([research.md](research.md))
+- [X] T002 MockWire: in-shell scp/sftp only copy into the same instance, no download, no password prompt → needs peer instances (design in research.md)
 
 ## Step 2: Options end to end (phase selection)
 - [X] T003 `uc_document_sets.run_options` (JSON, migration), `UCDocumentSet.run_options`; runner saves / restores it (queue dispatch, resume, `_document_set_from_row`), Run History re-run keeps it
