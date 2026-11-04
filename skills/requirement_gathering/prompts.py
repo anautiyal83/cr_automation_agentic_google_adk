@@ -21,7 +21,9 @@ FRAMEWORK EXPERTISE:
 - ciq-processor json-output: tableKeys, _each directives, _row, WHERE clauses
 - Node definitions: SSH config (host, port, user, auth, ne_id, kex_algorithms,
   connect_timeout_sec, elevate_to_root), prompt_regex
-- Variable patterns: ${{nodeGroups}}, ${{node_row.PGW.niamID-1}}, ${{configData}}
+- Variable patterns: ${{configSequences.0.records.0.data.<Column>}} (CIQ value), ${{<NODE>.niamID-<n>}}
+  (NIAM ID), ${{<NODE>.<field>}} (node value, e.g. a version), ${{varName}} (registered value). In questions and
+  answers refer to CIQ columns by name — never write placeholder syntax
 """
 
 ANALYZE_PROMPT = """Analyze this UC's documents and identify what's available and what's missing.
@@ -104,11 +106,19 @@ Developer already provided:
 - Do NOT ask about LDAP credentials if they're visible in the SSH session logs
 - Do NOT ask about shell prompts if they're visible in the SSH session logs
 - Do NOT ask about command syntax if it's in the MOP document
-- Do NOT re-ask questions that have been answered in "Developer already provided" above
+- Do NOT re-ask questions that have been answered in "Developer already provided" above — not even in other words
 - Only ask about things that are GENUINELY UNKNOWN and not inferable from the input documents
+- NEVER ask for a regex, pattern, expression or validation syntax. The user cannot write patterns; ask what TEXT
+  the output shows when the command worked (e.g. "Link UP", "result=\"success\"") and, when it matters, whether
+  EVERY line / item must show it or one is enough. The pipeline builds the pattern from the text and the real output
+- NEVER ask for passwords or other secret values — ask for the NAME of the secret that holds it
+- Do NOT ask what the default execution rules decide (health checks run completely; a failed pre-health check or
+  backup stops everything after it; a failed activity step stops the activity and starts the rollback when the node
+  was changed; ROLLBACK_ONLY runs only the rollback) — ask only when the documents suggest an exception
 
 === QUESTION STYLE ===
-- ALWAYS provide a default_value for every question — extract it from the documents if possible
+- ALWAYS provide a default_value for every question — extract it from the documents if possible; write it in
+  plain words (CIQ columns by name), never placeholder syntax like ${{...}} and never a regex
 - Write questions for a LAYMAN USER, not a developer
 - Use simple everyday language, avoid technical jargon
 - Keep questions short (1 sentence) — put technical details in "context"
@@ -147,8 +157,8 @@ Produce a structured requirements package as JSON:
 {{
   "category_1_node_activity": {{
     "nodes": [
-      {{"name": "niam_pgw_1", "type": "remote", "role": "PGW",
-        "ne_id": "${{node_row.PGW.niamID-1}}", "ssh": {{...}} }}
+      {{"name": "PGW", "type": "remote", "role": "PGW",
+        "ne_id": "${{PGW.niamID-1}}", "ssh": {{...}} }}
     ],
     "niam_failover": true/false,
     "root_escalation": {{"method": "su - root", "password": "...", "prompt": "Password:"}},
@@ -220,8 +230,8 @@ Produce a structured requirements package as JSON:
 CRITICAL for xml_templates:
 - Analyze the sample XML files provided and map each CIQ column to its XML tag
 - Use ACTUAL SPML format from the samples — do NOT invent dummy XML
-- Replace hardcoded values with ${{configData.COLUMN_NAME}} references
-- The IMSI field should always use ${{configData.TEST_IMSI}} or similar CIQ reference
+- Replace hardcoded values with the CIQ column name in angle brackets, e.g. <Mandatory Cap>
+- The IMSI field should always use the CIQ column that holds it, e.g. <Test IMSI>
 - Include the full SPML namespace and version from the samples
 
 Be concrete — use actual values from the answers and sample files, not placeholders."""

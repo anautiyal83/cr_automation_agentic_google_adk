@@ -18,10 +18,10 @@
 - [ ] E014 Rollback-only: rollback steps that read values registered in earlier phases (MRF `backupFileName`) cannot run with `ROLLBACK_ONLY` — validator warning + structure/route support (spec 010 backup location per order)
 
 ## Step 3: Text, not patterns (step 1 + step 6)
-- [ ] E020 Step 1 prompt: ask for the expected text (+ scope every/one), never a regex; de-duplicate questions by text across rounds (PGW Q-1)
-- [ ] E021 Step 1 prompt: remove the old data-model placeholders (`${nodeGroups}`, `${node_row…}`, `${configData}`) it teaches (PGW Q-4)
+- [X] E020 Step 1: prompt asks for the expected text (+ scope every/one), never a regex, never a secret value, no placeholder syntax, nothing the default rules decide; `questionnaire.clean_questions` enforces it after the LLM (pattern questions → text questions, regex / placeholder defaults cleaned, password → secret name, questions already answered under another id or repeated in the round dropped — word overlap with stemming)
+- [X] E021 Step 1 prompts: framework placeholders instead of `${nodeGroups}` / `${node_row…}` / `${configData}`; CIQ columns by name in the XML template mapping
 - [ ] E022 Step 6: build check regexes from the text + real output; "every" scope → count pattern; regex-looking answers are hints
-- [ ] E023 Tests
+- [~] E023 Tests: step 1 hygiene (`test_requirements_gaps.py`) done; step 6 part pending E022
 
 ## Step 4: Check
 - [ ] E030 MRF + PGW re-run: success run (no rollback), injected activity failure (rollback runs only after a change), precheck failure (nothing after it), `ROLLBACK_ONLY` run

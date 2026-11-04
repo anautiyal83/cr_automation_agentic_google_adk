@@ -296,6 +296,88 @@ def build_available_data_summary(
     return "\n".join(parts) if parts else "No additional data available"
 
 
+# --------------------------------------------------------------------------- question hygiene (spec 011)
+
+_PATTERN_ASK = re.compile(r"\b(regex|regexp|regular expression|pattern|expression|criteria\s+syntax)\b", re.I)
+_PROMPT_TOPIC = re.compile(r"\bprompt\b", re.I)
+_REGEX_LIKE = re.compile(r"\\[sdwSDWbB]|\(\?P?<|\.\*|\.\+|\[\^?[^\]]+\][*+?]|\{\d+(,\d*)?\}|^\^|\$$")
+_PLACEHOLDER = re.compile(r"\$\{\{?\s*(?:CIQ\.)?(?:[^{}.]+\.)*([^{}.]+?)\s*\}?\}")
+_SECRET = re.compile(r"\b(password|passphrase|secret|credential)s?\b", re.I)
+_WORD = re.compile(r"[a-z0-9]+")
+_STOP = {"the", "a", "an", "of", "for", "to", "in", "on", "is", "be", "should", "what", "which", "how", "do", "does",
+         "this", "that", "it", "and", "or", "when", "with", "from", "by", "are", "will", "you", "we", "your"}
+
+
+def looks_like_regex(text: str) -> bool:
+    """An answer / default written as a pattern (``\\s*``, ``(?P<…>``, ``.*``) rather than plain text."""
+    return bool(_REGEX_LIKE.search(str(text or "").strip()))
+
+
+def _plain(value: str) -> str:
+    """Placeholder syntax in a suggested answer → the CIQ column / value name in plain words."""
+    return _PLACEHOLDER.sub(lambda m: m.group(1).strip(), str(value or ""))
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ing", "es", "ed", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _words(text: str) -> set[str]:
+    return {_stem(w) for w in _WORD.findall(str(text or "").lower()) if w not in _STOP and len(w) > 1}
+
+
+def same_question(a: str, b: str, threshold: float = 0.75) -> bool:
+    """Two question texts ask the same thing (word overlap — the LLM re-asks with new ids)."""
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / len(wa | wb) >= threshold
+
+
+def clean_questions(questions: list[dict], answered_texts: dict[str, str] | None = None,
+                    all_answers: dict | None = None) -> list[dict]:
+    """Rules the LLM cannot be trusted to follow (spec 011, PGW Q-1 … Q-4):
+
+    - a question asking for a regex / pattern asks for the TEXT the output shows (+ scope)
+    - suggested answers carry no regex and no placeholder syntax
+    - a question for a password asks for the secret's NAME
+    - a question already answered (same words, another id) or repeated in this round is dropped
+    """
+    answered = [t for qid, t in (answered_texts or {}).items() if qid in (all_answers or {})]
+    out: list[dict] = []
+    for q in questions or []:
+        if not isinstance(q, dict) or not q.get("question"):
+            continue
+        q = dict(q)
+        text = str(q["question"])
+        if _PATTERN_ASK.search(text) and not _PROMPT_TOPIC.search(text):
+            q["question"] = (_PATTERN_ASK.sub("text", text).rstrip(" ?.") + "? Give the words the output shows "
+                             "(no pattern syntax) and whether every line / item must show them.")
+            q["helper_text"] = 'e.g. "Link UP" on every remote-node line, or "result=success" once'
+            q["input_type"] = "text"
+        if looks_like_regex(q.get("default_value", "")):
+            q["default_value"] = ""
+        q["default_value"] = _plain(q.get("default_value", ""))
+        if q.get("input_type") == "password" or (_SECRET.search(text) and not _PATTERN_ASK.search(text)):
+            q["question"] = "Which secret (name) holds this value? The value itself is never entered here."
+            q["context"] = (f"Asked as: {text} — " + str(q.get("context") or "")).strip(" —")
+            q["input_type"] = "text"
+            q["default_value"] = ""
+            q["helper_text"] = "e.g. repo_password — the workflow reads it as ${SECRET.repo_password}"
+        if any(same_question(text, t) for t in answered):  # answered before under another id
+            continue
+        if any(same_question(text, o["_asked"]) for o in out):  # repeated in this round
+            continue
+        q["_asked"] = text
+        out.append(q)
+    for q in out:
+        q.pop("_asked", None)
+    return out
+
+
 def filter_answered_questions(questions: list[dict], all_answers: dict) -> list[dict]:
     """Filter out questions already answered via ID or fuzzy topic match.
 
