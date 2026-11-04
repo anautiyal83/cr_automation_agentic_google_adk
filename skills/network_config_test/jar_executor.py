@@ -330,6 +330,28 @@ def _java_cmd(java_home: str | None) -> str:
     return "java"
 
 
+def _clean_conditional_pattern(cp) -> dict | None:
+    """``conditionalPattern`` with only the keys ciq-processor maps (startColumn, lookupChain
+    [sheet, joinOn, extract], rules [when, pattern, message]); None when it is malformed."""
+    if not isinstance(cp, dict) or not isinstance(cp.get("startColumn"), str):
+        return None
+    chain = cp.get("lookupChain")
+    rules = cp.get("rules")
+    if not isinstance(chain, list) or not chain or not isinstance(rules, list) or not rules:
+        return None
+    clean_chain = []
+    for step in chain:
+        if not isinstance(step, dict) or not all(isinstance(step.get(k), str) for k in ("sheet", "joinOn", "extract")):
+            return None
+        clean_chain.append({k: step[k] for k in ("sheet", "joinOn", "extract")})
+    clean_rules = []
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("pattern"), str):
+            return None
+        clean_rules.append({k: str(rule[k]) for k in ("when", "pattern", "message") if rule.get(k) is not None})
+    return {"startColumn": cp["startColumn"], "lookupChain": clean_chain, "rules": clean_rules}
+
+
 def _sanitize_rules_for_jar(rules_path: str) -> str:
     """Strip LLM-generated fields unsupported by the ciq-processor JAR.
 
@@ -370,6 +392,7 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
             "multi", "sheetRef", "sheetRefIgnoreCase",
             "aliases", "dropdownDisabled",
             "crossRef",  # sanitized separately below
+            "conditionalPattern",  # sanitized separately below (DEP-60, JAR probe 2026-11-05)
         }
         _SAFE_CROSSREF_KEYS = {"sheet", "column"}
         _SAFE_SHEET_KEYS = {"columns", "required", "required_if_listed_in", "aliases", "settings"}
@@ -404,6 +427,15 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
                         if col_type != "enum" and "allowedValues" in col_def:
                             del col_def["allowedValues"]
                             changed = True
+                        cp = col_def.get("conditionalPattern")
+                        if cp is not None:
+                            clean = _clean_conditional_pattern(cp)
+                            if clean != cp:
+                                changed = True
+                            if clean:
+                                col_def["conditionalPattern"] = clean
+                            else:
+                                del col_def["conditionalPattern"]
                         # Sanitize crossRef
                         cr = col_def.get("crossRef")
                         if isinstance(cr, dict):

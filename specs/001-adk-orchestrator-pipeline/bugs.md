@@ -840,3 +840,26 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   the step's regex); validator `untar_check_issues` + step 6 prompt rule for other shapes; MockWire 36a1476 `ls -d`;
   step 8 `vfs_commands` treats any `if [[ ]]; then A; else B; fi` by both branches (a canned key had answered it).
 - Replay of 9de5fcb8 steps 8 + 9: 4/4 — MRF1/MRF2 list their extracted members at 777, MRF3 its copied .3gp.
+
+### DEP-65 — Rollback-only depended on values the execution registered (High, Fixed 2026-11-05)
+- Run 9de5fcb8: the restore ran `when: ${backupTarName} != null`, the "no backup" branch `rm -rf <dest>/*` when
+  `== null` — in a rollback-only run nothing is registered, so it would wipe the folder instead of restoring; archive
+  names carried `$(date …)`; the repo route used a registered `hostname`. User rule: backups follow a naming
+  convention so rollback finds them directly. **Fix** `structure.backups_by_convention`: node
+  `/tmp/${ORDERNO}/<source folder>/<archive>`, repo `<backup_dir>/${ORDERNO}/${MRF.NODE_NAME}/<source folder>/<archive>`
+  (node name = the CIQ node-sheet field matching INDEX.NODE; hostname only when the CIQ has none); the rollback lists
+  the path first (`nc_rb<k>_check` → `ncBackup<k>`), registered-value conditions become that check, the restore
+  extracts the convention path (repo route: `mkdir` + copy back first).
+- Found with it: `when: ${fileCount} > 0` is always false (probed; bare `fileCount > 0` works) — the backup never
+  ran. Autofix `when_bare_operands`. Step 9's rollback-only case ran on a clean simulator (no backup to restore):
+  it now starts from the files its node group's sunny day left (`vfs_after`). MockWire 846b88a/86295c7: `2>/dev/null`
+  per pipeline stage (incl. after `$(…)`), Windows-safe file names. Autofix: an LLM member listing counts every line.
+- Replay of 9de5fcb8 (steps 8 + 9, node route): 4/4 — backups at /tmp/TEST_ORDERNO/…, the rollback-only case finds
+  and extracts them.
+
+### DEP-60 follow-up — step 3 rule (Fixed 2026-11-05, LLM generation not yet run end to end)
+- ciq-processor enforces `conditionalPattern` (probed: the corrected CIQ PASSED, the old one rejected on all three
+  rows). Step 3 now sees the developer answers' text (it saw only their count), the prompt asks for such rules
+  with this example, `rules_baseline.conditional_pattern` keeps a well-formed one even when the CIQ breaks it, the
+  JAR sanitizer lets it through (`_clean_conditional_pattern`).
+

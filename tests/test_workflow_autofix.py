@@ -554,3 +554,28 @@ def test_untar_branch_verifies_the_archive_members():
     ok = next(r["regex"] for r in check["register"] if r["count_var"] == "ncFilesOk")
     lines = ["-rwxrwxrwx 1 root root 1 Nov 4 a.wav", "-rw-r--r-- 1 root root 1 Nov 4 b.wav"]
     assert java_regex_matches(ok, lines[0]) and not java_regex_matches(ok, lines[1])
+
+
+def test_llm_member_listing_counts_every_line():
+    """Run 9de5fcb8: the LLM listed the members itself with `^-rwxrwxrwx.*`, which passes when ONE line
+    matches — every listed line must have the mode."""
+    from skills.network_config_gen.autofix import untar_member_check
+    step = {"node": "MRF",
+            "send": "if [[ 'x' == '13.'* ]]; then ls -ltrh /d/ | grep \"a\"; else ls -ld $(tar -tf /tmp/a.tar "
+                    "2>/dev/null | sed 's#^#/d/#') 2>/dev/null; fi",
+            "validation": {"success": {"criteria": {"regex": "^-rwxrwxrwx.*.+?"}}}}
+    extract = {"node": "MRF", "send": "tar -xf /tmp/a.tar -C /d/"}
+    wf = {"phases": {"a": {"steps": [extract, step]}}}
+    assert untar_member_check(wf) == 1 and untar_member_check(wf) == 0
+    assert step["validation"]["success"]["criteria"] == {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+
+
+def test_when_uses_bare_names():
+    """Probed 2026-11-05: `when: ${fileCount} > 0` is always false, `fileCount > 0` works."""
+    from skills.network_config_gen.autofix import when_bare_operands
+    steps = [{"node": "MRF", "send": "x", "when": "${fileCount} > 0"},
+             {"node": "MRF", "send": "y", "when": "${configSequences.0.records.0.data.A} != '' && ${MRF.VER} != ''"}]
+    wf = {"phases": {"p": {"when": "${x} == 'y'", "steps": steps}}}
+    assert when_bare_operands(wf) == 3 and when_bare_operands(wf) == 0
+    assert steps[0]["when"] == "fileCount > 0" and wf["phases"]["p"]["when"] == "x == 'y'"
+    assert steps[1]["when"] == "configSequences.0.records.0.data.A != '' && ${MRF.VER} != ''"

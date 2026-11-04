@@ -122,7 +122,16 @@ def _build_requirements_summary(requirements: dict) -> str:
 
     answers = requirements.get("developer_answers", {})
     if answers:
-        parts.append(f"Developer answers: {len(answers)} responses")
+        # the text, not a count: business rules about CIQ values live here (DEP-60: "13.X.X.X gets
+        # plain files, every other version tar files" never reached the rules)
+        parts.append(f"Developer answers ({len(answers)}):")
+        budget = 4000
+        for key, text in answers.items():
+            line = f"- {key}: {str(text).strip()[:400]}"
+            if budget - len(line) < 0:
+                break
+            budget -= len(line)
+            parts.append(line)
 
     return "\n".join(parts) if parts else "No requirements available"
 

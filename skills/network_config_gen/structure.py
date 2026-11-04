@@ -163,7 +163,7 @@ def flatten(parsed: dict) -> int:
     repo = _repo_config()["node"]
     if changed and isinstance(nodes, dict) and repo in nodes:
         used = {str(s.get("node")) for _, body in _phase_bodies(parsed) for s in _all_steps(body["steps"])}
-        if repo not in used:  # added by backup_to_repo
+        if repo not in used:  # added by backups_by_convention
             del nodes[repo]
     return changed
 
@@ -410,21 +410,65 @@ def _repo_transfer(tag: str, repo: str, node: str, login: tuple[str, str, str], 
     ]
 
 
-def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
-    """Store every backup archive on the repo server; restore it from there on rollback.
+def _order_ref() -> str:
+    """The order number the framework passes at run time (``execution.runtime_params``, e.g.
+    ``ORDERNO``): backups of an order are found by it — a rollback-only run of the order has no
+    value an earlier execution registered (user, 2026-11-05)."""
+    from core.config import runtime_params
+    key = next((k for k in runtime_params() if re.search(r"(?i)order", k)), None)
+    return "${" + key + "}" if key else "${crGroup}"
 
-    Only when the run chose Backup "via repo server" (spec 010 O-D2); otherwise the backup stays
-    on the node (``/tmp``) where the backup step wrote it and the rollback restores it from there.
-    The node runs the copies to and from the repo server (O-D7)."""
-    if not via_repo(requirements):
-        return 0
+
+def node_name_ref(node: str, requirements: dict | None) -> str:
+    """``${<NODE>.<field>}`` of the node's name in the CIQ node sheet (the field whose values are
+    the INDEX sheet's node names, e.g. ``${MRF.NODE_NAME}``); '' when the CIQ has none."""
+    if not isinstance(requirements, dict):
+        return ""
+    from .skill import _expected_coverage
+    fields = (((_expected_coverage(requirements).get("record_columns") or {}).get("node_fields") or {})
+              .get(node) or [])
+    sheets = (requirements.get("doc_extracted") or {}).get("ciq_sheets") or {}
+
+    def values(col: str, exclude: str = "") -> set[str]:
+        return {str(r.get(col)).strip() for name, sh in sheets.items() if name != exclude
+                for r in (sh or {}).get("sample_rows") or [] if isinstance(r, dict) and r.get(col)}
+    index_nodes = {v for name, sh in sheets.items()
+                   for col in ((sh or {}).get("columns") or list(((sh or {}).get("sample_rows") or [{}])[0]))
+                   if re.fullmatch(r"(?i)node", str(col)) for v in values(col)}
+    for f in fields:
+        vals = values(f)
+        if vals and index_nodes and vals <= index_nodes:
+            return "${" + node + "." + f + "}"
+    named = next((f for f in fields if re.fullmatch(r"(?i)node[ _]?name", f)), None)
+    return "${" + node + "." + named + "}" if named else ""
+
+
+def _rollback_bodies(parsed: dict) -> list[dict]:
+    return [body for name, body in _phase_bodies(parsed)
+            if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or ""))]
+
+
+def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int:
+    """Backups by a naming convention, so a rollback — also a rollback-only run of the order —
+    finds them without any value the execution registered (user, 2026-11-05; production M-9):
+
+    - the archive on the node: ``/tmp/${ORDERNO}/<source folder>/<name>`` (the LLM's name without
+      ``$(date …)``; the source folder keeps each record's backup apart)
+    - via repo server (spec 010): ``<backup_dir>/${ORDERNO}/<node name in the CIQ>/<source
+      folder>/<name>`` — the node copies it there and back (O-D7)
+    - the rollback first lists that path (``nc_rb<k>_check``, registers ``ncBackup<k>``) and
+      decides by it: references to what the backup step registered (``${backupTarName}``,
+      ``== null``) become that check, and the restore extracts the convention path. Run 9de5fcb8:
+      a rollback-only run skipped the restore and ran its ``rm -rf`` "no backup" branch."""
+    order = _order_ref()
+    repo_route = via_repo(requirements)
     cfg = _repo_config(requirements)
     local = _local_node(parsed)
-    backups = []  # (node, archive, repo_path, dropped vars)
+    backups = []  # (node, archive path, repo path or '', dropped vars, absolute sources, when)
     for name, body in _phase_bodies(parsed):
-        # a backup phase, or a backup archive in another phase (the LLM put it in the
-        # pre-checks of a fresh MRF workflow)
         phase_is_backup = bool(_BACKUP_PHASE.search(name) or _BACKUP_PHASE.search(str(body.get("name") or "")))
+        if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or "")):
+            continue
         out = []
         for step in body["steps"]:
             out.append(step)
@@ -438,84 +482,120 @@ def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
             if not (phase_is_backup or _BACKUP_PHASE.search(archive)
                     or _BACKUP_PHASE.search(str(step.get("command_description") or ""))):
                 continue
-            canonical = _SHELL_SUBST.sub("", archive)
-            basename = canonical.rsplit("/", 1)[-1]
-            if canonical != archive:  # the name must be known to fetch it again
-                send = send.replace(archive, canonical)  # the ls -1 autofix appends too (DEP-58)
-            # The variables the step registered for the archive (tar prints no archive name, so
-            # the LLM's regexes never matched) now hold its file name, from a listing of it:
-            # later `/tmp/${backupFileName}` and "no backup taken" checks keep their meaning
-            dropped = _registers(step)
-            listing = f" && ls -1 {canonical}"
-            if dropped and listing not in send:
-                send += listing
-            step["send"] = send
-            if dropped:
-                step["register"] = [{"regex": f"(?<{v}>{re.escape(basename)})"} for v in sorted(dropped)]
-            repo = _repo_node(parsed, cfg)
-            node = str(step.get("node"))
-            k = len(backups) + 1
+            basename = _SHELL_SUBST.sub("", archive).rsplit("/", 1)[-1]
             src = sources[0].rstrip("/") if sources else ""
             mirror = src if src.startswith("/") else (f"/{src}" if src.startswith("${") else "")
-            # Per node by its hostname: ${node} empties the MOP of a node group with several
-            # nodes (cli-automation generate, 2026-11-03) and node fields need not be unique
-            host = f"bkHost{k}"
-            repo_tpl = f"{cfg['backup_dir'].rstrip('/')}/${{crGroup}}/{{HOST}}{mirror}"
-            repo_dir = repo_tpl.replace("{HOST}", "${" + host + "}")
+            node_dir = f"/tmp/{order}{mirror}"
+            path = f"{node_dir}/{basename}"
+            dropped = _registers(step)
+            if archive != path:
+                stem = re.escape(archive.rsplit("/", 1)[-1].split("$(")[0].split("${")[0])
+                # listings the LLM or the DEP-58 autofix appended for the old name go with it
+                send = re.sub(r"\s*&&\s*ls\s+-1\s+\S*" + stem + r"\S*", "", send).replace(archive, path)
+            if not send.lstrip().startswith(f"mkdir -p {node_dir}"):
+                send = f"mkdir -p {node_dir} && {send.strip()}"
+            if f"ls -1 {path}" not in send:
+                send += f" && ls -1 {path}"
+            step["send"] = send
+            step["register"] = [{"regex": f"(?<{v}>{re.escape(basename)})"} for v in sorted(dropped)] \
+                if dropped else step.get("register")
+            if not step["register"]:
+                step.pop("register")
+            listed = "^" + r"\S+".join(re.escape(x) for x in re.split(r"\$\{[^}]*\}", path)) + "$"
+            for criteria in _success_criteria(step):
+                if "regex" in criteria:
+                    criteria["regex"] = listed
+            node = str(step.get("node"))
             when = str(step.get("when") or "")
-            out += [
-                _hostname_step(f"{AUTO_ID}bk{k}_host", node, host, when),
-                _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", when,
-                      send=f"mkdir -p {repo_dir}"),
-                *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
-                                file_transfer(requirements, node), canonical, f"{repo_dir}/{basename}", True, when,
-                                f"{node} copies the backup {basename} to the repo server"),
-            ]
-            absolute = bool(sources) and all(s.startswith(("/", "${")) for s in sources)
-            backups.append((node, canonical, f"{repo_tpl}/{basename}", dropped, absolute))
+            repo_path = ""
+            k = len(backups) + 1
+            if repo_route:
+                repo = _repo_node(parsed, cfg)
+                who = node_name_ref(node, requirements)
+                if who:
+                    repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/{who}{mirror}"
+                else:  # no node name column in the CIQ: the node's hostname
+                    out.append(_hostname_step(f"{AUTO_ID}bk{k}_host", node, f"bkHost{k}", when))
+                    repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/${{bkHost{k}}}{mirror}"
+                repo_path = f"{repo_dir}/{basename}"
+                out += [
+                    _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", when,
+                          send=f"mkdir -p {repo_dir}"),
+                    *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
+                                    file_transfer(requirements, node), path, repo_path, True, when,
+                                    f"{node} copies the backup {basename} to the repo server"),
+                ]
+            absolute = bool(sources) and all(x.startswith(("/", "${")) for x in sources)
+            backups.append((node, path, repo_path, dropped, absolute))
         body["steps"] = out
-    if not backups:
-        return 0
-    restored = sum(_restore_from_repo(parsed, cfg, b, k + 1, requirements) for k, b in enumerate(backups))
-    logger.info("Structure: %d backups stored on the repo server, %d restores from it", len(backups), restored)
+    for k, b in enumerate(backups, 1):
+        _rollback_by_convention(parsed, cfg, b, k, requirements)
+    if backups:
+        logger.info("Structure: %d backups by convention (%s)%s", len(backups), order,
+                    " on the repo server" if repo_route else " on the node")
     return len(backups)
 
 
-def _restore_from_repo(parsed: dict, cfg: dict, backup: tuple, k: int, requirements: dict | None) -> int:
-    node, archive, repo_tpl, dropped, absolute = backup
-    host = f"rsHost{k}"
-    repo_path = repo_tpl.replace("{HOST}", "${" + host + "}")
-    repo = _repo_node(parsed, cfg)
-    basename = archive.rsplit("/", 1)[-1]
-    # the archive as the rollback names it: literally or through a variable the backup registered
+def _success_criteria(step: dict) -> list[dict]:
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    return [c for c in (validation.get("criteria"), success.get("criteria")) if isinstance(c, dict)]
+
+
+def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requirements: dict | None) -> None:
+    node, path, repo_path, dropped, absolute = backup
+    flag = f"ncBackup{k}"
+    basename = path.rsplit("/", 1)[-1]
     names = [re.escape(basename)] + [r"\$\{" + re.escape(v) + r"\}" for v in dropped]
     extract = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S*(?:" + "|".join(names) + r"))(\s+-C\s+\S+)?")
-    for name, body in _phase_bodies(parsed):
-        if not (_ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or ""))):
-            continue
-        out, done = [], False
+    var_ref = re.compile(r"\$\{(" + "|".join(map(re.escape, dropped)) + r")\}|(?<![\w.$])(" +
+                         "|".join(map(re.escape, dropped)) + r")(?![\w.])") if dropped else None
+    bodies = _rollback_bodies(parsed)
+    if not bodies:
+        return
+    check_on = _repo_node(parsed, cfg) if repo_path else node
+    check = _step(f"{AUTO_ID}rb{k}_check", check_on,
+                  f"Is there a backup of this order to restore? ({basename})",
+                  send=f"ls -1 {repo_path or path} 2>/dev/null || true",
+                  register=[{"regex": f"(?<{flag}>\\S+)"}])
+    placed = False
+    for body in bodies:
+        out = []
         for step in body["steps"]:
-            if not done and isinstance(step, dict) and str(step.get("node", "")) == node and not _is_auto(step):
-                text = str(step.get("send") or "")
-                m = extract.search(text)
-                if m:
-                    when = str(step.get("when") or "")
-                    # the restored file is the archive itself; members are the backed-up absolute
-                    # paths without the leading "/"
-                    tail = " -C /" if absolute else (m.group(2) or "")
-                    step["send"] = text[:m.start(1)] + archive + tail + text[m.end():]
-                    out += [
-                        _hostname_step(f"{AUTO_ID}rs{k}_host", node, host, when),
-                        *_repo_transfer(f"rs{k}", repo, node, node_login(parsed, repo),
-                                        file_transfer(requirements, node), archive, repo_path, False, when,
-                                        f"{node} copies the backup {basename} back from the repo server"),
-                    ]
-                    done = True
+            if not isinstance(step, dict) or _is_auto(step):
+                out.append(step)
+                continue
+            if var_ref is not None:
+                # what the backup step registered is unknown in a rollback-only run: the file
+                for key in ("when", "skip_when"):
+                    if isinstance(step.get(key), str) and var_ref.search(step[key]):
+                        cond = var_ref.sub(flag, step[key])
+                        step[key] = re.sub(r"(" + flag + r")\s*(==|!=)\s*null\b", r"\1 \2 ''", cond)
+                if isinstance(step.get("send"), str):
+                    text = re.sub(r"/tmp/\$\{(?:" + "|".join(map(re.escape, dropped)) + r")\}", path, step["send"])
+                    step["send"] = var_ref.sub(basename, text) if var_ref.search(text) else text
+            text = str(step.get("send") or "")
+            m = extract.search(text) if str(step.get("node", "")) == node else None
+            if m and not placed:
+                tail = " -C /" if absolute else (m.group(2) or "")
+                step["send"] = text[:m.start(1)] + path + tail + text[m.end():]
+                when = str(step.get("when") or "")
+                if f"{flag} != ''" not in when:
+                    when = " && ".join(x for x in (when, f"{flag} != ''") if x)
+                step["when"] = when
+                out.append(check)
+                if repo_path:
+                    # a rollback-only run: nothing of this order exists on the node yet
+                    out.append(_step(f"{AUTO_ID}rs{k}_dir", node, "Create the restore folder on the node", when,
+                                     send=f"mkdir -p {path.rsplit('/', 1)[0]}"))
+                    out += _repo_transfer(f"rs{k}", check_on, node, node_login(parsed, check_on),
+                                          file_transfer(requirements, node), path, repo_path, False, when,
+                                          f"{node} copies the backup {basename} back from the repo server")
+                placed = True
             out.append(step)
         body["steps"] = out
-        if done:
-            return 1
-    return 0
+    if not placed:  # no restore step: the check still decides the rollback's conditions
+        bodies[0]["steps"].insert(0, check)
 
 
 def _hostname_step(sid: str, node: str, var: str, when: str) -> dict:
@@ -630,7 +710,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     from . import contract
     flatten(parsed)
     changes = select_phases(parsed, requirements)
-    changes += backup_to_repo(parsed, requirements)
+    changes += backups_by_convention(parsed, requirements)
     changes += files_via_repo(parsed, requirements)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)

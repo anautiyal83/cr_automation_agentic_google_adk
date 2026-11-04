@@ -174,6 +174,13 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   the node's /tmp; every transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps:
   `id: nc_*`. Step 8 lists the repo instance as a `transfer.peers` entry of each node instance (MockWire copies
   between their VFS)
+- Backups follow a naming convention, never a registered value (a rollback-only run has none — user 2026-11-05):
+  node `/tmp/${ORDERNO}/<source folder>/<archive without $(date)>`, repo `<backup_dir>/${ORDERNO}/${<NODE>.<CIQ node
+  name field>}/<source folder>/<archive>` (`structure.backups_by_convention`); the rollback lists that path
+  (`nc_rb<k>_check` → `ncBackup<k>`) and decides by it. `when` takes bare names (`${x} > 0` is always false; autofix)
+- Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
+- Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
+  GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
   upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 

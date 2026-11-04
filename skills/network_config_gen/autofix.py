@@ -294,6 +294,7 @@ def fix_workflow(yaml_text: str) -> str:
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
     untar_member_check(parsed)
+    when_bare_operands(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1562,7 +1563,15 @@ def untar_member_check(parsed: dict) -> int:
     changed = 0
     for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
         send = step.get("send")
-        if not isinstance(send, str) or "tar -tf" in send:
+        if not isinstance(send, str):
+            continue
+        if "tar -tf" in send:
+            # the LLM listed the members itself: every listed line must have the mode, not one
+            if re.search(r"\bls\s+-\w*l\w*\s+\$\(tar -tf", send) and not any(
+                    "ncFilesOk" in str(r) for r in step.get("register") or []) and any(
+                    _MODE_LITERAL.search(str(c.get("regex") or "")) for c in _criteria_blocks(step)):
+                _count_listed_modes(step)
+                changed += 1
             continue
         found = _archive_check(send, extracts, pos)
         if not found:
@@ -1570,18 +1579,44 @@ def untar_member_check(parsed: dict) -> int:
         archive, dest, test = found
         members = f"ls -ld $(tar -tf {archive} | sed 's#^#{dest}/#')"
         step["send"] = f"if {test}; then {members}; else {send.strip()}; fi" if test else members
-        mode = next((m.group(0) for c in _criteria_blocks(step) for m in [_MODE_LITERAL.search(str(c.get("regex") or ""))]
-                     if m), "")
-        regs = [r for r in step.get("register") or [] if "ncListed" not in str(r) and "ncModeOk" not in str(r)]
-        regs += [{"regex": "(?<ncListed>.+)", "loop": True, "count_var": "ncFilesListed"},
-                 {"regex": f"^{re.escape(mode)}.*" if mode else r"^[-dl]\S{9}.*", "loop": True,
-                  "count_var": "ncFilesOk"}]
-        step["register"] = regs
-        validation = step.setdefault("validation", {})
-        success = validation.setdefault("success", {})
-        success["criteria"] = {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
-        validation.pop("criteria", None)
+        _count_listed_modes(step)
         changed += 1
+    return changed
+
+
+def _count_listed_modes(step: dict) -> None:
+    """Pass when every listed line has the mode the step's regex names (``ncFilesOk ==
+    ncFilesListed``): a regex alone passes when ONE line matches."""
+    mode = next((m.group(0) for c in _criteria_blocks(step) for m in [_MODE_LITERAL.search(str(c.get("regex") or ""))]
+                 if m), "")
+    regs = [r for r in step.get("register") or [] if "ncListed" not in str(r) and "ncFilesOk" not in str(r)]
+    regs += [{"regex": "(?<ncListed>.+)", "loop": True, "count_var": "ncFilesListed"},
+             {"regex": f"^{re.escape(mode)}.*" if mode else r"^[-dl]\S{9}.*", "loop": True,
+              "count_var": "ncFilesOk"}]
+    step["register"] = regs
+    validation = step.setdefault("validation", {})
+    success = validation.setdefault("success", {})
+    success["criteria"] = {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+    validation.pop("criteria", None)
+
+
+def when_bare_operands(parsed: dict) -> int:
+    """``when: ${fileCount} > 0`` is always false — the JAR reads bare names (``fileCount > 0``;
+    probed 2026-11-05, run 9de5fcb8: the backup never ran). Registered variables and record columns
+    lose their ``${}`` in ``when`` / ``skip_when`` (node values ``${MRF.VER}`` are left alone)."""
+    pattern = re.compile(r"\$\{([A-Za-z][A-Za-z0-9_]*|configSequences\.[^{}]+)\}")
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for key in ("when", "skip_when"):
+            cond = step.get(key)
+            if isinstance(cond, str) and pattern.search(cond):
+                step[key] = pattern.sub(r"\1", cond)
+                changed += 1
+    for body in (parsed.get("phases") or {}).values():
+        cond = body.get("when") if isinstance(body, dict) else None
+        if isinstance(cond, str) and pattern.search(cond):
+            body["when"] = pattern.sub(r"\1", cond)
+            changed += 1
     return changed
 
 

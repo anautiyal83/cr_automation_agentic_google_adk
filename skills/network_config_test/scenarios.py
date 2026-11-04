@@ -4,7 +4,8 @@ Test cases are derived from the workflow and the CIQ JSON, not invented:
 
 - positive: one per CR group × node group — every check passes on a healthy node
 - rollback only (spec 011): one run with ``ROLLBACK_ONLY=true`` on a node group whose positive
-  passed — only the rollback phase runs, and its steps pass
+  passed, on the node state that positive left (its backup on the node / repo server: rollback-only
+  rolls back an order whose activity already ran) — only the rollback phase runs, and its steps pass
 - negative (on one representative node group whose positive passed):
   pre-health-check failure, activity failure, post-health-check failure, node login failure
 
@@ -461,10 +462,14 @@ class ScenarioSuite:
                 suite.results.append(await self._run(sc, steps, instances, base, node_instance))
             passed = [r.scenario.target for r in suite.results if r.status == "PASS"]
             representative = passed[0] if passed else self.plan["targets"][0]
-            # One rollback-only execution (spec 011 rule 5) on a clean simulator
+            # One rollback-only execution (spec 011 rule 5) on the files the representative's
+            # sunny day left: a clean simulator has no backup to restore (run 9de5fcb8, repo route)
             rollback = rollback_only_scenario(steps, representative) if contract else None
             if rollback:
-                suite.results.append(await self._run(rollback, steps, instances, base, node_instance))
+                after = next((Path(r.out_dir) / "vfs_after" for r in suite.results
+                              if r.scenario.target == representative), None)
+                suite.results.append(await self._run(rollback, steps, instances, base, node_instance,
+                                                     vfs_from=after))
             elif contract:
                 suite.notes.append("No rollback phase: the rollback-only execution was not tested")
             if not self.include_negatives:
@@ -516,12 +521,13 @@ class ScenarioSuite:
     # -- one case -------------------------------------------------------------
 
     async def _run(self, sc: Scenario, steps: list[WorkflowStep], instances: list[dict],
-                   base: dict[str, str], node_instance: dict[str, str]) -> ScenarioResult:
+                   base: dict[str, str], node_instance: dict[str, str],
+                   vfs_from: Path | None = None) -> ScenarioResult:
         t0 = time.monotonic()
         out_dir = self.out_root / sc.id
         result = ScenarioResult(scenario=sc, out_dir=str(out_dir))
         try:
-            await self._restart(instances, self._configs_for(sc, base, node_instance))
+            await self._restart(instances, self._configs_for(sc, base, node_instance), vfs_from)
             if self.plan.get("local_cwd"):
                 from ruamel.yaml import YAML
                 staged = stage_upload_inputs(
@@ -541,6 +547,9 @@ class ScenarioSuite:
                                         .get("overall_status") or ("PASS" if exec_result["success"] else "FAIL"))
             result.commands = _commands(report)
             result.events = self._collect_events(out_dir)
+            # the node state this case left (a later rollback-only case starts from it)
+            await self.control.stop()
+            shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_after", dirs_exist_ok=True)
             evaluate(result, steps, node_instance)
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
@@ -567,7 +576,7 @@ class ScenarioSuite:
         if rep["error"]:
             logger.warning("Execution report for %s not generated: %s", sc.id, rep["error"])
 
-    async def _restart(self, instances: list[dict], configs: dict[str, str]) -> None:
+    async def _restart(self, instances: list[dict], configs: dict[str, str], vfs_from: Path | None = None) -> None:
         from skills.network_simulator_setup.simulator_runner import SimulatorInstance, start_simulator
         await self.control.stop()
         for name, text in configs.items():
@@ -578,6 +587,8 @@ class ScenarioSuite:
         # case (inbox/<ORDERNO>.xml, outbox/….res) must not exist yet
         shutil.rmtree(self.sim_dir / "vfs", ignore_errors=True)
         (self.sim_dir / "vfs").mkdir(parents=True, exist_ok=True)
+        if vfs_from is not None and Path(vfs_from).is_dir():  # rollback-only: after the activity
+            shutil.copytree(vfs_from, self.sim_dir / "vfs", dirs_exist_ok=True)
         sim = await start_simulator(
             self.sim_dir,
             [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []))
