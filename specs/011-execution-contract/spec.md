@@ -19,6 +19,9 @@ UC's documents say otherwise**:
 And (same day): **the user is never asked for patterns** (regexes) — only for the text the output must show; the
 pipeline builds the pattern from that text and the real command output (spec 009 PGW Q-2).
 
+**Clarified (user, 2026-11-04)**: the local server is provided by the execution framework by default — a workflow need
+not declare a `LOCAL` node (step 6's autofix keeps dropping an unused one).
+
 ## The contract (phase names: spec 010 O-D1)
 
 | Phase | Steps on failure | After a failure | Runs when |
