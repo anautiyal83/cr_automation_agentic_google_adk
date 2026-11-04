@@ -160,11 +160,12 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Step 6 `structure.py` (after the LLM, idempotent; validator + regenerate see the flat form): record steps run in a
   `type: loop` over `${configSequences.0.records}` (`${rec.data.<Col>}`, `reverse_order: false` — null NPEs); phases
   per activity (spec 010, Settings → Vendor Profiles → Activity → `run_options`): only the ticked ones; Backup "via
-  repo server": the `REPO` node (`execution.repo_server`) runs `scp`/`sftp` (node type `file_transfer`) to fetch the
-  `tar -c` archive from the node, copy it back before the rollback, and pass every input file on (`expect_reply` =
-  node password); otherwise backups stay in the node's /tmp; every transfer gets `sha256sum` on both ends +
-  `criteria.expr: dst == src`. Added steps: `id: nc_*`. Step 8 lists the node instances as `transfer.peers` of the
-  repo instance (MockWire copies between their VFS)
+  repo server": automation server ↔ `REPO` (`execution.repo_server`) is framework sftp; the NODE runs `scp`/`sftp`
+  (node type `file_transfer`) against the repo to copy the `tar -c` archive there, back before the rollback, and every
+  input file in (`expect_reply` = repo password; no node address needed — NIAM nodes too); otherwise backups stay in
+  the node's /tmp; every transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps:
+  `id: nc_*`. Step 8 lists the repo instance as a `transfer.peers` entry of each node instance (MockWire copies
+  between their VFS)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
   upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 

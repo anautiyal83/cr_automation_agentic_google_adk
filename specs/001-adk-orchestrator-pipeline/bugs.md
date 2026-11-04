@@ -732,3 +732,12 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   tar command; with the builtin the backup fails. Step 6 has no real-output sample for `tar` to check the regex
   against. Candidate fix: a validator / autofix rule for `tar -c` success regexes (archive listing or "Removing
   leading"), or a built-in sample of tar's output.
+
+### DEP-59 — Simulated post-check answers vary per step 8 run (Medium, Open)
+- MRF run 3d75c561 copy (`data/step_tests/3d75c561_20261104_214717`, spec 010 T013a): the final check
+  `ls -ltrh <dest>/ | grep "$(basename <file> .tar)"` (success regex `-rwxrwxrwx.*`) got the step 8 LLM key
+  `regex:ls -ltrh \S+/ \| grep ".+?"` → `''`; an earlier step 8 on the same workflow answered a `-rwxrwxrwx.` line
+  (4/4). The `cp` before it runs inside `if [[ … ]]; then cp …; fi` and is answered by a canned key, so the file never
+  reaches the VFS and a VFS `ls` would not find it either. Candidate fix: unwrap `if [[ <literal> ]]; then <file cmd>;
+  else echo SKIPPED_BY_CONDITION; fi` into the file builtin, or check step 8 keys of a post-check `ls | grep` against
+  the step's success regex.

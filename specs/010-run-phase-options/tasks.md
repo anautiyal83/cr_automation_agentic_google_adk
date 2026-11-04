@@ -26,7 +26,7 @@
   on a DB copy: saved `{…activityPrecheck: false…, backup_via_repo: true}`, New Run "Without ActivityPrecheck · backup
   via repo server"); test `test_activity_holds_the_run_phases`
 
-## Step 4: Via repo server (O-D7 corrected: the repo server runs the copies)
+## Step 4: Via repo server (O-D7 final: the node runs the copies with the repo)
 - [X] T009 `structure.py`: `backup_to_repo` — the repo fetches the archive from the node and copies it back before
   the rollback extracts it; `files_via_repo` — every LLM sftp upload / download to a node is staged on the repo
   (`nc_xr<k>_stage`, framework sftp) and copied by the repo; `repo_copy` (`scp` / `sftp` per node type
@@ -40,7 +40,12 @@
   (`overlay._peer_copies`)
 - [ ] T011 MRF E2E both routes — fast check done (steps 8 + 9 on run 3d75c561 via repo, research.md T011a): SCP and
   SFTP 4/4 each; open: full pipeline run (step 6 LLM with the options), negatives (rollback restore from the repo)
-- [ ] T013 O-Q8 node address for the repo route (NIAM nodes) — user decision
+- [X] T013 O-Q8 / O-D7 final (user, 2026-11-04): the node runs `scp` / `sftp` against the repo (framework logs in to
+  the node, via NIAM for Nokia; generic per node type `file_transfer`) — `_repo_transfer` puts the copy on the node with
+  `<repo user>@<repo host>` and the repo password in `expect_reply`; `node_login` reads the repo node's login (the
+  `node_addresses` override is gone); contract: a copy from the repo onto the node outside `/tmp` is a change, nothing
+  on the repo is; step 8: the node instance gets the repo as a peer, the overlay names it by any workflow node's
+  address (bracketed or not); `is_peer_copy` accepts `user@host:`. Steps 8 + 9 on run 3d75c561: see research.md T013a
 
 ## Step 5: Docs
 - [ ] T012 README / CLAUDE.md / guideline

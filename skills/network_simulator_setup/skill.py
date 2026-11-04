@@ -215,8 +215,8 @@ class NetworkSimulatorSetupSkill:
             config_dir = str(sim_dir)
             for node_name, raw in self._raw_llm_outputs.items():
                 (sim_dir / "logs" / f"llm_{node_name}_raw.txt").write_text(raw, encoding="utf-8")
-            # The repo server copies files to / from the nodes (spec 010 O-D7): its instance reaches
-            # each node instance's VFS (the overlay names the node in the copy commands)
+            # The nodes copy files to / from the repo server (spec 010 O-D7): their instances reach
+            # the repo instance's VFS (the overlay names the repo in the copy commands)
             from .topology import add_peers, is_peer_copy
             peers = {n.name: {"root": str((sim_dir / "vfs" / n.instance).resolve()), "password": n.password}
                      for n in nodes}

@@ -99,6 +99,11 @@ def _segment_changes(segment: str) -> bool:
         return True
     if cmd == "sed" and any(w.startswith("-i") for w in words[1:]):
         return True
+    if cmd in ("scp", "sftp"):  # a copy with another host (the repo server, spec 010 O-D7)
+        if cmd == "sftp" and (len(args) != 2 or "<<<" in words):
+            return False  # a put to the other host
+        dest = args[-1] if args else ""
+        return bool(dest) and not _REMOTE.match(dest) and not _is_temp(dest)
     if cmd == "tar":
         flags = "".join(w.lstrip("-") for w in words[1:2])
         if "x" not in flags:  # listing / creating an archive (a backup) changes nothing
@@ -118,26 +123,16 @@ def _segment_changes(segment: str) -> bool:
 
 
 _REPO_NODE = re.compile(r"repo|backup", re.I)
-_TO_NODE = re.compile(r"^\s*(?:scp\b.*\s|sftp\s+)\S*@(?:\[[^\]]*\]|[^\s:@]+):(\S+)(?:\s+<<<\s*'put\s+\S+(?:\s+(\S+))?')?\s*$")
-
-
-def _copy_to_node(send: str) -> str | None:
-    """The node path a repo-server ``scp <src> user@[node]:<path>`` / ``sftp user@[node]:<dir> <<<
-    'put <src> [<name>]'`` writes; None for anything else (a download, a command on the repo)."""
-    m = _TO_NODE.match(send)
-    if not m or (send.lstrip().startswith("sftp") and "<<<" not in send):
-        return None
-    return f"{m.group(1).rstrip('/')}/{m.group(2)}" if m.group(2) else m.group(1)
+_REMOTE = re.compile(r"^(?:[^\s@/]+@)?(?:\[[^\]]*\]|[^\s:@/\[]+):")  # [user@]host: of scp / sftp
 
 
 def changes_node(step: dict, local_nodes: set[str], repo_nodes: set[str] = frozenset()) -> bool:
-    """A step on a remote node that changes how the node works (E-D3). On the repo server only a
-    copy onto a node outside the temp directories does (spec 010 O-D7)."""
+    """A step on a remote node that changes how the node works (E-D3). Nothing on the repo server
+    does (spec 010 O-D7: the node itself copies files to and from it)."""
     if not isinstance(step, dict) or str(step.get("node", "")) in local_nodes:
         return False
     if str(step.get("node", "")) in repo_nodes:
-        target = _copy_to_node(str(step.get("send") or ""))
-        return target is not None and not _is_temp(target)
+        return False
     sftp = step.get("sftp")
     if isinstance(sftp, dict):
         return str(sftp.get("operation", "")).lower() == "upload" and not _is_temp(str(sftp.get("remote_path", "")))

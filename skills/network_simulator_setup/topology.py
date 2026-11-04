@@ -200,11 +200,11 @@ def file_builtin(cmd: str) -> bool:
     return first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
 
 
-_PEER = re.compile(r"\S@\\?\[")
+_PEER = re.compile(r"\S@(?:\\?\[|[\w.\\-]+:)")
 
 
 def is_peer_copy(cmd: str) -> bool:
-    """The repo server's copy to / from a node (``scp … user@[node]:…``, spec 010 O-D7): MockWire
+    """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7): MockWire
     moves the file between the two instances' VFS (``transfer.peers``)."""
     return bool(_PEER.search(cmd))
 

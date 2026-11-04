@@ -6,10 +6,11 @@
    runs a step as a loop only with ``type: loop``; ``reverse_order`` must be set (it NPEs
    on null) — both verified against cli-automation execute/generate 2026-11-03.
 2. Backup "via repo server" (spec 010 O-D2 / O-D7, otherwise backups stay in the node's /tmp):
-   the repo server (``execution.repo_server``, workflow node ``REPO``) fetches each ``tar -c``
-   archive of a backup phase from the node with ``scp`` / ``sftp`` (node type's ``file_transfer``,
-   node password by ``expect_reply``) and copies it back before a rollback extracts it; every file
-   the workflow moves between the automation server and a node is staged on the repo server too.
+   each node copies the ``tar -c`` archive of a backup phase to the repo server
+   (``execution.repo_server``, workflow node ``REPO``) with ``scp`` / ``sftp`` (node type's
+   ``file_transfer``, repo password by ``expect_reply``) and back before a rollback extracts it;
+   every file the workflow moves between the automation server and a node is staged on the repo
+   server (framework sftp) and copied by the node the same way.
 3. Checksums: every ``sftp`` transfer is followed by ``sha256sum`` on both ends and a
    ``criteria.expr`` comparison of the two registered sums (string ``==`` verified).
 4. Execution contract (spec 011, ``contract.py``): failure flags, phase conditions, abort and
@@ -101,7 +102,7 @@ def _uses_vars(step: dict, names: set[str]) -> bool:
 def _moved_files(step: dict) -> set[str]:
     sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
     files = {str(sftp[k]) for k in ("remote_path", "local_path") if sftp.get(k) and "/" in str(sftp[k])}
-    if _is_auto(step) and str(step.get("id")).endswith("_copy"):  # the repo server's scp / sftp
+    if _is_auto(step) and str(step.get("id")).endswith("_copy"):  # the node's scp / sftp with the repo
         files |= {re.sub(r"^\S*@(?:\[[^\]]*\]|[^\s:@]+):", "", tok) for tok in str(step.get("send") or "").split()[1:]
                   if "/" in tok and not tok.startswith("'")}
     return files
@@ -348,16 +349,13 @@ def via_repo(requirements: dict | None) -> bool:
     return bool(run_options.normalize(raw)["backup_via_repo"])
 
 
-def node_login(parsed: dict, node: str, requirements: dict | None) -> tuple[str, str, str]:
-    """(user, address, password) the repo server logs in to ``node`` with (O-Q8): the node's own
-    SSH user, address and password secret of the workflow; ``requirements.node_addresses`` (node →
-    address, e.g. a CIQ node value ``${MRF.OAM_IP}``) overrides the address."""
+def node_login(parsed: dict, node: str) -> tuple[str, str, str]:
+    """(user, address, password) of a workflow node's SSH login — for the repo server, what a node
+    logs in to it with (O-D7: the node runs the copy, so a NIAM node needs no address of its own)."""
     spec = (parsed.get("nodes") or {}).get(node)
     ssh = spec.get("ssh") if isinstance(spec, dict) and isinstance(spec.get("ssh"), dict) else {}
     auth = ssh.get("auth") if isinstance(ssh.get("auth"), dict) else {}
-    override = ((requirements or {}).get("node_addresses") or {}) if isinstance(requirements, dict) else {}
-    address = str((override.get(node) if isinstance(override, dict) else "") or ssh.get("host") or node)
-    return str(ssh.get("user") or "root"), address, str(auth.get("password") or ssh.get("password") or "")
+    return str(ssh.get("user") or "root"), str(ssh.get("host") or node), str(auth.get("password") or ssh.get("password") or "")
 
 
 def file_transfer(requirements: dict | None, node: str) -> str:
@@ -372,29 +370,29 @@ def file_transfer(requirements: dict | None, node: str) -> str:
     return "sftp"
 
 
-def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: str, download: bool) -> str:
-    """The command the repo server runs to copy a file from (``download``) or to the node."""
-    remote = f"{user}@[{address}]:"
+def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: str, to_repo: bool) -> str:
+    """The command a node runs to copy a file to (``to_repo``) or from the repo server."""
+    remote = f"{user}@{f'[{address}]' if ':' in address else address}:"  # brackets for IPv6 only
     if method == "scp":
-        return f"scp {remote}{node_path} {repo_path}" if download else f"scp {repo_path} {remote}{node_path}"
-    if download:
-        return f"sftp {remote}{node_path} {repo_path}"
-    folder, _, name = node_path.rpartition("/")
-    return f"sftp {remote}{folder or '/'} <<< 'put {repo_path} {name}'"
+        return f"scp {node_path} {remote}{repo_path}" if to_repo else f"scp {remote}{repo_path} {node_path}"
+    if not to_repo:
+        return f"sftp {remote}{repo_path} {node_path}"
+    folder, _, name = repo_path.rpartition("/")
+    return f"sftp {remote}{folder or '/'} <<< 'put {node_path} {name}'"
 
 
 def _repo_transfer(tag: str, repo: str, node: str, login: tuple[str, str, str], method: str,
-                   node_path: str, repo_path: str, download: bool, when: str, what: str) -> list[dict]:
-    """Checksum at the source, the repo server's copy (node password by ``expect_reply``), checksum
-    at the destination compared with the source's. Ids ``nc_<tag>_sum_node`` / ``_copy`` /
-    ``_sum_repo`` (``flatten`` reads the node side back)."""
+                   node_path: str, repo_path: str, to_repo: bool, when: str, what: str) -> list[dict]:
+    """Checksum at the source, the node's copy to / from the repo server (repo password by
+    ``expect_reply``), checksum at the destination compared with the source's. Ids
+    ``nc_<tag>_sum_node`` / ``_copy`` / ``_sum_repo`` (``flatten`` reads the node side back)."""
     user, address, password = login
     src_var, dst_var = f"{tag}Src", f"{tag}Dst"
     node_sum = (node, node_path, f"nc_{tag}_sum_node", f"file on {node}")
     repo_sum = (repo, repo_path, f"nc_{tag}_sum_repo", "file on the repo server")
-    src, dst = (node_sum, repo_sum) if download else (repo_sum, node_sum)
-    copy_ = _step(f"nc_{tag}_copy", repo, what, when,
-                  send=repo_copy(method, user, address, node_path, repo_path, download))
+    src, dst = (node_sum, repo_sum) if to_repo else (repo_sum, node_sum)
+    copy_ = _step(f"nc_{tag}_copy", node, what, when,
+                  send=repo_copy(method, user, address, node_path, repo_path, to_repo))
     if password:
         copy_["expect_reply"] = [{"expect": "assword:", "reply": f"{password}\n", "timeout_sec": 30}]
     return [
@@ -417,7 +415,7 @@ def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
 
     Only when the run chose Backup "via repo server" (spec 010 O-D2); otherwise the backup stays
     on the node (``/tmp``) where the backup step wrote it and the rollback restores it from there.
-    The repo server runs the copies to and from the node (O-D7)."""
+    The node runs the copies to and from the repo server (O-D7)."""
     if not via_repo(requirements):
         return 0
     cfg = _repo_config(requirements)
@@ -469,9 +467,9 @@ def backup_to_repo(parsed: dict, requirements: dict | None = None) -> int:
                 _hostname_step(f"{AUTO_ID}bk{k}_host", node, host, when),
                 _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", when,
                       send=f"mkdir -p {repo_dir}"),
-                *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, node, requirements),
+                *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
                                 file_transfer(requirements, node), canonical, f"{repo_dir}/{basename}", True, when,
-                                f"The repo server fetches the backup {basename} from {node}"),
+                                f"{node} copies the backup {basename} to the repo server"),
             ]
             absolute = bool(sources) and all(s.startswith(("/", "${")) for s in sources)
             backups.append((node, canonical, f"{repo_tpl}/{basename}", dropped, absolute))
@@ -508,9 +506,9 @@ def _restore_from_repo(parsed: dict, cfg: dict, backup: tuple, k: int, requireme
                     step["send"] = text[:m.start(1)] + archive + tail + text[m.end():]
                     out += [
                         _hostname_step(f"{AUTO_ID}rs{k}_host", node, host, when),
-                        *_repo_transfer(f"rs{k}", repo, node, node_login(parsed, node, requirements),
+                        *_repo_transfer(f"rs{k}", repo, node, node_login(parsed, repo),
                                         file_transfer(requirements, node), archive, repo_path, False, when,
-                                        f"The repo server copies the backup {basename} back to {node}"),
+                                        f"{node} copies the backup {basename} back from the repo server"),
                     ]
                     done = True
             out.append(step)
@@ -529,7 +527,7 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
     """Every file the workflow moves between the automation server and a node goes through the
     repo server (O-D2 "via repo server" moves everything, O-D7): an upload becomes automation
     server → repo (framework sftp, the LLM's step on node REPO, id ``nc_xr<k>_stage``) → node (the
-    repo server's copy); a download node → repo (the repo's copy) → automation server."""
+    node's copy from the repo); a download node → repo (the node's copy) → automation server."""
     if not via_repo(requirements):
         return 0
     cfg = _repo_config(requirements)
@@ -563,9 +561,9 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
             sftp["remote_path"] = staged
             mkdir = _step(f"{AUTO_ID}xr{count}_dir", repo, "Create the file directory on the repo server", when,
                           send=f"mkdir -p {stage_dir}")
-            copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, node, requirements),
+            copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, repo),
                                    file_transfer(requirements, node), node_path, staged, op == "download", when,
-                                   f"The repo server copies {name} {'from' if op == 'download' else 'to'} {node}")
+                                   f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server")
             out += [mkdir, step, *copy_] if op == "upload" else [mkdir, *copy_, step]
         return out
 

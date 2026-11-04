@@ -58,11 +58,11 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
 
 
 def _peer_copies(workflow: dict, nodes: list[NodeSpec]) -> None:
-    """The repo server's copies to / from a node (spec 010 O-D7) name the node by its production
-    address and answer its password secret: in the overlay they name the node's instance (a
-    ``transfer.peers`` key of the repo instance) and answer the simulator password."""
+    """A node's copies to / from the repo server (spec 010 O-D7) name the repo by its production
+    address and answer its password secret: in the overlay they name the repo's instance (a
+    ``transfer.peers`` key of the node instance) and answer the simulator password."""
     from skills.network_config_gen.structure import node_login  # same address / password as step 6
-    logins = {spec.name: node_login(workflow, spec.name, None) for spec in nodes}
+    logins = {spec.name: node_login(workflow, spec.name) for spec in nodes}
 
     def walk(steps) -> None:
         for step in steps if isinstance(steps, list) else []:
@@ -72,9 +72,10 @@ def _peer_copies(workflow: dict, nodes: list[NodeSpec]) -> None:
             send = str(step.get("send") or "")
             for spec in nodes:
                 _, address, password = logins[spec.name]
-                if f"@[{address}]:" not in send:
+                hits = [f"@{a}:" for a in (f"[{address}]", address) if f"@{a}:" in send]
+                if not hits:
                     continue
-                step["send"] = send = send.replace(f"@[{address}]:", f"@[{spec.name}]:")
+                step["send"] = send = send.replace(hits[0], f"@{spec.name}:")
                 for reply in step.get("expect_reply") or []:
                     if isinstance(reply, dict) and password and password in str(reply.get("reply", "")):
                         reply["reply"] = str(reply["reply"]).replace(password, spec.password)
