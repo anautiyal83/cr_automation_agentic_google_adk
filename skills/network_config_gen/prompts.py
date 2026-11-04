@@ -70,6 +70,13 @@ CRITICAL RULES:
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
+- Failure handling is added by the pipeline (execution contract): health checks run completely, a failed
+  pre-health check or backup skips everything after it, a failed activity step stops the activity and starts the
+  rollback when the node was changed, ROLLBACK_ONLY runs only the rollback. Do NOT write the flags
+  (ROLLBACK_REQUIRED, ROLLBACK_ONLY, PRECHECK_FAILED, BACKUP_FAILED, CHANGES_MADE), phase `when` conditions
+  or `on_failure` policies for them. Put rollback steps in phases whose key and name contain "rollback".
+- Rollback steps must work in a rollback-only run (no earlier phase ran): find what to restore on the node or
+  the repo themselves (e.g. `ls` the backup location) instead of reading values registered in earlier phases
 - Switch to a service user with its own step `send: 'su - <user>'`, and leave it with
   `send: 'exit'`. These steps MUST set step-level prompt_regex to the prompt they lead to
   and MUST NOT validate output with a regex: the framework strips prompts from output.

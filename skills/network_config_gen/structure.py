@@ -10,6 +10,8 @@
    that extracts it first fetches it back the same way.
 3. Checksums: every ``sftp`` transfer is followed by ``sha256sum`` on both ends and a
    ``criteria.expr`` comparison of the two registered sums (string ``==`` verified).
+4. Execution contract (spec 011, ``contract.py``): failure flags, phase conditions, abort and
+   rollback rules.
 
 The LLM writes the flat form (``${configSequences.0.records.0.data.<Col>}``); ``flatten``
 turns a structured workflow back into it (loops unwrapped, added steps removed), so the
@@ -123,7 +125,8 @@ def _step(sid: str, node: str, description: str, when: str = "", **body) -> dict
 def flatten(parsed: dict) -> int:
     """Undo ``apply``: unwrap record loops (``${rec.data.X}`` → ``records.0``) and drop the
     added ``nc_`` steps. Returns the number of changes."""
-    changed = 0
+    from . import contract
+    changed = contract.strip(parsed)
 
     def walk(steps: list) -> list:
         nonlocal changed
@@ -446,9 +449,12 @@ def _hostname_step(sid: str, node: str, var: str, when: str) -> dict:
 # --------------------------------------------------------------------------- entry point
 
 def apply(parsed: dict, requirements: dict | None = None) -> int:
-    """flatten → repo backups → record loops → transfer checksums (idempotent)."""
+    """flatten → repo backups → record loops → transfer checksums → execution contract
+    (spec 011; idempotent)."""
+    from . import contract
     flatten(parsed)
     changes = backup_to_repo(parsed, requirements)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
+    changes += contract.apply(parsed)
     return changes

@@ -9,11 +9,13 @@
 - [X] E006 `register` `loop` + `count_var` and `expr` with `==`, `>`, `&&` on counts
 
 ## Step 2: Contract in step 6 (deterministic)
-- [ ] E010 `structure.py`: flags in `globals.vars`; phase `when` per the table; step `on_failure` per phase; failure /
+- [X] E010 `contract.py` (called by `structure.apply`, undone by `flatten`): flags in `globals.vars`; phase `when` per the table; step `on_failure` per phase; failure /
   success branch `vars`; change detection (`CHANGES_MADE`); dependants of `su` / used registers
-- [ ] E011 Prompt: phases and the contract (the LLM writes the steps, structure applies the rules)
-- [ ] E012 Validator: contract present; tests
+- [X] E011 Prompt: the pipeline adds failure handling (no flags / `when` / `on_failure` from the LLM); rollback phases named "rollback"; rollback steps must work in a rollback-only run
+- [X] E012 Tests `tests/test_execution_contract.py` (phase kinds, change detection E-D3, every rule, idempotence, strip round trip, condition combine); validator unchanged (checks the flat form); JAR `generate` accepts the result (E009)
 - [ ] E013 Step 9 passes `ROLLBACK_ONLY` (`execution.runtime_params`) and runs a rollback-only case
+
+- [ ] E014 Rollback-only: rollback steps that read values registered in earlier phases (MRF `backupFileName`) cannot run with `ROLLBACK_ONLY` — validator warning + structure/route support (spec 010 backup location per order)
 
 ## Step 3: Text, not patterns (step 1 + step 6)
 - [ ] E020 Step 1 prompt: ask for the expected text (+ scope every/one), never a regex; de-duplicate questions by text across rounds (PGW Q-1)
