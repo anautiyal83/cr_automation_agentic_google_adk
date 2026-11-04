@@ -98,6 +98,8 @@ shared/                            # Shared state + LLM wrapper
 
 core/                              # Infrastructure
   config.py, events.py, logging_config.py, retry.py
+  auth.py                          # users, roles, View/Update levels, set-password CLI (spec 006)
+  audit.py                         # append-only activity trail (audit_log)
 
 models/                            # Domain models
   domain.py, validation.py
@@ -109,8 +111,10 @@ tools/                             # Shared tools
   yaml_tools.py, report_tools.py, ciq_tools.py
 
 ui/                                # NiceGUI frontend
-  app.py                           # Entry point + CSS + layout
+  app.py                           # Entry point + CSS + layout + login middleware + screen gating
+  access.py                        # action() marking, @requires/@requires_admin, RunScope, trail helpers
   pages/                           # upload, progress, settings, history, etc.
+                                   # + login_page, users_section, audit_section (spec 006)
 
 schemas/                           # Authoritative YAML schemas (consumed by JARs)
 knowledge/                         # OKF-ready knowledge directory
@@ -174,6 +178,21 @@ python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICA
 # Test individual skill
 python test_step.py --skill ciq_validation_json_gen --run-id <id>
 ```
+
+## Login & Access (spec 006 — `specs/006-rbac-login/`)
+- Email + password login (`ui/pages/login_page.py`, `AuthMiddleware`): every route except `/login`, `/logout`
+  and NiceGUI assets needs a session (12 h) — media files too. Default admin `admin@netconfig.local`/`admin`
+  (forced change) or `NETCONFIG_ADMIN_EMAIL`/`NETCONFIG_ADMIN_PASSWORD`; `python -m core.auth set-password <email>`
+- A role gives each screen `view` or `update` (`core.auth.SCREENS`); `users` and `audit` are admin-only
+  (`ADMIN_SCREENS`). Screens without permission are not built; navigation/deep links refuse them
+- New action buttons: wrap in `action(btn[, screen])` (disabled on View screens) AND guard the handler with
+  `@requires(screen, "<action>")` (server check); admin-only things `@requires_admin`
+- Runs: `pipeline_runs.started_by`; sections take `scope()` at build time and use `RunScope.where()` in queries,
+  `RunScope.check()` before acting on a run id (admin: all runs, others own runs). One pipeline at a time:
+  `may_start_run()` before `runner.start(..., started_by=user.id)`
+- Trail: `await record(...)` in async handlers after success, `record_later(...)` in sync code (takes the
+  user now); pipeline events are recorded as `system` by `PipelineRunner._trail_event`. Never record secrets
+- Session data: `.nicegui/` (git-ignored); cookie secret `NETCONFIG_STORAGE_SECRET` or `data/.storage_secret`
 
 ## Step Names (UI)
 1. DOC Parser, 2. DOC Analyzer, 3. CIQ Config Generation,

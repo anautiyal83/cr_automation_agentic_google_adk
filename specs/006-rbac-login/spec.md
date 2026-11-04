@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-04
 
-**Status**: Decisions D1–D9 taken (2026-11-04); implementation step by step
+**Status**: Implemented 2026-11-04 (steps 1–7, see tasks.md); open: nothing
 
 **Input**: "Let's implement a login system so we add security. We want a role-based login: an
 admin who has access to all sections and who creates users and roles and assigns permissions to

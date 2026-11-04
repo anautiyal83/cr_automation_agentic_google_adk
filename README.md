@@ -16,6 +16,24 @@ pip install -r requirements.txt
 python main.py --ciq path/to/ciq.xlsx --uc-name DSR_1058_IFC_CAPABILITY_MODIFICATION
 ```
 
+## Login & Access
+
+The web UI needs a login (email + password). Spec: [specs/006-rbac-login](specs/006-rbac-login/spec.md).
+
+- **First start**: the administrator account `admin@netconfig.local` with password `admin` is created; at the
+  first login it must be changed. To choose them up front, set before the first start:
+  `NETCONFIG_ADMIN_EMAIL` and `NETCONFIG_ADMIN_PASSWORD`.
+- **Forgotten password** (any user, run on the server): `python -m core.auth set-password <email>`
+- **Users & Roles** (admin): create users (they set their own password at first login), give each one a role;
+  a role grants each screen **None**, **View** (data only, action buttons disabled) or **Update**.
+- **Runs**: everyone sees and acts on the runs they started; the administrator sees all runs. One pipeline
+  runs at a time — a start is refused while another user's run is in progress.
+- **Audit Trail** (admin): every action, refused attempt and pipeline step — filter, details, CSV export.
+- Sessions last 12 h; 5 failed logins lock an email for 5 minutes. The session cookie is signed with
+  `NETCONFIG_STORAGE_SECRET`, else a secret generated once into `data/.storage_secret` (do not share `data/`).
+  Run behind HTTPS (reverse proxy) in production.
+- The CLI (`main.py`, `test_run.py`, `test_step.py`) needs no login; its runs are visible to the administrator.
+
 ## Architecture
 
 ```
