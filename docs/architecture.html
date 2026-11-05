@@ -63,6 +63,7 @@ figcaption { color: var(--muted); font-size: 14px; max-width: 80ch; }
 .legend span { display: inline-flex; align-items: center; gap: 8px; }
 .sw { width: 22px; height: 0; border-top: 2px solid var(--flow); }
 .sw.retry { border-top: 2px dashed var(--retry); }
+.sw.review { border-top: 2px solid var(--review); }
 .dia { width: 10px; height: 10px; background: var(--review); transform: rotate(45deg); }
 .qb { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--review); }
 
@@ -92,6 +93,8 @@ svg .qring { fill: var(--surface); stroke: var(--review); stroke-width: 2; }
 svg .ah { fill: var(--flow); }
 svg .ah-retry { fill: var(--retry); }
 svg .ah-muted { fill: var(--muted); }
+svg .ah-review { fill: var(--review); }
+svg .edge-review { stroke: var(--review); stroke-width: 1.7; fill: none; }
 svg .ok-dot { fill: var(--pass); }
 svg .bad-dot { fill: var(--retry); }
 
@@ -293,7 +296,152 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
     </figure>
   </section>
 
-  <!-- 2. Review pauses -->
+  <!-- 2. Agents working together -->
+  <section id="team">
+    <div class="sec-head">
+      <h2>How the agents work together</h2>
+      <p>The agents work in pairs: one makes something, the next one tests it and sends the problems back. An orchestrator runs them in order, and the developer answers questions and decides at every review.</p>
+    </div>
+    <figure>
+      <div class="frame">
+        <svg viewBox="0 0 1200 940" role="img" aria-label="The orchestrator runs nine agents. The requirements agent feeds three maker and checker pairs; each checker sends failures back to its maker; the execution checker can also send the run back to the workflow maker; the report agent closes the run.">
+          <defs>
+            <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+            <marker id="a4r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-retry"/></marker>
+            <marker id="a4v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-review"/></marker>
+          </defs>
+
+          <!-- Orchestrator -->
+          <rect x="40" y="20" width="850" height="80" rx="10" class="box-strong"/>
+          <text x="60" y="48" font-size="15" font-weight="700">PipelineAgent</text>
+          <text x="172" y="48" font-size="12.5" class="t-muted">orchestrator · decides which agent runs next</text>
+          <g font-size="12">
+            <rect x="60" y="62" width="176" height="24" rx="5" class="chip"/><text x="148" y="78" text-anchor="middle">runs agents in order</text>
+            <rect x="246" y="62" width="196" height="24" rx="5" class="chip"/><text x="344" y="78" text-anchor="middle">checkpoint before each one</text>
+            <rect x="452" y="62" width="196" height="24" rx="5" class="chip"/><text x="550" y="78" text-anchor="middle">pauses for the developer</text>
+            <rect x="658" y="62" width="212" height="24" rx="5" class="chip"/><text x="764" y="78" text-anchor="middle">routes retries · at most 3</text>
+          </g>
+
+          <!-- Developer -->
+          <rect x="950" y="20" width="210" height="80" rx="10" class="box"/>
+          <circle cx="980" cy="50" r="9" class="rv"/><path d="M964,78 a16,13 0 0 1 32,0 z" class="rv"/>
+          <text x="1008" y="54" font-size="14" font-weight="600">Developer</text>
+          <text x="1008" y="73" font-size="11.5" class="t-muted">answers · reviews</text>
+          <line x1="894" y1="60" x2="946" y2="60" class="edge-review" marker-end="url(#a4v)" marker-start="url(#a4v)"/>
+          <text x="920" y="52" text-anchor="middle" font-size="11" class="t-review">decide</text>
+
+          <!-- Requirements -->
+          <rect x="330" y="130" width="540" height="100" rx="10" class="box"/>
+          <text x="346" y="156" font-size="13" font-weight="600" class="t-mono">requirements_gatherer</text>
+          <rect x="786" y="142" width="68" height="20" rx="10" class="chip-plain"/><text x="820" y="156" text-anchor="middle" font-size="11" class="t-mono t-muted">step 1–2</text>
+          <text x="346" y="178" font-size="12" class="t-muted">Reads the CIQ, MOP and session logs, asks the developer what is</text>
+          <text x="346" y="194" font-size="12" class="t-muted">missing, then writes requirements.json</text>
+          <g font-size="11" class="t-mono"><rect x="346" y="204" width="62" height="18" rx="9" class="chip-plain"/><text x="377" y="217" text-anchor="middle" class="t-muted">parsers</text><rect x="414" y="204" width="40" height="18" rx="9" class="chip"/><text x="434" y="217" text-anchor="middle" class="t-flow">LLM</text></g>
+          <path d="M1055,102 V180 H874" class="edge-review" marker-end="url(#a4v)"/>
+          <text x="966" y="172" text-anchor="middle" font-size="11.5" class="t-review">answers questions</text>
+          <path d="M600,232 V250 H265 V266" class="edge" marker-end="url(#a4)"/>
+          <text x="612" y="254" font-size="11.5" class="t-flow">requirements.json · read by every agent</text>
+
+          <text x="60" y="262" class="t-label">MAKERS · GENERATE</text>
+          <text x="730" y="262" class="t-label">CHECKERS · TEST</text>
+
+          <!-- Pair 1: CIQ -->
+          <rect x="60" y="270" width="410" height="110" rx="10" class="box"/>
+          <text x="76" y="296" font-size="13" font-weight="600" class="t-mono">ciq_validation_json_gen</text>
+          <rect x="386" y="282" width="68" height="20" rx="10" class="chip-plain"/><text x="420" y="296" text-anchor="middle" font-size="11" class="t-mono t-muted">step 3–4</text>
+          <text x="76" y="320" font-size="12" class="t-muted">Writes the CIQ validation rules with the LLM and</text>
+          <text x="76" y="336" font-size="12" class="t-muted">builds the CIQ JSON with ciq-processor</text>
+          <g font-size="11" class="t-mono"><rect x="76" y="350" width="40" height="18" rx="9" class="chip"/><text x="96" y="363" text-anchor="middle" class="t-flow">LLM</text><rect x="122" y="350" width="100" height="18" rx="9" class="chip-plain"/><text x="172" y="363" text-anchor="middle" class="t-muted">ciq-processor</text></g>
+
+          <rect x="730" y="270" width="410" height="110" rx="10" class="box"/>
+          <text x="746" y="296" font-size="13" font-weight="600" class="t-mono">ciq_validation_json_qa</text>
+          <rect x="1068" y="282" width="56" height="20" rx="10" class="chip-plain"/><text x="1096" y="296" text-anchor="middle" font-size="11" class="t-mono t-muted">step 5</text>
+          <text x="746" y="320" font-size="12" class="t-muted">Generates CIQ test cases, runs them through</text>
+          <text x="746" y="336" font-size="12" class="t-muted">ciq-processor, reports what the rules miss</text>
+          <g font-size="11" class="t-mono"><rect x="746" y="350" width="40" height="18" rx="9" class="chip"/><text x="766" y="363" text-anchor="middle" class="t-flow">LLM</text><rect x="792" y="350" width="100" height="18" rx="9" class="chip-plain"/><text x="842" y="363" text-anchor="middle" class="t-muted">ciq-processor</text></g>
+
+          <line x1="472" y1="305" x2="726" y2="305" class="edge" marker-end="url(#a4)"/>
+          <text x="600" y="297" text-anchor="middle" font-size="11.5" class="t-flow">rules + CIQ JSON</text>
+          <line x1="728" y1="350" x2="474" y2="350" class="retry" marker-end="url(#a4r)"/>
+          <text x="600" y="368" text-anchor="middle" font-size="11.5" class="t-retry">failing test cases</text>
+
+          <!-- Pair 2: Workflow -->
+          <rect x="60" y="410" width="410" height="160" rx="10" class="box"/>
+          <text x="76" y="436" font-size="13" font-weight="600" class="t-mono">network_config_gen</text>
+          <rect x="398" y="422" width="56" height="20" rx="10" class="chip-plain"/><text x="426" y="436" text-anchor="middle" font-size="11" class="t-mono t-muted">step 6</text>
+          <text x="76" y="458" font-size="12" class="t-muted">Generates the cli-automation workflow; autofix and</text>
+          <text x="76" y="474" font-size="12" class="t-muted">structure add backups, rollback and record loops</text>
+          <g font-size="11" class="t-mono"><rect x="76" y="484" width="40" height="18" rx="9" class="chip"/><text x="96" y="497" text-anchor="middle" class="t-flow">LLM</text><rect x="122" y="484" width="64" height="18" rx="9" class="chip-plain"/><text x="154" y="497" text-anchor="middle" class="t-muted">autofix</text><rect x="192" y="484" width="78" height="18" rx="9" class="chip-plain"/><text x="231" y="497" text-anchor="middle" class="t-muted">validator</text></g>
+          <line x1="76" y1="514" x2="454" y2="514" class="edge-muted" stroke-dasharray="2 4"/>
+          <text x="76" y="536" font-size="13" font-weight="600" class="t-mono">helper_script_gen</text>
+          <rect x="398" y="522" width="56" height="20" rx="10" class="chip-plain"/><text x="426" y="536" text-anchor="middle" font-size="11" class="t-mono t-muted">step 6</text>
+          <text x="76" y="556" font-size="12" class="t-muted">Writes the scripts the workflow's local steps call (LLM)</text>
+
+          <rect x="730" y="410" width="410" height="160" rx="10" class="box"/>
+          <text x="746" y="436" font-size="13" font-weight="600" class="t-mono">network_config_mop_qa</text>
+          <rect x="1068" y="422" width="56" height="20" rx="10" class="chip-plain"/><text x="1096" y="436" text-anchor="middle" font-size="11" class="t-mono t-muted">step 7</text>
+          <text x="746" y="458" font-size="12" class="t-muted">Renders the MOP from the workflow with</text>
+          <text x="746" y="474" font-size="12" class="t-muted">cli-automation and checks it is complete</text>
+          <g font-size="11" class="t-mono"><rect x="746" y="484" width="112" height="18" rx="9" class="chip-plain"/><text x="802" y="497" text-anchor="middle" class="t-muted">cli-automation</text></g>
+
+          <line x1="472" y1="450" x2="726" y2="450" class="edge" marker-end="url(#a4)"/>
+          <text x="600" y="442" text-anchor="middle" font-size="11.5" class="t-flow">workflow + scripts</text>
+          <line x1="728" y1="520" x2="474" y2="520" class="retry" marker-end="url(#a4r)"/>
+          <text x="600" y="538" text-anchor="middle" font-size="11.5" class="t-retry">MOP problems</text>
+
+          <!-- Pair 3: Prove -->
+          <rect x="60" y="600" width="410" height="110" rx="10" class="box"/>
+          <text x="76" y="626" font-size="13" font-weight="600" class="t-mono">network_simulator_setup</text>
+          <rect x="398" y="612" width="56" height="20" rx="10" class="chip-plain"/><text x="426" y="626" text-anchor="middle" font-size="11" class="t-mono t-muted">step 8</text>
+          <text x="76" y="650" font-size="12" class="t-muted">Starts one simulated node per real node, answering</text>
+          <text x="76" y="666" font-size="12" class="t-muted">with the outputs from the session logs</text>
+          <g font-size="11" class="t-mono"><rect x="76" y="680" width="40" height="18" rx="9" class="chip"/><text x="96" y="693" text-anchor="middle" class="t-flow">LLM</text><rect x="122" y="680" width="72" height="18" rx="9" class="chip-plain"/><text x="158" y="693" text-anchor="middle" class="t-muted">MockWire</text></g>
+
+          <rect x="730" y="600" width="410" height="110" rx="10" class="box"/>
+          <text x="746" y="626" font-size="13" font-weight="600" class="t-mono">network_config_exec_qa</text>
+          <rect x="1068" y="612" width="56" height="20" rx="10" class="chip-plain"/><text x="1096" y="626" text-anchor="middle" font-size="11" class="t-mono t-muted">step 9</text>
+          <text x="746" y="650" font-size="12" class="t-muted">Runs the workflow on the simulator (sunny day per</text>
+          <text x="746" y="666" font-size="12" class="t-muted">node group + rollback-only) and judges each case</text>
+          <g font-size="11" class="t-mono"><rect x="746" y="680" width="112" height="18" rx="9" class="chip-plain"/><text x="802" y="693" text-anchor="middle" class="t-muted">cli-automation</text><rect x="864" y="680" width="72" height="18" rx="9" class="chip-plain"/><text x="900" y="693" text-anchor="middle" class="t-muted">MockWire</text></g>
+
+          <line x1="472" y1="635" x2="726" y2="635" class="edge" marker-end="url(#a4)"/>
+          <text x="600" y="627" text-anchor="middle" font-size="11.5" class="t-flow">running simulator</text>
+          <line x1="728" y1="680" x2="474" y2="680" class="retry" marker-end="url(#a4r)"/>
+          <text x="600" y="698" text-anchor="middle" font-size="11.5" class="t-retry">simulator gap</text>
+
+          <!-- Execution checker back to the workflow maker -->
+          <path d="M935,712 V734 H30 V455 H56" class="retry" marker-end="url(#a4r)"/>
+          <text x="482" y="752" text-anchor="middle" font-size="11.5" class="t-retry">workflow problem → back to network_config_gen</text>
+
+          <!-- Report -->
+          <rect x="330" y="772" width="540" height="72" rx="10" class="box-strong"/>
+          <text x="346" y="798" font-size="13" font-weight="600" class="t-mono">report_generator</text>
+          <rect x="786" y="784" width="68" height="20" rx="10" class="chip-plain"/><text x="820" y="798" text-anchor="middle" font-size="11" class="t-mono t-muted">step 10</text>
+          <text x="346" y="824" font-size="12" class="t-muted">Lists every deliverable and writes the HTML and Excel report</text>
+          <path d="M1142,655 H1172 V808 H874" class="edge" marker-end="url(#a4)"/>
+          <text x="1166" y="826" text-anchor="end" font-size="11.5" class="t-flow">all cases pass</text>
+
+          <!-- Shared -->
+          <rect x="40" y="868" width="1120" height="56" rx="10" class="band"/>
+          <text x="60" y="892" class="t-label">SHARED BETWEEN AGENTS</text>
+          <g font-size="12">
+            <text x="60" y="913">run folder <tspan class="t-mono t-muted" font-size="11">data/runs/&lt;id&gt;</tspan>: every artifact</text>
+            <text x="420" y="913">requirements store</text>
+            <text x="600" y="913">retry target + QA feedback</text>
+            <text x="830" y="913">checkpoints <tspan class="t-muted">(resume after restart)</tspan></text>
+          </g>
+        </svg>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="sw"></i>hands its output on</span>
+        <span><i class="sw retry"></i>sends problems back for another try</span>
+        <span><i class="sw review"></i>talks to the developer</span>
+      </div>
+      <figcaption>Agents never call each other. Each one reads what the earlier agents left in the run folder and writes its own output there. A checker that finds problems writes them down with the step to retry. The orchestrator then re-runs that maker, which gets the feedback, and counts the retry.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 3. Review pauses -->
   <section id="reviews">
     <div class="sec-head">
       <h2>What happens at a review pause</h2>
