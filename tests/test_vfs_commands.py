@@ -144,3 +144,24 @@ def test_rollback_result_is_compared_with_the_node_before(tmp_path):
     (after / "MRF/d/a.wav").write_text("old", encoding="utf-8")
     (after / "MRF/d/new.wav").unlink()
     assert node_files_diff(before, after) == []                      # /tmp and the repo server don't count
+
+
+def test_staged_archive_members_carry_the_mode_the_workflow_checks(tmp_path):
+    """Run 46e5fee1: the untar keeps the members' permissions; the check wants 777 — the test archive
+    stored 0644, so the check failed on the simulator only."""
+    from skills.network_config_test.jar_executor import _write_test_input, extracted_member_mode
+    wf = {"phases": {"a": {"steps": [{"node": "MRF", "send": "ls -ld $(tar -tf /tmp/a.tar | sed 's#^#/d/#')",
+                                      "register": [{"regex": "^\-rwxrwxrwx.*", "loop": True, "count_var": "ok"}]}]}}}
+    assert extracted_member_mode(wf) == 0o777 and extracted_member_mode({"phases": {}}) == 0o644
+    _write_test_input(tmp_path / "a.tar", "a.tar", extracted_member_mode(wf))
+    with tarfile.open(tmp_path / "a.tar") as t:
+        assert t.getmembers()[0].mode == 0o777
+
+
+def test_staged_inputs_are_made_again_real_ones_kept(tmp_path):
+    from skills.network_config_test.jar_executor import _staged_by_step9, _write_test_input
+    _write_test_input(tmp_path / "a.tar", "a.tar")
+    _write_test_input(tmp_path / "b.txt", "b.txt")
+    (tmp_path / "real.tar").write_bytes(b"not ours")
+    assert _staged_by_step9(tmp_path / "a.tar") and _staged_by_step9(tmp_path / "b.txt")
+    assert not _staged_by_step9(tmp_path / "real.tar")

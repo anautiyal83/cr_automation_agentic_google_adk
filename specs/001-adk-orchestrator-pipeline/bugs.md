@@ -918,3 +918,14 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 - Step 9 now checks the outcome of rollback-only: the node's files (outside /tmp and the repo server) must equal
   their state before the activity — it "passed" twice while the original file was gone.
 - Replays of 3f5d8990: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.
+
+### DEP-69 — Run 46e5fee1: extracted files kept the wrong permissions in the simulator (High, Fixed 2026-11-05)
+- The MOP untars "keeping permissions of its constituents" (no chmod on that branch) and the check wants
+  `-rwxrwxrwx` for the extracted files. Three simulator gaps made it fail on the simulator only: MockWire `tar -x`
+  ignored the archive's member modes (GNU tar run as root restores them), `tar -c` wrote every member as 0644 (a
+  restore must bring back the original mode too), and step 9's test archive stored its member as 0644 — and, staged
+  once, was reused by every later step 9 of the run.
+- **Fix**: MockWire 7e90190 (`tar -c` stores the VFS mode, `-x` restores it); step 9 builds the test archive's
+  member with the mode the workflow's member check expects (`extracted_member_mode`, default 0644) and remakes files
+  it staged itself (`_staged_by_step9`; a real input is never touched).
+- Replays of 46e5fee1: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.

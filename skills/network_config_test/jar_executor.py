@@ -555,6 +555,7 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
     ref = re.compile(r"\$\{(?:configSequences\.\d+\.records\.\d+|" + "|".join(map(re.escape, items))
                      + r")\.data\.([^}]+)\}")
 
+    member_mode = extracted_member_mode(workflow)
     created = []
     for record in records or [{}]:
         def resolve(text, record=record):
@@ -565,12 +566,55 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
                 continue
             produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
             target = Path(cwd) / path
-            if produced or target.exists():
+            # a file staged by an earlier step 9 is made again (it must fit today's workflow — run
+            # 46e5fee1 reused a 0644 archive); a real input is never touched
+            if produced or (target.exists() and not _staged_by_step9(target)):
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            _write_test_input(target, path)
+            _write_test_input(target, path, member_mode)
             created.append(str(target))
     return created
+
+
+def extracted_member_mode(workflow: dict) -> int:
+    """The mode the workflow expects the files of an extracted archive to have: the mode its
+    member check (``ls -ld $(tar -tf …)``) looks for, as the vendor's archives carry it ("untar
+    keeping permissions of its constituents", run 46e5fee1). 0644 when no check names one."""
+    import json
+    import re
+    mode_re = re.compile(r"-([r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-])")
+
+    def walk(steps):
+        for st in steps or []:
+            if isinstance(st, dict):
+                yield st
+                yield from walk(st.get("steps"))
+    for body in (workflow.get("phases") or {}).values():
+        for st in walk(body.get("steps") if isinstance(body, dict) else body):
+            if "tar -tf" not in str(st.get("send") or ""):
+                continue
+            m = mode_re.search(json.dumps({k: st.get(k) for k in ("register", "validation")}).replace("\\-", "-"))
+            if m:
+                return int("".join("0" if c == "-" else "1" for c in m.group(1)), 2)
+    return 0o644
+
+
+_STAGED = b"test input staged by step 9"
+
+
+def _staged_by_step9(target: Path) -> bool:
+    """The file is a test input step 9 wrote (plain, or an archive whose member says so)."""
+    import tarfile
+    try:
+        head = target.read_bytes()[:4096]
+        if head.startswith(_STAGED):
+            return True
+        with tarfile.open(target) as tar:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            body = tar.extractfile(member).read(len(_STAGED)) if member else b""
+            return body == _STAGED
+    except (OSError, tarfile.TarError, AttributeError):
+        return False
 
 
 def test_member_name(archive_name: str) -> str:
@@ -580,7 +624,7 @@ def test_member_name(archive_name: str) -> str:
     return re.sub(r"\.(tar(\.(gz|bz2))?|tgz)$", "", archive_name, flags=re.I) + ".dat"
 
 
-def _write_test_input(target: Path, path: str) -> None:
+def _write_test_input(target: Path, path: str, member_mode: int = 0o644) -> None:
     """A staged input file. An archive name gets a real archive with one member: the simulated
     node extracts it (``tar -xf … -C <dir>``, MockWire f5928df); a text placeholder fails there
     like on a real node (DEP-59)."""
@@ -598,6 +642,7 @@ def _write_test_input(target: Path, path: str) -> None:
     with tarfile.open(target, mode, format=tarfile.USTAR_FORMAT) as tar:
         info = tarfile.TarInfo(test_member_name(target.name))
         info.size = len(data)
+        info.mode = member_mode
         tar.addfile(info, io.BytesIO(data))
 
 
