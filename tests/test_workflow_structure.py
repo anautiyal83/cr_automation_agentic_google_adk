@@ -371,3 +371,43 @@ phases:
     rollback = _leaves(wf, "rollbackConfiguration")
     assert not any(str(s.get("send", "")).startswith("rm -rf") for s in rollback)
     assert [s.get("id") for s in rollback if str(s.get("id", "")).startswith("nc_rb")] == ["nc_rb1_remove", "nc_rb1_check"]
+
+
+def test_rollback_reads_no_backup_value_and_keeps_to_the_loaded_files():
+    """Run 9de5fcb8: the restore waited for `ncArchived1` (registered by the backup step: unset in
+    rollback-only, so nothing was restored) and the LLM's `rm -rf <dest>/$(basename X)*` wildcard ran."""
+    wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}', user: u}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: tar -czvf /tmp/announcement_backup.tar.gz ${{{REC}DEST}}/
+      register: [{{regex: '(?<bk>\\S+)'}}, {{regex: '(?<ncArchived1>/\\S+)'}}]
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: cp /tmp/${{{REC}FILE}} ${{{REC}DEST}}/
+  rollbackConfiguration:
+    name: Rollback
+    steps:
+    - node: MRF
+      send: tar -xzvf /tmp/announcement_backup.tar.gz -C ${{{REC}DEST}}/
+      when: ncArchived1 != '' && bk != ''
+    - node: MRF
+      send: rm -rf ${{{REC}DEST}}/$(basename ${{{REC}FILE}})*
+      when: ncArchived1 == ''
+    - node: MRF
+      send: rm -rf /tmp/announcement_backup_*.tar.gz
+    - node: MRF
+      send: rm -f /tmp/${{{REC}FILE}}
+""")
+    structure.apply(wf, None)
+    rollback = _leaves(wf, "rollbackConfiguration")
+    sends = [str(s.get("send")) for s in rollback]
+    restore = next(s for s in rollback if "tar -xzvf" in str(s.get("send")))
+    assert restore["when"] == "ncBackup1 != ''"                               # nothing from the backup step
+    assert not any("$(basename" in x or "announcement_backup_*" in x for x in sends)   # LLM wildcards gone
+    assert "rm -f /tmp/${rec.data.FILE}" in sends                              # the activity's own input stays
+    assert "ncArchived1" not in json.dumps(wf).split('"rollbackConfiguration"')[1]

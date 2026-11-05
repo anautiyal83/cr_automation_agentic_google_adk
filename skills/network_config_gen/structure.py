@@ -647,7 +647,9 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                                     f"{node} copies the backup {basename} to the repo server"),
                 ]
             absolute = not dest_loads and bool(sources) and all(x.startswith(("/", "${")) for x in sources)
-            backups.append((node, path, repo_path, dropped, absolute, src.rstrip("/") if dest_loads else ""))
+            # a rollback reads none of the backup step's values (the LLM's or ncArchived<k>): a
+            # rollback-only run has none of them — they all become the file check
+            backups.append((node, path, repo_path, _registers(step), absolute, src.rstrip("/") if dest_loads else ""))
         body["steps"] = out
     for k, b in enumerate(backups, 1):
         _rollback_by_convention(parsed, cfg, b, k, requirements)
@@ -672,7 +674,11 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
     extract = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S*(?:" + "|".join(names) + r"))(\s+-C\s+\S+)?")
     var_ref = re.compile(r"\$\{(" + "|".join(map(re.escape, dropped)) + r")\}|(?<![\w.$])(" +
                          "|".join(map(re.escape, dropped)) + r")(?![\w.])") if dropped else None
-    wipe = re.compile(r"^rm\s+-\w+\s+" + re.escape(dest) + r"/\*?$") if dest else None
+    stem = re.escape(re.sub(r"\.(tar(\.\w+)?|tgz)$", "", basename))
+    # removals of the load folder's files (wildcards may hit files the activity never touched:
+    # nc_rb<k>_remove removes exactly the loaded ones) and of the backup archive by a name glob
+    owned = re.compile(r"^rm(?:\s+-\w+)*\s+(?:" + (re.escape(dest) + r"/.*" if dest else r"(?!)") +
+                       r"|\S*/" + stem + r"\S*\*\S*)$")
     bodies = _rollback_bodies(parsed)
     if not bodies:
         return
@@ -692,14 +698,18 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
             if not isinstance(step, dict) or _is_auto(step):
                 out.append(step)
                 continue
-            if wipe is not None and str(step.get("node", "")) == node and wipe.match(str(step.get("send") or "").strip()):
-                continue  # `rm -rf <dest>/*` deletes files the activity never touched: nc_rb<k>_remove
+            if str(step.get("node", "")) == node and owned.match(str(step.get("send") or "").strip()):
+                continue  # `rm -rf <dest>/*` deleted files the activity never touched
             if var_ref is not None:
                 # what the backup step registered is unknown in a rollback-only run: the file
                 for key in ("when", "skip_when"):
                     if isinstance(step.get(key), str) and var_ref.search(step[key]):
                         cond = var_ref.sub(flag, step[key])
-                        step[key] = re.sub(r"(" + flag + r")\s*(==|!=)\s*null\b", r"\1 \2 ''", cond)
+                        cond = re.sub(r"(" + flag + r")\s*(==|!=)\s*null\b", r"\1 \2 ''", cond)
+                        if "||" not in cond:  # two backup values became the same check
+                            terms = re.split(r"\s*&&\s*", cond)
+                            cond = " && ".join(t for i, t in enumerate(terms) if t not in terms[:i])
+                        step[key] = cond
                 if isinstance(step.get("send"), str):
                     text = re.sub(r"/tmp/\$\{(?:" + "|".join(map(re.escape, dropped)) + r")\}", path, step["send"])
                     step["send"] = var_ref.sub(basename, text) if var_ref.search(text) else text

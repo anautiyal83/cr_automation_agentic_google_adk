@@ -881,3 +881,17 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   `DOC_VERIFICATION_PROMPT_5003.dat`, rollback-only restores its original, `existing_content.dat` is never touched.
   PGW 6db86ff8: 2/2.
 
+
+### DEP-67 — Regenerated MRF workflow (run 9de5fcb8, 3rd step 6): three more generic gaps (High, Fixed 2026-11-05)
+- `ls <dir>/ | grep "<file>"` as an "already there?" pre-check (check `.*`) failed on a fresh node: grep exits 1
+  and the JAR fails a non-zero step first. Autofix `grep_no_match_ok`: `|| true` when the step's own check accepts
+  no output (a check that needs the match keeps failing on a missing file).
+- `chmod 777 $(tar -tf A | grep … | sed …)` checked by counting lines got no listing: `list_after_silent` skipped any
+  `|`, also inside `$(…)`. Now judged without the substitutions; chmod / chown paths = everything after the mode.
+- Rollback: the restore waited for `ncArchived1` (registered by the backup step — the server ran a half-applied
+  DEP-66) and the LLM's `rm -rf <dest>/$(basename X)*` / `rm -rf /tmp/<backup>_*.tar.gz` wildcards ran. Now every
+  value of the backup step maps to the file check `ncBackup<k>`, duplicate terms collapse, and LLM `rm` of the load
+  folder's files or of a backup-archive glob is dropped (`nc_rb<k>_remove` removes exactly the loaded files; the
+  activity's own input in /tmp may still be cleaned).
+- Replays (steps 8 + 9): node, repo SFTP, repo SCP 4/4 — backup = the overwritten file only, rollback-only restores
+  its original, unrelated file untouched; PGW 2/2.

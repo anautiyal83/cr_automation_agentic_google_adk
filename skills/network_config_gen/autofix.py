@@ -295,6 +295,7 @@ def fix_workflow(yaml_text: str) -> str:
     guard_skip_expr(parsed)
     untar_member_check(parsed)
     when_bare_operands(parsed)
+    grep_no_match_ok(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1423,21 +1424,50 @@ def _needs_output(step: dict) -> bool:
     return False
 
 
+def _without_substitutions(text: str) -> str:
+    """``text`` with the inside of every ``$(…)`` removed (``$()`` stays)."""
+    out, depth, i = [], 0, 0
+    while i < len(text):
+        if text.startswith("$(", i):
+            if depth == 0:
+                out.append("$(")
+            depth += 1
+            i += 2
+            continue
+        if text[i] == ")" and depth:
+            depth -= 1
+            if depth == 0:
+                out.append(")")
+        elif depth == 0:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def list_after_silent(parsed: dict) -> int:
     """``chmod / chown / cp / mv`` print nothing: when the step checks their output, list what they
     changed (``&& ls -l <files>`` — the files, not the folder: no ``total N`` line to count)."""
     changed = 0
     for _, step in _walk_all_steps(parsed.get("phases") or {}):
         send = step.get("send")
-        if not isinstance(send, str) or "&&" in send or "|" in send.replace("||", "") or not _needs_output(step):
+        # operators inside $(…) belong to the substitution (`chmod 777 $(tar -tf A | sed …)`)
+        bare = _without_substitutions(send) if isinstance(send, str) else ""
+        if not isinstance(send, str) or "&&" in bare or "|" in bare.replace("||", "") or not _needs_output(step):
             continue
         guard = _GUARD_THEN.match(send.strip())
         inner = guard.group(2) if guard else send.strip()
         m = _SILENT.match(inner)
-        if not m or ";" in inner:
+        if not m or ";" in _without_substitutions(inner):
             continue
-        args = [a for a in m.group(2).split() if not a.startswith("-")]
-        paths = args[-1:] if m.group(1) in ("cp", "mv") else args[1:]
+        rest = m.group(2).strip()
+        while rest.startswith("-"):                      # options (-R, -p, …)
+            rest = rest.split(None, 1)[1] if " " in rest else ""
+        if m.group(1) in ("cp", "mv"):
+            paths = _without_substitutions(rest).split()[-1:]
+            if paths and paths[0] == "$()":
+                continue
+        else:                                            # chmod / chown / chgrp: after the mode / owner
+            paths = [rest.split(None, 1)[1]] if " " in rest else []
         if not paths:
             continue
         listed = f"{inner} && ls -l {' '.join(paths)}"
@@ -1598,6 +1628,32 @@ def _count_listed_modes(step: dict) -> None:
     success = validation.setdefault("success", {})
     success["criteria"] = {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
     validation.pop("criteria", None)
+
+
+def grep_no_match_ok(parsed: dict) -> int:
+    """``ls <dir>/ | grep "<file>"`` exits 1 when nothing matches, and the JAR fails a non-zero
+    step before its check (run 9de5fcb8: an "is it already there?" pre-check failed on a fresh
+    node). When the step's own check accepts no output, no match is an answer: ``|| true``."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or _is_guarded(send) or "|| true" in send or "|| :" in send:
+            continue
+        stages = [x.strip() for x in re.split(r"(?<!\|)\|(?!\|)", send)]
+        if len(stages) < 2 or not re.match(r"^grep\b(?!.*\s-\w*c)", stages[-1]):
+            continue
+        blocks = _criteria_blocks(step)
+        if any(c.get("expr") for c in blocks):
+            continue
+        if all(java_regex_matches(str(c["regex"]), "") for c in blocks if c.get("regex")):
+            step["send"] = send.rstrip() + " || true"
+            changed += 1
+    return changed
+
+
+def _is_guarded(send: str) -> bool:
+    return send.lstrip().startswith("if ")
 
 
 def when_bare_operands(parsed: dict) -> int:

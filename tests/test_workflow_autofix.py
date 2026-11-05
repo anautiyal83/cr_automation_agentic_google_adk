@@ -579,3 +579,37 @@ def test_when_uses_bare_names():
     assert when_bare_operands(wf) == 3 and when_bare_operands(wf) == 0
     assert steps[0]["when"] == "fileCount > 0" and wf["phases"]["p"]["when"] == "x == 'y'"
     assert steps[1]["when"] == "configSequences.0.records.0.data.A != '' && ${MRF.VER} != ''"
+
+
+def test_grep_without_match_is_an_answer_when_the_check_allows_it():
+    """Run 9de5fcb8: `ls <dir>/ | grep "<file>"` (check `.*`) failed on a fresh node — grep exits 1."""
+    from skills.network_config_gen.autofix import grep_no_match_ok
+
+    def step(send, regex=None):
+        s = {"node": "MRF", "send": send}
+        if regex is not None:
+            s["validation"] = {"success": {"criteria": {"regex": regex}}}
+        return s
+    probe = step('ls -ltrh /d/ | grep "a.tar"', ".*")
+    needs = step('ls -ltrh /d/ | grep "a.tar"', "^-rwx.*")        # a missing file must still fail
+    nocheck = step("cat /x | grep -i err")
+    counted = step('ls /d | grep -c "a"', ".*")
+    wf = {"phases": {"p": {"steps": [probe, needs, nocheck, counted]}}}
+    assert grep_no_match_ok(wf) == 2 and grep_no_match_ok(wf) == 0
+    assert probe["send"].endswith("|| true") and nocheck["send"].endswith("|| true")
+    assert needs["send"] == 'ls -ltrh /d/ | grep "a.tar"' and "|| true" not in counted["send"]
+
+
+def test_silent_command_with_substituted_paths_gets_its_listing():
+    """Run 9de5fcb8: `chmod 777 $(tar -tf A | grep -v '/$' | sed …)` counted lines it never printed."""
+    from skills.network_config_gen.autofix import list_after_silent
+    members = "$(tar -tf /tmp/a.tar | grep -v '/$' | sed 's#^#/d/#')"
+    step = {"node": "MRF", "send": f"if [[ ! 'x' == '13.'* ]]; then chmod 777 {members}; else echo SKIPPED_BY_CONDITION; fi",
+            "register": [{"regex": "(?<l>.+)", "loop": True, "count_var": "TOTAL"}],
+            "validation": {"success": {"criteria": {"expr": "TOTAL > 0"}}}}
+    recursive = {"node": "MRF", "send": "chmod -R 755 /opt/x", "validation": {"success": {"criteria": {"expr": "a > 0"}}}}
+    wf = {"phases": {"p": {"steps": [step, recursive]}}}
+    assert list_after_silent(wf) == 2 and list_after_silent(wf) == 0
+    assert step["send"] == (f"if [[ ! 'x' == '13.'* ]]; then chmod 777 {members} && ls -l {members}; "
+                            "else echo SKIPPED_BY_CONDITION; fi")
+    assert recursive["send"] == "chmod -R 755 /opt/x && ls -l /opt/x"
