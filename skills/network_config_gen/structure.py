@@ -451,7 +451,6 @@ def _rollback_bodies(parsed: dict) -> list[dict]:
 _GUARDED = re.compile(r"^(if (\[\[.+?\]\]); then\s*)(.+?)(\s*;\s*else echo SKIPPED_BY_CONDITION;\s*fi)$", re.S)
 _EXTRACT = re.compile(r"^tar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+?)/?$")
 _COPY = re.compile(r"^cp(?:\s+-\w+)*\s+(\S+)\s+(\S+?)/?$")
-_OVERWRITTEN = re.compile(r"-C (\S+) \$\(cat \S+/overwritten\.list\)")
 NOTHING_TO_BACK_UP = "NO_FILES_TO_BACK_UP"
 
 
@@ -583,8 +582,10 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                 continue
             archive, sources = parsed_tar
             basename = _SHELL_SUBST.sub("", archive).rsplit("/", 1)[-1]
-            done = _OVERWRITTEN.search(send)                     # the load-aware form, applied before
-            src = done.group(1) if done else (sources[0].rstrip("/") if sources else "")
+            # `tar -c…f A -C <dir> <names>`: <dir> is what is backed up — our load-aware form, or the
+            # LLM's own selection `-C <dest> $(ls <dest> | grep …)` (run 3f5d8990)
+            done = re.search(r"\btar\s+-?[A-Za-z]*c[A-Za-z]*\s+\S+\s+-C\s+(\S+)", send)
+            src = done.group(1).rstrip("/") if done else (sources[0].rstrip("/") if sources else "")
             mirror = src if src.startswith("/") else (f"/{src}" if src.startswith("${") else "")
             node_dir = f"/tmp/{order}{mirror}"
             path = f"{node_dir}/{basename}"
@@ -717,7 +718,11 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
             m = extract.search(text) if str(step.get("node", "")) == node else None
             if m and not placed:
                 tail = f" -C {dest}" if dest else (" -C /" if absolute else (m.group(2) or ""))
-                step["send"] = text[:m.start(1)] + path + tail + text[m.end():]
+                # exactly the restore: whether there is a backup is the step's `when` (the file check),
+                # the loaded files go with nc_rb<k>_remove — the LLM's own wrappers tested another path
+                # and had no `;` before `else` (run 3f5d8990)
+                flags = "-xzvf" if path.endswith((".gz", ".tgz")) else "-xvf"
+                step["send"] = f"tar {flags} {path}{tail}"
                 when = str(step.get("when") or "")
                 if f"{flag} != ''" not in when:
                     when = " && ".join(x for x in (when, f"{flag} != ''") if x)

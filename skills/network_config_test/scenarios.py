@@ -260,6 +260,7 @@ class ScenarioResult:
     error: str = ""
     classification: str = ""  # workflow | simulator (when FAIL)
     html_reports: list[str] = field(default_factory=list)  # execution-report-generator output
+    restore_diff: list[str] | None = None  # rollback-only: node files that differ from before the activity
 
     def to_dict(self) -> dict:
         s = self.scenario
@@ -540,6 +541,8 @@ class ScenarioSuite:
             if sc.runtime_vars:
                 from core.config import runtime_params
                 runtime_vars = {**(runtime_params() if runtime_vars is None else runtime_vars), **sc.runtime_vars}
+            # the node files before this case (a rollback-only case is compared with its sunny day's)
+            shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_before", dirs_exist_ok=True)
             exec_result = await execute_target(self.plan, self.cli_jar, self.workflow_path, sc.target,
                                                out_dir, self.java_home, runtime_vars=runtime_vars)
             report = _read_report(out_dir)
@@ -550,6 +553,9 @@ class ScenarioSuite:
             # the node state this case left (a later rollback-only case starts from it)
             await self.control.stop()
             shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_after", dirs_exist_ok=True)
+            if sc.kind == "rollback" and vfs_from is not None:
+                await self.control.stop()
+                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs")
             evaluate(result, steps, node_instance)
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
@@ -747,6 +753,29 @@ def _commands(report: dict) -> list[CommandResult]:
     ) for key, info in (report.get("data") or {}).items() if isinstance(info, dict)]
 
 
+def node_files_diff(before: Path, after: Path) -> list[str]:
+    """Files of the simulated nodes that differ between two VFS snapshots — outside /tmp (backups,
+    lists, staged inputs) and the repo server: what a rollback must have put back."""
+    from skills.network_config_gen.structure import _repo_config
+    repo = _repo_config()["node"]
+
+    def files(root: Path) -> dict[str, bytes]:
+        out = {}
+        if not root.is_dir():
+            return out
+        for f in root.rglob("*"):
+            rel = f.relative_to(root).as_posix()
+            inst, _, path = rel.partition("/")
+            if f.is_file() and inst != repo and not path.startswith("tmp/"):
+                out[rel] = f.read_bytes()
+        return out
+    b, a = files(Path(before)), files(Path(after))
+    diff = [f"missing: /{k.partition('/')[2]}" for k in sorted(b.keys() - a.keys())]
+    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())]
+    diff += [f"changed: /{k.partition('/')[2]}" for k in sorted(b.keys() & a.keys()) if a[k] != b[k]]
+    return diff
+
+
 def align(commands: list[CommandResult], steps: list[WorkflowStep]) -> list[int | None]:
     """Workflow step index of each executed command (report order = execution order)."""
     indexes: list[int | None] = []
@@ -806,6 +835,10 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
         checks.append(Check("Simulator answered every command", not unmatched,
                             "; ".join(str(e.get("input", ""))[:80] for e in unmatched[:5])))
         checks.append(Check("Run reported PASS", run_passed(result.overall_status), result.overall_status))
+        if result.restore_diff is not None:
+            # every step passing is not enough: the node's files must be as before the activity
+            checks.append(Check("Node files restored to their state before the activity", not result.restore_diff,
+                                "; ".join(result.restore_diff[:5])))
         result.actual = f"{len(cmds)} rollback steps ran, {len(failed)} failed; run {result.overall_status}"
     elif sc.fault and sc.fault.kind == "login":
         inst = node_instance.get(sc.fault.node, "")

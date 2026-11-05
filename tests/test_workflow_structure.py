@@ -411,3 +411,60 @@ phases:
     assert not any("$(basename" in x or "announcement_backup_*" in x for x in sends)   # LLM wildcards gone
     assert "rm -f /tmp/${rec.data.FILE}" in sends                              # the activity's own input stays
     assert "ncArchived1" not in json.dumps(wf).split('"rollbackConfiguration"')[1]
+
+
+def test_llm_backup_with_dash_c_gets_the_exact_lists():
+    """Run 3f5d8990: the LLM wrote `tar -czvf A -C <dest> $(ls -1 <dest>/ | grep "<file>" || true)` — its own
+    "back up what exists"; not recognised, it fell back to one archive path for every record."""
+    wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}', user: u}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: mkdir -p /tmp/${{ORDERNO}} && tar -czvf /tmp/${{ORDERNO}}/bk.tar.gz -C ${{{REC}DEST}} $(ls -1 ${{{REC}DEST}}/ | grep "${{{REC}FILE}}" || true) && ls -1 /tmp/${{ORDERNO}}/bk.tar.gz || echo NO_FILES_TO_BACK_UP
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: cp /tmp/${{{REC}FILE}} ${{{REC}DEST}}/
+  rollbackConfiguration:
+    name: Rollback
+    steps:
+    - node: MRF
+      send: tar -xzvf /tmp/${{ORDERNO}}/bk.tar.gz -C ${{{REC}DEST}}
+""")
+    structure.apply(wf, None)
+    tar = next(s for s in _leaves(wf, "backup") if "tar -czvf" in str(s.get("send")))
+    assert tar["send"].startswith("if [[ -s /tmp/${ORDERNO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
+                                  "/tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat ")
+    assert any(s.get("id") == "nc_bk1_existing" for s in _leaves(wf, "backup"))
+    restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -xzvf" in str(s.get("send")))
+    assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
+
+
+def test_restore_step_is_exactly_the_restore():
+    """Run 3f5d8990: the LLM wrapped the restore in `if [[ -f /tmp/${ORDERNO}/<archive> ]]; then …
+    else rm …; fi` — another path than the backup's, no `;` before else — the original never came back."""
+    wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}', user: u}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: tar -czvf /tmp/bk.tar.gz ${{{REC}DEST}}/
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: cp /tmp/${{{REC}FILE}} ${{{REC}DEST}}/
+  rollbackConfiguration:
+    name: Rollback
+    steps:
+    - node: MRF
+      send: if [[ -f /tmp/${{ORDERNO}}/bk.tar.gz ]]; then tar -xzvf /tmp/bk.tar.gz -C ${{{REC}DEST}} else rm -rf ${{{REC}DEST}}/x; fi 2>&1 || true
+""")
+    structure.apply(wf, None)
+    restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -x" in str(s.get("send")))
+    assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
+    assert restore["when"] == "ncBackup1 != ''"

@@ -613,3 +613,29 @@ def test_silent_command_with_substituted_paths_gets_its_listing():
     assert step["send"] == (f"if [[ ! 'x' == '13.'* ]]; then chmod 777 {members} && ls -l {members}; "
                             "else echo SKIPPED_BY_CONDITION; fi")
     assert recursive["send"] == "chmod -R 755 /opt/x && ls -l /opt/x"
+
+
+def test_untar_check_by_basename_is_rewritten_too():
+    """Run 3f5d8990: `ls <dest>/ | grep "$(basename <archive> .tar)"` after the untar was not rewritten,
+    the validator then (rightly) refused the workflow and step 6 failed."""
+    from skills.network_config_gen.autofix import untar_check_issues, untar_member_check
+    REC = "${configSequences.0.records.0.data."
+    dest, file = f"{REC}DEST}}", f"{REC}INPUT_FILE}}"
+    extract = {"node": "MRF", "send": f"if [[ ! 'x' == '13.'* ]]; then tar -xf /tmp/{file} -C {dest}/; "
+                                      "else echo SKIPPED_BY_CONDITION; fi"}
+    for term in (f"$(basename {file} .tar)", f"$(basename /tmp/{file})", file):
+        check = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{term}"',
+                 "validation": {"success": {"criteria": {"regex": "^-rwxrwxrwx.*"}}}}
+        wf = {"phases": {"a": {"steps": [extract, check]}}}
+        assert untar_member_check(wf) == 1, term
+        assert check["send"].startswith("if [[ ! 'x' == '13.'* ]]; then ls -ld $(tar -tf /tmp/")
+        assert not untar_check_issues(wf)
+
+
+def test_when_drops_register_prefixes():
+    """Run 3f5d8990: `when: registered.backupTarName != ''` is no variable — always false."""
+    from skills.network_config_gen.autofix import when_bare_operands
+    step = {"node": "MRF", "send": "x", "when": "registered.backupTarName != null && register.y != '' && vars.z == 'a'"}
+    wf = {"phases": {"p": {"steps": [step]}}}
+    assert when_bare_operands(wf) == 1 and when_bare_operands(wf) == 0
+    assert step["when"] == "backupTarName != null && y != '' && z == 'a'"

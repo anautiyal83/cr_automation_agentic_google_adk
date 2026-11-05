@@ -129,3 +129,18 @@ def test_loop_pass_aligns_with_the_nearest_preceding_step():
     assert align(cmds * 2, steps)[2:] == [1, 2]
     # rollback-only: matched against the rollback steps, indexes stay the workflow's
     assert align(cmds * 2, [s for s in steps if s.phase_kind == "rollback"]) == [1, 2, 1, 2]
+
+
+def test_rollback_result_is_compared_with_the_node_before(tmp_path):
+    """Rollback-only "passed" twice while the original file was gone: the node's files are compared."""
+    from skills.network_config_test.scenarios import node_files_diff
+    before, after = tmp_path / "b", tmp_path / "a"
+    for root, files in ((before, {"MRF/d/a.wav": "old", "MRF/d/x": "x", "MRF/tmp/l": "1", "REPO/bk": "1"}),
+                        (after, {"MRF/d/x": "x", "MRF/d/new.wav": "n", "MRF/tmp/l": "2"})):
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+    assert node_files_diff(before, after) == ["missing: /d/a.wav", "left behind: /d/new.wav"]
+    (after / "MRF/d/a.wav").write_text("old", encoding="utf-8")
+    (after / "MRF/d/new.wav").unlink()
+    assert node_files_diff(before, after) == []                      # /tmp and the repo server don't count

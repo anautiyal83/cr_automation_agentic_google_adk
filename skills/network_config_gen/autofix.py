@@ -1574,8 +1574,12 @@ def _archive_check(send: str, extracts: list, pos: int):
     m = _LS_GREP.match(send.strip())
     if not m:
         return None
+    term = m.group(2).strip()
+    # the archive by its name, also as `$(basename <archive> [.ext])` (run 3f5d8990)
+    b = re.fullmatch(r"\$\(basename\s+(\S+)(?:\s+\S+)?\)", term)
+    named = b.group(1).rsplit("/", 1)[-1] if b else term
     for epos, archive, dest, test in extracts:
-        if epos < pos and m.group(1).rstrip("/") == dest and m.group(2).strip() == archive.rsplit("/", 1)[-1]:
+        if epos < pos and m.group(1).rstrip("/") == dest and named == archive.rsplit("/", 1)[-1]:
             return archive, dest, test
     return None
 
@@ -1661,17 +1665,23 @@ def when_bare_operands(parsed: dict) -> int:
     probed 2026-11-05, run 9de5fcb8: the backup never ran). Registered variables and record columns
     lose their ``${}`` in ``when`` / ``skip_when`` (node values ``${MRF.VER}`` are left alone)."""
     pattern = re.compile(r"\$\{([A-Za-z][A-Za-z0-9_]*|configSequences\.[^{}]+)\}")
+    # `registered.x` / `register.x` / `vars.x` are not variables either (run 3f5d8990: the restore
+    # waited for `registered.backupTarName != ''` and never ran) — the bare name is
+    prefixed = re.compile(r"(?<![\w.$])(?:registered|register|vars)\.([A-Za-z][A-Za-z0-9_]*)")
+
+    def bare(cond: str) -> str:
+        return prefixed.sub(r"\1", pattern.sub(r"\1", cond))
     changed = 0
     for _, step in _walk_all_steps(parsed.get("phases") or {}):
         for key in ("when", "skip_when"):
             cond = step.get(key)
-            if isinstance(cond, str) and pattern.search(cond):
-                step[key] = pattern.sub(r"\1", cond)
+            if isinstance(cond, str) and bare(cond) != cond:
+                step[key] = bare(cond)
                 changed += 1
     for body in (parsed.get("phases") or {}).values():
         cond = body.get("when") if isinstance(body, dict) else None
-        if isinstance(cond, str) and pattern.search(cond):
-            body["when"] = pattern.sub(r"\1", cond)
+        if isinstance(cond, str) and bare(cond) != cond:
+            body["when"] = bare(cond)
             changed += 1
     return changed
 

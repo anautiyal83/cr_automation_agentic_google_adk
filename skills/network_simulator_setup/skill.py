@@ -140,6 +140,11 @@ class NetworkSimulatorSetupSkill:
         for n in nodes:
             n.vfs = (derive_vfs(workflow_doc, n.name, produced, [x for x in samples if _sample_on(x, n.name)])
                      if isinstance(workflow_doc, dict) else None)
+            from .file_flows import mode_suffix
+            suffix = mode_suffix([x for x in samples if _sample_on(x, n.name)])
+            if suffix:  # ls -l modes like the real node's (SELinux ".")
+                n.vfs = n.vfs or {"dirs": []}
+                n.vfs["modeSuffix"] = suffix
             from .guards import backup_seed_files
             seeds = backup_seed_files(n.commands, inp.ciq_json_files)
             if seeds:

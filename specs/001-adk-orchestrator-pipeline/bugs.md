@@ -902,3 +902,19 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   The workflow stayed the one generated at 01:00, before DEP-67, and step 9 failed on the issue DEP-67 fixes.
 - **Fix**: without `failed_agents` a re-run starts at the display step's first agent (step 6: network_config_gen,
   then its scripts). Tests `test_pipeline_retries.py`, `test_generation_contracts.py`.
+
+### DEP-68 — Run 3f5d8990 (new MRF run): step 6 refused, then step 9 failed (High, Fixed 2026-11-05)
+- Step 6: the post-check `ls <dest>/ | grep "$(basename <archive> .tar)"` after an untar was not rewritten (the
+  autofix compared the grep term literally) and the validator refused it → `$(basename X [.ext])` counts as the
+  archive's name.
+- Step 9: (1) MockWire split `$(ls … | grep … || true)` at the inner `||` ("true)" unmatched) — MockWire fd84b2f:
+  `;` `|` `&&` `||` inside `$(…)` stay in it; (2) the LLM's own `tar -czvf A -C <dest> $(…)` backup was not seen as
+  a backup of `<dest>` → one archive path for every record; now `-C <dest>` names the folder and the exact
+  items/overwritten lists apply; (3) the post-health check expected the SELinux `-rwxrwxrwx.` — step 8 derives
+  `vfs.modeSuffix` from the real `ls -l` samples, MockWire keeps it through chmod; (4) the restore waited for
+  `registered.backupTarName` (no variable: always false) → `when` drops `registered.`/`register.`/`vars.`; (5) the
+  LLM wrapped the restore in `if [[ -f <other path> ]] … else rm …` without `;` → the restore step is exactly
+  `tar -x… <convention path> -C <dest>` (the file check is its `when`).
+- Step 9 now checks the outcome of rollback-only: the node's files (outside /tmp and the repo server) must equal
+  their state before the activity — it "passed" twice while the original file was gone.
+- Replays of 3f5d8990: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.
