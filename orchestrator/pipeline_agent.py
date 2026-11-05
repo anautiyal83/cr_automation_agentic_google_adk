@@ -316,6 +316,14 @@ class PipelineAgent(BaseAgent):
             elapsed = time.monotonic() - agent_t0
             flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
 
+            # ----- CANCELLED inside the agent (Cancel at a step 1 question round): nothing of it is
+            # cached or reported as completed (OB-19)
+            if (pipeline_actions.get(run_id_str) or {}).get("action") == "cancel":
+                pipeline_actions.pop(run_id_str, None)
+                flow.flow("PIPELINE CANCELLED during %s", agent.name)
+                ctx.session.state["pipeline_cancelled"] = True
+                break
+
             # ----- SAVE TO CACHE (on success) -----
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint

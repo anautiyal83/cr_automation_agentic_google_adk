@@ -974,3 +974,23 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   kept outside the repo).
 - Pipeline tests 308 passed (the MockWire process tests use the new JAR); replays of steps 8+9: MRF 46e5fee1 via
   repo SFTP 4/4, PGW 6db86ff8 2/2.
+
+### OB-18 — Step 1 input documents: formats the upload accepts but the parser cannot read (Medium, Open 2026-11-05)
+Found while writing the UC input guideline (code review, not yet reproduced in a run):
+- `.docx` / `.pdf` MOP: `_read_raw_artifacts` reads it with `Path.read_text` (raw bytes); no docx/pdf text
+  extraction exists. Only `.txt` MOPs parse (`skills/requirement_gathering/skill.py:558`).
+- `.xls` CIQ: openpyxl cannot open it, the error is logged at debug level → empty `ciq_sheets`, step 3 fails
+  later with "No CIQ structure" (`parsers/ciq_parser.py:101`).
+- Constraints file: stored but never read (`skill.py:141-144`).
+- Single-file slots (CIQ, MOP, constraints, command outputs) keep only the last uploaded file, silently
+  (`ui/pages/upload_section.py:450`).
+- Upload validation checks only existence + extension; command outputs count as optional there although the UI
+  marks them required (`models/validation.py`).
+- Sample I/O: only sections starting with `<` (XML) are parsed; JSON/YAML/CSV yield nothing (`xml_sample_parser.py`).
+
+### OB-19 — Cancel at a step 1 question round did not stop the run (High, Fixed 2026-11-05)
+- Run 8aee1c6d (EIR_1029_TAC_LOADING_EIR): Cancel on the questions (14:17, 17:45) was read as "Developer answered
+  0 questions"; step 1 re-analysed and asked the next round. The run stayed "running" for hours.
+- **Fix**: `RequirementsGathererNode._ask_developer` — decision `cancel` sets the run's cancel action and raises
+  `RunCancelled`; the agent ends. `PipelineAgent` checks for a cancel right after an agent returns: nothing of the
+  agent is cached or reported completed, the run ends cancelled. Tests `tests/test_requirements_cancel.py`.

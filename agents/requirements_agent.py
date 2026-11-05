@@ -31,6 +31,10 @@ flow = get_flow_logger(__name__)
 requirements_store: dict[str, dict] = {}  # run_id -> requirements package
 
 
+class RunCancelled(Exception):
+    """The developer pressed Cancel at a question round: the run ends, no further round."""
+
+
 class RequirementsGathererNode(BaseAgent):
     """Gatekeeper agent that gathers complete requirements before YAML generation.
 
@@ -42,6 +46,15 @@ class RequirementsGathererNode(BaseAgent):
     model_config = {"arbitrary_types_allowed": True}
 
     async def _run_async_impl(self, ctx):
+        try:
+            async for event in self._gather(ctx):
+                yield event
+        except RunCancelled:
+            # Cancel at a question round was read as "0 answers" and the next round was asked —
+            # the run stayed "running" (OB-19)
+            flow.flow("REQUIREMENTS CANCELLED — run_id=%s", str(ctx.session.state.get("run_id", ""))[:8])
+
+    async def _gather(self, ctx):
         run_id = ctx.session.state.get("run_id", "")
         run_dir = ctx.session.state.get("run_dir", "")
         uc_name = ctx.session.state.get("uc_name", "")
@@ -259,6 +272,10 @@ class RequirementsGathererNode(BaseAgent):
 
         decision = milestone_decisions.pop(milestone_step, "continue")
         milestone_waiting.pop(milestone_step, None)
+        if decision == "cancel":
+            from shared.state import pipeline_actions
+            pipeline_actions[ctx.session.state.get("run_id", "")] = {"action": "cancel"}
+            raise RunCancelled()
 
         answers = {}
         if isinstance(decision, str) and decision.startswith("{"):
