@@ -98,6 +98,11 @@ class NetworkSimulatorSetupAgent(BaseAgent):
         if feedback:
             flow.flow("SIMULATOR_SETUP: Regenerating with step 9 feedback (%d chars)", len(feedback))
 
+        # the run's workflow file (step 6 writes it; a resumed run's state holds the checkpoint's copy)
+        wf_file = Path(run_dir) / f"{uc_name}.yaml" if run_dir and uc_name else None
+        if wf_file and wf_file.exists():
+            artifacts["workflow_yaml"] = wf_file.read_text(encoding="utf-8")
+
         inp = SkillInput(
             uc_name=uc_name,
             workflow_yaml=artifacts.get("workflow_yaml", ""),

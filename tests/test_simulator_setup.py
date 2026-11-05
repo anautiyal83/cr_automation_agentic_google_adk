@@ -246,6 +246,14 @@ def test_classify_failures_uses_simulator_events():
     c = classify_failures(failed, broken)
     assert c["classification"] == "workflow" and c["retry_target"] == 6
     assert any("empty/unresolved" in w for w in c["workflow_issues"])
+    # pieces of an if/then/else the shell could not parse (no `;` before else, run 46e5fee1): step 6
+    pieces = [{"source": "unmatched", "instance": "MRF_22200", "input": x} for x in (
+        "if [[ -s /var/x/f.tar ]]", "then tar -czvf /tmp/b.tar.gz -C /var/x f.tar else echo NONE", "fi")]
+    c = classify_failures(failed, pieces)
+    assert c["classification"] == "workflow" and c["retry_target"] == 6
+    assert sum("broken shell syntax" in w for w in c["workflow_issues"]) == 3
+    ok = [{"source": "unmatched", "instance": "MRF_22200", "input": "if [[ -s /x ]]; then fooctl; fi"}]
+    assert classify_failures(failed, ok)["classification"] == "simulator"
 
 
 @needs_mockwire

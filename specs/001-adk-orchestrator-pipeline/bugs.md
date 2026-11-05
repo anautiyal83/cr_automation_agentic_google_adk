@@ -944,3 +944,18 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   Test `test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder`.
 - Replays of 46e5fee1 (latest workflow): node, repo SFTP, repo SCP 4/4, backup holds only the overwritten file,
   rollback-only restores the original, the unrelated file untouched; PGW 2/2.
+
+### DEP-71 — Run 46e5fee1: broken `if … else` classed as a simulator gap; step 8 ignored the run's workflow file (High, Fixed 2026-11-05)
+- Step 9 classed the pieces MockWire split from `if [[ … ]]; then tar … else echo …; fi` (no `;` before `else`)
+  as missing simulator responses → Re-run went to step 8 with the same broken workflow, twice. Step 8 also took
+  the workflow from the session state (a resumed run: the checkpoint's copy), not the run's `<UC>.yaml`.
+- **Fix**: `result_parser.classify_failures` — an unmatched piece led by a shell keyword (`then else elif fi do
+  done esac`, or `if` without `; then`) is broken shell syntax → workflow (step 6); MockWire runs well-formed
+  ones itself. Step 8 reads `run_dir/<UC>.yaml` (fallback: state).
+- Run 46e5fee1's workflow rebuilt with the DEP-70 code (no LLM; validator clean); replayed as saved 4/4.
+
+### OB-16 — A resumed run showed its old step results while redoing them (Low, Fixed 2026-11-05)
+- Restarted at step 8's review (step 8 runs again: its simulator is gone), the tracker showed step 9 "failed"
+  from before the restart and no review buttons for the ~70 s of the step 8 re-run.
+- **Fix**: `PipelineRunner._resume_state` drops the statuses of the steps the resumed run does again (from the
+  resume agent on; at a milestone pause, the paused step keeps its own) → they show pending.

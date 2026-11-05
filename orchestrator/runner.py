@@ -327,6 +327,12 @@ class PipelineRunner:
         state["_resume_index"] = index
         if at_milestone:
             state["_resume_milestone_at"] = index
+        # steps the resumed run does again are pending, not their last result: step 9 showed
+        # "failed" (no review buttons) while step 8 restarted the simulators (run 46e5fee1)
+        for name in _AGENT_NAMES[index + (1 if at_milestone else 0):]:
+            for sn in _AGENT_DISPLAY_STEPS.get(name, []):
+                if not (at_milestone and sn in _AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], [])):
+                    state.pop(f"step_{sn}_status", None)
         state["resumed_after_restart"] = True
         return state
 

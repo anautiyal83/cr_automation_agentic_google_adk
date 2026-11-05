@@ -398,3 +398,18 @@ def test_server_stop_keeps_the_run_resumable(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "_shutting_down", False)
     status, kept = asyncio.run(scenario(stop=False))                           # a task stopped otherwise
     assert status == "cancelled" and not kept
+
+
+def test_resumed_run_shows_the_steps_it_does_again_as_pending():
+    """Run 46e5fee1: resumed at step 8's review (step 8 runs again: its simulator is gone), step 9
+    still showed "failed" from before the restart and no review buttons, for the whole step 8 re-run."""
+    from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES
+    sim = next(n for n in _AGENT_NAMES if 8 in _AGENT_DISPLAY_STEPS.get(n, []))
+    done = {f"step_{i}_status": "passed" for i in range(1, 9)}
+    state = PipelineRunner._resume_state("r1", {"state": {**done, "step_9_status": "failed"},
+                                                "agent_index": _AGENT_NAMES.index(sim), "kind": "milestone"})
+    assert [i for i in range(1, 11) if f"step_{i}_status" in state] == list(range(1, 8))
+    mop = next(n for n in _AGENT_NAMES if 7 in _AGENT_DISPLAY_STEPS.get(n, []) and 9 not in _AGENT_DISPLAY_STEPS[n])
+    state = PipelineRunner._resume_state("r1", {"state": dict(done), "agent_index": _AGENT_NAMES.index(mop),
+                                                "kind": "milestone"})
+    assert state["step_7_status"] == "passed" and "step_8_status" not in state   # the review of step 7 again
