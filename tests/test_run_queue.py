@@ -280,9 +280,9 @@ def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
     assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"
 
 
-def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
-    """Spec 008 U-D7: a completed run can be marked finished (it leaves Live Run), once; a failed
-    or still running one cannot; the status stays 'completed'."""
+def test_mark_finished_only_ended_runs_once(tmp_path, monkeypatch):
+    """Spec 008 U-D7: a completed or failed run can be marked finished (it leaves Live Run), once — a
+    failed run had no way out of Live Run (OB-20); a running one cannot; the status stays."""
     runner, _ = _runner(tmp_path, monkeypatch)
 
     async def scenario():
@@ -296,7 +296,7 @@ def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
         row = (await db.execute("SELECT status, finished_at, finished_by FROM pipeline_runs WHERE id = 'ok'"))[0]
         return results, row
     results, row = asyncio.run(scenario())
-    assert results == [True, False, False, False, False]
+    assert results == [True, False, True, False, False]
     assert row["status"] == "completed" and row["finished_at"] and row["finished_by"] == "u1"
 
 

@@ -885,7 +885,7 @@ class ProgressSection:
         failed = [n for n, st in statuses.items() if st.startswith("failed")]
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
-        self.btn_finish.set_visibility(ok and not finished)
+        self.btn_finish.set_visibility(status in ("completed", "failed") and not finished)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -1753,7 +1753,7 @@ class ProgressSection:
         run_id = str(self.active_run_id)
         user = self._scope.user
         if not await self.runner.mark_finished(run_id, user.id if user else "cli"):
-            ui.notify("Only a completed run that is not finished yet can be marked finished", type="warning")
+            ui.notify("Only a completed or failed run that is not finished yet can be marked finished", type="warning")
             return
         await record("run.finish", target_type="run", target_id=run_id, run_id=run_id, uc_name=self._uc_name or "")
         ui.notify(f"{self._uc_name or 'Run'} marked as finished — it stays in Run History", type="positive")

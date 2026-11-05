@@ -994,3 +994,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: `RequirementsGathererNode._ask_developer` — decision `cancel` sets the run's cancel action and raises
   `RunCancelled`; the agent ends. `PipelineAgent` checks for a cancel right after an agent returns: nothing of the
   agent is cached or reported completed, the run ends cancelled. Tests `tests/test_requirements_cancel.py`.
+
+### OB-20 — A failed run could not be removed from Live Run (Medium, Fixed 2026-11-05)
+- After the restart, run 8aee1c6d (cancelled by the user, OB-19) was marked failed ("could not resume (no
+  checkpoint)") and Live Run kept showing it: "Mark as finished" was offered for completed runs only (U-D7).
+  Cause of "failed": the cancel set the run's in-memory status to `cancelled` while the run went on, so the
+  shutdown left no checkpoint and the DB still said `running`.
+- **Fix**: `runner.mark_finished` and the Live Run button accept failed runs too (spec 008 U-D7 updated). Run
+  8aee1c6d set to `cancelled` in the DB (what the user did). With OB-19 a cancel at the questions ends the run.

@@ -243,13 +243,14 @@ class PipelineRunner:
         return ids.index(run_id) + 1 if run_id in ids else 0
 
     async def mark_finished(self, run_id: str, user_id: str) -> bool:
-        """The user is done with a completed run: it leaves Live Run (spec 008 U-D7). Its status
-        stays ``completed``. False when the run is not completed or already finished."""
+        """The user is done with a completed or failed run: it leaves Live Run (spec 008 U-D7). Its
+        status stays. False when the run has not ended or is already finished — a failed run had no way
+        out of Live Run (OB-20)."""
         if not self._db:
             return False
         rows = await self._db.execute("SELECT status, finished_at FROM pipeline_runs WHERE id = ?", (run_id,))
         if (not rows or rows[0]["finished_at"]
-                or str(rows[0]["status"]).replace("PipelineStatus.", "").lower() != "completed"):
+                or str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("completed", "failed")):
             return False
         await self._db.execute("UPDATE pipeline_runs SET finished_at = ?, finished_by = ? WHERE id = ?",
                                (_utc_now(), user_id, run_id))
