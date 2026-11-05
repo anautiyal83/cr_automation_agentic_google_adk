@@ -384,7 +384,8 @@ def test_milestone_rerun_starts_at_the_earliest_failed_agent(tmp_path):
     agents = [SimpleNamespace(name=n) for n in ("network_config_gen", "helper_script_gen", "network_config_mop_qa")]
     self = SimpleNamespace(_agents_list=agents)
     ctx = SimpleNamespace(session=SimpleNamespace(state={"run_dir": str(tmp_path)}))
-    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1  # no error file: same agent
+    # no error file: the step's first agent — a step 6 re-run regenerates the workflow (run 9de5fcb8)
+    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 0
     (tmp_path / "step_6_error.json").write_text(json.dumps({"failed_agents": ["helper_script_gen"]}))
     assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1
     (tmp_path / "step_6_error.json").write_text(

@@ -895,3 +895,10 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   activity's own input in /tmp may still be cleaned).
 - Replays (steps 8 + 9): node, repo SFTP, repo SCP 4/4 — backup = the overwritten file only, rollback-only restores
   its original, unrelated file untouched; PGW 2/2.
+
+### OB-15 — "Re-run step" at the step 6 review kept the old workflow (Medium, Fixed 2026-11-05)
+- Run 9de5fcb8 (08:43): after a server restart the run resumed at the step 6 review; "Re-run step" re-ran only
+  helper_script_gen (0.2 s) — `_rerun_index` started a re-run without a recorded failure at the agent that just ran.
+  The workflow stayed the one generated at 01:00, before DEP-67, and step 9 failed on the issue DEP-67 fixes.
+- **Fix**: without `failed_agents` a re-run starts at the display step's first agent (step 6: network_config_gen,
+  then its scripts). Tests `test_pipeline_retries.py`, `test_generation_contracts.py`.

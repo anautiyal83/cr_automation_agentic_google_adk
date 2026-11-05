@@ -46,3 +46,15 @@ def test_continue_on_a_failed_step_drops_the_retry():
     assert rerun < dropped < auto
     assert source.count("_retries_exhausted(") == 2
     assert "continuing pipeline" not in source
+
+
+def test_rerun_of_a_passed_step_starts_at_its_first_agent(tmp_path):
+    """Run 9de5fcb8: "Re-run step" at the step 6 review (no failure) re-ran only helper_script_gen —
+    the workflow stayed the one generated before the fixes."""
+    from orchestrator.pipeline_agent import _AGENT_NAMES, _first_agent_of_step
+    pipeline = _agent(list(_AGENT_NAMES))
+    ctx = SimpleNamespace(session=SimpleNamespace(state={"run_dir": str(tmp_path)}))
+    helper = _AGENT_NAMES.index("helper_script_gen")
+    assert pipeline._rerun_index("", ctx, 6, helper) == _AGENT_NAMES.index(_first_agent_of_step(6)) < helper
+    (tmp_path / "step_6_error.json").write_text(json.dumps({"failed_agents": ["helper_script_gen"]}), encoding="utf-8")
+    assert pipeline._rerun_index("", ctx, 6, helper) == helper        # a recorded failure still decides

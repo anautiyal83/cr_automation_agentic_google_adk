@@ -466,7 +466,8 @@ class PipelineAgent(BaseAgent):
 
     def _rerun_index(self, run_id_str: str, ctx, step_num: int, index: int) -> int:
         """Agent index a milestone rerun starts from: the earliest agent the step's error file
-        names in ``failed_agents``, else the agent that just ran."""
+        names in ``failed_agents``, else the FIRST agent of the display step — "Re-run step" at the
+        step 6 review re-ran only helper_script_gen and kept the old workflow (run 9de5fcb8)."""
         run_dir = ctx.session.state.get("run_dir", "")
         err = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
         try:
@@ -475,7 +476,10 @@ class PipelineAgent(BaseAgent):
             failed = []
         names = [a.name for a in self._agents_list]
         indices = [names.index(a) for a in failed if a in names]
-        return min(indices) if indices else index
+        if indices:
+            return min(indices)
+        first = _first_agent_of_step(step_num)
+        return min(index, names.index(first)) if first in names else index
 
     async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
         """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""
