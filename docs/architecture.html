@@ -1,624 +1,521 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CR Automation Pipeline — Architecture</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetConfig Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-  :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #242836;
-    --border: #2e3348;
-    --text: #e2e4ed;
-    --text-muted: #8b8fa8;
-    --accent: #6c8aff;
-    --accent2: #38bdf8;
-    --green: #22c55e;
-    --amber: #f59e0b;
-    --red: #ef4444;
-    --purple: #a78bfa;
+/* Layout: one reading column; each diagram is a full-width figure that scrolls sideways inside its own frame on phones */
+:root {
+  --bg: #f3f6f7;
+  --surface: #ffffff;
+  --sunk: #e9eff1;
+  --ink: #132029;
+  --muted: #586a74;
+  --line: #c9d5db;
+  --flow: #0d7480;
+  --flow-soft: #dcefF1;
+  --review: #a86a12;
+  --review-soft: #f8ecd6;
+  --retry: #c1440e;
+  --pass: #1f7a4a;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e161b; --surface: #15212a; --sunk: #1b2a34; --ink: #e2eaee; --muted: #93a6b0; --line: #2c3d48;
+    --flow: #4cbcc7; --flow-soft: #163a40; --review: #e2ac55; --review-soft: #3a2c16; --retry: #f2875a; --pass: #6bcb94;
+    color-scheme: dark;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.65;
-    padding: 0;
-  }
-  .hero {
-    background: linear-gradient(135deg, #1e2340 0%, #0f1117 60%, #162032 100%);
-    border-bottom: 1px solid var(--border);
-    padding: 60px 40px 50px;
-    text-align: center;
-  }
-  .hero h1 {
-    font-size: 2.4rem;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    margin-bottom: 10px;
-  }
-  .hero h1 span { color: var(--accent); }
-  .hero .subtitle {
-    color: var(--text-muted);
-    font-size: 1.1rem;
-    max-width: 640px;
-    margin: 0 auto;
-  }
-  .badge-row {
-    margin-top: 20px;
-    display: flex;
-    gap: 10px;
-    justify-content: center;
-    flex-wrap: wrap;
-  }
-  .badge {
-    display: inline-block;
-    padding: 4px 14px;
-    border-radius: 20px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-  }
-  .badge.blue { color: var(--accent2); border-color: #1e3a5f; }
-  .badge.green { color: var(--green); border-color: #1a3a2a; }
-  .badge.purple { color: var(--purple); border-color: #2d2650; }
-  .badge.amber { color: var(--amber); border-color: #3d2f10; }
+}
+:root[data-theme="dark"] {
+  --bg: #0e161b; --surface: #15212a; --sunk: #1b2a34; --ink: #e2eaee; --muted: #93a6b0; --line: #2c3d48;
+  --flow: #4cbcc7; --flow-soft: #163a40; --review: #e2ac55; --review-soft: #3a2c16; --retry: #f2875a; --pass: #6bcb94;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15.5px/1.6 var(--font-body); }
+.page {
+  max-width: 1240px; margin: 0 auto; display: grid; gap: 56px;
+  padding-block: 44px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header { display: grid; gap: 12px; }
+.eyebrow { font: 500 12px/1.2 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--flow); }
+h1 { font: 600 clamp(32px, 5vw, 48px)/1.05 var(--font-display); margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+.lede { margin: 0; max-width: 70ch; color: var(--muted); font-size: 17px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 6px 0 0; padding: 0; list-style: none; font: 13px/1.4 var(--font-mono); color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+section { display: grid; gap: 16px; }
+.sec-head { display: grid; gap: 6px; max-width: 76ch; }
+h2 { font: 600 28px/1.15 var(--font-display); margin: 0; text-wrap: balance; }
+.sec-head p { margin: 0; color: var(--muted); }
+figure { margin: 0; display: grid; gap: 10px; }
+.frame { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; overflow-x: auto; }
+.frame svg { display: block; width: 100%; height: auto; min-width: 980px; }
+figcaption { color: var(--muted); font-size: 14px; max-width: 80ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 22px; height: 0; border-top: 2px solid var(--flow); }
+.sw.retry { border-top: 2px dashed var(--retry); }
+.dia { width: 10px; height: 10px; background: var(--review); transform: rotate(45deg); }
+.qb { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--review); }
 
-  .container { max-width: 1100px; margin: 0 auto; padding: 40px 30px; }
+/* SVG parts, themed from the tokens */
+svg text { font-family: var(--font-body); fill: var(--ink); }
+svg .t-mono { font-family: var(--font-mono); }
+svg .t-muted { fill: var(--muted); }
+svg .t-flow { fill: var(--flow); }
+svg .t-retry { fill: var(--retry); }
+svg .t-pass { fill: var(--pass); }
+svg .t-review { fill: var(--review); }
+svg .t-label { font: 600 11px var(--font-mono); letter-spacing: .08em; fill: var(--muted); }
+svg .t-stage { font: 600 15px var(--font-display); letter-spacing: .06em; fill: var(--flow); }
+svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+svg .box-strong { fill: var(--surface); stroke: var(--flow); stroke-width: 1.6; }
+svg .band { fill: var(--sunk); stroke: none; }
+svg .chip { fill: var(--flow-soft); stroke: none; }
+svg .chip-plain { fill: var(--sunk); stroke: var(--line); stroke-width: 1; }
+svg .num { fill: var(--flow); }
+svg .num-t { fill: var(--surface); font: 600 12px var(--font-mono); }
+svg .edge { stroke: var(--flow); stroke-width: 1.8; fill: none; }
+svg .edge-muted { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+svg .retry { stroke: var(--retry); stroke-width: 1.7; fill: none; stroke-dasharray: 6 4; }
+svg .bracket { stroke: var(--flow); stroke-width: 1.6; fill: none; }
+svg .rv { fill: var(--review); }
+svg .qring { fill: var(--surface); stroke: var(--review); stroke-width: 2; }
+svg .ah { fill: var(--flow); }
+svg .ah-retry { fill: var(--retry); }
+svg .ah-muted { fill: var(--muted); }
+svg .ok-dot { fill: var(--pass); }
+svg .bad-dot { fill: var(--retry); }
 
-  section { margin-bottom: 50px; }
-  section > h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin-bottom: 8px;
-    padding-bottom: 10px;
-    border-bottom: 2px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  section > h2 .icon {
-    width: 28px; height: 28px;
-    border-radius: 6px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.9rem;
-    flex-shrink: 0;
-  }
-  section > p.lead { color: var(--text-muted); margin-bottom: 24px; }
-
-  /* Cards */
-  .card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-    gap: 16px;
-  }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
-    transition: border-color 0.2s;
-  }
-  .card:hover { border-color: var(--accent); }
-  .card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
-  .card p { font-size: 0.88rem; color: var(--text-muted); }
-  .card .tag {
-    display: inline-block;
-    margin-top: 8px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .tag-base { background: #1e2a40; color: var(--accent2); }
-  .tag-llm { background: #2a1e40; color: var(--purple); }
-  .tag-jar { background: #2a3010; color: var(--amber); }
-  .tag-milestone { background: #1a2e20; color: var(--green); }
-  .tag-router { background: #2e1a1a; color: var(--red); }
-
-  /* Pipeline diagram */
-  .pipeline-flow {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: center;
-    padding: 24px 20px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 20px;
-  }
-  .pf-step {
-    padding: 7px 14px;
-    border-radius: 6px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .pf-step.step { background: #1e2a40; color: var(--accent2); border: 1px solid #2a3d5f; }
-  .pf-step.qa { background: #2a3010; color: var(--amber); border: 1px solid #4a5020; }
-  .pf-step.mile { background: #1a2e20; color: var(--green); border: 1px solid #2a4e30; }
-  .pf-step.review { background: #2a1e40; color: var(--purple); border: 1px solid #3d2e60; }
-  .pf-step.router { background: #2e1a1a; color: var(--red); border: 1px solid #4e2a2a; }
-  .pf-arrow { color: var(--text-muted); font-size: 0.85rem; }
-
-  /* Tables */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    font-size: 0.88rem;
-  }
-  thead { background: var(--surface2); }
-  th {
-    text-align: left;
-    padding: 12px 16px;
-    font-weight: 600;
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid var(--border);
-  }
-  td {
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  tr:last-child td { border-bottom: none; }
-  td code {
-    background: var(--surface2);
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 0.82rem;
-    font-family: 'Cascadia Code', 'Fira Code', monospace;
-  }
-
-  /* Feedback loop diagram */
-  .loop-container {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 16px;
-  }
-  @media (max-width: 800px) { .loop-container { grid-template-columns: 1fr; } }
-  .loop-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
-    position: relative;
-    overflow: hidden;
-  }
-  .loop-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-  }
-  .loop-card.loop-a::before { background: var(--amber); }
-  .loop-card.loop-b::before { background: var(--purple); }
-  .loop-card.loop-c::before { background: var(--red); }
-  .loop-card h4 { font-size: 0.95rem; margin-bottom: 10px; }
-  .loop-card .flow {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    line-height: 2;
-  }
-  .loop-card .flow strong { color: var(--text); }
-
-  /* Code block */
-  pre {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
-    overflow-x: auto;
-    font-family: 'Cascadia Code', 'Fira Code', monospace;
-    font-size: 0.82rem;
-    line-height: 1.7;
-    color: var(--text-muted);
-  }
-  pre strong { color: var(--text); font-weight: 600; }
-  pre .comment { color: #555a70; }
-  pre .key { color: var(--accent); }
-  pre .val { color: var(--green); }
-
-  /* Stack row */
-  .stack-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-top: 16px;
-  }
-  .stack-item {
-    flex: 1 1 180px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 18px;
-    text-align: center;
-  }
-  .stack-item .label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-muted);
-    margin-bottom: 6px;
-  }
-  .stack-item .value {
-    font-size: 1.05rem;
-    font-weight: 700;
-  }
-
-  /* Footer */
-  footer {
-    text-align: center;
-    padding: 30px;
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    border-top: 1px solid var(--border);
-  }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font: 500 11.5px/1.3 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--sunk); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n { font: 500 13px var(--font-mono); color: var(--flow); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td code, p code { font: 12.5px var(--font-mono); background: var(--sunk); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+.tag { display: inline-block; font: 500 11px/1.7 var(--font-mono); padding: 0 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); margin: 1px 4px 1px 0; white-space: nowrap; }
+.tag.llm { background: var(--flow-soft); color: var(--flow); }
+.tag.rev { background: var(--review-soft); color: var(--review); }
+.decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.decision { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 4px; min-width: 0; }
+.decision b { font: 600 16px var(--font-display); }
+.decision span { color: var(--muted); font-size: 14px; }
+footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 640px) { .frame { padding: 10px; } h2 { font-size: 24px; } }
 </style>
+
 </head>
 <body>
+<div class="page">
+  <header>
+    <div class="eyebrow">NetConfig pipeline</div>
+    <h1>From MOP and CIQ to a tested workflow</h1>
+    <p class="lede">NetConfig reads a use case's documents, builds the CIQ validation rules and the cli-automation workflow with an LLM, and proves the workflow on a simulated network before anyone runs it on a real node. A person reviews the result after each stage.</p>
+    <ul class="facts">
+      <li><b>10</b> steps</li>
+      <li><b>9</b> agents (Google ADK)</li>
+      <li><b>7</b> review pauses</li>
+      <li><b>3</b> retries per step, at most</li>
+      <li><b>1</b> run at a time, the rest queue</li>
+    </ul>
+  </header>
 
-<!-- ======================= HERO ======================= -->
-<div class="hero">
-  <h1><span>CR Automation</span> Pipeline Architecture</h1>
-  <p class="subtitle">
-    A 23-agent agentic pipeline for telecom UC Change Request automation,
-    built on Google ADK with LLM-driven generation, JAR-based validation,
-    and self-healing feedback loops.
-  </p>
-  <div class="badge-row">
-    <span class="badge blue">Google ADK</span>
-    <span class="badge purple">Gemini 2.5 Flash via LiteLLM</span>
-    <span class="badge green">NiceGUI</span>
-    <span class="badge amber">23 Agents</span>
-  </div>
+  <!-- 1. Pipeline -->
+  <section id="pipeline">
+    <div class="sec-head">
+      <h2>The pipeline</h2>
+      <p>Documents go in on the left; every step hands its output to the next. When a QA step finds a problem, the run goes back to the step that can fix it.</p>
+    </div>
+    <figure>
+      <div class="frame">
+        <svg viewBox="0 0 1390 440" role="img" aria-label="Ten pipeline steps in five stages, from the input documents to the final report, with QA steps sending the run back to earlier steps when they fail.">
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+            <marker id="a1r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-retry"/></marker>
+          </defs>
+
+          <!-- Inputs -->
+          <text x="20" y="44" class="t-label">INPUTS</text>
+          <rect x="20" y="80" width="150" height="28" rx="6" class="chip-plain"/><text x="34" y="99" font-size="12.5">CIQ workbook .xlsx</text>
+          <rect x="20" y="114" width="150" height="28" rx="6" class="chip-plain"/><text x="34" y="133" font-size="12.5">MOP .txt</text>
+          <rect x="20" y="148" width="150" height="28" rx="6" class="chip-plain"/><text x="34" y="167" font-size="12.5">Session logs</text>
+          <rect x="20" y="182" width="150" height="28" rx="6" class="chip-plain"/><text x="34" y="201" font-size="12.5">Developer notes</text>
+          <line x1="172" y1="145" x2="216" y2="125" class="edge" marker-end="url(#a1)"/>
+
+          <!-- Stage brackets -->
+          <text x="327" y="40" text-anchor="middle" class="t-stage">UNDERSTAND</text>
+          <path d="M220,62 V54 H434 V62" class="bracket"/>
+          <text x="617" y="40" text-anchor="middle" class="t-stage">CIQ</text>
+          <path d="M452,62 V54 H782 V62" class="bracket"/>
+          <text x="907" y="40" text-anchor="middle" class="t-stage">WORKFLOW</text>
+          <path d="M800,62 V54 H1014 V62" class="bracket"/>
+          <text x="1139" y="40" text-anchor="middle" class="t-stage">PROVE</text>
+          <path d="M1032,62 V54 H1246 V62" class="bracket"/>
+          <text x="1313" y="40" text-anchor="middle" class="t-stage">REPORT</text>
+          <path d="M1264,62 V54 H1362 V62" class="bracket"/>
+
+          <!-- Step nodes: x = 220 + (n-1)*116, width 98 -->
+          <g>
+            <rect x="220" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="238" cy="99" r="11" class="num"/><text x="238" y="103" text-anchor="middle" class="num-t">1</text>
+            <circle cx="300" cy="99" r="7" class="qring"/><text x="300" y="102.5" text-anchor="middle" font-size="9" font-weight="700" class="t-review">?</text>
+            <text x="269" y="132" text-anchor="middle" font-size="13" font-weight="600">DOC Parser</text>
+            <text x="269" y="156" text-anchor="middle" font-size="10.5" class="t-muted t-mono">parsers</text>
+          </g>
+          <g>
+            <rect x="336" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="354" cy="99" r="11" class="num"/><text x="354" y="103" text-anchor="middle" class="num-t">2</text>
+            <rect x="411" y="94" width="10" height="10" class="rv" transform="rotate(45 416 99)"/>
+            <text x="385" y="132" text-anchor="middle" font-size="13" font-weight="600">DOC Analyzer</text>
+            <text x="385" y="156" text-anchor="middle" font-size="10.5" class="t-muted t-mono">LLM</text>
+          </g>
+          <g>
+            <rect x="452" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="470" cy="99" r="11" class="num"/><text x="470" y="103" text-anchor="middle" class="num-t">3</text>
+            <text x="501" y="126" text-anchor="middle" font-size="13" font-weight="600">CIQ Config</text>
+            <text x="501" y="141" text-anchor="middle" font-size="13" font-weight="600">Generation</text>
+            <text x="501" y="160" text-anchor="middle" font-size="10.5" class="t-muted t-mono">LLM</text>
+          </g>
+          <g>
+            <rect x="568" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="586" cy="99" r="11" class="num"/><text x="586" y="103" text-anchor="middle" class="num-t">4</text>
+            <rect x="643" y="94" width="10" height="10" class="rv" transform="rotate(45 648 99)"/>
+            <text x="617" y="126" text-anchor="middle" font-size="13" font-weight="600">CIQ JSON</text>
+            <text x="617" y="141" text-anchor="middle" font-size="13" font-weight="600">Config</text>
+            <text x="617" y="160" text-anchor="middle" font-size="10.5" class="t-muted t-mono">ciq-processor</text>
+          </g>
+          <g>
+            <rect x="684" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="702" cy="99" r="11" class="num"/><text x="702" y="103" text-anchor="middle" class="num-t">5</text>
+            <rect x="759" y="94" width="10" height="10" class="rv" transform="rotate(45 764 99)"/>
+            <text x="733" y="132" text-anchor="middle" font-size="13" font-weight="600">QA-Validation</text>
+            <text x="733" y="156" text-anchor="middle" font-size="10.5" class="t-muted t-mono">LLM + JAR</text>
+          </g>
+          <g>
+            <rect x="800" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="818" cy="99" r="11" class="num"/><text x="818" y="103" text-anchor="middle" class="num-t">6</text>
+            <rect x="875" y="94" width="10" height="10" class="rv" transform="rotate(45 880 99)"/>
+            <text x="849" y="126" text-anchor="middle" font-size="13" font-weight="600">Execution</text>
+            <text x="849" y="141" text-anchor="middle" font-size="13" font-weight="600">Config</text>
+            <text x="849" y="160" text-anchor="middle" font-size="10.5" class="t-muted t-mono">LLM + autofix</text>
+          </g>
+          <g>
+            <rect x="916" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="934" cy="99" r="11" class="num"/><text x="934" y="103" text-anchor="middle" class="num-t">7</text>
+            <rect x="991" y="94" width="10" height="10" class="rv" transform="rotate(45 996 99)"/>
+            <text x="965" y="132" text-anchor="middle" font-size="13" font-weight="600">QA-MOP</text>
+            <text x="965" y="156" text-anchor="middle" font-size="10.5" class="t-muted t-mono">cli-automation</text>
+          </g>
+          <g>
+            <rect x="1032" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="1050" cy="99" r="11" class="num"/><text x="1050" y="103" text-anchor="middle" class="num-t">8</text>
+            <rect x="1107" y="94" width="10" height="10" class="rv" transform="rotate(45 1112 99)"/>
+            <text x="1081" y="126" text-anchor="middle" font-size="13" font-weight="600">Simulator</text>
+            <text x="1081" y="141" text-anchor="middle" font-size="13" font-weight="600">Setup</text>
+            <text x="1081" y="160" text-anchor="middle" font-size="10.5" class="t-muted t-mono">MockWire</text>
+          </g>
+          <g>
+            <rect x="1148" y="80" width="98" height="90" rx="8" class="box"/>
+            <circle cx="1166" cy="99" r="11" class="num"/><text x="1166" y="103" text-anchor="middle" class="num-t">9</text>
+            <rect x="1223" y="94" width="10" height="10" class="rv" transform="rotate(45 1228 99)"/>
+            <text x="1197" y="132" text-anchor="middle" font-size="13" font-weight="600">QA-Execution</text>
+            <text x="1197" y="156" text-anchor="middle" font-size="10.5" class="t-muted t-mono">JAR + MockWire</text>
+          </g>
+          <g>
+            <rect x="1264" y="80" width="98" height="90" rx="8" class="box-strong"/>
+            <circle cx="1282" cy="99" r="11" class="num"/><text x="1282" y="103" text-anchor="middle" class="num-t">10</text>
+            <text x="1313" y="126" text-anchor="middle" font-size="13" font-weight="600">Final</text>
+            <text x="1313" y="141" text-anchor="middle" font-size="13" font-weight="600">Report</text>
+            <text x="1313" y="160" text-anchor="middle" font-size="10.5" class="t-muted t-mono">report JAR</text>
+          </g>
+
+          <!-- Forward edges -->
+          <line x1="318" y1="125" x2="334" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="434" y1="125" x2="450" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="550" y1="125" x2="566" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="666" y1="125" x2="682" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="782" y1="125" x2="798" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="898" y1="125" x2="914" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="1014" y1="125" x2="1030" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="1130" y1="125" x2="1146" y2="125" class="edge" marker-end="url(#a1)"/>
+          <line x1="1246" y1="125" x2="1262" y2="125" class="edge" marker-end="url(#a1)"/>
+
+          <!-- Retry loops -->
+          <path d="M733,172 C733,232 501,232 501,176" class="retry" marker-end="url(#a1r)"/>
+          <text x="617" y="236" text-anchor="middle" font-size="11.5" class="t-retry">CIQ test cases fail → new rules</text>
+          <path d="M965,172 C965,214 857,214 857,176" class="retry" marker-end="url(#a1r)"/>
+          <text x="911" y="219" text-anchor="middle" font-size="11.5" class="t-retry">MOP fails</text>
+          <path d="M1189,172 C1189,214 1081,214 1081,176" class="retry" marker-end="url(#a1r)"/>
+          <text x="1135" y="219" text-anchor="middle" font-size="11.5" class="t-retry">simulator gap</text>
+          <path d="M1211,172 C1211,300 837,300 837,176" class="retry" marker-end="url(#a1r)"/>
+          <text x="1024" y="287" text-anchor="middle" font-size="11.5" class="t-retry">workflow problem → generate again</text>
+
+          <!-- Outputs -->
+          <rect x="200" y="318" width="1176" height="112" rx="8" class="band"/>
+          <text x="20" y="342" class="t-label">OUTPUTS</text>
+          <g font-size="11.5" class="t-mono">
+            <rect x="228" y="330" width="198" height="24" rx="5" class="chip"/><text x="240" y="346">requirements.json</text>
+            <rect x="228" y="360" width="198" height="24" rx="5" class="chip"/><text x="240" y="376">requirements summary</text>
+
+            <rect x="460" y="330" width="314" height="24" rx="5" class="chip"/><text x="472" y="346">validation-rules.yaml</text>
+            <rect x="460" y="360" width="314" height="24" rx="5" class="chip"/><text x="472" y="376">CIQ JSON (crGroups → nodeGroups)</text>
+            <rect x="460" y="390" width="314" height="24" rx="5" class="chip"/><text x="472" y="406">QA-Validation report</text>
+
+            <rect x="808" y="330" width="198" height="24" rx="5" class="chip"/><text x="820" y="346">workflow YAML</text>
+            <rect x="808" y="360" width="198" height="24" rx="5" class="chip"/><text x="820" y="376">helper scripts</text>
+            <rect x="808" y="390" width="198" height="24" rx="5" class="chip"/><text x="820" y="406">MOP (HTML)</text>
+
+            <rect x="1040" y="330" width="198" height="24" rx="5" class="chip"/><text x="1052" y="346">simulator config</text>
+            <rect x="1040" y="360" width="198" height="24" rx="5" class="chip"/><text x="1052" y="376">test cases + results</text>
+            <rect x="1040" y="390" width="198" height="24" rx="5" class="chip"/><text x="1052" y="406">execution reports</text>
+
+            <rect x="1268" y="330" width="94" height="24" rx="5" class="chip"/><text x="1278" y="346">HTML report</text>
+            <rect x="1268" y="360" width="94" height="24" rx="5" class="chip"/><text x="1278" y="376">Excel report</text>
+          </g>
+        </svg>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="sw"></i>hands output to the next step</span>
+        <span><i class="sw retry"></i>QA failure sends the run back</span>
+        <span><i class="dia"></i>review pause</span>
+        <span><i class="qb"></i>questions to the developer</span>
+      </div>
+      <figcaption>Each stage ends with something a person can check: the requirements, the CIQ rules and JSON, the workflow and its MOP, the simulator results. A retry counts against its step; after 3 the run fails.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 2. Review pauses -->
+  <section id="reviews">
+    <div class="sec-head">
+      <h2>What happens at a review pause</h2>
+      <p>The run waits until someone with Update rights on Live Run decides. The pause survives a server restart.</p>
+    </div>
+    <div class="decisions">
+      <div class="decision"><b>Continue</b><span>Accept the step's output, even with QA findings, and go on to the next step.</span></div>
+      <div class="decision"><b>Re-run step</b><span>Go back to the step that can fix the problem (shown by the dashed arrows) and run from there.</span></div>
+      <div class="decision"><b>Cancel</b><span>End the run. It stays in Run History with everything it produced so far.</span></div>
+    </div>
+  </section>
+
+  <!-- 3. System -->
+  <section id="system">
+    <div class="sec-head">
+      <h2>The system around it</h2>
+      <p>One server runs the web app, the run queue and the pipeline. The pipeline calls out to the LLM, three Java tools and the simulator, and keeps everything it makes on disk.</p>
+    </div>
+    <figure>
+      <div class="frame">
+        <svg viewBox="0 0 1200 610" role="img" aria-label="Layers of the NetConfig server: web app, runner, pipeline and storage, with the LLM, Java tools and simulator outside.">
+          <defs>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+          </defs>
+
+          <!-- People -->
+          <text x="20" y="40" class="t-label">PEOPLE</text>
+          <circle cx="44" cy="72" r="9" class="num"/><path d="M28,100 a16,13 0 0 1 32,0 z" class="num"/>
+          <text x="70" y="78" font-size="13" font-weight="600">Developer</text>
+          <text x="70" y="94" font-size="11.5" class="t-muted">uploads, answers, reviews</text>
+          <circle cx="44" cy="132" r="9" class="num"/><path d="M28,160 a16,13 0 0 1 32,0 z" class="num"/>
+          <text x="70" y="138" font-size="13" font-weight="600">Admin</text>
+          <text x="70" y="154" font-size="11.5" class="t-muted">users, roles, settings</text>
+
+          <!-- Web app -->
+          <rect x="230" y="24" width="640" height="130" rx="10" class="box"/>
+          <text x="250" y="50" class="t-label">WEB APP</text>
+          <text x="330" y="50" font-size="12" class="t-muted">NiceGUI · port 8000 · login and roles</text>
+          <g font-size="12.5">
+            <rect x="250" y="66" width="110" height="32" rx="6" class="chip"/><text x="305" y="86" text-anchor="middle">New Run</text>
+            <rect x="370" y="66" width="110" height="32" rx="6" class="chip"/><text x="425" y="86" text-anchor="middle">Live Run</text>
+            <rect x="490" y="66" width="110" height="32" rx="6" class="chip"/><text x="545" y="86" text-anchor="middle">Pipeline Queue</text>
+            <rect x="610" y="66" width="110" height="32" rx="6" class="chip"/><text x="665" y="86" text-anchor="middle">Run History</text>
+            <rect x="730" y="66" width="120" height="32" rx="6" class="chip"/><text x="790" y="86" text-anchor="middle">Run Artifacts</text>
+            <rect x="250" y="106" width="110" height="32" rx="6" class="chip-plain"/><text x="305" y="126" text-anchor="middle">Settings</text>
+            <rect x="370" y="106" width="110" height="32" rx="6" class="chip-plain"/><text x="425" y="126" text-anchor="middle">Users</text>
+            <rect x="490" y="106" width="110" height="32" rx="6" class="chip-plain"/><text x="545" y="126" text-anchor="middle">Audit trail</text>
+            <rect x="610" y="106" width="110" height="32" rx="6" class="chip-plain"/><text x="665" y="126" text-anchor="middle">Artifact Cache</text>
+            <rect x="730" y="106" width="120" height="32" rx="6" class="chip-plain"/><text x="790" y="126" text-anchor="middle">LLM Usage</text>
+          </g>
+          <line x1="190" y1="110" x2="226" y2="110" class="edge" marker-end="url(#a2)"/>
+
+          <!-- Runner -->
+          <rect x="230" y="200" width="640" height="96" rx="10" class="box"/>
+          <text x="250" y="226" class="t-label">RUNNER</text>
+          <g font-size="12.5">
+            <rect x="250" y="240" width="140" height="40" rx="6" class="chip-plain"/><text x="320" y="256" text-anchor="middle">Run queue</text><text x="320" y="272" text-anchor="middle" font-size="11" class="t-muted">one run at a time</text>
+            <rect x="402" y="240" width="140" height="40" rx="6" class="chip-plain"/><text x="472" y="256" text-anchor="middle">Checkpoints</text><text x="472" y="272" text-anchor="middle" font-size="11" class="t-muted">resume after restart</text>
+            <rect x="554" y="240" width="140" height="40" rx="6" class="chip-plain"/><text x="624" y="256" text-anchor="middle">Event bus</text><text x="624" y="272" text-anchor="middle" font-size="11" class="t-muted">live progress</text>
+            <rect x="706" y="240" width="144" height="40" rx="6" class="chip-plain"/><text x="778" y="256" text-anchor="middle">Review decisions</text><text x="778" y="272" text-anchor="middle" font-size="11" class="t-muted">continue / re-run / cancel</text>
+          </g>
+          <line x1="380" y1="156" x2="380" y2="196" class="edge" marker-end="url(#a2)"/>
+          <text x="388" y="180" font-size="11.5" class="t-flow">submit, decide</text>
+          <line x1="720" y1="198" x2="720" y2="158" class="edge" marker-end="url(#a2)"/>
+          <text x="728" y="180" font-size="11.5" class="t-flow">live events</text>
+
+          <!-- Pipeline -->
+          <rect x="230" y="342" width="640" height="120" rx="10" class="box-strong"/>
+          <text x="250" y="368" class="t-label">PIPELINE</text>
+          <text x="340" y="368" font-size="12" class="t-muted">Google ADK · 9 agents, each wrapping one skill</text>
+          <g font-size="12.5" font-weight="600">
+            <rect x="250" y="384" width="112" height="34" rx="6" class="chip"/><text x="306" y="405" text-anchor="middle">Understand</text>
+            <rect x="372" y="384" width="112" height="34" rx="6" class="chip"/><text x="428" y="405" text-anchor="middle">CIQ</text>
+            <rect x="494" y="384" width="112" height="34" rx="6" class="chip"/><text x="550" y="405" text-anchor="middle">Workflow</text>
+            <rect x="616" y="384" width="112" height="34" rx="6" class="chip"/><text x="672" y="405" text-anchor="middle">Prove</text>
+            <rect x="738" y="384" width="112" height="34" rx="6" class="chip"/><text x="794" y="405" text-anchor="middle">Report</text>
+          </g>
+          <line x1="362" y1="401" x2="372" y2="401" class="edge"/>
+          <line x1="484" y1="401" x2="494" y2="401" class="edge"/>
+          <line x1="606" y1="401" x2="616" y2="401" class="edge"/>
+          <line x1="728" y1="401" x2="738" y2="401" class="edge"/>
+          <text x="250" y="446" font-size="11.5" class="t-muted">review pauses · retry routing · artifact cache (reuses a stage's output when the inputs did not change)</text>
+          <line x1="550" y1="298" x2="550" y2="338" class="edge" marker-end="url(#a2)"/>
+          <text x="558" y="322" font-size="11.5" class="t-flow">starts, resumes</text>
+
+          <!-- External tools -->
+          <rect x="930" y="24" width="250" height="438" rx="10" class="band"/>
+          <text x="950" y="50" class="t-label">CALLED BY THE PIPELINE</text>
+          <g>
+            <rect x="950" y="66" width="210" height="58" rx="6" class="box"/>
+            <text x="964" y="88" font-size="13" font-weight="600">LLM</text>
+            <text x="964" y="108" font-size="11.5" class="t-muted">OpenRouter · Gemini 2.5</text>
+            <rect x="950" y="134" width="210" height="58" rx="6" class="box"/>
+            <text x="964" y="156" font-size="13" font-weight="600">ciq-processor JAR</text>
+            <text x="964" y="176" font-size="11.5" class="t-muted">checks CIQ, builds CIQ JSON</text>
+            <rect x="950" y="202" width="210" height="58" rx="6" class="box"/>
+            <text x="964" y="224" font-size="13" font-weight="600">cli-automation JAR</text>
+            <text x="964" y="244" font-size="11.5" class="t-muted">MOP from workflow, executes it</text>
+            <rect x="950" y="270" width="210" height="58" rx="6" class="box"/>
+            <text x="964" y="292" font-size="13" font-weight="600">report-generator JAR</text>
+            <text x="964" y="312" font-size="11.5" class="t-muted">execution reports</text>
+            <rect x="950" y="338" width="210" height="58" rx="6" class="box"/>
+            <text x="964" y="360" font-size="13" font-weight="600">MockWire</text>
+            <text x="964" y="380" font-size="11.5" class="t-muted">simulated nodes over SSH</text>
+            <text x="950" y="430" font-size="11.5" class="t-muted">All in lib/, set in</text>
+            <text x="950" y="446" font-size="11.5" class="t-muted">Settings → External Modules</text>
+          </g>
+          <line x1="872" y1="402" x2="926" y2="402" class="edge" marker-end="url(#a2)"/>
+          <text x="878" y="392" font-size="11.5" class="t-flow">calls</text>
+
+          <!-- Storage -->
+          <rect x="230" y="508" width="950" height="88" rx="10" class="band"/>
+          <text x="250" y="534" class="t-label">STORAGE</text>
+          <g font-size="12.5">
+            <rect x="250" y="546" width="220" height="36" rx="6" class="box"/><text x="262" y="569"><tspan font-weight="600">SQLite</tspan><tspan class="t-muted" font-size="11.5"> runs, users, audit</tspan></text>
+            <rect x="482" y="546" width="220" height="36" rx="6" class="box"/><text x="494" y="569"><tspan font-weight="600">data/runs/&lt;id&gt;</tspan><tspan class="t-muted" font-size="11.5"> outputs</tspan></text>
+            <rect x="714" y="546" width="220" height="36" rx="6" class="box"/><text x="726" y="569"><tspan font-weight="600">data/cache</tspan><tspan class="t-muted" font-size="11.5"> reusable stages</tspan></text>
+            <rect x="946" y="546" width="214" height="36" rx="6" class="box"/><text x="958" y="569"><tspan font-weight="600">data/uploads</tspan><tspan class="t-muted" font-size="11.5"> documents</tspan></text>
+          </g>
+          <line x1="550" y1="464" x2="550" y2="504" class="edge" marker-end="url(#a2)"/>
+          <text x="558" y="488" font-size="11.5" class="t-flow">writes outputs, status</text>
+        </svg>
+      </div>
+      <figcaption>The web app never runs a step itself: it submits a run and records decisions, and the runner drives the pipeline. That is why a run keeps going when the browser closes, and why it can resume after a restart.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4. Prove -->
+  <section id="prove">
+    <div class="sec-head">
+      <h2>How a workflow is proven (steps 8 and 9)</h2>
+      <p>The workflow runs exactly as it would in production, through cli-automation, but against simulated nodes that answer with the real outputs from your session logs.</p>
+    </div>
+    <figure>
+      <div class="frame">
+        <svg viewBox="0 0 1200 380" role="img" aria-label="Step 8 points a copy of the workflow at simulated nodes; step 9 runs it with cli-automation and judges the result from the run report and the simulator's command log.">
+          <defs>
+            <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+            <marker id="a3m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-muted"/></marker>
+          </defs>
+
+          <text x="20" y="34" class="t-label">STEP 8 · SET UP</text>
+          <text x="470" y="34" class="t-label">STEP 9 · EXECUTE</text>
+          <text x="930" y="34" class="t-label">STEP 9 · JUDGE</text>
+
+          <rect x="20" y="60" width="180" height="70" rx="8" class="box"/>
+          <text x="36" y="88" font-size="13" font-weight="600">Workflow YAML</text>
+          <text x="36" y="110" font-size="11.5" class="t-muted">from step 6</text>
+          <line x1="200" y1="95" x2="236" y2="95" class="edge" marker-end="url(#a3)"/>
+
+          <rect x="240" y="60" width="190" height="70" rx="8" class="box"/>
+          <text x="256" y="88" font-size="13" font-weight="600">Test copy</text>
+          <text x="256" y="110" font-size="11.5" class="t-muted">hosts → simulator ports</text>
+          <line x1="430" y1="95" x2="466" y2="95" class="edge" marker-end="url(#a3)"/>
+
+          <rect x="470" y="60" width="200" height="70" rx="8" class="box-strong"/>
+          <text x="486" y="88" font-size="13" font-weight="600">cli-automation JAR</text>
+          <text x="486" y="110" font-size="11.5" class="t-muted">once per node group</text>
+
+          <!-- SSH into simulated nodes -->
+          <line x1="670" y1="95" x2="716" y2="95" class="edge" marker-end="url(#a3)"/>
+          <text x="676" y="86" font-size="11.5" class="t-flow">SSH</text>
+          <rect x="720" y="60" width="180" height="70" rx="8" class="box"/>
+          <text x="736" y="86" font-size="13" font-weight="600">Node  <tspan class="t-mono t-muted" font-size="11.5">:22200</tspan></text>
+          <text x="736" y="104" font-size="11.5" class="t-muted">NIAM login, root, files</text>
+          <text x="736" y="120" font-size="11.5" class="t-muted">answers from your logs</text>
+          <path d="M620,130 V230 H716" class="edge" marker-end="url(#a3)"/>
+          <rect x="720" y="196" width="180" height="70" rx="8" class="box"/>
+          <text x="736" y="222" font-size="13" font-weight="600">Repo server  <tspan class="t-mono t-muted" font-size="11.5">:22201</tspan></text>
+          <text x="736" y="240" font-size="11.5" class="t-muted">keeps the backups</text>
+          <text x="736" y="256" font-size="11.5" class="t-muted">when “via repo” is on</text>
+          <line x1="790" y1="132" x2="790" y2="192" class="edge-muted" marker-end="url(#a3m)" marker-start="url(#a3m)"/>
+          <text x="798" y="166" font-size="11" class="t-muted">scp / sftp</text>
+
+          <!-- Logs into the judge -->
+          <rect x="930" y="60" width="250" height="70" rx="8" class="box"/>
+          <text x="946" y="88" font-size="13" font-weight="600">Simulator command log</text>
+          <text x="946" y="110" font-size="11.5" class="t-muted">every command, answered or not</text>
+          <line x1="900" y1="95" x2="926" y2="95" class="edge-muted" marker-end="url(#a3m)"/>
+
+          <rect x="930" y="170" width="250" height="150" rx="8" class="box-strong"/>
+          <text x="946" y="196" font-size="13" font-weight="600">Checks per test case</text>
+          <text x="946" y="216" font-size="11.5" class="t-muted">every step passed · every command</text>
+          <text x="946" y="232" font-size="11.5" class="t-muted">answered · files restored on rollback</text>
+          <circle cx="952" cy="258" r="5" class="ok-dot"/><text x="964" y="262" font-size="12.5" class="t-pass" font-weight="600">Pass → step 10</text>
+          <circle cx="952" cy="282" r="5" class="bad-dot"/><text x="964" y="286" font-size="12.5" class="t-retry" font-weight="600">Workflow problem → step 6</text>
+          <circle cx="952" cy="306" r="5" class="bad-dot"/><text x="964" y="310" font-size="12.5" class="t-retry" font-weight="600">Simulator gap → step 8</text>
+          <line x1="1055" y1="130" x2="1055" y2="166" class="edge-muted" marker-end="url(#a3m)"/>
+
+          <path d="M560,130 V346 H1055 V324" class="edge-muted" marker-end="url(#a3m)"/>
+          <text x="572" y="338" font-size="11.5" class="t-muted">run report: PASS / FAIL per step</text>
+        </svg>
+      </div>
+      <figcaption>Test cases per run: a sunny-day run for every node group, plus a rollback-only run that must put the node's files back exactly as they were. Nothing is ever sent to a production host.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5. Agents -->
+  <section id="agents">
+    <div class="sec-head">
+      <h2>Steps, agents and what they produce</h2>
+      <p>Each agent is a thin wrapper around one reusable skill package in <code>skills/</code>.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Step</th><th>Agent</th><th>Does</th><th>Uses</th><th>Pause</th></tr></thead>
+        <tbody>
+          <tr><td class="n">1–2</td><td>requirements_gatherer</td><td>Reads the CIQ, MOP and logs, asks the developer what is missing, writes the requirements</td><td><span class="tag llm">LLM</span><span class="tag">parsers</span></td><td><span class="tag rev">questions, summary</span></td></tr>
+          <tr><td class="n">3–4</td><td>ciq_validation_json_gen</td><td>Writes the CIQ validation rules and builds the CIQ JSON</td><td><span class="tag llm">LLM</span><span class="tag">ciq-processor</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">5</td><td>ciq_validation_json_qa</td><td>Tests the rules with generated CIQ test cases</td><td><span class="tag llm">LLM</span><span class="tag">ciq-processor</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">6</td><td>network_config_gen</td><td>Generates the cli-automation workflow; autofix and structure make it safe (backups, rollback, loops)</td><td><span class="tag llm">LLM</span><span class="tag">validator</span></td><td>—</td></tr>
+          <tr><td class="n">6</td><td>helper_script_gen</td><td>Writes the helper scripts the workflow's local steps call</td><td><span class="tag llm">LLM</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">7</td><td>network_config_mop_qa</td><td>Renders the MOP from the workflow and checks it</td><td><span class="tag">cli-automation</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">8</td><td>network_simulator_setup</td><td>Starts one simulated node per remote node, with answers from the session logs</td><td><span class="tag llm">LLM</span><span class="tag">MockWire</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">9</td><td>network_config_exec_qa</td><td>Runs the workflow on the simulator and judges each test case</td><td><span class="tag">cli-automation</span><span class="tag">MockWire</span></td><td><span class="tag rev">review</span></td></tr>
+          <tr><td class="n">10</td><td>report_generator</td><td>Lists every deliverable and writes the HTML and Excel report</td><td><span class="tag">report generator</span></td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>NetConfig pipeline, branch feature/skill-packages, 5 November 2026.</footer>
 </div>
-
-<div class="container">
-
-<!-- ======================= TECH STACK ======================= -->
-<section>
-  <h2><span class="icon" style="background:#1e2a40;color:var(--accent2);">S</span> Technology Stack</h2>
-  <div class="stack-row">
-    <div class="stack-item">
-      <div class="label">Orchestrator</div>
-      <div class="value">PipelineAgent</div>
-      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Custom BaseAgent subclass</p>
-    </div>
-    <div class="stack-item">
-      <div class="label">Framework</div>
-      <div class="value">Google ADK</div>
-      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Runner + InMemorySessionService</p>
-    </div>
-    <div class="stack-item">
-      <div class="label">LLM</div>
-      <div class="value">Gemini 2.5 Flash</div>
-      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">via OpenRouter / LiteLLM</p>
-    </div>
-    <div class="stack-item">
-      <div class="label">UI</div>
-      <div class="value">NiceGUI</div>
-      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">Port 8000, dark mode</p>
-    </div>
-    <div class="stack-item">
-      <div class="label">Storage</div>
-      <div class="value">SQLite + FS</div>
-      <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px;">DB metadata + file artifacts</p>
-    </div>
-  </div>
-</section>
-
-<!-- ======================= PIPELINE FLOW ======================= -->
-<section>
-  <h2><span class="icon" style="background:#1a2e20;color:var(--green);">F</span> Pipeline Flow</h2>
-  <p class="lead">23 agents execute sequentially. The PipelineAgent state machine supports conditional backtracking via <code>_retry_target</code>.</p>
-
-  <div class="pipeline-flow">
-    <span class="pf-step step">1 DOC Parser</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">2 DOC Analyzer</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">3 CIQ Config Gen</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M3</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">4 JSON Template</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M4</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step qa">5 QA-Validation</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M5</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step review">R5 Reviewer</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step router">Router5</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">6 Workflow Gen</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M6</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step qa">7 MOP Test</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M7</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step review">R7 Reviewer</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step router">Router7</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">8 Simulator Setup</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M8</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step qa">9 Execution Test</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step mile">M9</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step review">R9 Reviewer</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step router">Router9</span><span class="pf-arrow">&rarr;</span>
-    <span class="pf-step step">10 Final Report</span>
-  </div>
-
-  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:var(--text-muted);">
-    <span><span class="pf-step step" style="padding:3px 8px;">Step</span> Pipeline step (BaseAgent)</span>
-    <span><span class="pf-step qa" style="padding:3px 8px;">QA</span> JAR-based test step</span>
-    <span><span class="pf-step mile" style="padding:3px 8px;">M</span> Milestone (user review pause)</span>
-    <span><span class="pf-step review" style="padding:3px 8px;">R</span> LLM Peer Reviewer</span>
-    <span><span class="pf-step router" style="padding:3px 8px;">Router</span> Failure router</span>
-  </div>
-</section>
-
-<!-- ======================= 10 STEPS ======================= -->
-<section>
-  <h2><span class="icon" style="background:#1e2a40;color:var(--accent2);">10</span> Pipeline Steps</h2>
-  <p class="lead">Each step wraps an existing agent from cr_automation-agentic via cross-project import bridge.</p>
-
-  <table>
-    <thead>
-      <tr><th>#</th><th>Agent</th><th>Type</th><th>Description</th><th>Relies On</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>1</td><td><code>DocParserNode</code></td><td><span class="tag tag-base">BaseAgent</span></td>
-        <td>Parse CIQ/MOP Excel documents into structured IR</td><td>-</td>
-      </tr>
-      <tr>
-        <td>2</td><td><code>UCAnalyzerNode</code></td><td><span class="tag tag-llm">LLM</span></td>
-        <td>Enrich intermediate representation via LLM analysis</td><td>Step 1</td>
-      </tr>
-      <tr>
-        <td>3</td><td><code>ValidationRulesNode</code></td><td><span class="tag tag-llm">LLM</span></td>
-        <td>Generate <code>validation-rules.yaml</code> configuration</td><td>Step 2</td>
-      </tr>
-      <tr>
-        <td>4</td><td><code>JsonTemplateNode</code></td><td><span class="tag tag-llm">LLM</span></td>
-        <td>Generate <code>json-output.yaml</code> template</td><td>Step 3</td>
-      </tr>
-      <tr>
-        <td>5</td><td><code>CiqQANode</code></td><td><span class="tag tag-jar">JAR</span></td>
-        <td>QA cycle via <code>ciq-processor</code> JAR</td><td>Steps 3-4</td>
-      </tr>
-      <tr>
-        <td>6</td><td><code>WorkflowGenNode</code></td><td><span class="tag tag-llm">LLM</span></td>
-        <td>Generate <code>workflow.yaml</code> execution config</td><td>Step 5</td>
-      </tr>
-      <tr>
-        <td>7</td><td><code>MopTestNode</code></td><td><span class="tag tag-jar">JAR</span></td>
-        <td>MOP generation test via <code>cli-automation</code> JAR</td><td>Step 6</td>
-      </tr>
-      <tr>
-        <td>8</td><td><code>SimulatorSetupNode</code></td><td><span class="tag tag-llm">LLM</span></td>
-        <td>Generate MockWire simulator configurations</td><td>Step 6</td>
-      </tr>
-      <tr>
-        <td>9</td><td><code>ExecutionTestNode</code></td><td><span class="tag tag-jar">JAR</span></td>
-        <td>Execute workflow via JAR + MockWire simulation</td><td>Steps 6-8</td>
-      </tr>
-      <tr>
-        <td>10</td><td><code>FinalReportNode</code></td><td><span class="tag tag-base">BaseAgent</span></td>
-        <td>Generate HTML + Excel summary reports</td><td>All</td>
-      </tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ======================= FEEDBACK LOOPS ======================= -->
-<section>
-  <h2><span class="icon" style="background:#2e1a1a;color:var(--red);">R</span> Self-Healing Feedback Loops</h2>
-  <p class="lead">Three backtracking retry loops allow the pipeline to self-correct when QA or execution tests fail. Max 3 retries per loop before pipeline failure.</p>
-
-  <div class="loop-container">
-    <div class="loop-card loop-a">
-      <h4>Loop A &mdash; Validation</h4>
-      <div class="flow">
-        <strong>Step 5</strong> QA-Validation fails<br>
-        &darr; <strong>Reviewer</strong> analyzes test failures<br>
-        &darr; <strong>Router5</strong> sets <code>_retry_target=3</code><br>
-        &darr; <strong>Step 3</strong> re-generates validation-rules.yaml<br>
-        &darr; Step 4 &rarr; Step 5 (re-test)
-      </div>
-    </div>
-    <div class="loop-card loop-b">
-      <h4>Loop B &mdash; MOP</h4>
-      <div class="flow">
-        <strong>Step 7</strong> MOP Test fails<br>
-        &darr; <strong>Reviewer</strong> analyzes JAR parse errors<br>
-        &darr; <strong>Router7</strong> sets <code>_retry_target=6</code><br>
-        &darr; <strong>Step 6</strong> re-generates workflow.yaml<br>
-        &darr; Step 7 (re-test)
-      </div>
-    </div>
-    <div class="loop-card loop-c">
-      <h4>Loop C &mdash; Execution</h4>
-      <div class="flow">
-        <strong>Step 9</strong> Execution Test fails<br>
-        &darr; <strong>Reviewer</strong> classifies failure type<br>
-        &darr; <strong>Router9</strong> routes to:<br>
-        &nbsp;&nbsp;&bull; <code>_retry_target=6</code> (workflow issue)<br>
-        &nbsp;&nbsp;&bull; <code>_retry_target=8</code> (simulator issue)
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ======================= AGENT COMPOSITION ======================= -->
-<section>
-  <h2><span class="icon" style="background:#2a1e40;color:var(--purple);">A</span> Agent Composition (23 Total)</h2>
-  <p class="lead">The PipelineAgent indexes all 23 agents (0..22) and executes them sequentially with conditional skip and backtracking logic.</p>
-
-  <table>
-    <thead>
-      <tr><th>Index</th><th>Agent</th><th>Category</th><th>Conditional</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>0</td><td><code>DocParserNode</code></td><td>Step 1</td><td>-</td></tr>
-      <tr><td>1</td><td><code>UCAnalyzerNode</code></td><td>Step 2</td><td>-</td></tr>
-      <tr><td>2</td><td><code>ValidationRulesNode</code></td><td>Step 3</td><td>Retry target</td></tr>
-      <tr><td>3</td><td><code>MilestoneNode(3)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>4</td><td><code>JsonTemplateNode</code></td><td>Step 4</td><td>-</td></tr>
-      <tr><td>5</td><td><code>MilestoneNode(4)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>6</td><td><code>CiqQANode</code></td><td>Step 5</td><td>-</td></tr>
-      <tr><td>7</td><td><code>MilestoneNode(5)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>8</td><td><code>qa_validation_reviewer</code></td><td>Reviewer</td><td>Skip if Step 5 passed</td></tr>
-      <tr><td>9</td><td><code>FailureRouterStep5</code></td><td>Router</td><td>-</td></tr>
-      <tr><td>10</td><td><code>WorkflowGenNode</code></td><td>Step 6</td><td>Retry target</td></tr>
-      <tr><td>11</td><td><code>MilestoneNode(6)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>12</td><td><code>MopTestNode</code></td><td>Step 7</td><td>-</td></tr>
-      <tr><td>13</td><td><code>MilestoneNode(7)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>14</td><td><code>qa_mop_reviewer</code></td><td>Reviewer</td><td>Skip if Step 7 passed</td></tr>
-      <tr><td>15</td><td><code>FailureRouterStep7</code></td><td>Router</td><td>-</td></tr>
-      <tr><td>16</td><td><code>SimulatorSetupNode</code></td><td>Step 8</td><td>Retry target</td></tr>
-      <tr><td>17</td><td><code>MilestoneNode(8)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>18</td><td><code>ExecutionTestNode</code></td><td>Step 9</td><td>-</td></tr>
-      <tr><td>19</td><td><code>MilestoneNode(9)</code></td><td>Milestone</td><td>-</td></tr>
-      <tr><td>20</td><td><code>qa_execution_reviewer</code></td><td>Reviewer</td><td>Skip if Step 9 passed</td></tr>
-      <tr><td>21</td><td><code>FailureRouterStep9</code></td><td>Router</td><td>-</td></tr>
-      <tr><td>22</td><td><code>FinalReportNode</code></td><td>Step 10</td><td>-</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ======================= STATE MACHINE ======================= -->
-<section>
-  <h2><span class="icon" style="background:#1e2a40;color:var(--accent);">M</span> State Machine &amp; Session State</h2>
-  <p class="lead">All agent communication happens through ADK session state — a shared dictionary passed via <code>ctx.session.state</code>.</p>
-
-  <table>
-    <thead>
-      <tr><th>Key Pattern</th><th>Type</th><th>Description</th></tr>
-    </thead>
-    <tbody>
-      <tr><td><code>step_{N}_status</code></td><td>str</td><td><code>"passed"</code> | <code>"failed"</code> | <code>"skipped"</code></td></tr>
-      <tr><td><code>step_{N}_output</code></td><td>dict</td><td>Step output data (passed to downstream steps)</td></tr>
-      <tr><td><code>artifacts</code></td><td>dict</td><td>Generated YAML/config content keyed by name</td></tr>
-      <tr><td><code>milestone_{N}_decision</code></td><td>str</td><td><code>"continue"</code> | <code>"rerun"</code> | <code>"cancel"</code></td></tr>
-      <tr><td><code>milestone_{N}_waiting</code></td><td>bool</td><td>True while awaiting user decision</td></tr>
-      <tr><td><code>retry_count_{N}</code></td><td>int</td><td>Number of retries executed for step N</td></tr>
-      <tr><td><code>_retry_target</code></td><td>int</td><td>Transient: step number to backtrack to (consumed by PipelineAgent)</td></tr>
-      <tr><td><code>qa_feedback</code></td><td>list</td><td>QA test failure details from reviewer analysis</td></tr>
-      <tr><td><code>exec_feedback</code></td><td>list</td><td>Execution failure details from reviewer analysis</td></tr>
-      <tr><td><code>pipeline_config</code></td><td>dict</td><td>Full pipeline configuration</td></tr>
-      <tr><td><code>document_set</code></td><td>dict</td><td>Input file paths (CIQ, MOP, vendor MOP)</td></tr>
-      <tr><td><code>pipeline_cancelled</code></td><td>bool</td><td>Pipeline termination flag (user cancel)</td></tr>
-      <tr><td><code>pipeline_failed</code></td><td>bool</td><td>Pipeline termination flag (retry exhausted)</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ======================= EVENTS ======================= -->
-<section>
-  <h2><span class="icon" style="background:#1a2e20;color:var(--green);">E</span> Event System</h2>
-  <p class="lead">The async <code>EventBus</code> broadcasts pipeline events to the UI and other subscribers, filtered by <code>run_id</code>.</p>
-
-  <div class="card-grid">
-    <div class="card">
-      <h3>Lifecycle Events</h3>
-      <p><code>step_started</code>, <code>step_completed</code>, <code>step_failed</code>, <code>run_completed</code>, <code>run_failed</code>, <code>run_cancelled</code></p>
-    </div>
-    <div class="card">
-      <h3>Human-in-the-Loop</h3>
-      <p><code>milestone_reached</code>, <code>hil_requested</code>, <code>hil_responded</code> &mdash; Milestone pause/resume via <code>asyncio.Event</code></p>
-    </div>
-    <div class="card">
-      <h3>Retry Events</h3>
-      <p><code>retry_started</code> &mdash; Emitted when a feedback loop triggers backtracking to an upstream step</p>
-    </div>
-  </div>
-</section>
-
-<!-- ======================= EXTERNAL DEPS ======================= -->
-<section>
-  <h2><span class="icon" style="background:#2a3010;color:var(--amber);">J</span> External Dependencies</h2>
-
-  <table>
-    <thead>
-      <tr><th>Component</th><th>Path</th><th>Used By</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>CIQ Processor JAR</td><td><code>lib/ciq-processor-1.0.3-cli.jar</code></td><td>Step 5 (QA-Validation)</td></tr>
-      <tr><td>CLI Automation JAR</td><td><code>lib/cli-automation-standalone.jar</code></td><td>Steps 7, 9 (MOP Test, Execution)</td></tr>
-      <tr><td>Report Generator JAR</td><td><code>lib/execution-report-generator-1.0.2-cli.jar</code></td><td>Step 10 (Final Report)</td></tr>
-      <tr><td>MockWire Simulator</td><td><code>lib/mockwire/mockwire-simulator/mockwire.jar</code></td><td>Step 9 (Execution Test)</td></tr>
-      <tr><td>Report Templates</td><td><code>lib/templates/*.html</code></td><td>Step 10 (Final Report)</td></tr>
-      <tr><td>YAML Schemas</td><td><code>schemas/*.yaml</code></td><td>Steps 3, 4, 6 (validation)</td></tr>
-      <tr><td>Reference Agents</td><td><code>cr_automation-agentic/src/agents/</code></td><td>All steps (via cr_import.py)</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ======================= KEY FILES ======================= -->
-<section>
-  <h2><span class="icon" style="background:#242836;color:var(--text);">D</span> Key Source Files</h2>
-
-  <pre><span class="key">src/orchestrator/</span>
-    <strong>pipeline_agent.py</strong>  <span class="comment">-- PipelineAgent state-machine loop + backtracking + build_pipeline()</span>
-    <strong>runner.py</strong>          <span class="comment">-- PipelineRunner: ADK Runner + DB persistence + EventBus + milestones</span>
-
-<span class="key">src/nodes/</span>
-    <strong>step_nodes.py</strong>      <span class="comment">-- 10 BaseAgent step wrappers (call existing agents via cr_import)</span>
-    <strong>milestone_nodes.py</strong> <span class="comment">-- 7 MilestoneNode agents (asyncio.Event pause/resume)</span>
-    <strong>router_nodes.py</strong>    <span class="comment">-- 3 FailureRouter agents (classify + set _retry_target)</span>
-    <strong>reviewer_agents.py</strong> <span class="comment">-- 3 LlmAgent reviewers with FunctionTools</span>
-    <strong>tools.py</strong>           <span class="comment">-- Shared tools (YAML validation, report reading)</span>
-    <strong>cr_import.py</strong>       <span class="comment">-- Cross-project import bridge to cr_automation-agentic</span>
-
-<span class="key">src/core/</span>
-    <strong>events.py</strong>          <span class="comment">-- EventBus + PipelineEvent dataclass</span>
-    <strong>models.py</strong>          <span class="comment">-- Pydantic models (StepResult, RetryContext, etc.)</span>
-    <strong>config.py</strong>          <span class="comment">-- Pipeline configuration loader</span>
-
-<span class="key">src/storage/</span>
-    <strong>db.py</strong>              <span class="comment">-- SQLite metadata persistence</span>
-    <strong>artifact_store.py</strong>  <span class="comment">-- File system artifact storage</span>
-
-<span class="key">src/ui/</span>
-    <strong>app.py</strong>             <span class="comment">-- NiceGUI entry point + layout (sidebar 140px, step tracker)</span>
-    <strong>pages/</strong>             <span class="comment">-- upload, progress, settings, history, output_viewer, cleanup</span>
-
-<span class="key">config/</span>
-    <strong>pipeline_config.yaml</strong> <span class="comment">-- Model, retry, JAR paths, storage, UI settings</span></pre>
-</section>
-
-<!-- ======================= CROSS-PROJECT ======================= -->
-<section>
-  <h2><span class="icon" style="background:#2a1e40;color:var(--purple);">X</span> Cross-Project Integration</h2>
-  <p class="lead">Step agents delegate to existing implementations in <code>cr_automation-agentic</code> via runtime import bridge.</p>
-
-  <div class="card-grid">
-    <div class="card">
-      <h3>Import Bridge (<code>cr_import.py</code>)</h3>
-      <p>Uses <code>importlib.util.spec_from_file_location</code> with namespace isolation to avoid <code>src</code> package conflicts between the two projects.</p>
-    </div>
-    <div class="card">
-      <h3>Agent Delegation</h3>
-      <p>Each <code>StepNode._run_async_impl()</code> calls <code>_call_existing_agent()</code> which instantiates the reference agent and invokes <code>agent.execute()</code>.</p>
-    </div>
-    <div class="card">
-      <h3>State Mapping</h3>
-      <p>ADK session state is transformed to/from the <code>input_data</code> / <code>StepResult</code> format expected by legacy agents.</p>
-    </div>
-  </div>
-</section>
-
-</div>
-
-<footer>
-  CR Automation Pipeline &mdash; Architecture Document &mdash; Generated October 2026
-</footer>
-
 </body>
 </html>
