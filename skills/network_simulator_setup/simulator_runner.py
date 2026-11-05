@@ -1,9 +1,9 @@
 """MockWire simulator process management — per-run layout, start, health check, stop.
 
-MockWire CLI (lib/mockwire, feature/netconfig-testing-gaps):
+MockWire CLI (``lib/mockwire.jar``, built from the MockWire repo, branch feature/netconfig-testing-gaps):
     java -jar mockwire.jar --config <yaml> --responses <dir> --port <port>
          --events-file <jsonl> --vfs-root <dir> --ttl-minutes <n>
-Everything lives under the run directory; ``lib/mockwire`` is never modified.
+Everything lives under the run directory; ``lib/mockwire.jar`` is only copied.
 
 Per-run layout::
 

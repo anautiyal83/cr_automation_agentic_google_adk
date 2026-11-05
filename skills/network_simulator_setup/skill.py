@@ -61,7 +61,7 @@ class SkillInput:
     ciq_json_files: list[str] = field(default_factory=list)  # CIQ JSON data (niamIDs)
     feedback: str = ""  # execution test failures to fix (retry from step 9)
     run_dir: str = ""
-    mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
+    mockwire_jar: str = "lib/mockwire.jar"
     java_home: str | None = None
     auto_start: bool = True  # if False, skip phase 3 (just generate configs)
     host: str = "localhost"

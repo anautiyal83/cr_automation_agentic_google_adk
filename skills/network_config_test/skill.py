@@ -50,7 +50,7 @@ class SkillInput:
     run_dir: str = ""
     cli_automation_jar: str = "lib/cli-automation-standalone.jar"
     ciq_processor_jar: str = "lib/ciq-processor-1.0.3-cli.jar"
-    mockwire_jar: str = "lib/mockwire/mockwire-simulator/mockwire.jar"
+    mockwire_jar: str = "lib/mockwire.jar"
     # Settings → External Modules: HTML report per executed case (step 9)
     execution_report_jar: str = "lib/execution-report-generator-1.0.2-cli.jar"
     html_template_path: str = ""

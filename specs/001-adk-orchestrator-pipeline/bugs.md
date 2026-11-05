@@ -962,3 +962,15 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 - Reopened the same day: after the restart steps 1-7 showed pending while step 8 ran. The page reads the step
   results 1 s / 3 s after it opens; a run still resuming has no session then, and nothing read them later.
   **Fix**: the page reads them again on `run_started` (`ProgressSection._sync_steps`).
+
+### OB-17 — The whole MockWire project was copied into lib/ (Medium, Fixed 2026-11-05)
+- `lib/mockwire` was an embedded clone of the MockWire repo (32 MB: sources, build output, test configs), recorded
+  as a gitlink without `.gitmodules` — a clone of the pipeline got an empty folder and no simulator. The pipeline
+  only ever runs `mockwire-simulator/mockwire.jar` from it. Settings had an unused "Simulator Folder" field.
+- **Fix**: only `lib/mockwire.jar` (git-ignored like the other JARs), built from the MockWire repo
+  (D:\Nokia\workspace\mockwire, fast-forwarded to 7e90190; 37 MockWire tests pass). Settings → External Modules →
+  "MockWire JAR" (`mockwire_jar`) replaces the folder field. Runs whose config snapshot holds the old path fall back
+  to `lib/mockwire.jar` (`network_simulator_setup_agent.mockwire_jar`). Clone removed from git and disk (zip backup
+  kept outside the repo).
+- Pipeline tests 308 passed (the MockWire process tests use the new JAR); replays of steps 8+9: MRF 46e5fee1 via
+  repo SFTP 4/4, PGW 6db86ff8 2/2.

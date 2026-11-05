@@ -99,9 +99,9 @@ class SettingsSection:
         if val:
             self.sim_endpoint.value = val
 
-        val = await self._load_setting("simulator_folder")
+        val = await self._load_setting("mockwire_jar")
         if val:
-            self.sim_folder.value = val
+            self.mockwire_jar.value = val
 
         val = await self._load_setting("mop_template")
         if val:
@@ -258,8 +258,8 @@ class SettingsSection:
                         self.sim_endpoint = ui.input(
                             "Endpoint", value="localhost:8080",
                         ).classes("flex-1").props("outlined dense")
-                        self.sim_folder = ui.input(
-                            "Folder", value="./lib/simulator/",
+                        self.mockwire_jar = ui.input(
+                            "MockWire JAR", value="./lib/mockwire.jar",
                         ).classes("flex-1").props("outlined dense")
 
             # Save all button — always visible
@@ -293,7 +293,7 @@ class SettingsSection:
         await self._save_setting("cli_automation_jar", self.cli_jar.value or "")
         await self._save_setting("execution_report_jar", self.exec_report_jar.value or "")
         await self._save_setting("simulator_endpoint", self.sim_endpoint.value or "")
-        await self._save_setting("simulator_folder", self.sim_folder.value or "")
+        await self._save_setting("mockwire_jar", self.mockwire_jar.value or "")
         await self._save_setting("api_key", self.api_key_input.value or "")
         await self._save_setting("mop_template", self.mop_template.value or "")
         await self._save_setting("exec_summary_template", self.exec_summary_template.value or "")
@@ -315,6 +315,7 @@ class SettingsSection:
                 "ciq_processor_jar": self.ciq_jar.value,
                 "cli_automation_jar": self.cli_jar.value,
                 "execution_report_jar": self.exec_report_jar.value,
+                "mockwire_jar": self.mockwire_jar.value,
                 "mop_template": self.mop_template.value,
                 "exec_summary_template": self.exec_summary_template.value,
                 "exec_failure_template": self.exec_failure_template.value,
@@ -324,7 +325,8 @@ class SettingsSection:
             "default_model": self.model_select.value, "test_retry_limit": self.test_retry.value,
             "infra_retry_limit": self.infra_retry.value, "backoff_multiplier": self.backoff.value,
             "ciq_processor_jar": self.ciq_jar.value, "cli_automation_jar": self.cli_jar.value,
-            "execution_report_jar": self.exec_report_jar.value, "mop_template": self.mop_template.value,
+            "execution_report_jar": self.exec_report_jar.value, "mockwire_jar": self.mockwire_jar.value,
+            "mop_template": self.mop_template.value,
             "exec_summary_template": self.exec_summary_template.value,
             "exec_failure_template": self.exec_failure_template.value, "step_models": step_data,
             "api_key": "unchanged" if not self.api_key_input.value else "set"})
