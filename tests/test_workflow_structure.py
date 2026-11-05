@@ -468,3 +468,41 @@ phases:
     restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -x" in str(s.get("send")))
     assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
     assert restore["when"] == "ncBackup1 != ''"
+
+
+def test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder():
+    """Run 46e5fee1: `tar -czvf /tmp/bk_$(date +%Y%m%d%H%M%S).tar.gz -C <dest> …` (the space inside `$(…)`
+    hid the `-C`) and `tar -czvf A <dest>/$(basename X .tar)` (a folder the load never creates) fell back to
+    the LLM's guess; the restore path held `$(basename X .tar)` and was not recognised."""
+    for backup, restore in (
+        (f"if [[ -s ${{{REC}DEST}}/$(basename ${{{REC}FILE}}) ]]; then tar -czvf /tmp/bk_$(date +%Y%m%d%H%M%S).tar.gz "
+         f"-C ${{{REC}DEST}} $(basename ${{{REC}FILE}}) else echo NO_FILES_TO_BACK_UP; fi",
+         f"tar -xzvf /tmp/bk.tar.gz -C ${{{REC}DEST}}"),
+        (f"tar -czvf /tmp/${{ORDERNO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz "
+         f"${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar) 2>&1 || echo NO_FILES_TO_BACK_UP",
+         f"tar -xzvf /tmp/${{ORDERNO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz -C ${{{REC}DEST}}"),
+    ):
+        wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}', user: u}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: '{backup}'
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: tar -xf /tmp/${{{REC}FILE}} -C ${{{REC}DEST}}/
+  rollbackConfiguration:
+    name: Rollback
+    steps:
+    - node: MRF
+      send: '{restore}'
+""")
+        structure.apply(wf, None)
+        tar = next(s for s in _leaves(wf, "backup") if "tar -czvf" in str(s.get("send")))
+        assert tar["send"].startswith("if [[ -s /tmp/${ORDERNO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
+                                      "/tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat "), backup
+        back = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -xzvf" in str(s.get("send")))
+        assert back["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}", restore

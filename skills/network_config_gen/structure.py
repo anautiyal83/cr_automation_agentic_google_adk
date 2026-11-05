@@ -584,14 +584,20 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
             basename = _SHELL_SUBST.sub("", archive).rsplit("/", 1)[-1]
             # `tar -c…f A -C <dir> <names>`: <dir> is what is backed up — our load-aware form, or the
             # LLM's own selection `-C <dest> $(ls <dest> | grep …)` (run 3f5d8990)
-            done = re.search(r"\btar\s+-?[A-Za-z]*c[A-Za-z]*\s+\S+\s+-C\s+(\S+)", send)
+            # (the archive name may hold `$(date +%Y%m%d)` — a space inside, run 46e5fee1)
+            done = re.search(r"\btar\s+-?[A-Za-z]*c[A-Za-z]*\s+(?:\$\([^()]*\)|\S)+\s+-C\s+(\S+)", send)
             src = done.group(1).rstrip("/") if done else (sources[0].rstrip("/") if sources else "")
+            node = str(step.get("node"))
+            # a source under a folder the activity loads into (`${DEST}/$(basename X .tar)`, a
+            # guess at what the load creates — run 46e5fee1): the backup is of that folder
+            under = [ld["dest"] for ld in loads if ld["node"] == node and src.startswith(ld["dest"].rstrip("/") + "/")]
+            if under:
+                src = under[0].rstrip("/")
             mirror = src if src.startswith("/") else (f"/{src}" if src.startswith("${") else "")
             node_dir = f"/tmp/{order}{mirror}"
             path = f"{node_dir}/{basename}"
             dropped = _registers(step) - {v for v in _registers(step) if v.startswith("ncArchived")}
-            node = str(step.get("node"))
-            k = len(backups) + 1
+            k =len(backups) + 1
             listed = "^" + r"\S+".join(re.escape(x) for x in re.split(r"\$\{[^}]*\}", path)) + "$"
             dest_loads = [ld for ld in loads if ld["dest"] == src.rstrip("/") and ld["node"] == node]
             if dest_loads:
@@ -672,7 +678,9 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
     basename = path.rsplit("/", 1)[-1]
     lst = path.rsplit("/", 1)[0]
     names = [re.escape(basename)] + [r"\$\{" + re.escape(v) + r"\}" for v in dropped]
-    extract = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S*(?:" + "|".join(names) + r"))(\s+-C\s+\S+)?")
+    # a path may hold `$(basename X .tar)` — spaces inside (run 46e5fee1)
+    word = r"(?:\$\([^()]*\)|\S)*"
+    extract = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(" + word + r"(?:" + "|".join(names) + r"))(\s+-C\s+" + word + r")?")
     var_ref = re.compile(r"\$\{(" + "|".join(map(re.escape, dropped)) + r")\}|(?<![\w.$])(" +
                          "|".join(map(re.escape, dropped)) + r")(?![\w.])") if dropped else None
     stem = re.escape(re.sub(r"\.(tar(\.\w+)?|tgz)$", "", basename))

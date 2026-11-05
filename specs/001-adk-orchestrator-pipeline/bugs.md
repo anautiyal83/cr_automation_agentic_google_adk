@@ -929,3 +929,18 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   member with the mode the workflow's member check expects (`extracted_member_mode`, default 0644) and remakes files
   it staged itself (`_staged_by_step9`; a real input is never touched).
 - Replays of 46e5fee1: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.
+
+### DEP-70 — Run 46e5fee1: LLM backup forms the naming convention missed (High, Fixed 2026-11-05)
+- Two step 6 regenerations of the same run wrote backups `backups_by_convention` did not recognise as backups of
+  the load folder, so they kept the LLM's guess (and its `… else …` without `;`, which MockWire could not parse):
+  - `tar -czvf /tmp/bk_$(date +%Y%m%d%H%M%S).tar.gz -C <dest> $(basename X)`: the space inside `$(date …)` hid
+    the `-C <dest>`, the source became the relative `$(basename X)`: no `/tmp/${ORDERNO}/<dest>/` folder and
+    no load-aware lists;
+  - `tar -czvf A <dest>/$(basename X .tar)`: a folder under the load destination the load never creates
+    ("Cannot stat"); the restore path held `$(basename X .tar)` (spaces) and was not rewritten either.
+- **Fix** (`structure.py`, generic for any archive name / load folder): the `-C` detection and the restore match
+  read `$(…)` as part of a word; a backup source under a folder the activity loads into is a backup of that
+  folder (exact `items.list` → `overwritten.list`, restore = `tar -xzvf <convention path> -C <dest>`).
+  Test `test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder`.
+- Replays of 46e5fee1 (latest workflow): node, repo SFTP, repo SCP 4/4, backup holds only the overwritten file,
+  rollback-only restores the original, the unrelated file untouched; PGW 2/2.
