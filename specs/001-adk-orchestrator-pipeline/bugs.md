@@ -957,5 +957,8 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### OB-16 — A resumed run showed its old step results while redoing them (Low, Fixed 2026-11-05)
 - Restarted at step 8's review (step 8 runs again: its simulator is gone), the tracker showed step 9 "failed"
   from before the restart and no review buttons for the ~70 s of the step 8 re-run.
-- **Fix**: `PipelineRunner._resume_state` drops the statuses of the steps the resumed run does again (from the
-  resume agent on; at a milestone pause, the paused step keeps its own) → they show pending.
+- **Fix**: `pipeline_agent.clear_step_statuses` drops the statuses of the steps a run does again — on resume
+  (`PipelineRunner._resume_state`; at a milestone pause the paused step keeps its own) and on every Re-run.
+- Reopened the same day: after the restart steps 1-7 showed pending while step 8 ran. The page reads the step
+  results 1 s / 3 s after it opens; a run still resuming has no session then, and nothing read them later.
+  **Fix**: the page reads them again on `run_started` (`ProgressSection._sync_steps`).

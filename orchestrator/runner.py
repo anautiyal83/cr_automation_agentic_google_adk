@@ -316,7 +316,8 @@ class PipelineRunner:
         """Session state of a resumed run: the checkpoint's, with where the pipeline continues."""
         from agents.requirements_agent import requirements_store
         from orchestrator import checkpoints
-        from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step
+        from orchestrator.pipeline_agent import (_AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step,
+                                                 clear_step_statuses)
         state = dict(resume["state"])
         for key in ("pipeline_cancelled", "pipeline_failed", "pipeline_error"):
             state.pop(key, None)
@@ -329,10 +330,7 @@ class PipelineRunner:
             state["_resume_milestone_at"] = index
         # steps the resumed run does again are pending, not their last result: step 9 showed
         # "failed" (no review buttons) while step 8 restarted the simulators (run 46e5fee1)
-        for name in _AGENT_NAMES[index + (1 if at_milestone else 0):]:
-            for sn in _AGENT_DISPLAY_STEPS.get(name, []):
-                if not (at_milestone and sn in _AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], [])):
-                    state.pop(f"step_{sn}_status", None)
+        clear_step_statuses(state, index, tuple(_AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], [])) if at_milestone else ())
         state["resumed_after_restart"] = True
         return state
 

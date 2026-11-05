@@ -114,6 +114,15 @@ def _first_agent_of_step(step_num: int) -> str:
     return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
 
 
+def clear_step_statuses(state, from_index: int, keep: tuple[int, ...] = ()) -> None:
+    """Forget the results of the display steps the run does again (agents ``from_index`` on, steps
+    in ``keep`` excepted): the tracker shows them pending, not their last result (OB-16)."""
+    for name in _AGENT_NAMES[from_index:]:
+        for sn in _AGENT_DISPLAY_STEPS.get(name, []):
+            if sn not in keep:
+                state.pop(f"step_{sn}_status", None)
+
+
 async def _checkpoint(run_id: str, index: int, agent_name: str, kind: str, state) -> None:
     """Save the run's restart checkpoint (session state + requirements, spec 007)."""
     from agents.requirements_agent import requirements_store
@@ -398,6 +407,7 @@ class PipelineAgent(BaseAgent):
                     except Exception:
                         pass
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
+                    clear_step_statuses(ctx.session.state, target_index)
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
                     index = target_index
                     continue
@@ -564,6 +574,7 @@ class PipelineAgent(BaseAgent):
             if target and target in _RETRY_STEP_TO_INDEX:
                 target_index = _RETRY_STEP_TO_INDEX[target]
                 flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
+                clear_step_statuses(ctx.session.state, target_index)
                 await self._publish(run_id_str, "retry_started", target)
                 return target_index
         return None

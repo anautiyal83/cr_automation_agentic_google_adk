@@ -824,22 +824,23 @@ class ProgressSection:
         await event_bus.replay(self._on_event, run_id)
         ui.timer(0.5, self._load_run_info, once=True)
 
-        # Periodic sync: catch up with steps that completed before subscription
-        async def _sync_steps():
-            if not self.active_run_id or self.active_run_id != run_id:
-                return
-            try:
-                state = await self.runner.get_state(str(run_id))
-                for i in range(1, TOTAL_STEPS + 1):
-                    ss = state.get(f"step_{i}_status")
-                    if ss and i in self.step_widgets:
-                        self._update_step_visual(i, ss)
-            except Exception:
-                pass
-
         # Run sync after a brief delay to catch fast steps
-        ui.timer(1.0, _sync_steps, once=True)
-        ui.timer(3.0, _sync_steps, once=True)
+        ui.timer(1.0, lambda: self._sync_steps(run_id), once=True)
+        ui.timer(3.0, lambda: self._sync_steps(run_id), once=True)
+
+    async def _sync_steps(self, run_id) -> None:
+        """Catch up with steps that completed before the subscription — and with the earlier steps
+        of a run that was still waiting or resuming (no session yet when the page opened, OB-16)."""
+        if not self.runner or not self.active_run_id or str(self.active_run_id) != str(run_id):
+            return
+        try:
+            state = await self.runner.get_state(str(run_id))
+            for i in range(1, TOTAL_STEPS + 1):
+                ss = state.get(f"step_{i}_status")
+                if ss and i in self.step_widgets:
+                    self._update_step_visual(i, ss)
+        except Exception:
+            pass
 
     async def view_run(self, run_id: str):
         """Open a finished (or any) run on the run page: steps, artifacts, test cases, logs."""
@@ -1053,6 +1054,8 @@ class ProgressSection:
             self.status_label.text = "Pipeline Starting..."
             self.status_detail.text = "Your run left the queue — initializing agents"
             self.banner.style(replace="background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)")
+            # a resumed run: its earlier steps' results exist only now (the session is new)
+            await self._sync_steps(event.run_id)
 
         elif event.event_type == "run_completed":
             self.status_icon.name = "check_circle"
