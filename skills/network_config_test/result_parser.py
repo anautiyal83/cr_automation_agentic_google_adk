@@ -165,6 +165,9 @@ def evaluate_test_cases(
 
 
 _BROKEN_COMMAND = re.compile(r"\$\{|=,|=\"\"|=''|=\s*$|=\s+-")
+# a piece of an `if … then … else … fi` the shell could not parse (e.g. no `;` before `else`):
+# MockWire runs a well-formed one itself, so a keyword-led piece is the workflow's syntax (run 46e5fee1)
+_BROKEN_SHELL = re.compile(r"^\s*(?:(?:then|else|elif|fi|do|done|esac)\b|if\s(?!.*;\s*then\b))")
 
 
 def read_simulator_events(run_dir: str) -> list[dict]:
@@ -208,6 +211,8 @@ def classify_failures(command_results: list[CommandResult],
         cmd = str(e.get("input", ""))
         if _BROKEN_COMMAND.search(cmd):
             workflow_issues.append(f"{cmd[:80]} (sent with an empty/unresolved value)")
+        elif _BROKEN_SHELL.search(cmd):
+            workflow_issues.append(f"{cmd[:80]} (broken shell syntax: if/then/else/fi)")
         else:
             simulator_issues.append(f"{cmd[:80]} (no simulator response on {e.get('instance', '?')})")
     if simulator_events is not None and simulator_issues:

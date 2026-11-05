@@ -53,6 +53,34 @@ Spec: [specs/007-run-queue](specs/007-run-queue/spec.md).
   Run behind HTTPS (reverse proxy) in production.
 - The CLI (`main.py`, `test_run.py`, `test_step.py`) needs no login; its runs are visible to the administrator.
 
+## Run Phases & File Routes
+
+Spec: [specs/010-run-phase-options](specs/010-run-phase-options/spec.md).
+
+- **Phases are set per activity**: Settings → Vendor Profiles → Activity has a checkbox per phase, in this order:
+  PreNodeHealthCheck · Backup (+ *via repo server*) · Activity (ActivityPrecheck, ActivityConfiguration,
+  ActivityPostCheck) · PostNodeHealthCheck · Rollback (RollbackPrecheck, RollbackConfiguration, RollbackPostCheck).
+  New Run shows the selected activity's phases read-only; without an activity every phase runs. Step 6 generates only
+  the ticked phases (`skills/network_config_gen/structure.py` drops the others).
+- **File routes**:
+
+  | Backup | via repo server | Input files | Backup kept | Rollback restores from |
+  |--------|-----------------|-------------|-------------|------------------------|
+  | off | — | automation server → node (framework SFTP) | — | — |
+  | on | off | automation server → node (framework SFTP) | node `/tmp` | node `/tmp` |
+  | on | on | automation server → repo (framework SFTP), then the **node** copies it from the repo | repo server (the node copies it there) | repo server (the node copies it back) |
+
+- **Via repo server**: the framework logs in to the node as usual (NIAM for Nokia nodes) and runs `scp` or `sftp` on
+  the node against the repo server; the repo password is answered by `expect_reply`. Which of the two depends on the
+  node type: Settings → Vendor Profiles → Node type → *File transfer* (SFTP, or SCP for nodes without SFTP). The repo
+  server never logs in to a node, so nodes need no address beyond their own login. Every transfer is checked with
+  `sha256sum` on both ends.
+- **Repo server**: `execution.repo_server` in `config/pipeline_config.yaml` (host, user, password secret, backup
+  directory; workflow node `REPO`); step 1 asks for it when the MOP takes a backup. Paths:
+  `<backup_dir>/${crGroup}/files/` (input files), `<backup_dir>/${crGroup}/<hostname>/<source path>/` (backups).
+- **Simulator** (steps 8, 9): each node's MockWire instance lists the repo instance as a transfer peer, so the copies
+  really move files between the simulated hosts.
+
 ## Architecture
 
 ```

@@ -21,7 +21,7 @@ from core.config import runtime_params
 
 from . import prompts
 from .autofix import clean_yaml_response, fix_workflow
-from .validator import validate_workflow
+from .validator import behaviour_issues, validate_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,8 @@ class SkillOutput:
     workflow_yaml: str = ""
     helper_scripts: dict[str, str] = field(default_factory=dict)  # filename → script content
     validation_errors: list[str] = field(default_factory=list)
+    # the validation errors a developer can answer (asked in step 1); the rest step 6 must fix
+    developer_issues: list[str] = field(default_factory=list)
     status: str = "pending"  # "passed" | "failed" | "pending"
     error: str = ""
 
@@ -153,6 +155,34 @@ def _expected_coverage(requirements: dict) -> dict:
             "record_columns": _record_columns(requirements)}
 
 
+def _phases_text(requirements: dict, phases: list) -> str:
+    """The run's phases (spec 010) as the phase keys to use, each with its purpose; the MOP's
+    phase list only when the run has no options (older runs)."""
+    from shared import run_options
+    if "run_options" in requirements:
+        opts = run_options.normalize(requirements.get("run_options"))
+        keys = run_options.selected(opts)
+        text = ("use exactly these phase keys, in this order (no others): "
+                + "; ".join(f"{k} — {run_options.PURPOSE[k]}" for k in keys))
+        if opts["phases"]["backup"]:
+            text += (". Backups go through the repo server (the pipeline adds the transfers): write the backup "
+                     "archive in /tmp on the node" if opts["backup_via_repo"] else
+                     ". Backups stay on the node: write the backup archive in /tmp on the node and restore it "
+                     "from there in the rollback")
+        return text
+    return ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck"
+
+
+def _hint_if_pattern(answer):
+    """A developer answer written as a regex is a hint, not a check (spec 011 — users cannot write
+    patterns; PGW's `Updates Rejected:\\s*0…` did not match the real output)."""
+    from skills.requirement_gathering.questionnaire import looks_like_regex
+    if isinstance(answer, str) and looks_like_regex(answer):
+        return (f"{answer}   [written as a pattern — a HINT of the text to check; build the check from "
+                "the real output]")
+    return answer
+
+
 def _record_columns(requirements: dict) -> dict:
     """{"sheet", "columns", "node_fields"} of the CIQ JSON as step 3's json-output builder writes
     it: record columns (``configSequences.N.records.M.data``) and node fields
@@ -195,11 +225,11 @@ def _request_columns(requirements: dict) -> dict[str, str]:
 class NetworkConfigGenSkill:
     """Generates execution workflow YAML from requirements.
 
-    The workflow uses ${...} placeholders for runtime values:
-    - ${nodeGroups.<Node>.<field>} — node properties
-    - ${configData.tables.<Sheet>.<Column>} — CIQ data
-    - ${register.<varName>} — command output captures
-    - ${env.<key>} — environment variables
+    The workflow uses ${...} placeholders for runtime values (CLAUDE.md, spec 004):
+    - ${configSequences.0.records.0.data.<Column>} — CIQ data (record loops: ${rec.data.<Column>})
+    - ${<NODE>.niamID-<n>} / ${<NODE>.<field>} — NIAM IDs / node values of the CIQ node
+    - ${varName} — command output captures (register) and runtime parameters
+    - ${SECRET.key} / ${ENV.NAME} — secrets / environment
 
     Stateful: retains context between generate() and regenerate() calls.
     """
@@ -274,6 +304,7 @@ class NetworkConfigGenSkill:
         return SkillOutput(
             workflow_yaml=yaml_text,
             validation_errors=errors,
+            developer_issues=self._developer_issues(yaml_text, errors),
             status=status,
         )
 
@@ -300,6 +331,7 @@ class NetworkConfigGenSkill:
             developer_answers=ctx["answers"],
             developer_notes=ctx["notes"],
             runtime_params=ctx["runtime_params"],
+            ciq=ctx["ciq"],  # record columns + node values: what a correction may read (DEP-53)
         )
 
         logger.info("Regenerating workflow YAML with feedback (%d char prompt)", len(user_prompt))
@@ -319,8 +351,15 @@ class NetworkConfigGenSkill:
         return SkillOutput(
             workflow_yaml=yaml_text,
             validation_errors=errors,
+            developer_issues=self._developer_issues(yaml_text, errors),
             status=status,
         )
+
+    def _developer_issues(self, yaml_text: str, errors: list[str]) -> list[str]:
+        if not errors:
+            return []
+        behaviour = set(behaviour_issues(yaml_text, self._ciq_sheets, self._expected))
+        return [e for e in errors if e in behaviour]
 
     def _ciq_fixes(self, yaml_text: str) -> str:
         """Autofix steps that need the CIQ (the MOP's example directory → the CIQ path column),
@@ -488,6 +527,7 @@ class NetworkConfigGenSkill:
         answers = req.get("developer_answers", {})
         asked = req.get("developer_questions") or {}
         if answers and asked:  # question + answer: an answer alone often makes no sense
+            answers = {k: _hint_if_pattern(v) for k, v in answers.items()}
             answers_text = "\n".join(f"- Q: {asked[k]}\n  A: {v}" if k in asked else f"- {k}: {v}"
                                      for k, v in answers.items())
         else:
@@ -503,7 +543,7 @@ class NetworkConfigGenSkill:
             "xml": str(xml_summary)[:5000] or "No XML samples",
             "answers": answers_text,
             "notes": str(req.get("developer_notes") or "").strip()[:6000] or "None",
-            "phases_str": ", ".join(phases) if phases else "preNodeHealthCheck, activity, postNodeHealthCheck",
+            "phases_str": _phases_text(req, phases),
             "runtime_params": ", ".join(f"${{{p}}}" for p in runtime_params()) or "none",
         }
 

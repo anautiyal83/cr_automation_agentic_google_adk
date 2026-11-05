@@ -246,6 +246,14 @@ def test_classify_failures_uses_simulator_events():
     c = classify_failures(failed, broken)
     assert c["classification"] == "workflow" and c["retry_target"] == 6
     assert any("empty/unresolved" in w for w in c["workflow_issues"])
+    # pieces of an if/then/else the shell could not parse (no `;` before else, run 46e5fee1): step 6
+    pieces = [{"source": "unmatched", "instance": "MRF_22200", "input": x} for x in (
+        "if [[ -s /var/x/f.tar ]]", "then tar -czvf /tmp/b.tar.gz -C /var/x f.tar else echo NONE", "fi")]
+    c = classify_failures(failed, pieces)
+    assert c["classification"] == "workflow" and c["retry_target"] == 6
+    assert sum("broken shell syntax" in w for w in c["workflow_issues"]) == 3
+    ok = [{"source": "unmatched", "instance": "MRF_22200", "input": "if [[ -s /x ]]; then fooctl; fi"}]
+    assert classify_failures(failed, ok)["classification"] == "simulator"
 
 
 @needs_mockwire
@@ -289,3 +297,36 @@ def test_real_output_wins_over_invented_responses():
     assert keys[0].startswith(r'regex:^ldapsearch -b "imsi=')                     # real output first
     assert r'regex:ldapsearch -b "imsi=\S+,dc=IMSI"' not in merged                # invented duplicate dropped
     assert r'regex:ldapsearch -b "msisdn=\S+' in merged and "uptime" in merged
+
+
+def test_invented_exact_key_never_hides_real_output():
+    """DEP-54: MockWire tries exact keys before regex keys. An invented exact answer for an IMSI
+    the simulator made up hid the real-output template (made-up format → the workflow's regex,
+    written from the real output, failed)."""
+    from skills.network_simulator_setup.skill import merge_responses
+    dump = "ldapsearch -b \"imsi=${resolvedImsi},dc=IMSI\" objectclass=*"
+    lookup = "ldapsearch -b \"msisdn=${configSequences.0.records.0.data.Test MSISDN},dc=MSISDN\" objectclass=*"
+    recorded = {r'regex:^ldapsearch -b "imsi=(?<resolvedImsi>.+?),dc=IMSI" objectclass=\*$': {"lines": ["dn: uid=1"]}}
+    synthetic = {'ldapsearch -b "msisdn=1234567890,dc=MSISDN" objectclass=*': {"lines": ["provisionedIMSI: 123"]},
+                 'ldapsearch -b "imsi=123,dc=IMSI" objectclass=*': {"lines": ["dn: imsi=123,dc=IMSI"]}}
+    merged = merge_responses(recorded, synthetic, [{"cmd": lookup}, {"cmd": dump}], {dump},
+                             {"Test MSISDN": "1234567890"})
+    assert 'ldapsearch -b "imsi=123,dc=IMSI" objectclass=*' not in merged          # real output answers it
+    assert 'ldapsearch -b "msisdn=1234567890,dc=MSISDN" objectclass=*' in merged   # nothing real covers it
+
+
+def test_shell_pipes_in_regex_keys_never_make_a_catch_all():
+    """E030 run 2: the step 8 LLM keyed a response `regex:ls -ltrh \\S+/announcements/ | grep "\\S+" || true`;
+    as a regex `||` has an empty alternative, so it answered EVERY command of MRF — the backup `tar` got the
+    ls output, no archive was created and the transfer failed."""
+    import re
+
+    from skills.network_simulator_setup.autofix import safe_regex_key
+    key = safe_regex_key(r'regex:ls -ltrh \S+/announcements/ | grep "\S+" || true')
+    pattern = re.compile(key[len("regex:"):])
+    assert not pattern.search("tar -czvf /tmp/announcement_backup.tar.gz /var/opt/x/")
+    assert pattern.search('ls -ltrh /var/opt/announcements/ | grep "DOC_5003" || true')
+    assert safe_regex_key(r"regex:(start|stop) swms") == r"regex:(start|stop) swms"   # a real alternation stays
+    assert safe_regex_key("regex:.*") is None                                          # matches anything
+    assert safe_regex_key("regex:(unclosed") is None                                    # invalid
+    assert safe_regex_key("ls -l | wc -l") == "ls -l | wc -l"                          # exact keys untouched

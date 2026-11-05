@@ -62,6 +62,13 @@ CRITICAL RULES:
   cross lines). Test only the condition the validation describes, on the line that shows
   it (e.g. just the status line or the counter value); never reproduce headers, dates or
   the layout of the whole output. Where real output is given, the regex MUST match it.
+- Checks come from the TEXT the requirements say the output shows (e.g. "Link UP",
+  "result=success") — write the regex for that text against the real output. Developer
+  answers that look like regexes are hints only: never copy them unless they match the real
+  output. When the text must hold for EVERY line / item (every remote node, all files, each
+  sample), count: register [{regex: '<line of one item>', loop: true, count_var: TOTAL},
+  {regex: '<line of one item showing the text>', loop: true, count_var: OKN}] and success
+  criteria {expr: 'OKN == TOTAL && TOTAL > 0'} — a plain regex passes when ONE line matches.
 - Never put ${...} placeholders inside a validation or register regex: regexes are not
   interpolated (only send is). Match the shape of the value instead (digits, a word).
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
@@ -70,6 +77,13 @@ CRITICAL RULES:
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
+- Failure handling is added by the pipeline (execution contract): health checks run completely, a failed
+  pre-health check or backup skips everything after it, a failed activity step stops the activity and starts the
+  rollback when the node was changed, ROLLBACK_ONLY runs only the rollback. Do NOT write the flags
+  (ROLLBACK_REQUIRED, ROLLBACK_ONLY, PRECHECK_FAILED, BACKUP_FAILED, CHANGES_MADE), phase `when` conditions
+  or `on_failure` policies for them. Put rollback steps in phases whose key and name contain "rollback".
+- Rollback steps must work in a rollback-only run (no earlier phase ran): find what to restore on the node or
+  the repo themselves (e.g. `ls` the backup location) instead of reading values registered in earlier phases
 - Switch to a service user with its own step `send: 'su - <user>'`, and leave it with
   `send: 'exit'`. These steps MUST set step-level prompt_regex to the prompt they lead to
   and MUST NOT validate output with a regex: the framework strips prompts from output.
@@ -93,6 +107,9 @@ CRITICAL RULES:
   Conditions only COMPARE values (==, !=, <, >): no method calls (.endsWith(), .matches()) and no
   `!` — such a condition is always false. Decide inside the command instead:
   case "${configSequences.0.records.0.data.<Col>}" in *.tar) tar -xf …;; *) cp …;; esac
+- After `tar -xf <archive> -C <dir>` the directory holds the archive's MEMBERS, not the archive:
+  verify every member — `ls -ld $(tar -tf <archive> | sed 's#^#<dir>/#')` — never grep <dir> for
+  the archive's own name (a copied plain file is checked by its name).
 - ${configSequences.0.records.0.data.<Col>} exists only for the CIQ JSON RECORD columns listed in
   the CIQ section; columns of other sheets (node details, index) resolve to empty.
 - An entity identified by ONE OF several CIQ columns (rows fill either column, e.g. an
@@ -184,7 +201,9 @@ Use these runtime variable patterns in the workflow YAML:
 
   ${{configSequences.0.records.0.data.<Column>}} — CIQ value (exact CIQ column name; spaces allowed)
   ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE> (e.g. ${{RDS.niamID-1}})
-  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{email}}      — current node group (zone) and CR group
+  ${{nodeGroup}} ${{crGroup}} ${{email}}              — current node group (zone) and CR group
+                                                    (never ${{node}}: register the node's `hostname`)
+  ${{<NODE>.<field>}}                             — node value of the CIQ node (see CIQ: "Node values")
   ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}}               — provided by the framework at runtime
   ${{varName}}                                    — value registered by an earlier step's (?<varName>...) group
   ${{SECRET.key}} / ${{ENV.NAME}}                    — globals.secrets / OS environment
@@ -355,7 +374,7 @@ The framework provides these at runtime — reference them, do not define them:
   ${{NODE_TYPE}}              — e.g. "PGW_RDS"
   ${{SUB_ACTIVITY_NAME}}      — e.g. "1058_IFC_CAPABILITY_MODIFICATION"
   ${{crGroup}}                — CR group of the node group being executed (e.g. "CR1")
-  ${{nodeGroup}} / ${{node}}    — node group (zone) being executed (e.g. "EAST")
+  ${{nodeGroup}}               — node group (zone) being executed (e.g. "EAST")
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
@@ -376,6 +395,9 @@ The execution workflow YAML below was tested and has failures. Fix the issues.
 Nodes: {nodes_summary}
 Phases: {phases}
 
+=== CIQ DATA (what the placeholders can read) ===
+{ciq}
+
 === DEVELOPER ANSWERS (AUTHORITATIVE) ===
 {developer_answers}
 
@@ -383,9 +405,13 @@ Phases: {phases}
 {developer_notes}
 
 === VARIABLE PATTERNS ===
-  ${{configSequences.0.records.0.data.<Column>}} — CIQ value
+  ${{configSequences.0.records.0.data.<Column>}} — CIQ value (only the record columns listed under CIQ DATA)
   ${{<NODE>.niamID-<n>}}                          — NIAM ID of CIQ node <NODE>
-  ${{node}} ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
+  ${{<NODE>.<field>}}                             — node value listed under CIQ DATA (e.g. a version)
+  A value derived from a column (base name, extension, …): compute it in the shell command,
+  e.g. $(basename ${{configSequences.0.records.0.data.<Column>}} .tar) — never invent a column
+  ${{nodeGroup}} ${{crGroup}} ${{NODE_TYPE}} ${{SUB_ACTIVITY_NAME}} — framework values
+  Never ${{node}} (it empties the MOP of a node group with several nodes): register `hostname`
   ${{varName}}                                    — registered (?<varName>...) output
   ${{<PARAM>}}                                    — framework runtime parameter (never register it): {runtime_params}
   NOT supported: configData.*, nodeGroups.*, node_row.*, register.*, env.*
@@ -398,6 +424,9 @@ Phases: {phases}
 - register uses {{regex: '... (?<varName>...) ...'}} — Java named groups, letters/digits only
 - Validation regexes are searched (^/$ per line, '.' does not cross lines): test only the
   condition the validation describes, on the line that shows it — never the whole layout
+- Checks come from the expected TEXT and the real output; regex-looking developer answers are hints.
+  "Every line / item" = count: register {{regex: '<item line>', loop: true, count_var: TOTAL}} and
+  {{regex: '<item line showing the text>', loop: true, count_var: OKN}}, expr 'OKN == TOTAL && TOTAL > 0'
 - No ${{...}} inside regexes (only send is interpolated)
 - Files move with sftp steps (sftp: {{operation: upload|download, local_path, remote_path}}),
   never put/get in a shell; download a node's file before a LOCAL step reads it

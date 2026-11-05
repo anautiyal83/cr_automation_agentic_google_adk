@@ -404,3 +404,238 @@ def test_ciq_path_column_replaces_mop_example_directory():
     s = [st["send"] for st in wf["phases"]["a"]["steps"]]
     ref = "${configSequences.0.records.0.data.DEST}"
     assert s == ["cp /tmp/f " + ref + "/", "chmod 777 " + ref + "/${x}", "tar -czf /tmp/b.tgz /var/opt/swms/backup/a/b/c"]
+
+
+def test_missing_column_is_fixed_by_step_6_not_asked(tmp_path):
+    """DEP-53: the error names the node values and the shell derivation; the correction prompt
+    carries the CIQ section; a framework error is never a step 1 question."""
+    import yaml
+    from skills.network_config_gen import prompts
+    from skills.network_config_gen.validator import behaviour_issues, check_record_columns, validate_workflow
+    d = "configSequences.0.records.0.data."
+    rec = {"sheet": "ANNOUNCEMENT_FILES", "columns": ["GROUP", "INPUT_FILE"], "node_fields": {"MRF": ["VER", "Circle"]}}
+    wf = {"nodes": {"MRF": {"type": "remote", "plugin": "ssh", "ssh": {"host": "${MRF.niamID-1}"}}},
+          "phases": {"a": {"steps": [
+              {"node": "MRF", "send": f"if [[ '${{{d}MRF_VERSION}}' == '13' ]]; then cp /tmp/${{{d}INPUT_FILE}} /x/; fi"},
+              {"node": "MRF", "send": f"rm -rf /x/${{{d}INPUT_FILE_BASENAME}}*"}]}}}
+    errs = check_record_columns(wf, rec)
+    assert len(errs) == 2 and all("${MRF.VER}" in e and "$(basename" in e for e in errs)
+    text = yaml.safe_dump(wf)
+    expected = {"record_columns": rec}
+    all_errors = validate_workflow(text, None, None, expected)
+    assert any("MRF_VERSION" in e for e in all_errors)
+    assert not [e for e in behaviour_issues(text, None, expected) if "MRF_VERSION" in e or "BASENAME" in e]
+    filled = prompts.WORKFLOW_REGENERATE.format(current_yaml="x", test_failures="y", reviewer_analysis="", nodes_summary="",
+                                                phases="", developer_answers="", developer_notes="", runtime_params="",
+                                                ciq="  Node values of the current MRF node: ${MRF.VER}")
+    assert "=== CIQ DATA" in filled and "${MRF.VER}" in filled and "${node}" not in filled.replace("Never ${node}", "")
+
+
+def test_cwd_prompts_match_any_directory():
+    """E030: after `cd /var/opt/.../POSTPAID/` the MRF prompt is `[root@rjjvrmr03 POSTPAID]#`; a prompt_regex
+    written for `~` never matched and the rollback-only run failed ("prompt not ready")."""
+    import re
+
+    from skills.network_config_gen.autofix import generalize_prompt_cwd
+    wf = {"nodes": {
+        "MRF": {"prompt_regex": r"(?m)\[swmsuser@rjjvrmr03 ~]\$|\[root@rjjvrmr03 ~]#"},
+        "X": {"prompt_regex": r"(?m)\[(swmsuser|root)@rjjvrmr03 (.*?)\][#$]\s*$"},
+        "PGW": {"prompt_regex": r"pgwggn01:~ #|\[provgw@pgwggn01 ~]\$"},
+    }, "phases": {"a": {"steps": [{"node": "MRF", "send": "su - swmsuser",
+                                    "prompt_regex": r"\[swmsuser@rjjvrmr03 tmp\]\$"}]}}}
+    assert generalize_prompt_cwd(wf) == 4
+    mrf = wf["nodes"]["MRF"]["prompt_regex"]
+    for prompt in ("[root@rjjvrmr03 POSTPAID]#", "[root@rjjvrmr03 ~]#", "[swmsuser@rjjvrmr03 tmp]$"):
+        assert re.search(mrf, prompt), prompt
+    assert re.search(wf["nodes"]["X"]["prompt_regex"], "[root@rjjvrmr03 POSTPAID]#")
+    pgw = wf["nodes"]["PGW"]["prompt_regex"]
+    assert re.search(pgw, "[provgw@pgwggn01 inbox]$") and re.search(pgw, "pgwggn01:~ #")
+    assert re.search(wf["phases"]["a"]["steps"][0]["prompt_regex"], "[swmsuser@rjjvrmr03 ~]$")
+    assert generalize_prompt_cwd(wf) == 0                                       # idempotent
+
+
+def test_tar_backup_success_regex_matches_gnu_tar():
+    """DEP-58: GNU tar prints "tar: Removing leading `/' from member names", never the quoted form
+    the LLM wrote; such a regex becomes the archive's `ls -1` line, a matching one is kept."""
+    import re
+    from skills.network_config_gen.autofix import tar_create_success
+
+    def step(send, regex):
+        return {"node": "MRF", "send": send, "validation": {"success": {"criteria": {"regex": regex}}}}
+
+    wrong = step("tar -czvf /tmp/announcement_backup.tar.gz ${rec.data.DEST}/", "tar: Removing '.*'")
+    dated = step("tar -czf /tmp/bk_$(date +%F).tgz /etc/x", "Removing '/'")
+    good = step("tar -czvf /tmp/b.tar.gz /d/", "tar: Removing leading")
+    local = {"node": "LOCAL", "send": "tar -czf /tmp/l.tgz /x", "validation": {"success": {"criteria": {"regex": "nope"}}}}
+    wf = {"nodes": {"MRF": {"type": "remote"}, "LOCAL": {"type": "local"}},
+          "phases": {"backup": {"steps": [wrong, dated, good, local]}}}
+    # run e47b5409: tar -v never prints the archive name, so this regex can only match an `ls` of it
+    e47 = step("tar -czvf /tmp/announcement_backup_$(date +%Y%m%d%H%M%S).tar.gz ${rec.data.DEST}/", r".*\.tar\.gz")
+    wf["phases"]["backup"]["steps"].append(e47)
+    assert tar_create_success(wf) == 3
+    assert e47["send"].endswith(" && ls -1 /tmp/announcement_backup*.tar.gz")   # a glob: date runs once
+    assert re.search(e47["validation"]["success"]["criteria"]["regex"], "/tmp/announcement_backup_20261104230136.tar.gz")
+    assert wrong["send"].endswith(" && ls -1 /tmp/announcement_backup.tar.gz")
+    regex = wrong["validation"]["success"]["criteria"]["regex"]
+    assert re.search(regex, "tar: Removing leading `/' from member names\n/tmp/announcement_backup.tar.gz", re.M)
+    regex = dated["validation"]["success"]["criteria"]["regex"]
+    assert re.search(regex, "/tmp/bk_2026-11-04.tgz", re.M) and re.search(regex, "/tmp/bk.tgz", re.M)
+    assert good["validation"]["success"]["criteria"]["regex"] == "tar: Removing leading" and "ls -1" not in good["send"]
+    assert local["validation"]["success"]["criteria"]["regex"] == "nope"
+    assert tar_create_success(wf) == 0  # idempotent
+
+
+def test_no_output_check_passes_on_empty_output():
+    """The JAR rejects any regex with ^ on empty output (probed, run c89f65c2): a silent cp failed
+    `(?:^$)|SKIPPED_BY_CONDITION`. Empty-only alternatives become `.*`; others stay."""
+    from skills.network_config_gen.autofix import empty_output_success
+    from skills.network_config_test.scenarios import java_regex_matches
+
+    def step(rx):
+        return {"node": "MRF", "send": "cp a b", "validation": {"success": {"criteria": {"regex": rx}}}}
+    steps = [step(r"(?:^$)|SKIPPED_BY_CONDITION"), step(r"^\s*$"), step(r"(?:^$|SKIPPED_BY_CONDITION)"),
+             step(r"^(?!.*error).*$"), step(r"(?:.*)|SKIPPED_BY_CONDITION"), step(r"^total \d+")]
+    wf = {"phases": {"activity": {"steps": steps}}}
+    assert empty_output_success(wf) == 3
+    rx = [s["validation"]["success"]["criteria"]["regex"] for s in steps]
+    assert rx[:3] == [r".*|SKIPPED_BY_CONDITION", ".*", r"(?:.*|SKIPPED_BY_CONDITION)"]
+    assert rx[3:] == [r"^(?!.*error).*$", r"(?:.*)|SKIPPED_BY_CONDITION", r"^total \d+"]   # kept
+    assert all(java_regex_matches(r, "") for r in rx[:3]) and java_regex_matches(rx[0], "SKIPPED_BY_CONDITION")
+    assert not java_regex_matches(r"^$", "") and java_regex_matches(r"$", "")       # the JAR's rule
+    assert java_regex_matches(r"[^x]*", "")                                          # a class, no anchor
+    assert empty_output_success(wf) == 0
+
+
+def test_chmod_check_reads_a_listing_and_a_skip_passes():
+    """DEP-63 (run c89f65c2): chmod prints nothing, its count check had nothing to count; the JAR
+    counts `.*` twice per line, fails on any parenthesis in expr, reads unregistered vars as ''."""
+    from skills.network_config_gen.autofix import (expr_without_parentheses, guard_skip_expr,
+                                                    list_after_silent, loop_count_nonempty)
+    step = {"node": "MRF",
+            "send": "if [[ ! '${MRF.VER}' == '13.'* ]]; then chmod 777 ${rec.data.DEST}/*; "
+                    "else echo SKIPPED_BY_CONDITION; fi",
+            "register": [{"regex": "(?<fileLine>.*)", "loop": True, "count_var": "TOTAL_FILES"},
+                         {"regex": "^-rwxrwxrwx.*", "loop": True, "count_var": "OK_PERMISSIONS"}],
+            "validation": {"success": {"criteria": {"expr": "(OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0)"}}}}
+    plain_cp = {"node": "MRF", "send": "cp /tmp/a /opt/x/", "validation": {"success": {"criteria": {"regex": ".*"}}}}
+    wf = {"phases": {"activity": {"steps": [step, plain_cp]}}}
+    for rule in (list_after_silent, loop_count_nonempty, expr_without_parentheses, guard_skip_expr):
+        assert rule(wf) == 1, rule.__name__
+        assert rule(wf) == 0, rule.__name__ + " is idempotent"
+    assert step["send"] == ("if [[ ! '${MRF.VER}' == '13.'* ]]; then chmod 777 ${rec.data.DEST}/* && "
+                            "ls -l ${rec.data.DEST}/*; else echo SKIPPED_BY_CONDITION; fi")
+    assert step["register"][0]["regex"] == "(?<fileLine>.+)"
+    assert step["register"][-1] == {"regex": "(?<ncSkipped>SKIPPED_BY_CONDITION)"}
+    assert step["validation"]["success"]["criteria"]["expr"] == \
+        "OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0 || ncSkipped == 'SKIPPED_BY_CONDITION'"
+    assert plain_cp["send"] == "cp /tmp/a /opt/x/"     # its check needs no output
+
+
+def test_untar_branch_verifies_the_archive_members():
+    """Run 9de5fcb8, user decision A: after `tar -xf A -C D`, D holds A's members — the check
+    `ls D/ | grep <A's name>` becomes a member listing on the extract branch, counted for 777."""
+    import re
+    from skills.network_config_gen.autofix import untar_check_issues, untar_member_check
+    from skills.network_config_test.scenarios import java_regex_matches
+    REC = "${configSequences.0.records.0.data."
+    dest, file = f"{REC}DEST}}", f"{REC}INPUT_FILE}}"
+    extract = {"node": "MRF", "send": f"if [[ ! '${{MRF.VER}}' == '13.'* ]]; then tar -xf /tmp/{file} -C {dest}/; "
+                                      "else echo SKIPPED_BY_CONDITION; fi"}
+    precheck = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{file}" || true'}
+    check = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{file}"',
+             "validation": {"success": {"criteria": {"regex": "-rwxrwxrwx.*.+?"}}}}
+    wf = {"phases": {"activity": {"steps": [precheck, extract, check]}}}
+    assert untar_check_issues(wf) and untar_member_check(wf) == 1 and untar_member_check(wf) == 0
+    assert not untar_check_issues(wf)
+    assert precheck["send"].endswith("|| true")                       # before the extract: unchanged
+    assert check["send"] == (f"if [[ ! '${{MRF.VER}}' == '13.'* ]]; then ls -ld $(tar -tf /tmp/{file} | "
+                             f"sed 's#^#{dest}/#'); else ls -ltrh {dest}/ | grep \"{file}\"; fi")
+    assert check["validation"]["success"]["criteria"] == {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+    ok = next(r["regex"] for r in check["register"] if r["count_var"] == "ncFilesOk")
+    lines = ["-rwxrwxrwx 1 root root 1 Nov 4 a.wav", "-rw-r--r-- 1 root root 1 Nov 4 b.wav"]
+    assert java_regex_matches(ok, lines[0]) and not java_regex_matches(ok, lines[1])
+
+
+def test_llm_member_listing_counts_every_line():
+    """Run 9de5fcb8: the LLM listed the members itself with `^-rwxrwxrwx.*`, which passes when ONE line
+    matches — every listed line must have the mode."""
+    from skills.network_config_gen.autofix import untar_member_check
+    step = {"node": "MRF",
+            "send": "if [[ 'x' == '13.'* ]]; then ls -ltrh /d/ | grep \"a\"; else ls -ld $(tar -tf /tmp/a.tar "
+                    "2>/dev/null | sed 's#^#/d/#') 2>/dev/null; fi",
+            "validation": {"success": {"criteria": {"regex": "^-rwxrwxrwx.*.+?"}}}}
+    extract = {"node": "MRF", "send": "tar -xf /tmp/a.tar -C /d/"}
+    wf = {"phases": {"a": {"steps": [extract, step]}}}
+    assert untar_member_check(wf) == 1 and untar_member_check(wf) == 0
+    assert step["validation"]["success"]["criteria"] == {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+
+
+def test_when_uses_bare_names():
+    """Probed 2026-11-05: `when: ${fileCount} > 0` is always false, `fileCount > 0` works."""
+    from skills.network_config_gen.autofix import when_bare_operands
+    steps = [{"node": "MRF", "send": "x", "when": "${fileCount} > 0"},
+             {"node": "MRF", "send": "y", "when": "${configSequences.0.records.0.data.A} != '' && ${MRF.VER} != ''"}]
+    wf = {"phases": {"p": {"when": "${x} == 'y'", "steps": steps}}}
+    assert when_bare_operands(wf) == 3 and when_bare_operands(wf) == 0
+    assert steps[0]["when"] == "fileCount > 0" and wf["phases"]["p"]["when"] == "x == 'y'"
+    assert steps[1]["when"] == "configSequences.0.records.0.data.A != '' && ${MRF.VER} != ''"
+
+
+def test_grep_without_match_is_an_answer_when_the_check_allows_it():
+    """Run 9de5fcb8: `ls <dir>/ | grep "<file>"` (check `.*`) failed on a fresh node — grep exits 1."""
+    from skills.network_config_gen.autofix import grep_no_match_ok
+
+    def step(send, regex=None):
+        s = {"node": "MRF", "send": send}
+        if regex is not None:
+            s["validation"] = {"success": {"criteria": {"regex": regex}}}
+        return s
+    probe = step('ls -ltrh /d/ | grep "a.tar"', ".*")
+    needs = step('ls -ltrh /d/ | grep "a.tar"', "^-rwx.*")        # a missing file must still fail
+    nocheck = step("cat /x | grep -i err")
+    counted = step('ls /d | grep -c "a"', ".*")
+    wf = {"phases": {"p": {"steps": [probe, needs, nocheck, counted]}}}
+    assert grep_no_match_ok(wf) == 2 and grep_no_match_ok(wf) == 0
+    assert probe["send"].endswith("|| true") and nocheck["send"].endswith("|| true")
+    assert needs["send"] == 'ls -ltrh /d/ | grep "a.tar"' and "|| true" not in counted["send"]
+
+
+def test_silent_command_with_substituted_paths_gets_its_listing():
+    """Run 9de5fcb8: `chmod 777 $(tar -tf A | grep -v '/$' | sed …)` counted lines it never printed."""
+    from skills.network_config_gen.autofix import list_after_silent
+    members = "$(tar -tf /tmp/a.tar | grep -v '/$' | sed 's#^#/d/#')"
+    step = {"node": "MRF", "send": f"if [[ ! 'x' == '13.'* ]]; then chmod 777 {members}; else echo SKIPPED_BY_CONDITION; fi",
+            "register": [{"regex": "(?<l>.+)", "loop": True, "count_var": "TOTAL"}],
+            "validation": {"success": {"criteria": {"expr": "TOTAL > 0"}}}}
+    recursive = {"node": "MRF", "send": "chmod -R 755 /opt/x", "validation": {"success": {"criteria": {"expr": "a > 0"}}}}
+    wf = {"phases": {"p": {"steps": [step, recursive]}}}
+    assert list_after_silent(wf) == 2 and list_after_silent(wf) == 0
+    assert step["send"] == (f"if [[ ! 'x' == '13.'* ]]; then chmod 777 {members} && ls -l {members}; "
+                            "else echo SKIPPED_BY_CONDITION; fi")
+    assert recursive["send"] == "chmod -R 755 /opt/x && ls -l /opt/x"
+
+
+def test_untar_check_by_basename_is_rewritten_too():
+    """Run 3f5d8990: `ls <dest>/ | grep "$(basename <archive> .tar)"` after the untar was not rewritten,
+    the validator then (rightly) refused the workflow and step 6 failed."""
+    from skills.network_config_gen.autofix import untar_check_issues, untar_member_check
+    REC = "${configSequences.0.records.0.data."
+    dest, file = f"{REC}DEST}}", f"{REC}INPUT_FILE}}"
+    extract = {"node": "MRF", "send": f"if [[ ! 'x' == '13.'* ]]; then tar -xf /tmp/{file} -C {dest}/; "
+                                      "else echo SKIPPED_BY_CONDITION; fi"}
+    for term in (f"$(basename {file} .tar)", f"$(basename /tmp/{file})", file):
+        check = {"node": "MRF", "send": f'ls -ltrh {dest}/ | grep "{term}"',
+                 "validation": {"success": {"criteria": {"regex": "^-rwxrwxrwx.*"}}}}
+        wf = {"phases": {"a": {"steps": [extract, check]}}}
+        assert untar_member_check(wf) == 1, term
+        assert check["send"].startswith("if [[ ! 'x' == '13.'* ]]; then ls -ld $(tar -tf /tmp/")
+        assert not untar_check_issues(wf)
+
+
+def test_when_drops_register_prefixes():
+    """Run 3f5d8990: `when: registered.backupTarName != ''` is no variable — always false."""
+    from skills.network_config_gen.autofix import when_bare_operands
+    step = {"node": "MRF", "send": "x", "when": "registered.backupTarName != null && register.y != '' && vars.z == 'a'"}
+    wf = {"phases": {"p": {"steps": [step]}}}
+    assert when_bare_operands(wf) == 1 and when_bare_operands(wf) == 0
+    assert step["when"] == "backupTarName != null && y != '' && z == 'a'"

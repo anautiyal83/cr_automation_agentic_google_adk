@@ -114,6 +114,12 @@ class UploadSection:
                     ui.label("Use case:").classes("text-caption cr-text-dim")
                     self.uc_name_label = ui.label("—").classes("cr-file-name font-semibold")
 
+                with ui.row().classes("items-center gap-2 mt-1"):
+                    ui.label("Phases:").classes("text-caption cr-text-dim")
+                    self.phases_label = ui.label("—").classes("text-caption")
+                    ui.icon("info", size="14px").classes("cr-text-dim") \
+                        .tooltip("Set per activity in Settings → Vendor Profiles → Activities")
+
                 with ui.stepper_navigation():
                     ui.button("Next: documents", on_click=self.stepper.next) \
                         .props("unelevated color=primary no-caps icon-right=arrow_forward")
@@ -196,6 +202,20 @@ class UploadSection:
         # Load vendor data
         ui.timer(0.5, self._load_vendors, once=True)
 
+    # ------------------------------------------------------------------ run phases (spec 010)
+
+    def _run_options(self) -> dict:
+        """The selected activity's phases (Settings → Vendor Profiles); the default without one."""
+        from shared import run_options
+        vendor = next((v for v in self._vendors_cache if v.id == self.selected_vendor_id), None)
+        activity = next((a for a in (vendor.activities if vendor else [])
+                         if a.name == self.selected_activity_name), None)
+        return run_options.normalize(activity.run_options if activity else None)
+
+    def _show_phases(self) -> None:
+        from shared import run_options
+        self.phases_label.text = run_options.summary(self._run_options())
+
     def _refresh_summary(self) -> None:
         """Step 3 summary: what will run, which documents are in."""
         self.summary_box.clear()
@@ -210,6 +230,9 @@ class UploadSection:
                          ("Activity", self.selected_activity_name or self.activity_name or "—")):
                 ui.label(k).classes("cr-kv-key")
                 ui.label(v).classes("cr-kv-value")
+            from shared import run_options
+            ui.label("Phases").classes("cr-kv-key")
+            ui.label(run_options.summary(self._run_options())).classes("cr-kv-value")
             for doc in DOC_TYPES:
                 files = _files(doc["key"])
                 ui.label(doc["label"]).classes("cr-kv-key")
@@ -278,6 +301,7 @@ class UploadSection:
         else:
             # No vendors configured — show manual entry
             self._manual_row.set_visibility(True)
+        self._show_phases()
 
     async def _on_vendor_change(self, e) -> None:
         """When vendor changes, populate node types and activities."""
@@ -302,6 +326,8 @@ class UploadSection:
             self.activity_select.options = {}
             self.activity_select.update()
 
+        self.selected_activity_name = self.activity_select.value or ""
+        self._show_phases()
         self._update_uc_name()
         await self._validate()
 
@@ -329,6 +355,7 @@ class UploadSection:
         """When activity changes, update UC name."""
         self.selected_activity_name = self.activity_select.value or ""
         self.activity_name = self.selected_activity_name.upper().replace(" ", "_")
+        self._show_phases()
         self._update_uc_name()
         await self._validate()
 
@@ -537,6 +564,10 @@ class UploadSection:
     async def _on_start(self) -> None:
         if not self.is_valid or not self.on_start_pipeline:
             return
+        from shared import run_options
+        if not run_options.selected(self._run_options()):
+            ui.notify("The activity has no phase: tick them in Settings → Vendor Profiles", type="warning")
+            return
         # Persist new node type and activity name for future dropdowns
         if self.node_type and self.node_type != "OTHER" and self.node_type not in self._node_types:
             self._node_types.insert(-1, self.node_type)  # before OTHER
@@ -584,6 +615,7 @@ class UploadSection:
             validated=True,
             developer_notes=notes,
             vendor_profile=vendor_profile,
+            run_options=self._run_options(),
         )
         self.start_btn.disable()
         self.start_btn.props("loading")

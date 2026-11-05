@@ -100,7 +100,7 @@
 - [ ] T029 [US3] Test MOP QA — trigger Step 7 failure (invalid workflow YAML), verify failure_type and `_retry_target=6` — *no recorded verification*
 - [ ] T030 [US3] Test Exec QA classification — "PatternSyntaxException" → workflow/6; "Connection refused" → simulator/8 — *blocked: Step 9 has never executed a command (004 DEP-2)*
 - [ ] T031 [US3] Verify QA feedback flows to upstream step — feedback reaches `regenerate(feedback)` on retry — *partially verified for CIQ gen; Step 8 regenerate broken (004 S8-08)*
-- [ ] T051 [US3] Fail the run gracefully when MAX_RETRIES is exhausted instead of continuing (bugs.md OB-4)
+- [X] T051 [US3] Fail the run gracefully when MAX_RETRIES is exhausted instead of continuing (bugs.md OB-4)
 - [ ] T052 [US3] Confirm/fix: Continue on a failed QA milestone should not auto-retry (bugs.md OB-5)
 
 **Checkpoint**: All QA skills correctly analyze failures and route retries
@@ -255,10 +255,10 @@
 
 ### Open
 - [ ] BF-071 Fix `clear_from_step()` wiping the whole UC cache on step 5/7/8/9 re-run — OB-1 (tracked in [002-artifact-cache](../002-artifact-cache/tasks.md))
-- [ ] BF-072 Fail run on MAX_RETRIES exhaustion — OB-4 (= T051)
+- [X] BF-072 Fail run on MAX_RETRIES exhaustion — OB-4 (= T051)
 - [ ] BF-073 Continue on failed QA milestone must not auto-retry — OB-5 (= T052)
-- [ ] BF-074 Implement resume after restart — OB-6 (= T021)
-- [ ] BF-076 Cache helper scripts by content — OB-7 (002 T007 / 003 T009)
+- [X] BF-074 Implement resume after restart — OB-6 (= T021) — done by spec 007 (`resume_queue`)
+- [X] BF-076 Cache helper scripts by content — OB-7 (002 T007 / 003 T009) — done with OB-14
 - [ ] BF-077 helper_script_gen must report failure — OB-8 (003 T007)
 - [ ] BF-075 Step 8 issues S8-01..S8-12, DEP-1..DEP-5 — tracked in [004-simulator-setup](../004-simulator-setup/spec.md)
 

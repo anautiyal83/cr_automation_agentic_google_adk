@@ -119,9 +119,40 @@ def dump_yaml(data: dict) -> str:
     stream = StringIO()
     yaml = YAML()
     yaml.default_flow_style = False
-    yaml.width = 200
-    yaml.dump(data, stream)
+    yaml.width = 1_000_000  # never fold: a folded long regex KEY is invalid YAML (MockWire exits)
+    yaml.dump(yaml11_safe(data), stream)
     return stream.getvalue()
+
+
+# Plain scalars YAML 1.1 (SnakeYAML in MockWire and cli-automation) reads as something else than
+# the string: "10:00:00" is the base-60 int 36000 (`time` answered 36000, run c89f65c2), yes/no/on/
+# off are booleans, "~" is null, "0755" octal, "1_000" an int
+_YAML11_NOT_STR = __import__("re").compile(
+    r"^(?:[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?"
+    r"|y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF"
+    r"|~|null|Null|NULL|[-+]?0[0-7_]+|[-+]?[0-9][0-9_]*_[0-9_]*(?:\.[0-9_]*)?)$")
+
+
+def yaml11_safe(data):
+    """``data`` with every plain string YAML 1.1 would not read back as that string quoted."""
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString, ScalarString
+    if isinstance(data, dict):
+        items = []
+        for key, value in list(data.items()):
+            if isinstance(key, str) and not isinstance(key, ScalarString) and _YAML11_NOT_STR.match(key):
+                key = DoubleQuotedScalarString(key)
+            items.append((key, yaml11_safe(value)))
+        data.clear()  # rebuilt in order: MockWire tries regex keys in file order
+        for key, value in items:
+            data[key] = value
+        return data
+    if isinstance(data, list):
+        for i, item in enumerate(data):
+            data[i] = yaml11_safe(item)
+        return data
+    if isinstance(data, str) and not isinstance(data, ScalarString) and _YAML11_NOT_STR.match(data):
+        return DoubleQuotedScalarString(data)
+    return data
 
 
 def _repair_truncated_yaml(yaml_text: str) -> str:
@@ -244,3 +275,39 @@ def _leaf_steps(steps):
             yield from _leaf_steps(s["steps"])
         else:
             yield s
+
+
+_UNRELATED_COMMAND = "zz_netconfig_unrelated_probe_command --x"
+
+
+def safe_regex_key(key: str) -> str | None:
+    """A response key the LLM wrote as ``regex:<shell command>``: a ``|`` outside a group is the
+    shell's pipe, never an alternation — ``ls x | grep y || true`` as a regex has an EMPTY
+    alternative and answered every command of the node (E030: the backup ``tar`` got the
+    ``ls`` output, no archive was created). Such pipes are escaped; a key that still matches an
+    unrelated command is dropped (None). Exact keys are returned unchanged."""
+    if not key.startswith("regex:"):
+        return key
+    body, out, depth, i = key[6:], [], 0, 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            out.append(body[i:i + 2])
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            ch = "\\|"
+        out.append(ch)
+        i += 1
+    fixed = "".join(out)
+    try:
+        pattern = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", fixed))
+    except re.error:
+        return None
+    if pattern.search(_UNRELATED_COMMAND):
+        return None  # matches anything: it would answer every command of the node
+    return "regex:" + fixed

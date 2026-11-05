@@ -30,6 +30,7 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
     if not isinstance(workflow, dict):
         raise ValueError("workflow YAML could not be parsed")
     wf_nodes = workflow.get("nodes") or {}
+    _peer_copies(workflow, nodes)
 
     for spec in nodes:
         node = wf_nodes.get(spec.name)
@@ -52,8 +53,57 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
             ssh.pop("ne_id", None)
         # Quoted: the JAR reads YAML 1.1 (SnakeYAML), where a bare `no` is boolean false
         ssh["strict_host_key_checking"] = SingleQuotedScalarString("no")
+    _step_prompts(workflow, nodes)
     _shorten_polls(workflow.get("phases") or {})
     return dump_yaml(workflow)
+
+
+def _step_prompts(workflow: dict, nodes: list[NodeSpec]) -> None:
+    """A step's own ``prompt_regex`` replaces the node's: extend it with the simulator prompts too
+    (the LLM gave the rollback `cd` a `user@host:` prompt the simulated node never shows; the step
+    waited for it and failed, run c89f65c2)."""
+    by_name = {spec.name: spec for spec in nodes}
+
+    def walk(steps) -> None:
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict):
+                continue
+            walk(step.get("steps"))
+            spec = by_name.get(str(step.get("node") or ""))
+            if spec is not None and step.get("prompt_regex"):
+                step["prompt_regex"] = extend_prompt_regex(str(step["prompt_regex"]), spec.all_prompts(),
+                                                           spec.prompt_templates)
+
+    for body in (workflow.get("phases") or {}).values():
+        walk(body.get("steps") if isinstance(body, dict) else body)
+
+
+def _peer_copies(workflow: dict, nodes: list[NodeSpec]) -> None:
+    """A node's copies to / from the repo server (spec 010 O-D7) name the repo by its production
+    address and answer its password secret: in the overlay they name the repo's instance (a
+    ``transfer.peers`` key of the node instance) and answer the simulator password."""
+    from skills.network_config_gen.structure import node_login  # same address / password as step 6
+    logins = {spec.name: node_login(workflow, spec.name) for spec in nodes}
+
+    def walk(steps) -> None:
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict):
+                continue
+            walk(step.get("steps"))
+            send = str(step.get("send") or "")
+            for spec in nodes:
+                _, address, password = logins[spec.name]
+                hits = [f"@{a}:" for a in (f"[{address}]", address) if f"@{a}:" in send]
+                if not hits:
+                    continue
+                step["send"] = send = send.replace(hits[0], f"@{spec.name}:")
+                for reply in step.get("expect_reply") or []:
+                    if isinstance(reply, dict) and password and password in str(reply.get("reply", "")):
+                        reply["reply"] = str(reply["reply"]).replace(password, spec.password)
+
+    for body in (workflow.get("phases") or {}).values():
+        if isinstance(body, dict):
+            walk(body.get("steps"))
 
 
 # The simulator answers at once (trigger files appear on upload): a poll that has not

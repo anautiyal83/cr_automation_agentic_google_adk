@@ -65,6 +65,37 @@ _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "network_config_exec_qa": (9, "Execution QA"),
 }
 
+# Cached only once this step has executed their artifacts and passed: step 6 passing its
+# validator is not proof — a workflow that failed step 9 stayed cached and the next run reused it (DEP-55)
+_CACHE_AFTER_STEP: dict[str, int] = {"network_config_gen": 9, "helper_script_gen": 9}
+
+
+def _step_ok(state: dict, run_dir: str, step: int) -> bool:
+    """A display step passed: not failed in the state and no error file on disk (the disk is
+    authoritative — ADK session state written by an agent is not always visible here)."""
+    if state.get(f"step_{step}_status") == "failed":
+        return False
+    return not (run_dir and (Path(run_dir) / f"step_{step}_error.json").exists())
+
+
+def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: list[int], state: dict,
+                           run_dir: str) -> None:
+    """The step that executes deferred artifacts (step 9) ended: cache what it proved; when it
+    failed, drop them — also a cached copy this run reused — so the next run generates again."""
+    for proof in sorted(set(_CACHE_AFTER_STEP.values()) & set(display_steps)):
+        proven = [a for a, s in _CACHE_AFTER_STEP.items() if s == proof]
+        if _step_ok(state, run_dir, proof):
+            for name in proven:
+                if name in pending:
+                    data, inputs, *rest = pending.pop(name)
+                    cache.save_cache(uc_name, name, data, inputs=inputs, options=rest[0] if rest else "")
+        else:
+            for name in proven:
+                pending.pop(name, None)
+                cache.clear_cache(uc_name, name)
+            flow.flow("CACHE DROPPED %s — step %d failed with them", ", ".join(proven), proof)
+
+
 # Maps agent name → index for retry routing
 _AGENT_NAMES = [
     "requirements_gatherer",       # 0
@@ -81,6 +112,15 @@ _AGENT_NAMES = [
 def _first_agent_of_step(step_num: int) -> str:
     """First agent (in execution order) that reports into a display step."""
     return next((a for a in _AGENT_NAMES if step_num in _AGENT_DISPLAY_STEPS.get(a, [])), "")
+
+
+def clear_step_statuses(state, from_index: int, keep: tuple[int, ...] = ()) -> None:
+    """Forget the results of the display steps the run does again (agents ``from_index`` on, steps
+    in ``keep`` excepted): the tracker shows them pending, not their last result (OB-16)."""
+    for name in _AGENT_NAMES[from_index:]:
+        for sn in _AGENT_DISPLAY_STEPS.get(name, []):
+            if sn not in keep:
+                state.pop(f"step_{sn}_status", None)
 
 
 async def _checkpoint(run_id: str, index: int, agent_name: str, kind: str, state) -> None:
@@ -129,6 +169,7 @@ class PipelineAgent(BaseAgent):
         # milestone checkpoint the agent is not re-run, its review pause is shown again
         index = int(ctx.session.state.pop("_resume_index", 0) or 0)
         resume_pause_at = ctx.session.state.pop("_resume_milestone_at", None)
+        pending_cache: dict[str, tuple] = {}  # (artifacts, inputs, options)  # agent → artifacts waiting for step 9 (DEP-55)
         total = len(self._agents_list)
         run_id_str = ctx.session.state.get("run_id", "")
 
@@ -171,14 +212,15 @@ class PipelineAgent(BaseAgent):
             uc_name = ctx.session.state.get("uc_name", "")
             cache_hit = False
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
                 cache = ArtifactCache()
                 # A step an earlier agent of the same display step failed is not "passed" from
                 # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
                 step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
                 if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause:
                     has = cache.has_cache(uc_name, agent.name,
-                                          inputs_fingerprint(ctx.session.state.get("document_set")))
+                                          inputs_fingerprint(ctx.session.state.get("document_set")),
+                                          options_fingerprint(ctx.session.state.get("document_set")))
                     flow.flow("CACHE CHECK %s: has_cache=%s", agent.name, has)
                     if has:
                         cached = cache.load_cache(uc_name, agent.name)
@@ -276,12 +318,10 @@ class PipelineAgent(BaseAgent):
 
             # ----- SAVE TO CACHE (on success) -----
             try:
-                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint
+                from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
+                run_dir = ctx.session.state.get("run_dir", "")
                 if agent.name in CACHEABLE_AGENTS:
-                    all_passed = all(
-                        ctx.session.state.get(f"step_{sn}_status", "passed") != "failed"
-                        for sn in display_steps
-                    )
+                    all_passed = all(_step_ok(ctx.session.state, run_dir, sn) for sn in display_steps)
                     if all_passed:
                         cache = ArtifactCache()
                         artifacts = ctx.session.state.get("artifacts", {})
@@ -293,10 +333,18 @@ class PipelineAgent(BaseAgent):
                             req = requirements_store.get(run_id_str)
                             if req:
                                 cache_data["requirements_json"] = _json.dumps(req, indent=2)
-                        cache.save_cache(uc_name, agent.name, cache_data,
-                                         inputs=inputs_fingerprint(ctx.session.state.get("document_set")))
+                        inputs = inputs_fingerprint(ctx.session.state.get("document_set"))
+                        options = options_fingerprint(ctx.session.state.get("document_set"))
+                        proof = _CACHE_AFTER_STEP.get(agent.name)
+                        if proof:  # kept until the step that executes them passes (DEP-55)
+                            pending_cache[agent.name] = (cache_data, inputs, options)
+                            flow.flow("CACHE DEFERRED %s — saved when step %d passes", agent.name, proof)
+                        else:
+                            cache.save_cache(uc_name, agent.name, cache_data, inputs=inputs, options=options)
+                _settle_deferred_cache(ArtifactCache(), uc_name, pending_cache, display_steps,
+                                       ctx.session.state, run_dir)
             except Exception as e:
-                logger.debug("Cache save failed for %s: %s", agent.name, e)
+                logger.error("Cache save failed for %s: %s", agent.name, e)
 
             # ----- PUBLISH step_completed -----
             for sn in display_steps:
@@ -348,6 +396,8 @@ class PipelineAgent(BaseAgent):
                         # From the earliest agent of this step that failed: a step 6 rerun after a
                         # workflow error must regenerate the workflow, not only the scripts (OB-12)
                         target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
+                    if await self._retries_exhausted(ctx, run_id_str, target_index, ms_step):
+                        break
                     # Clear cache from rerun target onward
                     try:
                         from storage.artifact_cache import ArtifactCache
@@ -357,33 +407,33 @@ class PipelineAgent(BaseAgent):
                     except Exception:
                         pass
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
+                    clear_step_statuses(ctx.session.state, target_index)
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
                     index = target_index
                     continue
+                else:
+                    # "Continue" on a failed step goes on with what it produced: the QA agent's
+                    # retry request is dropped (OB-5)
+                    dropped = ctx.session.state.pop("_retry_target", None)
+                    if dropped is not None:
+                        flow.flow("CONTINUE — step %d accepted by the reviewer, no retry of step %s", ms_step, dropped)
 
             # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)
             if retry_target is not None and retry_target in _RETRY_STEP_TO_INDEX:
-                retry_count_key = f"retry_count_{retry_target}"
-                current_count = ctx.session.state.get(retry_count_key, 0) + 1
-                ctx.session.state[retry_count_key] = current_count
-
-                if current_count > MAX_RETRIES:
-                    flow.flow("MAX RETRIES exceeded for step %d (count=%d) — continuing pipeline",
-                               retry_target, current_count)
-                else:
-                    target_index = _RETRY_STEP_TO_INDEX[retry_target]
-                    # The retried agent must regenerate, not reload what just failed (OB-11)
-                    try:
-                        from storage.artifact_cache import ArtifactCache
-                        ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
-                    except Exception as e:
-                        logger.debug("Cache clear failed on auto-retry: %s", e)
-                    flow.flow("AUTO-RETRY — step %d -> agent index %d (count=%d/%d)",
-                               retry_target, target_index, current_count, MAX_RETRIES)
-                    await self._publish(run_id_str, "retry_started", retry_target)
-                    index = target_index
-                    continue
+                target_index = _RETRY_STEP_TO_INDEX[retry_target]
+                if await self._retries_exhausted(ctx, run_id_str, target_index, display_steps[-1] if display_steps else 0):
+                    break
+                # The retried agent must regenerate, not reload what just failed (OB-11)
+                try:
+                    from storage.artifact_cache import ArtifactCache
+                    ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
+                except Exception as e:
+                    logger.debug("Cache clear failed on auto-retry: %s", e)
+                flow.flow("AUTO-RETRY — step %d -> agent index %d", retry_target, target_index)
+                await self._publish(run_id_str, "retry_started", retry_target)
+                index = target_index
+                continue
 
             index += 1
 
@@ -398,9 +448,36 @@ class PipelineAgent(BaseAgent):
     # Built-in milestone pause
     # ------------------------------------------------------------------
 
+    async def _retries_exhausted(self, ctx, run_id_str: str, target_index: int, failed_step: int) -> bool:
+        """Count a retry of the agent at ``target_index`` (review rerun or auto-retry); past
+        ``MAX_RETRIES`` the run fails with the failed step's error instead of going on with failed
+        artifacts or looping (OB-4)."""
+        key = f"retry_count_agent_{target_index}"
+        count = ctx.session.state.get(key, 0) + 1
+        ctx.session.state[key] = count
+        if count <= MAX_RETRIES:
+            flow.flow("RETRY %d/%d of %s", count, MAX_RETRIES, self._agents_list[target_index].name)
+            return False
+        detail = ""
+        run_dir = ctx.session.state.get("run_dir", "")
+        err = Path(run_dir) / f"step_{failed_step}_error.json" if run_dir and failed_step else None
+        try:
+            if err and err.exists():
+                detail = str(json.loads(err.read_text(encoding="utf-8")).get("error") or "").strip().splitlines()[0][:300]
+        except (OSError, ValueError, IndexError):
+            pass
+        message = (f"Step {failed_step} still failing after {MAX_RETRIES} retries of "
+                   f"{self._agents_list[target_index].name}" + (f": {detail}" if detail else ""))
+        flow.flow("MAX RETRIES — %s", message)
+        ctx.session.state["pipeline_failed"] = True
+        ctx.session.state["pipeline_error"] = message
+        await self._publish(run_id_str, "step_failed", failed_step, {"error": message})
+        return True
+
     def _rerun_index(self, run_id_str: str, ctx, step_num: int, index: int) -> int:
         """Agent index a milestone rerun starts from: the earliest agent the step's error file
-        names in ``failed_agents``, else the agent that just ran."""
+        names in ``failed_agents``, else the FIRST agent of the display step — "Re-run step" at the
+        step 6 review re-ran only helper_script_gen and kept the old workflow (run 9de5fcb8)."""
         run_dir = ctx.session.state.get("run_dir", "")
         err = Path(run_dir) / f"step_{step_num}_error.json" if run_dir else None
         try:
@@ -409,7 +486,10 @@ class PipelineAgent(BaseAgent):
             failed = []
         names = [a.name for a in self._agents_list]
         indices = [names.index(a) for a in failed if a in names]
-        return min(indices) if indices else index
+        if indices:
+            return min(indices)
+        first = _first_agent_of_step(step_num)
+        return min(index, names.index(first)) if first in names else index
 
     async def _milestone_pause(self, ctx, step_num: int, name: str, run_id_str: str) -> str:
         """Pause for user review. Returns 'continue', 'rerun', or 'cancel'."""
@@ -494,6 +574,7 @@ class PipelineAgent(BaseAgent):
             if target and target in _RETRY_STEP_TO_INDEX:
                 target_index = _RETRY_STEP_TO_INDEX[target]
                 flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
+                clear_step_statuses(ctx.session.state, target_index)
                 await self._publish(run_id_str, "retry_started", target)
                 return target_index
         return None

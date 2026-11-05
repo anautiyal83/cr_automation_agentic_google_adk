@@ -79,6 +79,16 @@ def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     return (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
 
 
+LLM_TIMEOUT_SEC = 300  # one LLM call; config llm_timeout_sec / env LLM_TIMEOUT_SEC override
+_TRANSIENT = ("payload is not completed", "connection", "timed out", "timeout", "reset", "temporarily", "502",
+              "503", "504")
+
+
+def _transient(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(t in text for t in _TRANSIENT)
+
+
 async def call_llm(
     system_prompt: str,
     user_prompt: str,
@@ -144,21 +154,25 @@ async def call_llm(
 
     max_retries = 3
     retry_delays = [5, 15, 30]  # seconds
+    # A call that never returns stalled a step 6 for 43 minutes (E030: OpenRouter reset the
+    # connection only then) — every call has a hard limit and a timeout is retried
+    timeout = float(config.get("llm_timeout_sec") or os.environ.get("LLM_TIMEOUT_SEC") or LLM_TIMEOUT_SEC)
 
     t0 = time.monotonic()
     last_error = None
 
     for attempt in range(max_retries + 1):
         try:
-            response = await litellm.acompletion(
+            response = await asyncio.wait_for(litellm.acompletion(
                 model=model,
                 messages=messages,
                 temperature=0.2,
                 max_tokens=16000,
-            )
+                timeout=timeout,
+            ), timeout=timeout * 1.05 + 1)
             break  # success
-        except (litellm.ServiceUnavailableError, litellm.RateLimitError,
-                litellm.Timeout, litellm.APIConnectionError) as e:
+        except (litellm.ServiceUnavailableError, litellm.RateLimitError, litellm.Timeout,
+                litellm.APIConnectionError, litellm.InternalServerError, asyncio.TimeoutError) as e:
             last_error = e
             if attempt < max_retries:
                 delay = retry_delays[attempt]
@@ -168,6 +182,15 @@ async def call_llm(
             else:
                 logger.error("LLM call failed after %d attempts: %s", max_retries + 1, e)
                 raise
+        except litellm.APIError as e:
+            # A broken / cut-off response ("payload is not completed") is transient too
+            if attempt < max_retries and _transient(e):
+                last_error = e
+                logger.warning("LLM call failed (attempt %d/%d): %s — retrying in %ds",
+                               attempt + 1, max_retries + 1, str(e)[:120], retry_delays[attempt])
+                await asyncio.sleep(retry_delays[attempt])
+                continue
+            raise
         except Exception:
             raise  # Non-retryable errors propagate immediately
 

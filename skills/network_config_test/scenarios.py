@@ -3,6 +3,9 @@
 Test cases are derived from the workflow and the CIQ JSON, not invented:
 
 - positive: one per CR group × node group — every check passes on a healthy node
+- rollback only (spec 011): one run with ``ROLLBACK_ONLY=true`` on a node group whose positive
+  passed, on the node state that positive left (its backup on the node / repo server: rollback-only
+  rolls back an order whose activity already ran) — only the rollback phase runs, and its steps pass
 - negative (on one representative node group whose positive passed):
   pre-health-check failure, activity failure, post-health-check failure, node login failure
 
@@ -14,6 +17,10 @@ cli-automation JAR's semantics (probed 2026-11-02):
 - ``on_failure: stop`` (default) — every later step, in every phase, is skipped; run FAILs
 - ``continue`` / ``warning`` — later steps still run; the run still FAILs
 - skipped steps are absent from the JAR's execution report
+
+Workflows with the execution contract (spec 011, flags in ``globals.vars``) are judged by it: a
+failed health check lets the rest of its phase run, a pre-health failure skips every later phase,
+an activity failure stops the activity and runs the rollback only when the node was changed.
 
 Evidence per case: the JAR report (which steps ran, validation status) and MockWire's event
 log (which commands each node actually received).
@@ -57,13 +64,14 @@ NEGATIVE_KINDS = [
 class WorkflowStep:
     index: int
     phase: str
-    phase_kind: str          # pre | activity | post
+    phase_kind: str          # pre | backup | activity | post | rollback
     node: str
     send: str
     regex: str
     on_failure: str          # stop | continue | warning | run
     description: str = ""
     has_when: bool = False
+    changes: bool = False    # the contract marks it as changing the node (CHANGES_MADE)
 
     @property
     def is_prompt_step(self) -> bool:
@@ -71,13 +79,17 @@ class WorkflowStep:
 
 
 def phase_kind(name: str, body: dict | None = None) -> str:
-    """pre | post | activity from the phase key or its ``name``."""
-    text = f"{name} {(body or {}).get('name', '') if isinstance(body, dict) else ''}".lower()
-    if "pre" in text and ("check" in text or "health" in text or text.startswith("pre")):
-        return "pre"
-    if "post" in text:
-        return "post"
-    return "activity"
+    """pre | backup | activity | post | rollback from the phase key or its ``name`` (the
+    execution contract's classification, spec 011)."""
+    from skills.network_config_gen.contract import phase_kind as contract_kind
+    return {"pre_health": "pre", "post_health": "post"}.get(
+        k := contract_kind(str(name), body if isinstance(body, dict) else {}), k)
+
+
+def has_contract(workflow: dict) -> bool:
+    """The workflow carries the execution contract's flags (spec 011)."""
+    flags = ((workflow.get("globals") or {}).get("vars") or {}) if isinstance(workflow, dict) else {}
+    return isinstance(flags, dict) and "ROLLBACK_REQUIRED" in flags and "ROLLBACK_ONLY" in flags
 
 
 def workflow_steps(workflow: dict) -> list[WorkflowStep]:
@@ -110,8 +122,15 @@ def workflow_steps(workflow: dict) -> list[WorkflowStep]:
                 on_failure=_policy(raw.get("on_failure")) or phase_policy,
                 description=str(raw.get("command_description") or ""),
                 has_when="when" in raw,
+                changes=_sets_flag(raw, "success", "CHANGES_MADE"),
             ))
     return steps
+
+
+def _sets_flag(step: dict, branch: str, flag: str) -> bool:
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    b = validation.get(branch) if isinstance(validation.get(branch), dict) else {}
+    return str((b.get("vars") or {}).get(flag, "")).lower() == "true"
 
 
 def _policy(value: Any) -> str:
@@ -149,8 +168,34 @@ def run_passed(overall_status: str) -> bool:
     return str(overall_status or "").strip().upper() in _PASSING_RUN
 
 
+def _has_caret(regex: str) -> bool:
+    """An unescaped ``^`` / ``\\A`` anchor outside a character class."""
+    i, in_class = 0, False
+    while i < len(regex):
+        ch = regex[i]
+        if ch == "\\":
+            if regex[i + 1:i + 2] == "A" and not in_class:
+                return True
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+            if regex[i + 1:i + 2] == "^":   # negated class, not an anchor
+                i += 1
+        elif ch == "^":
+            return True
+        i += 1
+    return False
+
+
 def java_regex_matches(regex: str, text: str) -> bool:
-    """The JAR's validation semantics: find(), ^/$ per line, '.' does not cross lines."""
+    """The JAR's validation semantics: find(), ^/$ per line, '.' does not cross lines; on EMPTY
+    output a regex with a ``^`` anchor never matches (``^$`` fails, ``.*`` / ``$`` pass — probed
+    2026-11-04, run c89f65c2)."""
+    if not text.strip("\r\n") and _has_caret(regex):
+        return False
     py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
     try:
         return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE) is not None
@@ -176,12 +221,14 @@ class Fault:
 class Scenario:
     id: str
     title: str
-    kind: str                 # positive | negative
-    category: str             # happy_path | pre_check | activity | post_check | login
+    kind: str                 # positive | rollback | negative
+    category: str             # happy_path | rollback_only | pre_check | activity | post_check | login
     target: tuple[str, str, str]  # (json_file, node_group, cr_group)
     fault: Fault | None = None
     expected: str = ""
     policy: str = ""          # failure policy of the faulted step
+    runtime_vars: dict[str, str] = field(default_factory=dict)  # extra --var (ROLLBACK_ONLY)
+    contract: bool = False    # judged by the execution contract (spec 011)
 
     @property
     def node_group(self) -> str:
@@ -213,6 +260,7 @@ class ScenarioResult:
     error: str = ""
     classification: str = ""  # workflow | simulator (when FAIL)
     html_reports: list[str] = field(default_factory=list)  # execution-report-generator output
+    restore_diff: list[str] | None = None  # rollback-only: node files that differ from before the activity
 
     def to_dict(self) -> dict:
         s = self.scenario
@@ -245,8 +293,19 @@ def positive_scenarios(targets: list[tuple[str, str, str]]) -> list[Scenario]:
     ) for i, t in enumerate(targets, 1)]
 
 
+def rollback_only_scenario(steps: list[WorkflowStep], target: tuple[str, str, str]) -> Scenario | None:
+    """One run with ``ROLLBACK_ONLY=true`` (spec 011 rule 5) when the workflow has a rollback."""
+    if not any(s.phase_kind == "rollback" for s in steps):
+        return None
+    return Scenario(
+        id="TC-R01", kind="rollback", category="rollback_only", target=target,
+        title=f"Rollback only — {target[2] or 'CR'} / {target[1]}",
+        expected="With ROLLBACK_ONLY=true only the rollback phase runs; its steps pass; the run PASSes.",
+        runtime_vars={"ROLLBACK_ONLY": "true"}, contract=True)
+
+
 def negative_scenarios(steps: list[WorkflowStep], target: tuple[str, str, str],
-                       simulated_nodes: set[str]) -> tuple[list[Scenario], list[str]]:
+                       simulated_nodes: set[str], contract: bool = False) -> tuple[list[Scenario], list[str]]:
     """One fault per phase kind plus a login failure; also returns notes for kinds with no
     injectable step (only commands answered by a simulated node can be faulted)."""
     scenarios: list[Scenario] = []
@@ -268,7 +327,8 @@ def negative_scenarios(steps: list[WorkflowStep], target: tuple[str, str, str],
             fault=Fault(kind="validation", node=step.node, step_index=step.index, send=step.send,
                         description=f"'{step.send}' on {step.node} returns a failing output"),
             policy=step.on_failure,
-            expected=_expected_text(step, steps),
+            expected=_expected_text(step, steps, contract),
+            contract=contract,
         ))
     remote = next((s for s in steps if s.node in simulated_nodes), None)
     if remote:
@@ -285,7 +345,33 @@ def negative_scenarios(steps: list[WorkflowStep], target: tuple[str, str, str],
     return scenarios, notes
 
 
-def _expected_text(step: WorkflowStep, steps: list[WorkflowStep]) -> str:
+def contract_expectation(step: WorkflowStep, steps: list[WorkflowStep]) -> dict:
+    """What the execution contract (spec 011) makes happen after ``step`` fails."""
+    if step.phase_kind in ("pre", "post"):
+        same = [s for s in steps if s.phase == step.phase and s.index > step.index]
+        stops = step.on_failure in ("stop", "run")
+        return {"phase_continues": bool(same) and not stops,
+                "later_phases_run": step.phase_kind == "post",  # pre-health: every next phase skipped
+                "rollback": False}
+    if step.phase_kind == "activity":
+        changed = step.changes or any(s.changes for s in steps if s.phase_kind == "activity" and s.index < step.index)
+        return {"phase_continues": False, "later_phases_run": False, "rollback": changed}
+    return {"phase_continues": False, "later_phases_run": False, "rollback": False}
+
+
+def _expected_text(step: WorkflowStep, steps: list[WorkflowStep], contract: bool = False) -> str:
+    if contract:
+        exp = contract_expectation(step, steps)
+        text = f"The validation of '{step.send[:60]}' detects the fault and the run FAILs"
+        if step.phase_kind == "pre":
+            return text + ("; the remaining health checks still run" if exp["phase_continues"] else "") + \
+                "; every later phase is skipped (pre-health failure)."
+        if step.phase_kind == "post":
+            return text + ("; the remaining health checks still run" if exp["phase_continues"] else "") + \
+                "; it is reported, no rollback."
+        return text + "; the activity stops there; " + (
+            "the rollback runs (the node was changed)." if exp["rollback"]
+            else "no rollback (nothing was changed yet).")
     later = [s for s in steps if s.index > step.index]
     text = f"The validation of '{step.send[:60]}' detects the fault and the run FAILs"
     if step.on_failure in ("stop", "run"):
@@ -371,15 +457,26 @@ class ScenarioSuite:
                 shutil.rmtree(old, ignore_errors=True)
 
         suite = SuiteResult()
+        contract = has_contract(workflow)
         try:
             for sc in positive_scenarios(self.plan["targets"]):
                 suite.results.append(await self._run(sc, steps, instances, base, node_instance))
+            passed = [r.scenario.target for r in suite.results if r.status == "PASS"]
+            representative = passed[0] if passed else self.plan["targets"][0]
+            # One rollback-only execution (spec 011 rule 5) on the files the representative's
+            # sunny day left: a clean simulator has no backup to restore (run 9de5fcb8, repo route)
+            rollback = rollback_only_scenario(steps, representative) if contract else None
+            if rollback:
+                after = next((Path(r.out_dir) / "vfs_after" for r in suite.results
+                              if r.scenario.target == representative), None)
+                suite.results.append(await self._run(rollback, steps, instances, base, node_instance,
+                                                     vfs_from=after))
+            elif contract:
+                suite.notes.append("No rollback phase: the rollback-only execution was not tested")
             if not self.include_negatives:
                 suite.notes.append("Negative scenarios are not enabled yet (sunny day only)")
                 return suite
-            passed = [r.scenario.target for r in suite.results if r.status == "PASS"]
-            representative = passed[0] if passed else self.plan["targets"][0]
-            negatives, notes = negative_scenarios(steps, representative, set(node_instance))
+            negatives, notes = negative_scenarios(steps, representative, set(node_instance), contract)
             suite.notes += notes
             if not passed:
                 suite.notes.append("No happy path passed: negative cases ran on "
@@ -425,12 +522,13 @@ class ScenarioSuite:
     # -- one case -------------------------------------------------------------
 
     async def _run(self, sc: Scenario, steps: list[WorkflowStep], instances: list[dict],
-                   base: dict[str, str], node_instance: dict[str, str]) -> ScenarioResult:
+                   base: dict[str, str], node_instance: dict[str, str],
+                   vfs_from: Path | None = None) -> ScenarioResult:
         t0 = time.monotonic()
         out_dir = self.out_root / sc.id
         result = ScenarioResult(scenario=sc, out_dir=str(out_dir))
         try:
-            await self._restart(instances, self._configs_for(sc, base, node_instance))
+            await self._restart(instances, self._configs_for(sc, base, node_instance), vfs_from)
             if self.plan.get("local_cwd"):
                 from ruamel.yaml import YAML
                 staged = stage_upload_inputs(
@@ -439,13 +537,25 @@ class ScenarioSuite:
                 if staged:
                     logger.info("Scenario %s: staged %d upload input(s): %s", sc.id, len(staged),
                                 ", ".join(Path(s).name for s in staged))
+            runtime_vars = self.runtime_vars
+            if sc.runtime_vars:
+                from core.config import runtime_params
+                runtime_vars = {**(runtime_params() if runtime_vars is None else runtime_vars), **sc.runtime_vars}
+            # the node files before this case (a rollback-only case is compared with its sunny day's)
+            shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_before", dirs_exist_ok=True)
             exec_result = await execute_target(self.plan, self.cli_jar, self.workflow_path, sc.target,
-                                               out_dir, self.java_home, runtime_vars=self.runtime_vars)
+                                               out_dir, self.java_home, runtime_vars=runtime_vars)
             report = _read_report(out_dir)
             result.overall_status = str(((report.get("metadata") or {}).get("execution_summary") or {})
                                         .get("overall_status") or ("PASS" if exec_result["success"] else "FAIL"))
             result.commands = _commands(report)
             result.events = self._collect_events(out_dir)
+            # the node state this case left (a later rollback-only case starts from it)
+            await self.control.stop()
+            shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_after", dirs_exist_ok=True)
+            if sc.kind == "rollback" and vfs_from is not None:
+                await self.control.stop()
+                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs")
             evaluate(result, steps, node_instance)
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
@@ -472,7 +582,7 @@ class ScenarioSuite:
         if rep["error"]:
             logger.warning("Execution report for %s not generated: %s", sc.id, rep["error"])
 
-    async def _restart(self, instances: list[dict], configs: dict[str, str]) -> None:
+    async def _restart(self, instances: list[dict], configs: dict[str, str], vfs_from: Path | None = None) -> None:
         from skills.network_simulator_setup.simulator_runner import SimulatorInstance, start_simulator
         await self.control.stop()
         for name, text in configs.items():
@@ -483,6 +593,8 @@ class ScenarioSuite:
         # case (inbox/<ORDERNO>.xml, outbox/….res) must not exist yet
         shutil.rmtree(self.sim_dir / "vfs", ignore_errors=True)
         (self.sim_dir / "vfs").mkdir(parents=True, exist_ok=True)
+        if vfs_from is not None and Path(vfs_from).is_dir():  # rollback-only: after the activity
+            shutil.copytree(vfs_from, self.sim_dir / "vfs", dirs_exist_ok=True)
         sim = await start_simulator(
             self.sim_dir,
             [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []))
@@ -556,6 +668,7 @@ def inject_fault(config_text: str, fault: Fault) -> str:
     from ruamel.yaml.comments import CommentedMap
     yaml = YAML()
     yaml.preserve_quotes = True
+    yaml.width = 1_000_000  # never fold: a folded long regex KEY is invalid YAML and MockWire exits
     cfg = yaml.load(StringIO(config_text)) or CommentedMap()
 
     if fault.kind == "login":
@@ -640,6 +753,29 @@ def _commands(report: dict) -> list[CommandResult]:
     ) for key, info in (report.get("data") or {}).items() if isinstance(info, dict)]
 
 
+def node_files_diff(before: Path, after: Path) -> list[str]:
+    """Files of the simulated nodes that differ between two VFS snapshots — outside /tmp (backups,
+    lists, staged inputs) and the repo server: what a rollback must have put back."""
+    from skills.network_config_gen.structure import _repo_config
+    repo = _repo_config()["node"]
+
+    def files(root: Path) -> dict[str, bytes]:
+        out = {}
+        if not root.is_dir():
+            return out
+        for f in root.rglob("*"):
+            rel = f.relative_to(root).as_posix()
+            inst, _, path = rel.partition("/")
+            if f.is_file() and inst != repo and not path.startswith("tmp/"):
+                out[rel] = f.read_bytes()
+        return out
+    b, a = files(Path(before)), files(Path(after))
+    diff = [f"missing: /{k.partition('/')[2]}" for k in sorted(b.keys() - a.keys())]
+    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())]
+    diff += [f"changed: /{k.partition('/')[2]}" for k in sorted(b.keys() & a.keys()) if a[k] != b[k]]
+    return diff
+
+
 def align(commands: list[CommandResult], steps: list[WorkflowStep]) -> list[int | None]:
     """Workflow step index of each executed command (report order = execution order)."""
     indexes: list[int | None] = []
@@ -650,12 +786,15 @@ def align(commands: list[CommandResult], steps: list[WorkflowStep]) -> list[int 
             if steps[j].node.lower() == cmd.node.lower() and matches_command(steps[j].send, cmd.command):
                 found = j
                 break
-        if found is None:  # repeated/looping steps: search from the start
-            found = next((s.index for s in steps if s.node.lower() == cmd.node.lower()
-                          and matches_command(s.send, cmd.command)), None)
-        else:
+        if found is not None:
             cursor = found + 1
-        indexes.append(found)
+            indexes.append(steps[found].index)
+            continue
+        # a record loop's next pass: the nearest PRECEDING match (same loop) — the first one from the
+        # start was the backup's identical sha256sum for a rollback step
+        indexes.append(next((steps[j].index for j in range(min(cursor, len(steps)) - 1, -1, -1)
+                             if steps[j].node.lower() == cmd.node.lower()
+                             and matches_command(steps[j].send, cmd.command)), None))
     return indexes
 
 
@@ -681,6 +820,26 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
                             "; ".join(str(e.get("input", ""))[:80] for e in unmatched[:5])))
         checks.append(Check("Run reported PASS", run_passed(result.overall_status), result.overall_status))
         result.actual = (f"{len(cmds)} steps ran, {len(failed)} failed; run {result.overall_status}")
+    elif sc.kind == "rollback":
+        # matched against the rollback's steps only: the backup's identical sha256sum came first
+        idx = align(cmds, [s for s in steps if s.phase_kind == "rollback"])
+        outside = [c for c, i in zip(cmds, idx) if i is None or steps[i].phase_kind != "rollback"]
+        checks.append(Check("Rollback steps ran", bool(cmds),
+                            f"{len(cmds)} commands" if cmds else
+                            "nothing ran: the rollback steps are skipped without values from earlier phases"))
+        checks.append(Check("Only the rollback phase ran", not outside,
+                            "; ".join(f"{c.node}: {c.command[:60]}" for c in outside[:5])))
+        checks.append(Check("Every rollback step passed", not failed,
+                            "; ".join(f"{c.node}: {c.command[:60]} — {c.validation_conclusion or c.failure_reason or c.validation_status}"
+                                      for c in failed[:5])))
+        checks.append(Check("Simulator answered every command", not unmatched,
+                            "; ".join(str(e.get("input", ""))[:80] for e in unmatched[:5])))
+        checks.append(Check("Run reported PASS", run_passed(result.overall_status), result.overall_status))
+        if result.restore_diff is not None:
+            # every step passing is not enough: the node's files must be as before the activity
+            checks.append(Check("Node files restored to their state before the activity", not result.restore_diff,
+                                "; ".join(result.restore_diff[:5])))
+        result.actual = f"{len(cmds)} rollback steps ran, {len(failed)} failed; run {result.overall_status}"
     elif sc.fault and sc.fault.kind == "login":
         inst = node_instance.get(sc.fault.node, "")
         received = [e for e in result.events if e.get("instance") == inst
@@ -709,7 +868,9 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
         checks.append(Check("Validation detected the fault", detected,
                             "" if detected or not reached else
                             f"the success regex accepted the failing output: {at_fault[0].output[:150]!r}"))
-        if sc.policy in ("stop", "run"):
+        if sc.contract and 0 <= fault_i < len(steps):
+            checks += _contract_checks(steps[fault_i], steps, cmds, idx)
+        elif sc.policy in ("stop", "run"):
             checks.append(Check(f"on_failure={sc.policy}: no later step ran", not later,
                                 "; ".join(f"{c.node}: {c.command[:60]}" for c in later[:5])))
         else:
@@ -723,12 +884,37 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
     result.checks = checks
     result.status = "PASS" if all(c.ok for c in checks) else "FAIL"
     if result.status == "FAIL":
-        if sc.kind == "positive" or (checks and not checks[0].ok):
+        if sc.kind in ("positive", "rollback") or (checks and not checks[0].ok):
             verdict = classify_failures(cmds, result.events)
             result.classification = verdict.get("classification", "workflow")
         else:
             # The fault was delivered: a missed detection or wrong flow is the workflow's
             result.classification = "workflow"
+
+
+def _contract_checks(step: WorkflowStep, steps: list[WorkflowStep], cmds: list[CommandResult],
+                     idx: list[int | None]) -> list[Check]:
+    """After a fault in ``step``: what the execution contract (spec 011) must make happen."""
+    exp = contract_expectation(step, steps)
+    ran = [(c, steps[i]) for c, i in zip(cmds, idx) if i is not None and i > step.index]
+    same = [c for c, s in ran if s.phase == step.phase]
+    rollback = [c for c, s in ran if s.phase_kind == "rollback"]
+    other = [c for c, s in ran if s.phase != step.phase and s.phase_kind != "rollback"]
+    checks = []
+    if exp["phase_continues"]:
+        checks.append(Check("The remaining health checks still ran", bool(same), f"{len(same)} ran"))
+    elif step.phase_kind != "post":
+        checks.append(Check("The phase stopped at the failure", not same,
+                            "; ".join(f"{c.node}: {c.command[:60]}" for c in same[:3])))
+    if not exp["later_phases_run"]:
+        checks.append(Check("No later phase ran", not other,
+                            "; ".join(f"{c.node}: {c.command[:60]}" for c in other[:3])))
+    if exp["rollback"]:
+        checks.append(Check("The rollback ran (the node was changed)", bool(rollback), f"{len(rollback)} rollback steps"))
+    else:
+        checks.append(Check("No rollback ran", not rollback,
+                            "; ".join(f"{c.node}: {c.command[:60]}" for c in rollback[:3])))
+    return checks
 
 
 def _classify(results: list[ScenarioResult]) -> dict:

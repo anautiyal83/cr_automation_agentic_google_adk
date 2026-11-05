@@ -219,7 +219,8 @@ def dump_yaml(data: dict) -> str:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.width = 200
-    yaml.dump(data, stream)
+    from skills.network_simulator_setup.autofix import yaml11_safe  # the JAR reads YAML 1.1 too
+    yaml.dump(yaml11_safe(data), stream)
     return stream.getvalue()
 
 
@@ -286,9 +287,19 @@ def fix_workflow(yaml_text: str) -> str:
     fix_missing_downloads(parsed)
     drop_session_exits(parsed)
     fix_single_file_listings(parsed)
+    tar_create_success(parsed)
+    empty_output_success(parsed)
+    list_after_silent(parsed)
+    loop_count_nonempty(parsed)
+    expr_without_parentheses(parsed)
+    guard_skip_expr(parsed)
+    untar_member_check(parsed)
+    when_bare_operands(parsed)
+    grep_no_match_ok(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
+    generalize_prompt_cwd(parsed)
 
     # --- Drop nodes no step uses (e.g. an invented NIAM/jump-host node: NIAM access is
     # ssh.ne_id on the real nodes), then add missing nodes referenced in steps ---
@@ -320,6 +331,41 @@ def fix_workflow(yaml_text: str) -> str:
 
 
 _REGEX_PLACEHOLDER = re.compile(r"\$\{[^{}]*\}")
+
+# `[user@host dir]#` prompts show the current directory: after a `cd` the prompt is
+# `[root@node POSTPAID]#`, and a prompt_regex written for `~` never matches (MRF rollback-only,
+# spec 011 E030). The directory part matches any directory.
+_CWD_PROMPT = re.compile(r"(\\\[[A-Za-z0-9_.()|-]+@[A-Za-z0-9_.()|-]+ )(?:~|[A-Za-z0-9_./~-]+|\(\.\*\?\)|\.\*\??)(\\?\])")
+
+
+def generalize_prompt_cwd(parsed: dict) -> int:
+    r"""Node and step ``prompt_regex``: the directory of a ``[user@host dir]`` prompt → ``[^\]]*``."""
+    changed = 0
+
+    def fix(regex: Any) -> Any:
+        nonlocal changed
+        if not isinstance(regex, str):
+            return regex
+        new = _CWD_PROMPT.sub(lambda m: m.group(1) + r"[^\]]*" + m.group(2), regex)
+        changed += new != regex
+        return new
+
+    for node in (parsed.get("nodes") or {}).values() if isinstance(parsed.get("nodes"), dict) else []:
+        if isinstance(node, dict) and "prompt_regex" in node:
+            node["prompt_regex"] = fix(node["prompt_regex"])
+
+    def walk(steps):
+        for step in steps or []:
+            if isinstance(step, dict):
+                if "prompt_regex" in step:
+                    step["prompt_regex"] = fix(step["prompt_regex"])
+                walk(step.get("steps"))
+    for body in (parsed.get("phases") or {}).values() if isinstance(parsed.get("phases"), dict) else []:
+        if isinstance(body, dict):
+            walk(body.get("steps"))
+    if changed:
+        logger.info("Prompt regexes: the directory of %d [user@host dir] prompt(s) matches any directory", changed)
+    return changed
 
 
 def fix_regex_placeholders(phases: Any) -> int:
@@ -1271,6 +1317,390 @@ def fix_single_file_listings(parsed: dict) -> int:
                 criteria["regex"] = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
                 changed += 1
     return changed
+
+
+def tar_create_success(parsed: dict) -> int:
+    """A ``tar -c`` backup's success regex must match what tar prints (DEP-58): the LLM wrote
+    ``tar: Removing '.*'`` but GNU tar (and MockWire's builtin) prints ``tar: Removing leading
+    `/' from member names``. A regex that misses a sample of that output is replaced by the
+    archive's ``ls -1`` line (appended to the command); a non-zero tar exit fails the step first."""
+    from .structure import _SHELL_SUBST, tar_archive
+    nodes = parsed.get("nodes") or {}
+    local = {"LOCAL", "local"} | {str(n) for n, v in nodes.items() if isinstance(v, dict)
+                                  and "local" in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        found = tar_archive(send) if str(step.get("node", "")) not in local else None
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+        blocks = [c for c in (validation.get("criteria"), success.get("criteria")) if isinstance(c, dict) and c.get("regex")]
+        if not found or not blocks:
+            continue
+        archive, sources = found
+        dynamic = r"_?\$\{[^}]*\}|" + _SHELL_SUBST.pattern  # ${var}, $(date …): a value at run time
+        # a name made at run time ($(date …)) is listed by a glob: running date again misses it
+        ls_path = re.sub(dynamic, "*", archive)
+        # tar -v lists the members, never the archive: its name is printed only by an `ls` of it
+        # (run e47b5409: `.*\.tar\.gz` was kept and the backup failed on the simulator)
+        listed = [re.sub(dynamic, "_1", archive)] if any(
+            re.search(r"\bls\b[^;&|]*" + re.escape(p), send) for p in (archive, ls_path)) else []
+        sample = "\n".join(["tar: Removing leading `/' from member names",
+                            *(s.lstrip("/").rstrip("/") + "/" for s in sources), *listed])
+        name = r"\S*".join(re.escape(p) for p in re.split(dynamic, archive))
+        for criteria in blocks:
+            try:
+                ok = re.search(re.sub(r"\(\?<(?=[A-Za-z])", "(?P<", str(criteria["regex"])), sample, re.M)
+            except re.error:
+                ok = None
+            if ok:
+                continue
+            listing = f" && ls -1 {ls_path}"
+            if listing not in send:
+                step["send"] = send = send + listing
+            criteria["regex"] = f"^{name}$"
+            changed += 1
+    return changed
+
+
+def empty_output_success(parsed: dict) -> int:
+    """A "no output" alternative (``^$``, ``^\\s*$``) in a success regex can never pass: on empty
+    output the JAR rejects every regex with a ``^`` (probed 2026-11-04 — a silent ``cp`` failed its
+    ``(?:^$)|SKIPPED_BY_CONDITION`` check, run c89f65c2). Such an alternative becomes ``.*``; a
+    command that fails still fails the step by its exit code before any regex."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    from skills.network_simulator_setup.topology import _split_alternatives
+
+    def empty_only(alt: str) -> bool:
+        py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", alt)
+        try:
+            return re.fullmatch(py, "", re.M) is not None and re.search(py, "abc", re.M) is None
+        except re.error:
+            return False
+
+    def fixed(regex: str) -> str:
+        alts = _split_alternatives(regex)
+        wrapped = len(alts) == 1 and regex.startswith("(?:") and regex.endswith(")") \
+            and _split_alternatives(regex[3:-1]) != [regex[3:-1]]
+        if wrapped:
+            alts = _split_alternatives(regex[3:-1])
+        new = [".*" if empty_only(a) else a for a in alts]
+        if new == alts:
+            return regex
+        return f"(?:{'|'.join(new)})" if wrapped else "|".join(new)
+
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+        for criteria in (validation.get("criteria"), success.get("criteria")):
+            regex = criteria.get("regex") if isinstance(criteria, dict) else None
+            if not isinstance(regex, str) or not regex or java_regex_matches(regex, ""):
+                continue
+            new = fixed(regex)
+            if new != regex:
+                criteria["regex"] = new
+                changed += 1
+    return changed
+
+
+# Commands that print nothing when they succeed (coreutils): a check that reads their output
+# has nothing to read (DEP-63: `chmod 777 d/*` checked by counting `-rwxrwxrwx` lines)
+_SILENT = re.compile(r"^(chmod|chown|chgrp|cp|mv)\s+(.*)$")
+_GUARD_THEN = re.compile(r"^(if \[\[.+?\]\]; then\s*)(.+?)(\s*;\s*else echo " + SKIPPED_BY_CONDITION + r";\s*fi)$", re.S)
+
+
+def _needs_output(step: dict) -> bool:
+    """The step reads its command's output: registers, an expr, or a regex empty output fails."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    if step.get("register"):
+        return True
+    for criteria in _criteria_blocks(step):
+        if criteria.get("expr"):
+            return True
+        regex = criteria.get("regex")
+        if isinstance(regex, str) and regex and not java_regex_matches(regex, ""):
+            return True
+    return False
+
+
+def _without_substitutions(text: str) -> str:
+    """``text`` with the inside of every ``$(…)`` removed (``$()`` stays)."""
+    out, depth, i = [], 0, 0
+    while i < len(text):
+        if text.startswith("$(", i):
+            if depth == 0:
+                out.append("$(")
+            depth += 1
+            i += 2
+            continue
+        if text[i] == ")" and depth:
+            depth -= 1
+            if depth == 0:
+                out.append(")")
+        elif depth == 0:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def list_after_silent(parsed: dict) -> int:
+    """``chmod / chown / cp / mv`` print nothing: when the step checks their output, list what they
+    changed (``&& ls -l <files>`` — the files, not the folder: no ``total N`` line to count)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        # operators inside $(…) belong to the substitution (`chmod 777 $(tar -tf A | sed …)`)
+        bare = _without_substitutions(send) if isinstance(send, str) else ""
+        if not isinstance(send, str) or "&&" in bare or "|" in bare.replace("||", "") or not _needs_output(step):
+            continue
+        guard = _GUARD_THEN.match(send.strip())
+        inner = guard.group(2) if guard else send.strip()
+        m = _SILENT.match(inner)
+        if not m or ";" in _without_substitutions(inner):
+            continue
+        rest = m.group(2).strip()
+        while rest.startswith("-"):                      # options (-R, -p, …)
+            rest = rest.split(None, 1)[1] if " " in rest else ""
+        if m.group(1) in ("cp", "mv"):
+            paths = _without_substitutions(rest).split()[-1:]
+            if paths and paths[0] == "$()":
+                continue
+        else:                                            # chmod / chown / chgrp: after the mode / owner
+            paths = [rest.split(None, 1)[1]] if " " in rest else []
+        if not paths:
+            continue
+        listed = f"{inner} && ls -l {' '.join(paths)}"
+        step["send"] = guard.group(1) + listed + guard.group(3) if guard else listed
+        changed += 1
+    return changed
+
+
+def loop_count_nonempty(parsed: dict) -> int:
+    """A looped register counts every match: ``(?<line>.*)`` also matches the empty string after
+    each line, so one line counted 2 and ``OK == TOTAL`` never held (probed 2026-11-04). A loop
+    regex that can match empty text gets ``.+`` for ``.*`` (or must match one character)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            if not isinstance(reg, dict) or not reg.get("loop") or not isinstance(reg.get("regex"), str):
+                continue
+            regex = reg["regex"]
+            py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+            try:
+                empty = re.fullmatch(py, "") is not None
+            except re.error:
+                continue
+            if not empty:
+                continue
+            new = re.sub(r"(?<!\\)\.\*", ".+", regex)
+            try:
+                if re.fullmatch(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", new), ""):
+                    new = "(?=.)" + regex
+            except re.error:
+                new = "(?=.)" + regex
+            reg["regex"] = new
+            changed += 1
+    return changed
+
+
+def expr_without_parentheses(parsed: dict) -> int:
+    """The JAR's ``criteria.expr`` fails on any parenthesis (``(TOTAL > 0)`` fails; probed
+    2026-11-04) and binds ``&&`` tighter than ``||``: parentheses around an ``&&`` group or a
+    single comparison are dropped. Ones that hold ``||`` stay (the validator reports them)."""
+    changed = 0
+    group = re.compile(r"\(([^()'|]*(?:'[^']*'[^()'|]*)*)\)")
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for criteria in _criteria_blocks(step):
+            expr = criteria.get("expr")
+            if not isinstance(expr, str) or "(" not in expr:
+                continue
+            new = expr
+            while True:
+                stripped = group.sub(lambda m: m.group(1).strip(), new)
+                if stripped == new:
+                    break
+                new = stripped
+            if new != expr:
+                criteria["expr"] = re.sub(r"\s+", " ", new).strip()
+                changed += 1
+    return changed
+
+
+def guard_skip_expr(parsed: dict) -> int:
+    """A guarded step (``…; else echo SKIPPED_BY_CONDITION; fi``) must pass when skipped: regex
+    checks get the alternative (``shell_guard_conditions``), an ``expr`` check gets
+    ``|| ncSkipped == 'SKIPPED_BY_CONDITION'`` with ``ncSkipped`` registered (an unregistered
+    variable reads as '' — probed 2026-11-04; DEP-63: the VER 13 nodes failed the skipped chmod)."""
+    changed = 0
+    tail = f" || ncSkipped == '{SKIPPED_BY_CONDITION}'"
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or not _GUARD_THEN.match(send.strip()):
+            continue
+        blocks = [c for c in _criteria_blocks(step) if isinstance(c.get("expr"), str) and c["expr"]
+                  and tail not in c["expr"]]
+        if not blocks:
+            continue
+        for criteria in blocks:
+            criteria["expr"] = criteria["expr"] + tail
+        regs = step.setdefault("register", [])
+        if not any(isinstance(r, dict) and "(?<ncSkipped>" in str(r.get("regex")) for r in regs):
+            regs.append({"regex": f"(?<ncSkipped>{SKIPPED_BY_CONDITION})"})
+        changed += 1
+    return changed
+
+
+_TAR_EXTRACT = re.compile(r"\btar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+)")
+_LS_GREP = re.compile(r"""^ls(?:\s+-\w+)*\s+(\S+?)/?\s*\|\s*grep(?:\s+-\w+)*\s+["']?([^"'|]+?)["']?\s*$""")
+_MODE_LITERAL = re.compile(r"-[r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-]")
+
+
+def _extracts(parsed: dict) -> list[tuple[int, str, str, str]]:
+    """(step position, archive, destination, guard test or '') of every ``tar -x … -C <dest>``."""
+    out = []
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = str(step.get("send") or "").strip()
+        guard = _GUARD_THEN.match(send)
+        m = _TAR_EXTRACT.search(guard.group(2) if guard else send)
+        if m:
+            test = re.match(r"if (\[\[.+?\]\]); then", guard.group(1)).group(1) if guard else ""
+            out.append((pos, m.group(1), m.group(2).rstrip("/"), test))
+    return out
+
+
+def _archive_check(send: str, extracts: list, pos: int):
+    """The extract a ``ls <dest> | grep <archive name>`` after it refers to, else None."""
+    m = _LS_GREP.match(send.strip())
+    if not m:
+        return None
+    term = m.group(2).strip()
+    # the archive by its name, also as `$(basename <archive> [.ext])` (run 3f5d8990)
+    b = re.fullmatch(r"\$\(basename\s+(\S+)(?:\s+\S+)?\)", term)
+    named = b.group(1).rsplit("/", 1)[-1] if b else term
+    for epos, archive, dest, test in extracts:
+        if epos < pos and m.group(1).rstrip("/") == dest and named == archive.rsplit("/", 1)[-1]:
+            return archive, dest, test
+    return None
+
+
+def untar_member_check(parsed: dict) -> int:
+    """After ``tar -xf <archive> -C <dest>`` the destination holds the archive's MEMBERS, not the
+    archive: a later ``ls <dest> | grep <archive name>`` finds nothing (run 9de5fcb8). The check
+    lists every member instead (user decision A, 2026-11-04) — on the branch that extracts; a copy
+    branch keeps its own check — and passes when every listed line has the mode the step expects:
+    ``if [[ … ]]; then ls -ld $(tar -tf A | sed 's#^#D/#'); else <copy check>; fi``. A missing
+    member fails ``ls`` (exit code) before the count."""
+    extracts = _extracts(parsed)
+    if not extracts:
+        return 0
+    changed = 0
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = step.get("send")
+        if not isinstance(send, str):
+            continue
+        if "tar -tf" in send:
+            # the LLM listed the members itself: every listed line must have the mode, not one
+            if re.search(r"\bls\s+-\w*l\w*\s+\$\(tar -tf", send) and not any(
+                    "ncFilesOk" in str(r) for r in step.get("register") or []) and any(
+                    _MODE_LITERAL.search(str(c.get("regex") or "")) for c in _criteria_blocks(step)):
+                _count_listed_modes(step)
+                changed += 1
+            continue
+        found = _archive_check(send, extracts, pos)
+        if not found:
+            continue
+        archive, dest, test = found
+        members = f"ls -ld $(tar -tf {archive} | sed 's#^#{dest}/#')"
+        step["send"] = f"if {test}; then {members}; else {send.strip()}; fi" if test else members
+        _count_listed_modes(step)
+        changed += 1
+    return changed
+
+
+def _count_listed_modes(step: dict) -> None:
+    """Pass when every listed line has the mode the step's regex names (``ncFilesOk ==
+    ncFilesListed``): a regex alone passes when ONE line matches."""
+    mode = next((m.group(0) for c in _criteria_blocks(step) for m in [_MODE_LITERAL.search(str(c.get("regex") or ""))]
+                 if m), "")
+    regs = [r for r in step.get("register") or [] if "ncListed" not in str(r) and "ncFilesOk" not in str(r)]
+    regs += [{"regex": "(?<ncListed>.+)", "loop": True, "count_var": "ncFilesListed"},
+             {"regex": f"^{re.escape(mode)}.*" if mode else r"^[-dl]\S{9}.*", "loop": True,
+              "count_var": "ncFilesOk"}]
+    step["register"] = regs
+    validation = step.setdefault("validation", {})
+    success = validation.setdefault("success", {})
+    success["criteria"] = {"expr": "ncFilesOk == ncFilesListed && ncFilesListed > 0"}
+    validation.pop("criteria", None)
+
+
+def grep_no_match_ok(parsed: dict) -> int:
+    """``ls <dir>/ | grep "<file>"`` exits 1 when nothing matches, and the JAR fails a non-zero
+    step before its check (run 9de5fcb8: an "is it already there?" pre-check failed on a fresh
+    node). When the step's own check accepts no output, no match is an answer: ``|| true``."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or _is_guarded(send) or "|| true" in send or "|| :" in send:
+            continue
+        stages = [x.strip() for x in re.split(r"(?<!\|)\|(?!\|)", send)]
+        if len(stages) < 2 or not re.match(r"^grep\b(?!.*\s-\w*c)", stages[-1]):
+            continue
+        blocks = _criteria_blocks(step)
+        if any(c.get("expr") for c in blocks):
+            continue
+        if all(java_regex_matches(str(c["regex"]), "") for c in blocks if c.get("regex")):
+            step["send"] = send.rstrip() + " || true"
+            changed += 1
+    return changed
+
+
+def _is_guarded(send: str) -> bool:
+    return send.lstrip().startswith("if ")
+
+
+def when_bare_operands(parsed: dict) -> int:
+    """``when: ${fileCount} > 0`` is always false — the JAR reads bare names (``fileCount > 0``;
+    probed 2026-11-05, run 9de5fcb8: the backup never ran). Registered variables and record columns
+    lose their ``${}`` in ``when`` / ``skip_when`` (node values ``${MRF.VER}`` are left alone)."""
+    pattern = re.compile(r"\$\{([A-Za-z][A-Za-z0-9_]*|configSequences\.[^{}]+)\}")
+    # `registered.x` / `register.x` / `vars.x` are not variables either (run 3f5d8990: the restore
+    # waited for `registered.backupTarName != ''` and never ran) — the bare name is
+    prefixed = re.compile(r"(?<![\w.$])(?:registered|register|vars)\.([A-Za-z][A-Za-z0-9_]*)")
+
+    def bare(cond: str) -> str:
+        return prefixed.sub(r"\1", pattern.sub(r"\1", cond))
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for key in ("when", "skip_when"):
+            cond = step.get(key)
+            if isinstance(cond, str) and bare(cond) != cond:
+                step[key] = bare(cond)
+                changed += 1
+    for body in (parsed.get("phases") or {}).values():
+        cond = body.get("when") if isinstance(body, dict) else None
+        if isinstance(cond, str) and bare(cond) != cond:
+            body["when"] = bare(cond)
+            changed += 1
+    return changed
+
+
+def untar_check_issues(parsed: dict) -> list[str]:
+    """Checks that still look for an extracted archive by its name in the destination (validator)."""
+    extracts = _extracts(parsed)
+    issues = []
+    for pos, (_, step) in enumerate(_walk_all_steps(parsed.get("phases") or {})):
+        send = str(step.get("send") or "")
+        for epos, archive, dest, _ in extracts:
+            name = archive.rsplit("/", 1)[-1]
+            if epos < pos and "tar -tf" not in send and dest in send and name in send \
+                    and re.match(r"^\s*ls\b", send) and "|| true" not in send:
+                issues.append(
+                    f"Step '{send[:80]}' checks {dest} for the archive {name}, but `tar -x … -C {dest}` puts the "
+                    f"archive's MEMBERS there, not the archive: verify every member — "
+                    f"`ls -ld $(tar -tf {archive} | sed 's#^#{dest}/#')` on the branch that extracts")
+    return issues
 
 
 def json_text(value) -> str:

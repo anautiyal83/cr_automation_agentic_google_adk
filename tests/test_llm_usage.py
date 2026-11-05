@@ -29,3 +29,31 @@ def test_usage_stored_per_run_and_cleared(tmp_path, monkeypatch):
     assert [e["total_tokens"] for e in every] == [10, 5]
     assert len(one) == 1 and one[0]["step"] == "network_config_gen" and one[0]["timestamp"] == 1700000000.0
     assert after_clear == []
+
+
+def test_a_hanging_llm_call_times_out_and_is_retried(monkeypatch):
+    """E030 run 2: a step 6 call hung 43 minutes until OpenRouter reset the connection."""
+    import asyncio
+    import types
+
+    import litellm
+
+    from shared import llm
+    calls = {"n": 0}
+    real_sleep = asyncio.sleep
+
+    async def acompletion(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await real_sleep(30)                         # hangs
+        msg = types.SimpleNamespace(content="ok")
+        usage = types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)], usage=usage)
+
+    async def no_wait(seconds, *a, **kw):
+        await real_sleep(0 if seconds >= 5 else seconds)  # skip the retry back-off, keep the hang
+    monkeypatch.setattr(litellm, "acompletion", acompletion)
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    text = asyncio.run(llm.call_llm("s", "u", model="openrouter/x",
+                                    config={"llm_timeout_sec": 0.2, "openrouter_api_key": "k"}))
+    assert text == "ok" and calls["n"] == 2

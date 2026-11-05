@@ -36,6 +36,9 @@ class NetworkConfigGenAgent(BaseAgent):
         uc_name = state.get("uc_name", "")
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
+        # The run's phases and backup route (spec 010) — from the run, not the cached requirements
+        requirements = {**requirements,
+                        "run_options": (state.get("document_set") or {}).get("run_options") or {}}
 
         flow.flow("NETWORK_CONFIG_GEN START — uc=%s", uc_name)
 
@@ -86,9 +89,10 @@ class NetworkConfigGenAgent(BaseAgent):
                 err_file.write_text(json.dumps({"error": state["step_6_error"],
                                                 "failed_agents": ["network_config_gen"]}, indent=2))
 
-        # What the correction rounds could not fix: offered as step 1 questions at the milestone
+        # What the correction rounds could not fix AND a developer can answer: offered as step 1
+        # questions at the milestone. Framework errors (placeholders, regexes, …) are not asked (DEP-53)
         from shared import clarifications
-        clarifications.save(run_dir, 6, clarifications.from_errors(6, output.validation_errors)
+        clarifications.save(run_dir, 6, clarifications.from_errors(6, output.developer_issues)
                             if output.status == "failed" else [])
 
         flow.flow("NETWORK_CONFIG_GEN DONE — status=%s, errors=%d",

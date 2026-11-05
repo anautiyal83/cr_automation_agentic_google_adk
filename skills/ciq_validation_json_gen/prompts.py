@@ -63,6 +63,31 @@ sheets:
 4. Do NOT generate workbook_rules, outputs, node_id_config, report, or any other section.
 5. Do NOT use allowedValues on string columns — those are free-form data fields.
 6. Mark columns as required: true where samples show consistent non-empty data.
+7. When the REQUIREMENTS (developer answers, MOP) say a column's allowed form depends on a value
+   in ANOTHER sheet (e.g. "node version 13.X.X.X gets plain files, other versions tar files"),
+   add a conditionalPattern to that column. lookupChain follows the link columns from the row to
+   the deciding value (data sheet GROUP → INDEX → its NODE → node sheet → VER); rules are tried in
+   order, "when" and "pattern" are full-match Java regexes, the last rule ("when: .*") covers the
+   rest. Only for a rule the requirements state — never from the sample data alone:
+      INPUT_FILE:
+        type: string
+        required: true
+        conditionalPattern:
+          startColumn: GROUP
+          lookupChain:
+          - sheet: INDEX
+            joinOn: GROUP
+            extract: NODE
+          - sheet: Node_Details
+            joinOn: NODE_NAME
+            extract: VER
+          rules:
+          - when: '13\\..*'
+            pattern: '(?i)(?!.*\\.(tar|tgz|tar\\.gz)$).+'
+            message: "Node version {{lookupValue}} gets plain files, not an archive: '{{value}}'"
+          - when: '.*'
+            pattern: '(?i).+\\.(tar|tgz|tar\\.gz)'
+            message: "Node version {{lookupValue}} gets tar files: '{{value}}' is not one"
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """

@@ -21,6 +21,7 @@
 | U-D4 | Rename | Label only: the screen key stays `outputs` (stored role permissions keep working) |
 | U-D5 | Confirmations | One shared dialog (`ui.components.confirm`): what is deleted/cleared and that it cannot be undone; the action runs only on the confirm button. Covers: queue Remove, Artifact Cache Clear / Clear All, LLM Usage Clear, plus the existing dialogs (run Delete, Bulk Cleanup, Cleanup Old Runs, user/role/vendor Delete) |
 | U-D6 | LLM Usage layout | Summary cards, then **Per Use Case**: one collapsible row per use case (calls, tokens, cost, time in the header), inside it one collapsible row per pipeline step in pipeline order, inside it that step's calls (newest first, date + time). **Per Model** stays as a table. The separate Per Pipeline Step table and global Call Log go away (their data is inside the tree). Step call tables are built when the step is opened |
+| U-D7 | Finishing a run (2026-11-04, user: "when pipeline completes successfully, user should be given option to mark it as completed or finished, and then it should be removed from the live Run page") | A completed run shows **Mark as finished** on Live Run (owner or admin, Update on Live Run). It stores `pipeline_runs.finished_at` / `finished_by` (status stays `completed`), records `run.finish` and clears Live Run; Live Run never brings a finished run back on its own (Run History → Open still shows it, without the button). Failed runs are not offered the button |
 
 ## Acceptance
 

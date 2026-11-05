@@ -93,6 +93,9 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_unbalanced_quotes(parsed))
     errors.extend(check_condition_syntax(parsed))
     errors.extend(check_record_columns(parsed, (expected or {}).get("record_columns")))
+    errors.extend(check_scope_every(parsed))
+    from .autofix import untar_check_issues  # option A: verify an extracted archive's members
+    errors.extend(untar_check_issues(parsed))
     errors.extend(check_unused_record_columns(parsed, (expected or {}).get("record_columns")))
     errors.extend(check_completeness(parsed, expected))
     if command_samples:
@@ -110,6 +113,25 @@ _SAMPLE_EXCERPT_LINES = 8
 
 
 _CIQ_COLUMN = re.compile(r"\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}")
+
+
+def behaviour_issues(yaml_text: str, ciq_sheets: dict | None = None, expected: dict | None = None) -> list[str]:
+    """The errors of ``validate_workflow`` about WHAT the activity does (requirements coverage, CIQ
+    rows and columns the activity needs, request inputs) — a developer can answer those. All other
+    errors are about HOW the framework is used (placeholders, regexes, quoting, conditions): step 6
+    fixes them itself and they are never asked as questions (DEP-53)."""
+    parsed = parse_yaml(yaml_text)
+    if parsed is None:
+        return []
+    from .structure import flatten
+    flatten(parsed)
+    issues = list(check_unused_record_columns(parsed, (expected or {}).get("record_columns")))
+    issues += check_completeness(parsed, expected)
+    if ciq_sheets:
+        issues += check_ciq_coverage(parsed, ciq_sheets)
+        issues += check_alternative_columns(parsed, ciq_sheets)
+        issues += check_request_inputs(parsed, ciq_sheets, (expected or {}).get("request_columns") or {})
+    return issues
 
 
 def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
@@ -275,8 +297,13 @@ def check_record_columns(parsed: dict, record_columns: dict | None) -> list[str]
                 col = m.group(1).strip()
                 if col not in cols:
                     bad.setdefault(col, f"{phase_name}: {str(step.get('send') or step.get('command_description'))[:60]}")
+    node_values = [f"${{{ntype}.{f}}}" for ntype, fields in ((record_columns or {}).get("node_fields") or {}).items()
+                   for f in fields]
+    other = (f"node values {', '.join(node_values)}, " if node_values else "") + \
+        "a value derived in the command (e.g. $(basename ${configSequences.0.records.0.data.<Column>} .tar)) " \
+        "or a value registered from the node"
     return [f"CIQ column '{c}' (step {where}) is not in the CIQ JSON records — they hold only {sheet} columns "
-            f"{cols}; any other column resolves to empty. Use those columns (or a value registered from the node)."
+            f"{cols}; any other column resolves to empty. Use those columns, {other}."
             for c, where in bad.items()]
 
 
@@ -446,14 +473,22 @@ def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] 
     defined_always |= set(((parsed.get("globals") or {}).get("vars") or {}).keys())
 
     def runs(guard: str, row: dict) -> bool:
-        for term in guard.split("&&"):
-            m = _WHEN_TERM.match(term)
-            if not m:
-                continue
-            value = str(row.get(m.group(1).strip()) or "").strip()
-            if (value == m.group(3)) != (m.group(2) == "=="):
-                return False
-        return True
+        """The step may run for ``row``: some ``||`` alternative can hold. A term on a CIQ
+        column is decided by the row; any other term (a registered value such as
+        ``resolvedImsi != ''``) is known only at run time and counts as possibly true (DEP-56)."""
+        for alternative in guard.split("||"):
+            holds = True
+            for term in alternative.split("&&"):
+                m = _WHEN_TERM.match(term)
+                if not m:
+                    continue
+                value = str(row.get(m.group(1).strip()) or "").strip()
+                if (value == m.group(3)) != (m.group(2) == "=="):
+                    holds = False
+                    break
+            if holds:
+                return True
+        return False
 
     problems: dict[str, dict] = {}
     for rows in sheets.values():
@@ -530,6 +565,13 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
                     f"{verdict or 'does not match'} the real output recorded for this command. "
                     f"Real output (relevant lines):\n{_excerpt(matching[0]['output'], regex)}\n"
                     "Write the regex against this real output.")
+        counted = _count_check_fails_on_real_output(step, outputs)
+        if counted:
+            problems.append(
+                f"Step '{send[:80]}' ({phase_name}): on the real output of a healthy node the count check gives "
+                f"{counted} — every item must show the expected text there. Fix the two count regexes (one line "
+                f"per item / one line per item showing the text). Real output (relevant lines):\n"
+                f"{_excerpt(matching[0]['output'], '')}")
         captured = _expr_fails_on_real_output(step, outputs)
         if captured:
             problems.append(
@@ -661,6 +703,8 @@ def check_expr_vars(parsed: dict, runtime_params: list[str] | None = None) -> li
         for reg in step.get("register") or []:
             if isinstance(reg, dict) and isinstance(reg.get("regex"), str):
                 defined |= set(_NAMED_GROUP.findall(reg["regex"]))
+            if isinstance(reg, dict) and isinstance(reg.get("count_var"), str):
+                defined.add(reg["count_var"])  # loop: true + count_var (spec 011 count checks)
         for criteria in _criteria_blocks(step):
             expr = criteria.get("expr")
             if not isinstance(expr, str):
@@ -710,6 +754,78 @@ def _expr_on_real_output(step: dict, outputs: list[str]) -> tuple[str, str]:
                 return "pass", f"{var}={raw.strip()}"
             seen.append(f"{var}={raw.strip()}")
     return ("fail", ", ".join(seen)) if seen else ("n/a", "")
+
+
+_COUNT_EXPR = re.compile(r"^\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*==\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*&&\s*"
+                         r"\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*>\s*0\s*$")
+
+
+def count_check(step: dict) -> tuple[str, str, str, str] | None:
+    """(ok var, ok regex, total var, total regex) of a count check: ``register`` two loop
+    counts and ``expr: OK == TOTAL && TOTAL > 0`` (spec 011 "every item"); None otherwise."""
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+    m = _COUNT_EXPR.match(str(criteria.get("expr") or ""))
+    if not m or m.group(2) != m.group(3):
+        return None
+    counts = {r["count_var"]: str(r.get("regex") or "") for r in step.get("register") or []
+              if isinstance(r, dict) and r.get("loop") and isinstance(r.get("count_var"), str)}
+    ok, total = m.group(1), m.group(2)
+    if ok not in counts or total not in counts:
+        return None
+    return ok, counts[ok], total, counts[total]
+
+
+def _py(regex: str) -> re.Pattern | None:
+    try:
+        return re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex), re.MULTILINE)
+    except re.error:
+        return None
+
+
+def _count_check_fails_on_real_output(step: dict, outputs: list[str]) -> str:
+    """'OK=a of TOTAL=b' when no real (healthy) output passes the step's count check."""
+    check = count_check(step)
+    if not check or not outputs:
+        return ""
+    ok_name, ok_rx, total_name, total_rx = check
+    ok_p, total_p = _py(ok_rx), _py(total_rx)
+    if ok_p is None or total_p is None:
+        return ""
+    seen = []
+    for out in outputs:
+        ok_n, total_n = len(ok_p.findall(out)), len(total_p.findall(out))
+        if total_n > 0 and ok_n == total_n:
+            return ""
+        seen.append(f"{ok_name}={ok_n} of {total_name}={total_n}")
+    return "; ".join(seen[:2])
+
+
+_EVERY_SCOPE = re.compile(
+    r"\b(every|all|each)\b[^.;]*?\b(lines?|entr(?:y|ies)|nodes?|items?|files?|samples?|rows?|cores?|instances?|"
+    r"records?|links?|interfaces?|process(?:es)?|members?|subscribers?)\b", re.I)
+
+
+def check_scope_every(parsed: dict) -> list[str]:
+    """A check that must hold for EVERY item (every remote node "Link UP", all files 777) is
+    a count, not "one line matches" — the regex passes when a single item shows the text
+    (spec 011; MRF M-6, PGW G-6)."""
+    problems: list[str] = []
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        text = f"{validation.get('description') or ''}"
+        if not _EVERY_SCOPE.search(text) or count_check(step):
+            continue
+        if not _success_regex(step):
+            continue  # nothing checks the output (a script decides)
+        problems.append(
+            f"Step '{str(step.get('send') or step.get('command_description') or '')[:80]}' ({phase_name}): the check "
+            f"says \"{text.strip()[:120]}\" — every item must show it, but the success regex passes when ONE line "
+            "matches. Count instead: register: [{regex: '<line of one item>', loop: true, count_var: TOTAL}, "
+            "{regex: '<line of one item showing the expected text>', loop: true, count_var: OKN}] and success "
+            "criteria: {expr: 'OKN == TOTAL && TOTAL > 0'} (names: letters/digits; regexes from the real output).")
+    return problems
 
 
 def _expr_fails_on_real_output(step: dict, outputs: list[str]) -> str:
@@ -926,6 +1042,7 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             defined |= set((body.get("vars") or {}).keys())
     for regex in _iter_register_regexes(phases):
         defined |= set(_NAMED_GROUP.findall(regex))
+    defined |= set(_iter_count_vars(phases))
 
     problems: dict[str, str] = {}
     for text in _iter_strings(parsed):
@@ -960,6 +1077,18 @@ def _iter_strings(value: Any):
     elif isinstance(value, list):
         for v in value:
             yield from _iter_strings(v)
+
+
+def _iter_count_vars(value: Any):
+    if isinstance(value, dict):
+        for reg in value.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("count_var"), str):
+                yield reg["count_var"]
+        for v in value.values():
+            yield from _iter_count_vars(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _iter_count_vars(v)
 
 
 def _iter_register_regexes(value: Any):

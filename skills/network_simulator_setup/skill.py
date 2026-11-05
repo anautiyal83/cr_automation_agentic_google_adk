@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from . import prompts
-from .autofix import parse_llm_yaml, salvage_yaml_entries
+from .autofix import parse_llm_yaml, safe_regex_key, salvage_yaml_entries
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -140,12 +140,28 @@ class NetworkSimulatorSetupSkill:
         for n in nodes:
             n.vfs = (derive_vfs(workflow_doc, n.name, produced, [x for x in samples if _sample_on(x, n.name)])
                      if isinstance(workflow_doc, dict) else None)
+            from .file_flows import mode_suffix
+            suffix = mode_suffix([x for x in samples if _sample_on(x, n.name)])
+            if suffix:  # ls -l modes like the real node's (SELinux ".")
+                n.vfs = n.vfs or {"dirs": []}
+                n.vfs["modeSuffix"] = suffix
             from .guards import backup_seed_files
             seeds = backup_seed_files(n.commands, inp.ciq_json_files)
             if seeds:
                 n.vfs = n.vfs or {"dirs": []}
                 n.vfs.setdefault("files", {}).update(seeds)
                 logger.info("Topology node %s: %d backup sources seeded in the VFS", n.name, len(seeds))
+            # File commands on paths the workflow fills run on the VFS, not from keys (DEP-59)
+            from .file_flows import node_steps
+            from .vfs_commands import resolved_dirs, vfs_handled, workflow_prefixes
+            prefixes = workflow_prefixes(n.commands, node_steps(workflow_doc, n.name)
+                                         if isinstance(workflow_doc, dict) else [], n.vfs)
+            n.vfs_commands = {str(c.get("cmd") or "").strip() for c in n.commands
+                              if vfs_handled(str(c.get("cmd") or ""), prefixes)}
+            if n.vfs_commands:
+                n.vfs = n.vfs or {"dirs": []}
+                n.vfs["dirs"] = sorted(set(n.vfs.get("dirs") or []) | set(resolved_dirs(prefixes, inp.ciq_json_files)))
+                logger.info("Topology node %s: %d commands answered from the VFS", n.name, len(n.vfs_commands))
             if n.vfs:
                 logger.info("Topology node %s: vfs dirs=%s triggers=%d", n.name, n.vfs["dirs"],
                             len(n.vfs.get("triggers", [])))
@@ -164,7 +180,7 @@ class NetworkSimulatorSetupSkill:
         hints = str(inp.generation_hints.get("step_8", "") or "")
         results = await asyncio.gather(
             *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
-                                            skip=covered[n.name]) for n in nodes),
+                                            skip=covered[n.name] | n.vfs_commands) for n in nodes),
             return_exceptions=True,
         )
         errors: list[str] = []
@@ -193,7 +209,8 @@ class NetworkSimulatorSetupSkill:
             merged = merge_responses(recorded[node.name], result, node.commands, covered[node.name], row)
             # Bash-guarded commands: evaluated per CIQ target, ahead of the generic keys (S8-29)
             from .guards import guarded_responses
-            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files), **merged}
+            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
+            merged = drop_vfs_answers(node, merged, row)
             instance_configs[node.instance] = build_instance_config(node, merged)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
@@ -215,6 +232,15 @@ class NetworkSimulatorSetupSkill:
             config_dir = str(sim_dir)
             for node_name, raw in self._raw_llm_outputs.items():
                 (sim_dir / "logs" / f"llm_{node_name}_raw.txt").write_text(raw, encoding="utf-8")
+            # The nodes copy files to / from the repo server (spec 010 O-D7): their instances reach
+            # the repo instance's VFS (the overlay names the repo in the copy commands)
+            from .topology import add_peers, is_peer_copy
+            peers = {n.name: {"root": str((sim_dir / "vfs" / n.instance).resolve()), "password": n.password}
+                     for n in nodes}
+            for node in nodes:
+                if any(is_peer_copy(str(c.get("cmd", ""))) for c in node.commands):
+                    instance_configs[node.instance] = add_peers(
+                        instance_configs[node.instance], {k: v for k, v in peers.items() if k != node.name})
             for node in nodes:
                 write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
                 errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
@@ -328,7 +354,9 @@ class NetworkSimulatorSetupSkill:
         from .topology import RESERVED_KEYS, _is_builtin_key
         entries = dict(entries)
         for key, new in (fixed.items() if isinstance(fixed, dict) else []):
-            key = str(key)
+            key = safe_regex_key(str(key))
+            if key is None:
+                continue
             if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs) or key in recorded:
                 continue
             if isinstance(new, dict) and isinstance(new.get("lines"), str):
@@ -396,7 +424,11 @@ class NetworkSimulatorSetupSkill:
             if isinstance(val, dict) and isinstance(val.get("lines"), str):
                 val = {**val, "lines": val["lines"].splitlines()}
             if isinstance(val, dict) and ("lines" in val or "file" in val):
-                entries[str(key)] = dict(val)
+                safe = safe_regex_key(str(key))
+                if safe is None:
+                    logger.warning("Phase 2: %s — dropped response key %r: it matches any command", node.name, str(key)[:80])
+                    continue
+                entries[safe] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
 
@@ -412,7 +444,8 @@ def synthetic_mismatches(node: NodeSpec, entries: dict, recorded: set[str], row:
     for c in node.commands:
         cmd = str(c.get("cmd", "")).strip()
         regex = _validation_regex(c)
-        if not cmd or not regex or cmd in recorded or re.match(r"^(su(\s+-)?\s+\S+|exit|logout)$", cmd):
+        if not cmd or not regex or cmd in recorded or cmd in node.vfs_commands \
+                or re.match(r"^(su(\s+-)?\s+\S+|exit|logout)$", cmd):
             continue
         if len(expectations.get(cmd, ())) > 1:
             # Checked again later with another expectation (file absent → present): one
@@ -438,7 +471,8 @@ def _builtins_only(node: NodeSpec) -> bool:
     """Every command of the node is answered by MockWire itself (sftp steps send nothing)."""
     from .topology import file_builtin
     cmds = [str(c.get("cmd") or "").strip() for c in node.commands]
-    return all(not c or c.split(" ", 1)[0] in _SIM_BUILTINS or file_builtin(c) for c in cmds)
+    return all(not c or c.split(" ", 1)[0] in _SIM_BUILTINS or file_builtin(c) or c in node.vfs_commands
+               for c in cmds)
 
 
 def command_key_regex(cmd: str) -> str:
@@ -496,9 +530,16 @@ def repair_literal_mismatches(node: NodeSpec, entries: dict, recorded: set[str],
     text as its line: the MRF backup answered ``…`/\\' from member names`` (a literal backslash)
     where tar prints ``…`/' …`` and the step checks for it, three regenerations in a row (S8-27)."""
     import difflib
+    from skills.network_config_test.scenarios import java_regex_matches
+    from .topology import _regex_examples
     entries = dict(entries)
     for b in synthetic_mismatches(node, entries, recorded, row):
-        text = _regex_literal(str(b.get("regex") or ""))
+        regex = str(b.get("regex") or "")
+        text = _regex_literal(regex)
+        if not text:
+            # any other regex: a string generated from it — `date` answered "… CEST 2023" where the
+            # step wants a 3-letter zone, twice in a row (DEP-59 verification run)
+            text = next((c for c in _regex_examples(regex) if java_regex_matches(regex, c)), None)
         entry = entries.get(b.get("key"))
         if not text or not isinstance(entry, dict) or not isinstance(entry.get("lines"), list):
             continue
@@ -540,7 +581,7 @@ def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: 
         cmd = str(c.get("cmd", "")).strip()
         first = cmd.split(" ", 1)[0] if cmd else ""
         if (not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or file_builtin(cmd)
-                or is_vfs_command(cmd, node.vfs)):
+                or is_vfs_command(cmd, node.vfs) or cmd in node.vfs_commands):
             continue
         seen.add(cmd)
         resolved = resolve_command(cmd, row)
@@ -585,10 +626,52 @@ def merge_responses(recorded: dict, synthetic: dict, commands: list[dict], cover
                 break  # it also answers a command nobody recorded: keep it, behind the real one
             kept.pop(key)
             logger.info("Dropped invented response %r: real output covers %r", str(key)[:80], cmd[:80])
+    # MockWire tries EXACT keys before any regex key, whatever the order: an invented exact key a
+    # real-output regex also answers (``ldapsearch … imsi=123456789012345 …`` for an IMSI the
+    # simulator made up) hides the real output (DEP-54) — the real output answers it instead
+    real_patterns = [_py_regex(str(k)[6:]) for k in recorded if str(k).startswith("regex:")]
+    for key in [k for k in kept if not str(k).startswith("regex:")]:
+        if any(p is not None and p.search(str(key)) for p in real_patterns):
+            kept.pop(key)
+            logger.info("Dropped invented exact response %r: a real-output rule answers it", str(key)[:80])
     merged = dict(recorded)
     for key, entry in kept.items():
         merged.setdefault(key, entry)
     return merged
+
+
+def _py_regex(java: str) -> re.Pattern | None:
+    """A MockWire (Java) regex key for Python: ``(?<name>…)`` → ``(?P<name>…)``; None if invalid."""
+    try:
+        return re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", java))
+    except re.error:
+        return None
+
+
+def drop_vfs_answers(node: NodeSpec, entries: dict, row: dict) -> dict:
+    """No key may answer a command the VFS answers (MockWire matches YAML first): a canned
+    ``cp`` copied nothing and the post-check ``ls … | grep`` returned what the LLM wrote (DEP-59).
+    A key that also answers another command of the node stays."""
+    entries = dict(entries)
+    others = [(c, resolve_command(c, row)) for c in
+              (str(x.get("cmd") or "").strip() for x in node.commands) if c and c not in node.vfs_commands]
+    kept: set = set()
+    dropped = 0
+    for cmd in sorted(node.vfs_commands):
+        resolved = resolve_command(cmd, row)
+        while True:
+            key, _ = _find_entry({k: v for k, v in entries.items() if k not in kept}, cmd, resolved)
+            if key is None:
+                break
+            if any(_find_entry({key: entries[key]}, o, r)[0] is not None for o, r in others):
+                kept.add(key)
+                node.warnings.append(f"key {str(key)[:60]!r} answers a VFS command and another command: kept")
+                continue
+            entries.pop(key)
+            dropped += 1
+    if dropped:
+        logger.info("Phase 2: %s — %d keys dropped: their commands run on the VFS", node.name, dropped)
+    return entries
 
 
 def _find_entry(entries: dict, cmd: str, resolved: str):
@@ -597,11 +680,9 @@ def _find_entry(entries: dict, cmd: str, resolved: str):
             return key, entries[key]
     for key, entry in entries.items():
         if str(key).startswith("regex:"):
-            try:
-                if re.search(str(key)[6:], resolved):
-                    return key, entry
-            except re.error:
-                continue
+            pattern = _py_regex(str(key)[6:])
+            if pattern is not None and pattern.search(resolved):
+                return key, entry
     # MockWire's longest-prefix fallback ("cmd" answers "cmd -x"), not across | ; > &
     for key, entry in entries.items():
         k = str(key)

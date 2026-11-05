@@ -250,4 +250,73 @@ def merge_llm_rules(baseline: dict, llm: dict | None, rows: dict) -> dict:
                         rule["description"] = v
                 elif k in ("ignoreCase", "dropdownDisabled") and isinstance(v, bool):
                     rule[k] = v  # presentation/matching flags; numeric limits are not checked here
+                elif k == "conditionalPattern":
+                    cp = conditional_pattern(v, s, col, rows)
+                    if cp:
+                        rule["conditionalPattern"] = cp
     return baseline
+
+
+def conditional_pattern(cp, sheet: str, col: str, rows: dict) -> dict | None:
+    """A cross-sheet rule from the requirements (``conditionalPattern``: the value a lookup chain
+    finds decides the column's pattern), in the form ciq-processor reads (JAR probe 2026-11-05:
+    run c89f65c2's CIQ rejected on all three rows). Kept when every sheet / column of the chain
+    exists and its regexes compile and one ``when`` matches a looked-up value of the CIQ — but NOT
+    only when the CIQ passes it: it is a business rule, and catching a CIQ that breaks it is its job
+    (DEP-60). The rows it rejects are logged."""
+    if not isinstance(cp, dict) or not isinstance(cp.get("lookupChain"), list) or not isinstance(cp.get("rules"), list):
+        return None
+    start = str(cp.get("startColumn") or "")
+    data = rows.get(sheet, [])
+    if not start or not data or start not in data[0]:
+        return None
+    chain = []
+    for step in cp["lookupChain"]:
+        if not isinstance(step, dict):
+            return None
+        t, join, extract = (str(step.get(k) or "") for k in ("sheet", "joinOn", "extract"))
+        if not rows.get(t) or join not in rows[t][0] or extract not in rows[t][0]:
+            return None
+        chain.append({"sheet": t, "joinOn": join, "extract": extract})
+    rules = []
+    for r in cp["rules"]:
+        if not isinstance(r, dict) or not isinstance(r.get("pattern"), str):
+            return None
+        when = r.get("when")
+        try:
+            re.compile(r["pattern"])
+            if when is not None:
+                re.compile(str(when))
+        except re.error:
+            return None
+        rules.append({"when": None if when is None else str(when), "pattern": r["pattern"],
+                      "message": str(r.get("message") or f"{col} '{{value}}' does not fit {{lookupValue}}")})
+    if not chain or not rules:
+        return None
+
+    def lookup(row: dict) -> str | None:
+        value = row.get(start, "")
+        for step in chain:
+            hit = next((r for r in rows[step["sheet"]] if r.get(step["joinOn"], "") == value), None)
+            if hit is None:
+                return None
+            value = hit.get(step["extract"], "")
+        return value
+
+    looked = [(row, lookup(row)) for row in data]
+    if not any(v is not None and any(r["when"] is None or re.fullmatch(r["when"], v) for r in rules)
+               for _, v in looked):
+        return None  # matches nothing the CIQ holds: not a rule about this data
+    bad = 0
+    for row, v in looked:
+        rule = next((r for r in rules if v is not None and (r["when"] is None or re.fullmatch(r["when"], v))), None)
+        if rule and row.get(col) and not re.fullmatch(rule["pattern"], row[col]):
+            bad += 1
+    if bad:
+        logger.warning("Rule from the requirements: %s.%s — %d CIQ row(s) break it (step 5 will report them)",
+                       sheet, col, bad)
+    out = {"startColumn": start, "lookupChain": chain, "rules": rules}
+    for r in out["rules"]:
+        if r["when"] is None:
+            del r["when"]
+    return out

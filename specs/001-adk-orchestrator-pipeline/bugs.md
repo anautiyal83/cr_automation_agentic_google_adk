@@ -522,11 +522,15 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 | DEP-51 | — | `${node}` in any step empties the whole MOP of a node group with several nodes (cli-automation generate; MRF CR1 MRF1+MRF2 → 0 commands, no error); execute resolves it | Fixed: validator rejects `${node}`, prompt says register `hostname` instead; the repo path uses a registered hostname |
 | S8-30 | — | Simulator could not verify checksums or serve backups: YAML answered `sha256sum`/`tar -c` with invented text, the archive never existed for the download, the repo node had no YAML entries and was refused | Fixed: MockWire a025dec builtins `sha256sum`/`md5sum` over the VFS (real bytes from SFTP) and `tar -c` (real ustar/gzip in the VFS); step 8 leaves them (and `mkdir`) to the builtins (`topology.file_builtin`), seeds the backup sources per CIQ record (`guards.backup_seed_files`), accepts a node answered only by builtins |
 | S8-31 | — | With every record executed, PGW NORTH's 2nd record (IFC 40453) ran the guarded `org … \| grep -i 40453` — the simulator answered nothing (responses were written for the 1st record) | Fixed: guard responses per (node, record); a holding guard without its own response answers the first stage filtered by the grep, else a line built from the step's success/register regexes holding the grepped value |
-| OB-25 | — | A rollback phase runs in a successful execution too: the JAR only protects rollback phases after a stop (`isPostFailurePhase`); a sunny-day run therefore restores the backup over the new files | Open — needs a way to run a phase on failure only (`then:` targets / `on_failure: run`) |
+| OB-25 | — | A rollback phase runs in a successful execution too: the JAR only protects rollback phases after a stop (`isPostFailurePhase`); a sunny-day run therefore restores the backup over the new files | Fixed by spec 011 (E004, contract.py rule 5): rollback phases carry `when: ROLLBACK_REQUIRED == 'true' \|\| ROLLBACK_ONLY == 'true'` |
 | S8-32 | — | Fresh MRF step 6 (LLM): a rollback guard on a registered value (`if [[ '${backupFileName}' == '' …`) ran with an empty value; the response key `'\S+'` cannot match `''`, MockWire split the command at `;` → "command not found" for `if [[ '' == ''`, `then rm …`, `fi` | Fixed: a quoted placeholder `'${…}'` keys as `[^']*` (empty or with spaces) |
 | G-19 | — | Fresh MRF step 6 (LLM) put the backup `tar` in the pre-checks phase and registered the archive name from tar's output (never printed); the rollback's "no backup taken" checks used that variable | Fixed: backup archives are recognised by phase, step description or archive name; the tar step lists its archive (`&& ls -1 <archive>`) and the LLM's variable registers the file name from it; the rollback extract stays in the record loop (files moved in a pass keep later steps in it) |
 | S8-33 | — | UI run f8d64fe0 step 9: 3/3 failed at `cd /tmp` — the step waits for `[root@rjjvrmr03 tmp]#` (the real prompt shows the working directory) but the simulator prompt was fixed (`[root@rjjvrmr03 ]#`) and a YAML `cd` did not move the directory | Fixed: MockWire renders bash `\W`/`\w` in prompts from the session directory (`~` where it started) and a `cd` answered from YAML still changes it; step 8 writes prompts that show a directory as templates (`topology.cwd_prompt`), the overlay's prompt alternative accepts any directory, `cd` is no longer left to the builtin (refuses directories the sandbox lacks). Steps 8-9 on f8d64fe0: 3/3 PASS |
 | DEP-52 | — | Same run: the backup never ran — its gate `when: announcementFiles != ''` reads a register captured with `(.*)` ("total 16K"); a value with a space makes every condition false (JAR-probed: bare and `'${x}'` forms) | Fixed: autofix `single_token_condition_vars` — a variable a `when` reads registers one token (`\S+`). With it: backup → automation server → REPO with sha256 per hop, MRF1/MRF2 47/47, MRF3 26/26 |
+| DEP-53 | — | MRF run 0dc24f05: after a step 9 Re-run (and again after Clarify) step 6 failed — the workflow used `data.MRF_VERSION` (the version is the node value `${MRF.VER}`, Node_Details.VER) and `data.INPUT_FILE_BASENAME` (invented by step 1's requirements). The validator rejected both correctly, but (1) step 6's correction / regenerate prompt has no CIQ section — record columns and node values (`${MRF.VER}`, `${MRF.Circle}`) are only in the first prompt — and (2) the error says "use those columns (or a value registered from the node)", never the node values or deriving a value in bash; both rounds returned the identical workflow. The Clarify then asked the user a technical question ("application should take this decision") | Fixed: step 6's correction prompt carries the CIQ section (record columns, node values `${MRF.VER}`, shell derivation like `$(basename …)`); the column error lists them too; only behaviour errors (`validator.behaviour_issues`: completeness, CIQ coverage, either-or, request inputs, unused columns) become step 1 questions — framework errors are step 6's. Also: the prompts no longer offer `${node}` (DEP-51) |
+| DEP-54 | — | PGW workflow (run 7ec00db9) failed step 9 0/2 at "Retrieve full subscriber profile": the simulator answered the IMSI dump in a made-up format (`dn: imsi=…,dc=IMSI`), the workflow's regex (from the real output, `dn: uid=…,ds=SUBSCRIBER`) failed. Step 8 had LLM-invented EXACT keys for a made-up MSISDN/IMSI; MockWire tries exact keys before regex keys, so they hid the template built from the real output (S8-25 dropped only invented regex keys; `_find_entry` also skipped Java `(?<name>…)` regexes as invalid). First reading (`exit` prompt) was wrong: the exit steps passed | Fixed: `merge_responses` drops invented exact keys a real-output rule answers; `_py_regex` converts Java named groups |
+| DEP-55 | — | Step 6 is cached as soon as its validator passes — before step 9 has executed it. The DEP-54 workflow stayed cached after its step 9 failure (review answered Continue) and the next PGW run reused it and failed the same way | Fixed: `_CACHE_AFTER_STEP` — network_config_gen / helper_script_gen artifacts wait in the run and are cached when step 9 passes; a step 9 failure drops them and any cached copy (`_settle_deferred_cache`); pass checks read the error file on disk, not only session state |
+| DEP-56 | — | PGW control run 40a31978: step 6 failed validation twice ("For CIQ rows like EAST … uses ${preActivitySpecificFields} but no step that runs for that row registers it") although step 9 then passed 2/2 with that workflow. `row_variable_gaps.runs()` splits a `when` only on `&&`; `_WHEN_TERM` swallows `… != '' || resolvedImsi` into the column name, so `Test IMSI != '' || resolvedImsi != ''` counts as false for rows without a Test IMSI. Effect: correct PGW workflows fail step 6 and are never cached | Fixed: `row_variable_gaps.runs()` — a condition holds when one `||` alternative can; terms on values registered at run time count as possibly true (PGW control workflow: 2 false positives gone) |
 | OB-22 | — | HTML reports (CIQ QA report, final report, execution reports) opened with View showed raw tags: the shared viewer escaped every file into a <pre> | Fixed: .html files render in an iframe (as the milestone dialog already did) |
 | DEP-27 | — | The JAR stores the FIRST group's value under a register name: `( +[0-9.]+){5} +(?<cpuIdle>…)` registered 0.00 (probe) — the step 6 prompt example itself had the unnamed group | Fixed: autofix makes every other group non-capturing in register regexes with a named group; validator reads the value like the JAR; prompt example corrected |
 | S8-21 | — | Placeholder commands got invented responses (NORTH queried imsi=404530000000132, the simulator answered another subscriber) although real output was recorded | Fixed: step 8 turns recorded output into a `regex:` template (named capture per placeholder, recorded values → `${name}`), so any queried value is answered with real formatting |
@@ -683,21 +687,37 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### OB-3 — CIQ gen fails with status=failed but 0 errors — Likely fixed
 - `skills/ciq_validation_json_gen/skill.py:92` sets `error="No CIQ structure in requirements.doc_extracted.ciq_sheets"`. The agent writes `output.error` to `step_3_error.json` and logs `error[:200]` (agent error logging improved in 0f52f58). Unverified by a reproduction.
 
-### OB-4 — MAX_RETRIES exhaustion continues the pipeline (High, Open)
+### OB-4 — MAX_RETRIES exhaustion continues the pipeline (High, Fixed 2026-11-04)
 - `orchestrator/pipeline_agent.py:304-306` logs "MAX RETRIES exceeded … continuing pipeline" and proceeds to the next agent with failed artifacts. This contradicts US3 AC4 / FR-007 ("fails gracefully with a clear error").
 
-### OB-5 — Continue on a failed QA milestone still auto-retries (Medium, Suspected)
+### OB-5 — Continue on a failed QA milestone still auto-retries (Medium, Fixed 2026-11-04)
 - After `_milestone_pause` returns `continue`, the loop falls through to the auto-retry block, which pops `_retry_target` set by the QA agent and jumps back. "Skip & Continue" on a failed step 5/7/9 therefore re-runs generation instead of continuing. Needs confirmation in the UI.
+- **Confirmed** by reading: every failed step pauses for review; "Continue" fell through to the auto-retry block.
+- **Fix (OB-4 + OB-5)**: "Continue" drops the QA agent's `_retry_target`; every retry — review "Re-run step" or
+  auto-retry — counts per agent (`PipelineAgent._retries_exhausted`); past `MAX_RETRIES` (3) the run fails with
+  "Step N still failing after 3 retries of <agent>: <first error line>". The CLI (`main.py`, `test_run.py`) answers
+  every failed review with "rerun", so a step that never passes looped forever before. The Re-run button's tooltip
+  states the limit. Tests: `tests/test_pipeline_retries.py`.
 
-### OB-7 — Cached helper scripts contain file paths, not code (High, Open)
+### OB-7 — Cached helper scripts contain file paths, not code (High, Fixed — see OB-14)
 - `artifacts["helper_scripts"]` is `{name: path}`; `save_cache()` writes `str(value)`, so a cache hit writes path strings into `run_dir/scripts/*.py`. Tracked as [002](../002-artifact-cache/spec.md) C-2 / [003](../003-helper-script-gen/spec.md) H-3.
+- **Fixed** with OB-14: `storage/artifact_cache.save_cache` reads the script file when the value is a run-dir path
+  and caches its content; a cache hit writes the contents back to `run_dir/scripts/` (`pipeline_agent`).
 
 ### OB-8 — helper_script_gen failure shows as passed (High, Fixed 2026-11-02)
 - The agent never sets `step_6_status` or writes `step_6_error.json`, so a failed or partial script generation passes the step 6 milestone and can be cached. Tracked as [003](../003-helper-script-gen/spec.md) H-1.
 - **Fix**: the agent sets `step_6_status=failed` and merges its error into `step_6_error.json`. A second bug turned up while fixing it (**OB-9**): `PipelineAgent` deleted the step's error file before *every* agent, so `helper_script_gen` wiped `network_config_gen`'s step 6 error. Now only the first agent of a shared display step clears it (`_first_agent_of_step`). Test: `tests/test_generation_contracts.py`.
 
-### OB-10 — A second UI instance marks live runs as failed (High, Open)
+### OB-10 — A second UI instance marks live runs as failed (High, Fixed 2026-11-04)
 - `ProgressSection._restore_active_run` marks any `running` DB run that its own runner does not hold as "Server restarted — pipeline lost". A second server (or a preview) on the same `data/pipeline.db` therefore fails the first server's live run. Happened 2026-11-02 with a UI preview on :8001 (row restored). Mitigation: previews use a DB copy; fix: record the owning process (pid/port) on the run and only recover runs whose owner is gone.
+- 2026-11-04: the old code is gone, but spec 007 made it worse — a second server's `resume_queue()` at its start
+  resumed every running / paused run it did not hold itself, i.e. ran the first server's live job a second time, and
+  its `dispatch()` could start a second pipeline next to it.
+- **Fix**: `pipeline_runs.owner` = `<host>:<pid>:<process start>` (`orchestrator/ownership.py`, psutil — the start
+  time tells a live owner from a reused pid); `dispatch()` claims a row atomically (`UPDATE … WHERE status IN
+  ('queued','resuming') RETURNING id`) with this process as owner and starts nothing while another live process holds
+  a run; `resume_queue()` skips runs whose owner is another live process (a run of another host counts as live). Runs
+  from before the column have no owner and resume as before. Tests: `tests/test_run_queue.py`.
 
 ### UI-1 — Inconsistent layout across pages (Medium, Fixed 2026-11-02)
 - Step boxes sized by their labels (2px border on the active one), connectors painted as blocks, dashboard banner/KPIs at half width, nested cards, mixed button cases, Settings without a title, sidebar labels wrapping.
@@ -713,5 +733,232 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
 ### UI-3 — Developer notes retyped every run (Medium, Fixed 2026-11-02)
 - Notes are per use case; run c43f64ef was started without them, so the IMSI/MSISDN lookup was unknown. The New Run wizard now pre-fills empty notes from the last run of the same UC.
 
-### OB-6 — Resume after server restart not implemented (Medium, Open)
+### OB-6 — Resume after server restart not implemented (Medium, Fixed by spec 007)
 - There is no `resume_run` in `orchestrator/runner.py` and no `--resume` in `main.py`. FR-009 / SC-007 / contract `resume_run` are not met.
+- **Fixed** by [spec 007](../007-run-queue/spec.md): checkpoints before every agent and at review pauses
+  (`orchestrator/checkpoints.py`), `PipelineRunner.resume_queue()` at server start (T023 E2E passed). A CLI
+  `--resume` flag was not added: interrupted runs resume by themselves.
+
+### DEP-57 — Prose answer became the repo host (Medium, Fixed 2026-11-04)
+- Run 3d75c561: the `orch_repo_server` answer "repo server is an intermittent server which will just keep the backup
+  files in case we need to perform a rollback." gave `repo_server.host = "rollback."` (any token with a dot counted as a
+  host; a bare word too). Fix: `questionnaire.parse_repo_server` — a host is an IP or dotted name (`_HOST_NAME`) or comes
+  with `user@` / `:port`; a bare name only when the answer is one or two words; prose → nothing (configured defaults).
+
+### DEP-58 — LLM backup regex never matches GNU tar (Medium, Open)
+- MRF workflow (run 3d75c561): backup step success regex `tar: Removing '.*'`; GNU tar (and MockWire's builtin `tar -c`)
+  prints ``tar: Removing leading `/' from member names``. It passed only while a catch-all simulator key answered the
+  tar command; with the builtin the backup fails. Step 6 has no real-output sample for `tar` to check the regex
+  against. Candidate fix: a validator / autofix rule for `tar -c` success regexes (archive listing or "Removing
+  leading"), or a built-in sample of tar's output.
+- **Fixed 2026-11-04**: autofix `tar_create_success` — a `tar -c` step's success regex is tested against a sample of
+  GNU tar's output (`Removing leading` line, members, archive); one that misses becomes the archive's `ls -1` line
+  (`^/tmp/x\.tar\.gz$`, `$(…)` / `${…}` parts `\S*`) with `&& ls -1 <archive>` appended; a matching regex is kept.
+  `structure.backup_to_repo` canonicalizes every mention of the archive. Steps 8 + 9 on the 3d75c561 copy without
+  the manual patch: 4/4 (repo route, SCP).
+- Found with it: `test_step --refix-workflow` validated without step 6's context (CIQ sheets, samples, expected
+  coverage) and reported `${MRF.VER}` as unresolvable — now passes the same context as step 6.
+
+### DEP-59 — Simulated post-check answers vary per step 8 run (Medium, Fixed 2026-11-04)
+- MRF run 3d75c561 copy (`data/step_tests/3d75c561_20261104_214717`, spec 010 T013a): the final check
+  `ls -ltrh <dest>/ | grep "$(basename <file> .tar)"` (success regex `-rwxrwxrwx.*`) got the step 8 LLM key
+  `regex:ls -ltrh \S+/ \| grep ".+?"` → `''`; an earlier step 8 on the same workflow answered a `-rwxrwxrwx.` line
+  (4/4). The `cp` before it runs inside `if [[ … ]]; then cp …; fi` and is answered by a canned key, so the file never
+  reaches the VFS and a VFS `ls` would not find it either. Candidate fix: unwrap `if [[ <literal> ]]; then <file cmd>;
+  else echo SKIPPED_BY_CONDITION; fi` into the file builtin, or check step 8 keys of a post-check `ls | grep` against
+  the step's success regex.
+- **Fix**: MockWire f5928df runs `if [[ … ]]; then …; [else …;] fi`, `$(…)`, `cp mv chmod chown basename dirname`
+  and `tar -x/-t` itself on its VFS. Step 8 (`network_simulator_setup/vfs_commands.py`) gives no response key to a
+  command whose paths all lie where the workflow puts files (`/tmp`, uploads, node-side copies, backup sources,
+  archives, copy / extract targets; never `/`), drops LLM / recorded / guard keys that answer one
+  (`drop_vfs_answers`), creates those folders per CIQ record; step 9 stages `.tar` inputs as real archives.
+  Found on the way: an invented answer that still fails a non-literal success regex after the LLM retry gets a
+  string generated from the regex (`repair_literal_mismatches`; `date` answered "… CEST 2023" for `\w{3} \d{4}`).
+- Verified (steps 8 + 9, run 3d75c561 copy, repo route): SCP and SFTP 3/4 each — MRF1 / MRF2 load, chmod and
+  post-check all on the VFS; MRF3 fails for real (DEP-60). Workflow without its `cp`: MRF1 / MRF2 now fail (the
+  `chmod` of the missing file) — the false green is gone. PGW 6db86ff8: 2/2.
+
+### DEP-60 — MRF3 untars a .3gp file (Medium, Open — step 6 / test data)
+- Found by DEP-59's VFS simulation (was a canned green before): MRF3 has VER 17.0.3.7, so the workflow takes the
+  "not 13" branch `tar -xf /tmp/<INPUT_FILE> -C <dest>/`, but its CIQ INPUT_FILE is
+  `DOC_VERIFICATION_PROMPT_7999_AMRWB_Mode1.3gp` → "tar: This does not look like a tar archive" (a real node fails
+  the same way). Step 9 routes it to step 6. The workflow branches on VER only; the MOP rule (G-15) combined file
+  type and version (`endsWith('.tar') && VER == '13.X.X.X'`). Needs the user: branch on the file type, or fix the
+  CIQ test row (non-13 nodes get .tar files, guideline M-12).
+
+### DEP-61 — UI run e47b5409: every backup failed after MockWire f5928df (High, Fixed 2026-11-04)
+- `tar -czvf /tmp/announcement_backup_$(date +%Y%m%d%H%M%S).tar.gz …`: f5928df expands `$(…)`; the inner
+  `date +%Y%m%d%H%M%S` was answered by the config's plain `date` key (MockWire prefix fallback) → "Tue Oct 26 …
+  2023", and tar got its words as file names (`tar: Jan: Cannot stat`, `InvalidPathException`). My DEP-59
+  verification workflow had no `$(date)`.
+- **Fix** MockWire b393ac3: a YAML prefix match never answers a pure builtin (date, echo, basename, dirname,
+  true, false, :); builtin `date +FORMAT` (strftime subset).
+- Second cause, DEP-58 autofix: its tar sample always held the archive name, so `.*\.tar\.gz` was kept — but
+  `tar -v` lists members only. Now the name is in the sample only when an `ls` of the archive follows; a name
+  made at run time is listed by a glob (`&& ls -1 /tmp/announcement_backup*.tar.gz`: running date again would
+  miss the file on a real node too).
+- Replay of e47b5409 steps 8 + 9 (DB copy): MRF1 / MRF2 pass; MRF3 fails for real (DEP-60: VER 17 untars a .3gp);
+  TC-R01 rollback-only extracts `/tmp/` — `${backupTarName}` is registered in the backup phase only (E014, open).
+
+### DEP-62 — UI run c89f65c2: step 9 failed on three simulator / check mismatches (High, Fixed 2026-11-04)
+- `time` answered `36000`: step 8 wrote `- 10:00:00` unquoted and MockWire (SnakeYAML, YAML 1.1) reads it as a
+  base-60 int. **Fix**: both `dump_yaml`s (MockWire configs, overlay, workflow for the JAR) double-quote plain
+  strings YAML 1.1 would read as non-strings (`yaml11_safe`: sexagesimal, yes/no/on/off, ~, octal, 1_000), key
+  order kept.
+- Rollback `cd` waited forever: its step-level `prompt_regex` (`user@host:…#`) replaces the node's and lacks the
+  simulator prompt (`mrf:~ #`). **Fix**: `overlay._step_prompts` extends step prompt regexes like the node's.
+- A silent `cp` failed `(?:^$)|SKIPPED_BY_CONDITION`: the JAR rejects every regex with `^` on EMPTY output
+  (probed: `^`, `^$`, `(?m)^$`, `\A` fail; `$`, `.*`, `x*`, `[^x]*` pass). **Fix**: `java_regex_matches` models it;
+  autofix `empty_output_success` turns empty-only alternatives of a success regex into `.*` (a failing command
+  still fails by its exit code first).
+- Replay (steps 8 + 9, DB copy): TC-R01 passes; MRF1 / MRF2 now stop at DEP-63; MRF3 = DEP-60.
+
+### DEP-63 — Step 6: a chmod step checked by counting `ls -l` lines (Medium, Fixed 2026-11-04)
+- c89f65c2: `if [[ ! VER == 13.* ]]; then chmod 777 <dest>/*; else echo SKIPPED_BY_CONDITION; fi` registers
+  `TOTAL_FILES` / `OK_PERMISSIONS` from its output and succeeds on `OK_PERMISSIONS == TOTAL_FILES && TOTAL_FILES > 0`.
+  chmod prints nothing → 0 == 0 && 0 > 0 is false on every node; and the guard autofix lets SKIPPED_BY_CONDITION
+  pass only regex checks, not `expr` ones, so the skipped branch (VER 13) fails too.
+- Probed (cli-automation): `expr` fails on ANY parenthesis (`(TOTAL_FILES > 0)` fails), `&&` binds tighter than
+  `||`; a looped `(?<x>.*)` counts the empty match after each line (one line → 2); an unregistered variable is `''`.
+- **Fix** (autofix): `list_after_silent` (`chmod 777 d/*` → `chmod 777 d/* && ls -l d/*` when the check reads
+  output), `loop_count_nonempty` (`.*` → `.+`), `expr_without_parentheses` (groups without `||`),
+  `guard_skip_expr` (`|| ncSkipped == 'SKIPPED_BY_CONDITION'` + its register). Replay of c89f65c2 steps 8 + 9:
+  MRF1, MRF2, rollback-only PASS; MRF3 = DEP-60.
+
+### DEP-60 — resolved 2026-11-04 (user): VER 13.X.X.X gets plain files (copy), every other version tar files (untar)
+- The workflow branch was right; the step 1 answer saying the opposite was wrong and is corrected in
+  `data/knowledge/MRF_ANNOUNCEMENT_LOADING/requirements.json`, the step 1 cache and run c89f65c2 (requirements,
+  summary, checkpoint). The CIQ test data was wrong (the user fixed it: MRF1/MRF2 VER 17 + .tar, MRF3 VER 13 + .3gp).
+  Open: step 3 should reject such rows (`conditionalPattern` VER → INPUT_FILE type; stripped by
+  `_sanitize_rules_for_jar` today).
+
+### DEP-64 — After an untar the check looked for the archive's name in the destination (High, Fixed 2026-11-04)
+- Run 9de5fcb8: `ls -ltrh <dest>/ | grep "<INPUT_FILE>"` after `tar -xf /tmp/<INPUT_FILE> -C <dest>/` — the
+  destination holds the archive's members, so grep found nothing on every untar node. User decision A: verify every
+  member. **Fix**: autofix `untar_member_check` → `if <extract test>; then ls -ld $(tar -tf <archive> | sed
+  's#^#<dest>/#'); else <copy check>; fi`, counted (`ncFilesOk == ncFilesListed && ncFilesListed > 0`, mode from
+  the step's regex); validator `untar_check_issues` + step 6 prompt rule for other shapes; MockWire 36a1476 `ls -d`;
+  step 8 `vfs_commands` treats any `if [[ ]]; then A; else B; fi` by both branches (a canned key had answered it).
+- Replay of 9de5fcb8 steps 8 + 9: 4/4 — MRF1/MRF2 list their extracted members at 777, MRF3 its copied .3gp.
+
+### DEP-65 — Rollback-only depended on values the execution registered (High, Fixed 2026-11-05)
+- Run 9de5fcb8: the restore ran `when: ${backupTarName} != null`, the "no backup" branch `rm -rf <dest>/*` when
+  `== null` — in a rollback-only run nothing is registered, so it would wipe the folder instead of restoring; archive
+  names carried `$(date …)`; the repo route used a registered `hostname`. User rule: backups follow a naming
+  convention so rollback finds them directly. **Fix** `structure.backups_by_convention`: node
+  `/tmp/${ORDERNO}/<source folder>/<archive>`, repo `<backup_dir>/${ORDERNO}/${MRF.NODE_NAME}/<source folder>/<archive>`
+  (node name = the CIQ node-sheet field matching INDEX.NODE; hostname only when the CIQ has none); the rollback lists
+  the path first (`nc_rb<k>_check` → `ncBackup<k>`), registered-value conditions become that check, the restore
+  extracts the convention path (repo route: `mkdir` + copy back first).
+- Found with it: `when: ${fileCount} > 0` is always false (probed; bare `fileCount > 0` works) — the backup never
+  ran. Autofix `when_bare_operands`. Step 9's rollback-only case ran on a clean simulator (no backup to restore):
+  it now starts from the files its node group's sunny day left (`vfs_after`). MockWire 846b88a/86295c7: `2>/dev/null`
+  per pipeline stage (incl. after `$(…)`), Windows-safe file names. Autofix: an LLM member listing counts every line.
+- Replay of 9de5fcb8 (steps 8 + 9, node route): 4/4 — backups at /tmp/TEST_ORDERNO/…, the rollback-only case finds
+  and extracts them.
+
+### DEP-60 follow-up — step 3 rule (Fixed 2026-11-05, LLM generation not yet run end to end)
+- ciq-processor enforces `conditionalPattern` (probed: the corrected CIQ PASSED, the old one rejected on all three
+  rows). Step 3 now sees the developer answers' text (it saw only their count), the prompt asks for such rules
+  with this example, `rules_baseline.conditional_pattern` keeps a well-formed one even when the CIQ breaks it, the
+  JAR sanitizer lets it through (`_clean_conditional_pattern`).
+
+### DEP-66 — Backup / rollback touched files unrelated to the activity (High, Fixed 2026-11-05)
+- User rule (2026-11-05): never touch anything on a node unrelated to the activity — back up and restore exactly
+  the files the activity overwrites. Run 9de5fcb8's workflow backed up the whole destination folder, its untar
+  branch ran `chmod 777 <dest>/*`, its rollback "no backup" branch `rm -rf <dest>/*`; the "already there?" pre-check
+  counted the archive's files before the archive was on the node (it counted the folder itself: 1).
+- **Fix** (structure, option A): for a folder the activity loads into (`cp` / `tar -x`) the uploads of the loaded
+  files move to the backup phase; `nc_bk<k>_items*` list what the load puts there (`L/items.list`, same branch
+  tests), `nc_bk<k>_existing` which of them exist (files only → `L/overwritten.list`), the backup archives exactly
+  those (`tar -C <dest> $(cat …)`, else NO_FILES_TO_BACK_UP; repo copies only when archived); the rollback removes
+  exactly the loaded files (`nc_rb<k>_remove`, replaces `rm -rf <dest>/*`), then restores into `<dest>`;
+  `loaded_members_only`: `<dest>/*` after an untar becomes the archive's members. Simulator: the folder is seeded
+  with the file the load overwrites + an unrelated file (branch-aware, `jar_executor.test_member_name`); step 8
+  judges `$(…)` inner commands on their own and `>`/`>>` into the VFS as file commands. Step 9: rollback-only
+  aligns against the rollback steps (a loop's 2nd pass took the backup's identical sha256sum).
+- Replays of 9de5fcb8 (steps 8 + 9): node route, repo SFTP, repo SCP 4/4 each — the backup holds only
+  `DOC_VERIFICATION_PROMPT_5003.dat`, rollback-only restores its original, `existing_content.dat` is never touched.
+  PGW 6db86ff8: 2/2.
+
+
+### DEP-67 — Regenerated MRF workflow (run 9de5fcb8, 3rd step 6): three more generic gaps (High, Fixed 2026-11-05)
+- `ls <dir>/ | grep "<file>"` as an "already there?" pre-check (check `.*`) failed on a fresh node: grep exits 1
+  and the JAR fails a non-zero step first. Autofix `grep_no_match_ok`: `|| true` when the step's own check accepts
+  no output (a check that needs the match keeps failing on a missing file).
+- `chmod 777 $(tar -tf A | grep … | sed …)` checked by counting lines got no listing: `list_after_silent` skipped any
+  `|`, also inside `$(…)`. Now judged without the substitutions; chmod / chown paths = everything after the mode.
+- Rollback: the restore waited for `ncArchived1` (registered by the backup step — the server ran a half-applied
+  DEP-66) and the LLM's `rm -rf <dest>/$(basename X)*` / `rm -rf /tmp/<backup>_*.tar.gz` wildcards ran. Now every
+  value of the backup step maps to the file check `ncBackup<k>`, duplicate terms collapse, and LLM `rm` of the load
+  folder's files or of a backup-archive glob is dropped (`nc_rb<k>_remove` removes exactly the loaded files; the
+  activity's own input in /tmp may still be cleaned).
+- Replays (steps 8 + 9): node, repo SFTP, repo SCP 4/4 — backup = the overwritten file only, rollback-only restores
+  its original, unrelated file untouched; PGW 2/2.
+
+### OB-15 — "Re-run step" at the step 6 review kept the old workflow (Medium, Fixed 2026-11-05)
+- Run 9de5fcb8 (08:43): after a server restart the run resumed at the step 6 review; "Re-run step" re-ran only
+  helper_script_gen (0.2 s) — `_rerun_index` started a re-run without a recorded failure at the agent that just ran.
+  The workflow stayed the one generated at 01:00, before DEP-67, and step 9 failed on the issue DEP-67 fixes.
+- **Fix**: without `failed_agents` a re-run starts at the display step's first agent (step 6: network_config_gen,
+  then its scripts). Tests `test_pipeline_retries.py`, `test_generation_contracts.py`.
+
+### DEP-68 — Run 3f5d8990 (new MRF run): step 6 refused, then step 9 failed (High, Fixed 2026-11-05)
+- Step 6: the post-check `ls <dest>/ | grep "$(basename <archive> .tar)"` after an untar was not rewritten (the
+  autofix compared the grep term literally) and the validator refused it → `$(basename X [.ext])` counts as the
+  archive's name.
+- Step 9: (1) MockWire split `$(ls … | grep … || true)` at the inner `||` ("true)" unmatched) — MockWire fd84b2f:
+  `;` `|` `&&` `||` inside `$(…)` stay in it; (2) the LLM's own `tar -czvf A -C <dest> $(…)` backup was not seen as
+  a backup of `<dest>` → one archive path for every record; now `-C <dest>` names the folder and the exact
+  items/overwritten lists apply; (3) the post-health check expected the SELinux `-rwxrwxrwx.` — step 8 derives
+  `vfs.modeSuffix` from the real `ls -l` samples, MockWire keeps it through chmod; (4) the restore waited for
+  `registered.backupTarName` (no variable: always false) → `when` drops `registered.`/`register.`/`vars.`; (5) the
+  LLM wrapped the restore in `if [[ -f <other path> ]] … else rm …` without `;` → the restore step is exactly
+  `tar -x… <convention path> -C <dest>` (the file check is its `when`).
+- Step 9 now checks the outcome of rollback-only: the node's files (outside /tmp and the repo server) must equal
+  their state before the activity — it "passed" twice while the original file was gone.
+- Replays of 3f5d8990: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.
+
+### DEP-69 — Run 46e5fee1: extracted files kept the wrong permissions in the simulator (High, Fixed 2026-11-05)
+- The MOP untars "keeping permissions of its constituents" (no chmod on that branch) and the check wants
+  `-rwxrwxrwx` for the extracted files. Three simulator gaps made it fail on the simulator only: MockWire `tar -x`
+  ignored the archive's member modes (GNU tar run as root restores them), `tar -c` wrote every member as 0644 (a
+  restore must bring back the original mode too), and step 9's test archive stored its member as 0644 — and, staged
+  once, was reused by every later step 9 of the run.
+- **Fix**: MockWire 7e90190 (`tar -c` stores the VFS mode, `-x` restores it); step 9 builds the test archive's
+  member with the mode the workflow's member check expects (`extracted_member_mode`, default 0644) and remakes files
+  it staged itself (`_staged_by_step9`; a real input is never touched).
+- Replays of 46e5fee1: node, repo SFTP, repo SCP 4/4 with the original restored; PGW 2/2.
+
+### DEP-70 — Run 46e5fee1: LLM backup forms the naming convention missed (High, Fixed 2026-11-05)
+- Two step 6 regenerations of the same run wrote backups `backups_by_convention` did not recognise as backups of
+  the load folder, so they kept the LLM's guess (and its `… else …` without `;`, which MockWire could not parse):
+  - `tar -czvf /tmp/bk_$(date +%Y%m%d%H%M%S).tar.gz -C <dest> $(basename X)`: the space inside `$(date …)` hid
+    the `-C <dest>`, the source became the relative `$(basename X)`: no `/tmp/${ORDERNO}/<dest>/` folder and
+    no load-aware lists;
+  - `tar -czvf A <dest>/$(basename X .tar)`: a folder under the load destination the load never creates
+    ("Cannot stat"); the restore path held `$(basename X .tar)` (spaces) and was not rewritten either.
+- **Fix** (`structure.py`, generic for any archive name / load folder): the `-C` detection and the restore match
+  read `$(…)` as part of a word; a backup source under a folder the activity loads into is a backup of that
+  folder (exact `items.list` → `overwritten.list`, restore = `tar -xzvf <convention path> -C <dest>`).
+  Test `test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder`.
+- Replays of 46e5fee1 (latest workflow): node, repo SFTP, repo SCP 4/4, backup holds only the overwritten file,
+  rollback-only restores the original, the unrelated file untouched; PGW 2/2.
+
+### DEP-71 — Run 46e5fee1: broken `if … else` classed as a simulator gap; step 8 ignored the run's workflow file (High, Fixed 2026-11-05)
+- Step 9 classed the pieces MockWire split from `if [[ … ]]; then tar … else echo …; fi` (no `;` before `else`)
+  as missing simulator responses → Re-run went to step 8 with the same broken workflow, twice. Step 8 also took
+  the workflow from the session state (a resumed run: the checkpoint's copy), not the run's `<UC>.yaml`.
+- **Fix**: `result_parser.classify_failures` — an unmatched piece led by a shell keyword (`then else elif fi do
+  done esac`, or `if` without `; then`) is broken shell syntax → workflow (step 6); MockWire runs well-formed
+  ones itself. Step 8 reads `run_dir/<UC>.yaml` (fallback: state).
+- Run 46e5fee1's workflow rebuilt with the DEP-70 code (no LLM; validator clean); replayed as saved 4/4.
+
+### OB-16 — A resumed run showed its old step results while redoing them (Low, Fixed 2026-11-05)
+- Restarted at step 8's review (step 8 runs again: its simulator is gone), the tracker showed step 9 "failed"
+  from before the restart and no review buttons for the ~70 s of the step 8 re-run.
+- **Fix**: `pipeline_agent.clear_step_statuses` drops the statuses of the steps a run does again — on resume
+  (`PipelineRunner._resume_state`; at a milestone pause the paused step keeps its own) and on every Re-run.
+- Reopened the same day: after the restart steps 1-7 showed pending while step 8 ran. The page reads the step
+  results 1 s / 3 s after it opens; a run still resuming has no session then, and nothing read them later.
+  **Fix**: the page reads them again on `run_started` (`ProgressSection._sync_steps`).

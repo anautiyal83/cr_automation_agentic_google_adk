@@ -278,3 +278,138 @@ def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
     assert rows[0]["detail"] == "Paused — review of step 5" and rows[0]["estimate"] == "now"
     assert rows[1]["estimate"].startswith("after the review") and rows[1]["pos"] == "1"
     assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"
+
+
+def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
+    """Spec 008 U-D7: a completed run can be marked finished (it leaves Live Run), once; a failed
+    or still running one cannot; the status stays 'completed'."""
+    runner, _ = _runner(tmp_path, monkeypatch)
+
+    async def scenario():
+        db = runner._db
+        await db.execute_insert("INSERT INTO uc_document_sets (id, uc_name, ciq_file_path, mop_file_path, "
+                                "command_outputs_path, uploaded_at) VALUES ('d', 'UC', '', '', '', '2026-11-04')")
+        for rid, status in (("ok", "completed"), ("bad", "failed"), ("run", "running")):
+            await db.execute_insert("INSERT INTO pipeline_runs (id, document_set_id, status, started_at, started_by) "
+                                    "VALUES (?, 'd', ?, '2026-11-04T00:00:00+00:00', 'u1')", (rid, status))
+        results = [await runner.mark_finished(r, "u1") for r in ("ok", "ok", "bad", "run", "missing")]
+        row = (await db.execute("SELECT status, finished_at, finished_by FROM pipeline_runs WHERE id = 'ok'"))[0]
+        return results, row
+    results, row = asyncio.run(scenario())
+    assert results == [True, False, False, False, False]
+    assert row["status"] == "completed" and row["finished_at"] and row["finished_by"] == "u1"
+
+
+def test_owner_liveness():
+    """OB-10: a run's owner is <host>:<pid>:<process start>; a reused pid is not the owner."""
+    import socket
+    import subprocess
+    import sys
+    from orchestrator.ownership import owner_alive, this_owner
+    import psutil
+    assert owner_alive(this_owner())
+    assert not owner_alive(None) and not owner_alive("garbage")
+    assert owner_alive("other-host:1:1")                     # cannot be checked: left alone
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        started = int(psutil.Process(child.pid).create_time())
+        host = socket.gethostname()
+        assert owner_alive(f"{host}:{child.pid}:{started}")
+        assert not owner_alive(f"{host}:{child.pid}:{started - 100}")  # same pid, another process
+    finally:
+        child.kill()
+        child.wait()
+    assert not owner_alive(f"{socket.gethostname()}:{child.pid}:{started}")
+
+
+def test_second_server_leaves_the_live_run_alone(tmp_path, monkeypatch):
+    """OB-10: a server starting on the same database neither resumes the run another live server
+    executes nor starts a second pipeline next to it."""
+    import socket
+    import subprocess
+    import sys
+    import psutil
+    runner, launched = _runner(tmp_path, monkeypatch)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    owner = f"{socket.gethostname()}:{other.pid}:{int(psutil.Process(other.pid).create_time())}"
+
+    async def scenario():
+        a = await runner.submit(_doc("UC_A"), started_by="u1")
+        await runner.submit(_doc("UC_B"), started_by="u2")
+        await runner._db.execute("UPDATE pipeline_runs SET owner = ? WHERE id = ?", (owner, a["run_id"]))
+        runner._active_runs.clear()                  # this is the second server: it holds nothing
+        started = await runner.resume_queue()
+        return started, await _statuses(runner)
+    try:
+        started, statuses = asyncio.run(scenario())
+    finally:
+        other.kill()
+        other.wait()
+    assert started is None and statuses == {"UC_A": "running", "UC_B": "queued"} and launched == ["UC_A"]
+
+
+def _hanging_runner(tmp_path, monkeypatch):
+    """A runner whose pipeline waits forever (paused at a review) with a checkpoint saved."""
+    import types as _t
+    from orchestrator import runner as runner_mod
+
+    async def forever(**kw):
+        await asyncio.Event().wait()
+        yield None
+
+    async def no_sim(run_id):
+        return None
+    monkeypatch.setattr(runner_mod, "stop_simulator", no_sim)
+    monkeypatch.setattr(runner_mod, "_shutting_down", False)
+
+    async def make():
+        r = PipelineRunner(config={}, db=await init_database(str(tmp_path / "p.db")))
+        r._runner = _t.SimpleNamespace(run_async=forever)
+        return r
+    return make
+
+
+def test_server_stop_keeps_the_run_resumable(tmp_path, monkeypatch):
+    """A server stop cancels the pipeline task: the run must stay live with its checkpoint so the
+    next start resumes it (run e47b5409 came back as "cancelled — Pipeline task stopped")."""
+    from orchestrator import checkpoints
+    from orchestrator import runner as runner_mod
+    make = _hanging_runner(tmp_path, monkeypatch)
+
+    async def scenario(stop: bool):
+        r = await make()
+        run_id = "e47b5409-8db6-4445-bd5f-5c3cc59f926f" if stop else "5dcb049c-49ed-4676-8e54-8a13e2163e6e"
+        await r._db.execute("INSERT INTO pipeline_runs (id, document_set_id, status, current_step, started_at) "
+                            "VALUES (?, ?, 'paused_milestone', 9, '2026-11-04')", (run_id, run_id))
+        await checkpoints.save(run_id, 7, "network_config_qa", "milestone", {"run_id": run_id}, {})
+        r._active_runs[run_id] = {"status": "paused_milestone"}
+        task = asyncio.ensure_future(r._run_pipeline(run_id, "u"))
+        await asyncio.sleep(0.05)
+        if stop:
+            runner_mod.mark_shutdown()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        rows = await r._db.execute("SELECT status FROM pipeline_runs WHERE id = ?", (run_id,))
+        return rows[0]["status"], await checkpoints.load(r._db, run_id) is not None
+    assert asyncio.run(scenario(stop=True)) == ("paused_milestone", True)   # resumes at the next start
+    monkeypatch.setattr(runner_mod, "_shutting_down", False)
+    status, kept = asyncio.run(scenario(stop=False))                           # a task stopped otherwise
+    assert status == "cancelled" and not kept
+
+
+def test_resumed_run_shows_the_steps_it_does_again_as_pending():
+    """Run 46e5fee1: resumed at step 8's review (step 8 runs again: its simulator is gone), step 9
+    still showed "failed" from before the restart and no review buttons, for the whole step 8 re-run."""
+    from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES
+    sim = next(n for n in _AGENT_NAMES if 8 in _AGENT_DISPLAY_STEPS.get(n, []))
+    done = {f"step_{i}_status": "passed" for i in range(1, 9)}
+    state = PipelineRunner._resume_state("r1", {"state": {**done, "step_9_status": "failed"},
+                                                "agent_index": _AGENT_NAMES.index(sim), "kind": "milestone"})
+    assert [i for i in range(1, 11) if f"step_{i}_status" in state] == list(range(1, 8))
+    mop = next(n for n in _AGENT_NAMES if 7 in _AGENT_DISPLAY_STEPS.get(n, []) and 9 not in _AGENT_DISPLAY_STEPS[n])
+    state = PipelineRunner._resume_state("r1", {"state": dict(done), "agent_index": _AGENT_NAMES.index(mop),
+                                                "kind": "milestone"})
+    assert state["step_7_status"] == "passed" and "step_8_status" not in state   # the review of step 7 again

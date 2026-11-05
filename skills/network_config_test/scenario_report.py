@@ -39,6 +39,7 @@ def generate_scenario_report(uc_name: str, suite: SuiteResult, duration_sec: flo
     verdict = "PASS" if results and suite.failed == 0 else "FAIL"
     positives = [r for r in results if r.scenario.kind == "positive"]
     negatives = [r for r in results if r.scenario.kind == "negative"]
+    rollbacks = [r for r in results if r.scenario.kind == "rollback"]
     parts = [
         f"<!doctype html><html><head><meta charset='utf-8'><title>{escape(uc_name)} — Test Case Report</title>",
         f"<style>{_CSS}</style></head><body><div class='wrap'>",
@@ -48,7 +49,7 @@ def generate_scenario_report(uc_name: str, suite: SuiteResult, duration_sec: flo
         f"<span class='pill verdict {verdict}'>{verdict}</span></div>",
         "<div class='kpis'>",
         _kpi(len(results), "Test cases"), _kpi(suite.passed, "Passed"), _kpi(suite.failed, "Failed"),
-        _kpi(len(positives), "Sunny day"), _kpi(len(negatives), "Negative"),
+        _kpi(len(positives), "Sunny day"), _kpi(len(rollbacks), "Rollback only"), _kpi(len(negatives), "Negative"),
         _kpi(f"{duration_sec:.0f}s", "Duration"),
         "</div>",
     ]

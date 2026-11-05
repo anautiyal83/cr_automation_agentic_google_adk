@@ -129,8 +129,8 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
                     vn_esc = vn.get("escalation", {})
                     if vn_ssh:
                         en_ssh = en.setdefault("ssh", {})
-                        # Profile wins for user, prompt, port, login_via_pam
-                        for k in ("user", "port", "prompt_pattern", "login_via_pam"):
+                        # Profile wins for user, prompt, port, login_via_pam, SFTP / SCP (spec 010 O-D6)
+                        for k in ("user", "port", "prompt_pattern", "login_via_pam", "file_transfer"):
                             if vn_ssh.get(k):
                                 en_ssh[k] = vn_ssh[k]
                     if vn_esc and vn_esc.get("method", "none") != "none":

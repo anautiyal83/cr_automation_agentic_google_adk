@@ -229,7 +229,8 @@ class ProgressSection:
                 self.ms_skip_btn.set_visibility(False)
                 self.ms_rerun_btn = action(ui.button("Re-run step", icon="replay",
                     on_click=lambda: self._milestone_respond("rerun")) \
-                    .props("outline color=primary size=sm no-caps"), "progress")
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
@@ -256,6 +257,11 @@ class ProgressSection:
             self.btn_outputs = ui.button("Browse outputs", icon="folder_open",
                                          on_click=self._go_outputs) \
                 .props("outline color=primary size=sm no-caps")
+            # A completed run stays here until the user is done with it (spec 008 U-D7)
+            self.btn_finish = action(ui.button("Mark as finished", icon="task_alt", on_click=self._finish)
+                                     .props("unelevated color=positive size=sm no-caps"), "progress")
+            self.btn_finish.tooltip("Done with this run: it leaves Live Run (Run History keeps it)")
+            self.btn_finish.set_visibility(False)
 
     def _step_widget(self, step_num: int):
         with ui.element("div").classes("cr-step-row") as box:
@@ -544,14 +550,15 @@ class ProgressSection:
 
     async def _show_latest_run(self):
         """Nothing executes: Live Run keeps showing the user's latest run (completed, failed, waiting…) —
-        a run leaves Live Run only when it is cancelled (spec 007)."""
+        a run leaves Live Run when it is cancelled (spec 007) or marked finished (spec 008 U-D7)."""
         if not self.runner or not self.runner._db:
             return
         where, params = self._scope.where("r")
         rows = await self.runner._db.execute(
-            "SELECT r.id, r.status FROM pipeline_runs r "
+            "SELECT r.id, r.status, r.finished_at FROM pipeline_runs r "
             f"WHERE {where} ORDER BY COALESCE(r.queued_at, r.started_at) DESC LIMIT 1", params)
-        if rows and str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
+        if rows and not rows[0]["finished_at"] and \
+                str(rows[0]["status"]).replace("PipelineStatus.", "").lower() not in ("cancelled", "removed"):
             await self.view_run(rows[0]["id"])
 
     async def _show_waiting(self, run_id) -> None:
@@ -812,24 +819,28 @@ class ProgressSection:
         # Subscribe to events FIRST (before any steps can complete)
         event_bus.subscribe(self._on_event, run_id)
         self._run_dir, self._uc_name, self._follow_live = "", "", True
+        # Steps that finished before the subscription (a re-run's cached steps 1-2 take
+        # milliseconds): replayed, so step 1 is not left "pending" until a page refresh
+        await event_bus.replay(self._on_event, run_id)
         ui.timer(0.5, self._load_run_info, once=True)
 
-        # Periodic sync: catch up with steps that completed before subscription
-        async def _sync_steps():
-            if not self.active_run_id or self.active_run_id != run_id:
-                return
-            try:
-                state = await self.runner.get_state(str(run_id))
-                for i in range(1, TOTAL_STEPS + 1):
-                    ss = state.get(f"step_{i}_status")
-                    if ss and i in self.step_widgets:
-                        self._update_step_visual(i, ss)
-            except Exception:
-                pass
-
         # Run sync after a brief delay to catch fast steps
-        ui.timer(1.0, _sync_steps, once=True)
-        ui.timer(3.0, _sync_steps, once=True)
+        ui.timer(1.0, lambda: self._sync_steps(run_id), once=True)
+        ui.timer(3.0, lambda: self._sync_steps(run_id), once=True)
+
+    async def _sync_steps(self, run_id) -> None:
+        """Catch up with steps that completed before the subscription — and with the earlier steps
+        of a run that was still waiting or resuming (no session yet when the page opened, OB-16)."""
+        if not self.runner or not self.active_run_id or str(self.active_run_id) != str(run_id):
+            return
+        try:
+            state = await self.runner.get_state(str(run_id))
+            for i in range(1, TOTAL_STEPS + 1):
+                ss = state.get(f"step_{i}_status")
+                if ss and i in self.step_widgets:
+                    self._update_step_visual(i, ss)
+        except Exception:
+            pass
 
     async def view_run(self, run_id: str):
         """Open a finished (or any) run on the run page: steps, artifacts, test cases, logs."""
@@ -851,13 +862,14 @@ class ProgressSection:
         self.action_btns.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.completion_row.set_visibility(True)
-        status, error, statuses = "unknown", "", {}
+        status, error, statuses, finished = "unknown", "", {}, False
         if self.runner and self.runner._db:
             try:
                 rows = await self.runner._db.execute(
-                    "SELECT status, error_summary, current_step, started_at, completed_at FROM pipeline_runs "
-                    "WHERE id = ?", (str(run_id),))
+                    "SELECT status, error_summary, current_step, started_at, completed_at, finished_at "
+                    "FROM pipeline_runs WHERE id = ?", (str(run_id),))
                 if rows:
+                    finished = bool(rows[0].get("finished_at"))
                     status = str(rows[0].get("status") or "").replace("PipelineStatus.", "").lower()
                     error = rows[0].get("error_summary") or ""
                     self._run_elapsed = _elapsed_between(rows[0].get("started_at"), rows[0].get("completed_at"))
@@ -873,6 +885,7 @@ class ProgressSection:
         failed = [n for n, st in statuses.items() if st.startswith("failed")]
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
+        self.btn_finish.set_visibility(ok and not finished)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -1041,6 +1054,8 @@ class ProgressSection:
             self.status_label.text = "Pipeline Starting..."
             self.status_detail.text = "Your run left the queue — initializing agents"
             self.banner.style(replace="background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)")
+            # a resumed run: its earlier steps' results exist only now (the session is new)
+            await self._sync_steps(event.run_id)
 
         elif event.event_type == "run_completed":
             self.status_icon.name = "check_circle"
@@ -1055,6 +1070,7 @@ class ProgressSection:
             ))
             self.action_btns.set_visibility(False)
             self.completion_row.set_visibility(True)
+            self.btn_finish.set_visibility(True)
             self.progress_bar.value = 1.0
             self.progress_bar.props("color=positive")
         elif event.event_type == "run_failed":
@@ -1706,6 +1722,7 @@ class ProgressSection:
         self.active_run_id = None
         self.action_btns.set_visibility(False)
         self.completion_row.set_visibility(False)
+        self.btn_finish.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.progress_bar.set_visibility(False)
         self.status_icon.name = "hourglass_empty"
@@ -1714,9 +1731,33 @@ class ProgressSection:
         self.status_detail.text = "Start a new run from New Run"
         self.banner.style(replace="")
         self._run_t0, self._run_elapsed = None, ""
+        # Forget the run: its folder (artifacts, test cases, KPIs), UC and step durations
+        self._run_dir, self._uc_name, self._follow_live = "", "", False
+        self._step_started.clear()
         for i in range(1, TOTAL_STEPS + 1):
             self._update_step_visual(i, "pending")
+            if self.step_widgets.get(i, {}).get("duration") is not None:
+                self.step_widgets[i]["duration"].text = ""
         self._set_run_state("idle")
+        # The step panel shows "No run selected" instead of the last run's step (e.g. Final Report)
+        if hasattr(self, "tabs"):
+            self.tabs.value = "overview"
+        self._select_step(1)
+
+    @requires("progress", "run.finish")
+    @_own_run("run.finish")
+    async def _finish(self):
+        """The user is done with this completed run: it leaves Live Run (spec 008 U-D7)."""
+        if not self.runner or not self.active_run_id:
+            return
+        run_id = str(self.active_run_id)
+        user = self._scope.user
+        if not await self.runner.mark_finished(run_id, user.id if user else "cli"):
+            ui.notify("Only a completed run that is not finished yet can be marked finished", type="warning")
+            return
+        await record("run.finish", target_type="run", target_id=run_id, run_id=run_id, uc_name=self._uc_name or "")
+        ui.notify(f"{self._uc_name or 'Run'} marked as finished — it stays in Run History", type="positive")
+        self._reset_to_default()
 
     @requires("progress", "run.restart")
     @_own_run("run.restart")

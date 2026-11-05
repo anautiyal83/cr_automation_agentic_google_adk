@@ -52,7 +52,8 @@ report_generation -> HTML + Excel pipeline report
 
 ## PipelineAgent Built-in Features
 - **Milestones**: built-in pause after each agent (configured via `_AGENT_MILESTONES`)
-- **Retry routing**: reads `_retry_target` from state, maps via `_RETRY_STEP_TO_INDEX`
+- **Retry routing**: reads `_retry_target` from state, maps via `_RETRY_STEP_TO_INDEX`; "Continue" at a review drops it;
+  every retry counts per agent, past `MAX_RETRIES` (3) the run fails (OB-4/5)
 - **Display steps**: maps agent name to 10 UI steps via `_AGENT_DISPLAY_STEPS`
 - **No separate** milestone agents, reviewer agents, or router agents
 - **app_name**: `"netconfig"`
@@ -148,9 +149,16 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
   step 9 passes their test values as `--var`
 - Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
+- `tar -c` success regexes must match GNU tar (``tar: Removing leading `/' …``); autofix replaces a missing one with
+  the archive's `ls -1` line (DEP-58)
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- JAR facts (probed 2026-11-04): on EMPTY output a regex with `^` never matches (`^$` fails, `.*` passes —
+  autofix `empty_output_success`); `expr` fails on any parenthesis and binds `&&` tighter than `||` (autofix drops
+  them); a looped register counts `.*` twice per line (autofix → `.+`); an unregistered variable reads as `''`;
+  silent commands (`chmod cp mv chown`) whose check reads output get `&& ls -l <paths>` (autofix); guarded steps
+  with an `expr` pass when skipped (`|| ncSkipped == 'SKIPPED_BY_CONDITION'`)
 - `criteria.expr` compares REGISTERED variables only (`cpuIdle >= 90`): no `Float()`/`Int()`, a literal `True` always
   fails, named groups of the validation regex are invisible to expr → `register:` the value on the step (autofix)
 - A non-zero exit fails a step before its regex (`use_exit_code: false` does not help): "must be absent" checks are
@@ -158,9 +166,24 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Files move with step `sftp: {operation: upload|download, local_path, remote_path}` on the node, never `put`/`get` in a
   shell (autofix rewrites); a node's file must be downloaded before a LOCAL step reads it (validator)
 - Step 6 `structure.py` (after the LLM, idempotent; validator + regenerate see the flat form): record steps run in a
-  `type: loop` over `${configSequences.0.records}` (`${rec.data.<Col>}`, `reverse_order: false` — null NPEs); a
-  backup phase's `tar -c` archive goes node → LOCAL → `REPO` (`execution.repo_server`, step 1 `orch_repo_server`) and
-  back on rollback; every sftp transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps: `id: nc_*`
+  `type: loop` over `${configSequences.0.records}` (`${rec.data.<Col>}`, `reverse_order: false` — null NPEs); phases
+  per activity (spec 010, Settings → Vendor Profiles → Activity → `run_options`): only the ticked ones; Backup "via
+  repo server": automation server ↔ `REPO` (`execution.repo_server`) is framework sftp; the NODE runs `scp`/`sftp`
+  (node type `file_transfer`) against the repo to copy the `tar -c` archive there, back before the rollback, and every
+  input file in (`expect_reply` = repo password; no node address needed — NIAM nodes too); otherwise backups stay in
+  the node's /tmp; every transfer gets `sha256sum` on both ends + `criteria.expr: dst == src`. Added steps:
+  `id: nc_*`. Step 8 lists the repo instance as a `transfer.peers` entry of each node instance (MockWire copies
+  between their VFS)
+- Backups follow a naming convention, never a registered value (a rollback-only run has none — user 2026-11-05):
+  node `/tmp/${ORDERNO}/<source folder>/<archive without $(date)>`, repo `<backup_dir>/${ORDERNO}/${<NODE>.<CIQ node
+  name field>}/<source folder>/<archive>` (`structure.backups_by_convention`); the rollback lists that path
+  (`nc_rb<k>_check` → `ncBackup<k>`) and decides by it. `when` takes bare names (`${x} > 0` is always false; autofix)
+- Never touch anything on the node unrelated to the activity (user rule): for a folder the activity loads into,
+  structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
+  backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
+- Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
+- Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
+  GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
   upload `inbox/${X}.xml` + later check of `outbox/${X}.xml.res` → the simulator produces the file (UC sample response)
 
@@ -212,6 +235,10 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - How a UC simulator must behave for cli-automation: `lib/mockwire/AGENTS.md` (read before changing step 8)
 - Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
+- MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm …` on its VFS: step 8
+  (`vfs_commands.py`) gives no response key to a command whose paths all lie where the workflow puts files (`/tmp`,
+  uploads, copy / extract targets, backup sources, archives) and creates those folders per CIQ record (DEP-59);
+  staged `.tar` inputs are real archives (step 9)
 - Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
   `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
@@ -228,4 +255,6 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - UI (spec 008): Run Artifacts = screen `outputs`; Artifact Cache page = admin screen `cache`; destructive buttons go through `ui.components.confirm`
 - Checkpoints (`orchestrator/checkpoints.py`, table `run_checkpoints`): before every agent and at review pauses;
   `resume_queue()` at startup; step 9 resumes at step 8; `MAX_RESUME_ATTEMPTS = 2`
+- `pipeline_runs.owner` (`orchestrator/ownership.py`): a server never resumes or runs beside a run another live
+  process owns (OB-10); still use a DB copy for previews
 - Audit trail: user actions only (`ui/access.record`) — the runner writes no trail entries

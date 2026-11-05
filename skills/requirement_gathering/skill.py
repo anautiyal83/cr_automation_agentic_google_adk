@@ -256,6 +256,8 @@ class RequirementGatheringSkill:
         # Filter already-answered
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
+        # No pattern / secret questions, no repeats in other words (spec 011)
+        questions = questionnaire.clean_questions(questions, self._question_texts, self._all_answers)
         # Drop SSH/PAM questions covered by vendor profile
         if questions and self._vendor_profile:
             questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)
@@ -353,6 +355,8 @@ class RequirementGatheringSkill:
 
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
+        # No pattern / secret questions, no repeats in other words (spec 011)
+        questions = questionnaire.clean_questions(questions, self._question_texts, self._all_answers)
         # Drop SSH/PAM questions covered by vendor profile
         if questions and self._vendor_profile:
             questions = questionnaire.filter_vendor_profile_questions(questions, self._vendor_profile)

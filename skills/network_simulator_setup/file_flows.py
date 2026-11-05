@@ -88,6 +88,20 @@ _LONG_LINE = re.compile(r"^([-dl][rwxsStT-]{9})[.+@]?\s+\d+\s+(\S+)\s+(\S+)\s", 
 _MODE = re.compile(r"(?<![\w-])([-d][r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-])(?![\w-])")
 
 
+_MARKED = re.compile(r"^[-dl][rwxsStT-]{9}([.+@]?)\s+\d+\s", re.MULTILINE)
+
+
+def mode_suffix(samples: list[dict]) -> str:
+    """The marker the real node prints after every ``ls -l`` mode (SELinux ``.``, ACL ``+``), when
+    most recorded lines have one: a regex written from the real output (mode + SELinux dot) failed
+    on the simulator's bare mode (run 3f5d8990)."""
+    marks = [m.group(1) for s in samples for m in _MARKED.finditer(str(s.get("output") or ""))]
+    if not marks:
+        return ""
+    top = max(set(marks), key=marks.count)
+    return top if top and marks.count(top) * 2 > len(marks) else ""
+
+
 def derive_listing(steps: list[dict], dirs: list[str], samples: list[dict]) -> list[dict]:
     """``vfs.listing``: the ``ls -l`` columns of files in each directory as the real node shows
     them (S8-23). MockWire prints ``-rw-r--r--`` by default; a workflow regex written from the

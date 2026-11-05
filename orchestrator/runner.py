@@ -35,6 +35,16 @@ _LIVE_SQL = ", ".join(f"'{s}'" for s in (*_LIVE, "PipelineStatus.RUNNING", "Pipe
                                           "PipelineStatus.PAUSED_MILESTONE"))
 
 
+# The server is stopping (set by the UI's shutdown hook before the event loop cancels the
+# pipeline task): an interrupted run keeps its status and checkpoint and resumes at the next start
+_shutting_down = False
+
+
+def mark_shutdown() -> None:
+    global _shutting_down
+    _shutting_down = True
+
+
 def _utc_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
@@ -65,6 +75,7 @@ def _document_set_from_row(row: dict) -> dict:
         "selected_sheets": loads(row.get("selected_sheets"), []),
         "developer_notes": row.get("developer_notes") or "",
         "vendor_profile": loads(row.get("vendor_profile"), {}),
+        "run_options": loads(row.get("run_options"), {}),
     }
 
 
@@ -172,13 +183,13 @@ class PipelineRunner:
         if not self._db:
             return None
         async with self._queue_lock:
-            if self.active_run():
+            if self.active_run() or await self._held_elsewhere():
                 return None
             rows = await self._db.execute(
                 "SELECT r.id AS run_id, r.status, r.document_set_id, r.review_milestones, r.started_by, d.uc_name, "
                 "d.ciq_file_path, d.mop_file_path, d.sample_io_xml_paths, d.constraints_file_path, "
                 "d.command_outputs_path, d.additional_documents, d.selected_sheets, d.developer_notes, "
-                "d.vendor_profile FROM pipeline_runs r "
+                "d.vendor_profile, d.run_options FROM pipeline_runs r "
                 "LEFT JOIN uc_document_sets d ON d.id = r.document_set_id "
                 "WHERE r.status IN ('resuming', 'queued') "
                 "ORDER BY CASE r.status WHEN 'resuming' THEN 0 ELSE 1 END, r.queued_at, r.rowid LIMIT 1")
@@ -193,11 +204,18 @@ class PipelineRunner:
                 await self._persist_run_status(run_id, "failed", "Server restart: no checkpoint to resume from")
                 asyncio.ensure_future(self.dispatch())
                 return None
+            # Claimed atomically with this process as owner: another server on the same database
+            # may dispatch the same row (OB-10)
+            from orchestrator.ownership import this_owner
+            claim = ("UPDATE pipeline_runs SET status = 'running', owner = ?{} WHERE id = ? "
+                     "AND status IN ('queued', 'resuming') RETURNING id")
             if resume is None:  # a resumed run keeps its original start time
-                await self._db.execute("UPDATE pipeline_runs SET status = 'running', started_at = ? WHERE id = ?",
-                                       (datetime.now(timezone.utc).isoformat(), run_id))
+                claimed = await self._db.execute(claim.format(", started_at = ?"),
+                                                 (this_owner(), datetime.now(timezone.utc).isoformat(), run_id))
             else:
-                await self._db.execute("UPDATE pipeline_runs SET status = 'running' WHERE id = ?", (run_id,))
+                claimed = await self._db.execute(claim.format(""), (this_owner(), run_id))
+            if not claimed:
+                return None
             try:
                 await self._launch(run_id, _document_set_from_row(row), bool(row["review_milestones"]),
                                    row["started_by"] or "cli", resume=resume)
@@ -209,12 +227,34 @@ class PipelineRunner:
         flow.flow("RUN %s — run_id=%s", "RESUMED" if resume else "DEQUEUED", run_id[:8])
         return run_id
 
+    async def _held_elsewhere(self) -> bool:
+        """Another live server process executes a run on this database (OB-10)."""
+        from orchestrator.ownership import owner_alive, this_owner
+        rows = await self._db.execute(
+            f"SELECT owner FROM pipeline_runs WHERE status IN ({_LIVE_SQL}) "
+            "AND status NOT IN ('queued', 'resuming') AND owner IS NOT NULL AND owner != ?", (this_owner(),))
+        return any(owner_alive(r["owner"]) for r in rows)
+
     async def queue_position(self, run_id: str) -> int:
         """1-based position of a queued run (0 when it is not waiting)."""
         rows = await self._db.execute(
             "SELECT id FROM pipeline_runs WHERE status = 'queued' ORDER BY queued_at, rowid") if self._db else []
         ids = [r["id"] for r in rows]
         return ids.index(run_id) + 1 if run_id in ids else 0
+
+    async def mark_finished(self, run_id: str, user_id: str) -> bool:
+        """The user is done with a completed run: it leaves Live Run (spec 008 U-D7). Its status
+        stays ``completed``. False when the run is not completed or already finished."""
+        if not self._db:
+            return False
+        rows = await self._db.execute("SELECT status, finished_at FROM pipeline_runs WHERE id = ?", (run_id,))
+        if (not rows or rows[0]["finished_at"]
+                or str(rows[0]["status"]).replace("PipelineStatus.", "").lower() != "completed"):
+            return False
+        await self._db.execute("UPDATE pipeline_runs SET finished_at = ?, finished_by = ? WHERE id = ?",
+                               (_utc_now(), user_id, run_id))
+        flow.flow("RUN FINISHED — run_id=%s marked finished by the user", run_id[:8])
+        return True
 
     async def remove_queued(self, run_id: str) -> bool:
         """Take a waiting run out of the queue (status ``removed``). False when it is not waiting."""
@@ -241,12 +281,17 @@ class PipelineRunner:
             return None
         from orchestrator import checkpoints
         # interrupted = was executing (running / paused / resuming), never the waiting ones
+        from orchestrator.ownership import owner_alive, this_owner
         lost = await self._db.execute(
-            "SELECT r.id, r.status, d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
+            "SELECT r.id, r.status, r.owner, d.uc_name FROM pipeline_runs r LEFT JOIN uc_document_sets d "
             f"ON d.id = r.document_set_id WHERE r.status IN ({_LIVE_SQL}) AND r.status != 'queued'")
         for row in lost:
             run_id = row["id"]
             if run_id in self._active_runs:
+                continue
+            if row["status"] != "resuming" and row["owner"] != this_owner() and owner_alive(row["owner"]):
+                # another server on this database executes it (OB-10): not interrupted
+                flow.flow("RUN %s belongs to live server %s — not resumed", run_id[:8], row["owner"])
                 continue
             cp = await checkpoints.load(self._db, run_id)
             reason = ""
@@ -271,7 +316,8 @@ class PipelineRunner:
         """Session state of a resumed run: the checkpoint's, with where the pipeline continues."""
         from agents.requirements_agent import requirements_store
         from orchestrator import checkpoints
-        from orchestrator.pipeline_agent import _AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step
+        from orchestrator.pipeline_agent import (_AGENT_DISPLAY_STEPS, _AGENT_NAMES, _first_agent_of_step,
+                                                 clear_step_statuses)
         state = dict(resume["state"])
         for key in ("pipeline_cancelled", "pipeline_failed", "pipeline_error"):
             state.pop(key, None)
@@ -282,6 +328,9 @@ class PipelineRunner:
         state["_resume_index"] = index
         if at_milestone:
             state["_resume_milestone_at"] = index
+        # steps the resumed run does again are pending, not their last result: step 9 showed
+        # "failed" (no review buttons) while step 8 restarted the simulators (run 46e5fee1)
+        clear_step_statuses(state, index, tuple(_AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], [])) if at_milestone else ())
         state["resumed_after_restart"] = True
         return state
 
@@ -292,8 +341,8 @@ class PipelineRunner:
             "INSERT OR REPLACE INTO uc_document_sets "
             "(id, uc_name, ciq_file_path, mop_file_path, sample_io_xml_paths, "
             "constraints_file_path, command_outputs_path, uploaded_at, additional_documents, "
-            "selected_sheets, developer_notes, vendor_profile) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "selected_sheets, developer_notes, vendor_profile, run_options) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (doc_set_id,
              document_set.get("uc_name") or "",
              document_set.get("ciq_file_path") or "",
@@ -305,7 +354,8 @@ class PipelineRunner:
              json.dumps(document_set.get("additional_documents") or {}),
              json.dumps(document_set.get("selected_sheets") or []),
              document_set.get("developer_notes") or "",
-             json.dumps(document_set.get("vendor_profile") or {})),
+             json.dumps(document_set.get("vendor_profile") or {}),
+             json.dumps(document_set.get("run_options") or {})),
         )
 
     async def _launch(self, run_id: str, document_set: dict[str, Any], review_milestones: bool,
@@ -469,13 +519,19 @@ class PipelineRunner:
             # The pipeline is free: the next queued run starts (spec 007). A task cancelled outright
             # never reached a final status — without one it would hold the queue forever
             info = self._active_runs.get(run_id, {})
-            if info.get("status") in _LIVE:
-                info["status"] = "cancelled"
-                await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
-            if self._db:  # the run is over: nothing to resume
-                from orchestrator import checkpoints
-                await checkpoints.delete(self._db, run_id)
-            asyncio.ensure_future(self.dispatch())
+            if _shutting_down and info.get("status") in _LIVE:
+                # a server stop, not the end of the run: resume_queue() continues it at the next start
+                # (it was marked cancelled and its checkpoint deleted — nothing came back, run e47b5409)
+                flow.flow("RUN INTERRUPTED by server stop — run_id=%s resumes at the next start", run_id[:8])
+            else:
+                if info.get("status") in _LIVE:
+                    flow.flow("RUN STOPPED — run_id=%s: pipeline task ended without a final status", run_id[:8])
+                    info["status"] = "cancelled"
+                    await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
+                if self._db:  # the run is over: nothing to resume
+                    from orchestrator import checkpoints
+                    await checkpoints.delete(self._db, run_id)
+                asyncio.ensure_future(self.dispatch())
 
     async def _monitor_milestones(self, run_id: str):
         """Monitor session state for milestone pauses and update runner status."""

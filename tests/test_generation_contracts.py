@@ -384,7 +384,8 @@ def test_milestone_rerun_starts_at_the_earliest_failed_agent(tmp_path):
     agents = [SimpleNamespace(name=n) for n in ("network_config_gen", "helper_script_gen", "network_config_mop_qa")]
     self = SimpleNamespace(_agents_list=agents)
     ctx = SimpleNamespace(session=SimpleNamespace(state={"run_dir": str(tmp_path)}))
-    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1  # no error file: same agent
+    # no error file: the step's first agent — a step 6 re-run regenerates the workflow (run 9de5fcb8)
+    assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 0
     (tmp_path / "step_6_error.json").write_text(json.dumps({"failed_agents": ["helper_script_gen"]}))
     assert PipelineAgent._rerun_index(self, "r", ctx, 6, 1) == 1
     (tmp_path / "step_6_error.json").write_text(
@@ -510,3 +511,32 @@ def test_request_builder_must_get_the_request_identifiers():
     assert len(missing) == 1 and "create_xml.py" in missing[0] and "${resolvedImsi}" in missing[0]
     given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDERNO}.xml'"
     assert check_request_inputs(wf(given), sheets, columns) == []
+
+
+def test_step6_is_cached_only_after_step9_passes(tmp_path):
+    """DEP-55: step 6 passing its validator is no proof; its artifacts are cached when step 9
+    passes, dropped (with any cached copy) when step 9 fails."""
+    from orchestrator.pipeline_agent import _settle_deferred_cache
+
+    class Cache:
+        def __init__(self):
+            self.saved, self.cleared = {}, []
+
+        def save_cache(self, uc, name, data, inputs="", options=""):
+            self.saved[name] = data
+
+        def clear_cache(self, uc, name=None):
+            self.cleared.append(name)
+
+    pending = {"network_config_gen": ({"workflow_yaml": "w"}, "fp"), "helper_script_gen": ({"s": "x"}, "fp")}
+    cache = Cache()
+    _settle_deferred_cache(cache, "UC", pending, [8], {}, str(tmp_path))           # not step 9: nothing yet
+    assert not cache.saved and not cache.cleared and len(pending) == 2
+    (tmp_path / "step_9_error.json").write_text("{}")                              # step 9 failed (disk)
+    _settle_deferred_cache(cache, "UC", dict(pending), [9], {"step_9_status": "passed"}, str(tmp_path))
+    assert not cache.saved and sorted(cache.cleared) == ["helper_script_gen", "network_config_gen"]
+    (tmp_path / "step_9_error.json").unlink()
+    cache = Cache()
+    _settle_deferred_cache(cache, "UC", pending, [9], {}, str(tmp_path))           # step 9 passed
+    assert cache.saved == {"network_config_gen": {"workflow_yaml": "w"}, "helper_script_gen": {"s": "x"}}
+    assert not pending and not cache.cleared

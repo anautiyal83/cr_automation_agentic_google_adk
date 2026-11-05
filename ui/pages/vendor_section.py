@@ -9,7 +9,9 @@ from nicegui import ui
 
 from ui.access import action, record, requires
 
+from shared import run_options
 from shared.profiles import ProfileManager, Vendor, NodeType, Activity
+from ui.components import PhaseOptions
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +138,8 @@ class VendorSection:
                                 parts.append("elevate_to_root")
                             if prompt:
                                 parts.append(f'prompt={prompt[:30]}')
+                            if str(ssh_cfg.get("file_transfer", "sftp")).lower() == "scp":
+                                parts.append("files via SCP")
                             ui.label(", ".join(parts) if parts else "default") \
                                 .classes("text-[11px] cr-text-dim font-mono")
                             action(ui.button(icon="edit", on_click=lambda nid=nt.id, vid=v.id: self._show_edit_node_dialog(vid, nid)) \
@@ -161,11 +165,11 @@ class VendorSection:
                         with ui.row().classes("items-center gap-2 ml-6"):
                             ui.badge(act.display_name or act.name, color="primary").props("rounded dense")
                             nodes_str = ", ".join(act.node_types) if act.node_types else "all"
-                            phases_str = ", ".join(act.default_phases) if act.default_phases else "default"
                             n_fields = len(act.ciq_mapping.get("field_mappings", []))
                             fields_str = f' fields={n_fields}' if n_fields else ''
-                            ui.label(f'nodes=[{nodes_str}] phases=[{phases_str}]{fields_str}') \
+                            ui.label(f'nodes=[{nodes_str}]{fields_str}') \
                                 .classes("text-[11px] cr-text-dim font-mono")
+                            ui.label(run_options.summary(act.run_options)).classes("text-[11px] cr-text-dim")
                             action(ui.button(icon="edit", on_click=lambda aid=act.id, vid=v.id: self._show_edit_activity_dialog(vid, aid)) \
                                 .props("flat round size=xs color=grey-6"), "settings")
                             action(ui.button(icon="close", on_click=lambda aid=act.id: self._delete_activity(aid)) \
@@ -375,11 +379,17 @@ class VendorSection:
                 "Sets elevate_to_root in the generated YAML node SSH config."
             ).classes("text-[11px] cr-text-dim ml-7")
 
+            # How files reach / leave this node (spec 010 O-D4)
+            ui.label("File transfer").classes("text-caption font-semibold mt-2")
+            file_transfer = ui.select({"sftp": "SFTP (node supports it)", "scp": "SCP (no SFTP on the node)"},
+                                      value=str(ssh.get("file_transfer", "sftp")).lower()
+                                      if str(ssh.get("file_transfer", "sftp")).lower() in ("sftp", "scp") else "sftp")                 .props("outlined dense").classes("w-full")
+
             with ui.row().classes("w-full justify-end gap-2 mt-3"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
                 action(ui.button("Save", icon="save", on_click=lambda: self._save_node_from_dialog(
                     dialog, nt, vendor_id, name, login_method, node_prompt,
-                    elevate_root,
+                    elevate_root, file_transfer,
                 )).props("unelevated color=primary no-caps"), "settings")
 
         dialog.open()
@@ -387,7 +397,7 @@ class VendorSection:
     @requires("settings", "vendor.node_type.save")
     async def _save_node_from_dialog(self, dialog, nt, vendor_id,
                                       name, login_method, node_prompt,
-                                      elevate_root):
+                                      elevate_root, file_transfer=None):
         self._ensure_pm()
         nt.vendor_id = vendor_id
         nt.name = name.value.strip().upper()
@@ -395,6 +405,7 @@ class VendorSection:
             "login_via_pam": "PAM" in (login_method.value or ""),
             "prompt_pattern": node_prompt.value.strip(),
             "elevate_to_root": elevate_root.value,
+            "file_transfer": (file_transfer.value if file_transfer is not None else "sftp") or "sftp",
         }
         nt.escalation = {
             "method": "ctrl_p_e" if elevate_root.value else "none",
@@ -442,7 +453,7 @@ class VendorSection:
         vendor = next((v for v in self._vendors if v.id == vendor_id), None)
         available_nodes = [nt.name for nt in vendor.node_types] if vendor else []
 
-        with dialog, ui.card().classes("w-[480px] p-4"):
+        with dialog, ui.card().classes("w-[680px] max-w-full p-4"):
             ui.label(title).classes("text-subtitle1 font-bold mb-2")
 
             name = ui.input("Activity Name", value=act.name,
@@ -459,11 +470,10 @@ class VendorSection:
                     node_checks[n] = ui.checkbox(n, value=n in act.node_types) \
                         .props("dense color=primary")
 
-            ui.label("Default Phases").classes("text-caption font-semibold mt-2")
-            phases = ui.input("Phases (comma-separated)",
-                               value=", ".join(act.default_phases),
-                               placeholder="preNodeHealthCheck, activity, postNodeHealthCheck") \
-                .props("outlined dense").classes("w-full")
+            ui.label("Phases").classes("text-caption font-semibold mt-2")
+            phases = PhaseOptions(act.run_options, hint=(
+                "Every run of this activity has only the phases ticked here; rollback runs only when an "
+                "activity step failed after changing the node, or on its own with ROLLBACK_ONLY."))
 
             ui.label("CIQ Mapping").classes("text-caption font-semibold mt-2")
             node_id_col = ui.input("Node ID Column", value=ciq.get("node_id_column", ""),
@@ -539,7 +549,10 @@ class VendorSection:
         act.name = name.value.strip().replace(" ", "_")
         act.display_name = display.value.strip() or act.name.replace("_", " ").title()
         act.node_types = [n for n, cb in node_checks.items() if cb.value]
-        act.default_phases = [p.strip() for p in phases.value.split(",") if p.strip()]
+        act.run_options = phases.value
+        if not run_options.selected(act.run_options):
+            ui.notify("Select at least one phase", type="warning")
+            return
 
         # Collect field mappings from dynamic rows
         field_mappings = []

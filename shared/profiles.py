@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from shared import run_options
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,9 +45,9 @@ class Activity:
     name: str = ""
     display_name: str = ""
     node_types: list[str] = field(default_factory=list)
-    default_phases: list[str] = field(default_factory=lambda: [
-        "preNodeHealthCheck", "activity", "postNodeHealthCheck"
-    ])
+    # Phases the activity's workflow has + "backup via repo server" (spec 010, fixed per activity;
+    # stored in the default_phases column)
+    run_options: dict = field(default_factory=run_options.default)
     ciq_mapping: dict = field(default_factory=lambda: {
         "node_id_column": "",
         "gateway_id_column": "",
@@ -181,7 +183,7 @@ class ProfileManager:
             "name": act.name,
             "display_name": act.display_name or act.name.replace("_", " ").title(),
             "node_types": act.node_types,
-            "default_phases": act.default_phases,
+            "default_phases": run_options.normalize(act.run_options),
             "ciq_mapping": act.ciq_mapping,
         })
         return act.id
@@ -237,8 +239,9 @@ class ProfileManager:
                 "access_gateway_enabled": vendor.access_gateway.get("enabled", False),
             },
             "category_3_orchestration": {
-                "phases": activity.default_phases if activity else [],
+                "phases": run_options.selected(activity.run_options if activity else None),
             },
+            "run_options": run_options.normalize(activity.run_options if activity else None),
         }
 
         if activity:
@@ -304,7 +307,8 @@ class ProfileManager:
             name=row["name"],
             display_name=row.get("display_name", ""),
             node_types=_parse_json(row.get("node_types", "[]")),
-            default_phases=_parse_json(row.get("default_phases", "[]")),
+            # a dict of options; an old free-text phase list never shaped the run → all phases
+            run_options=run_options.normalize(_parse_json(row.get("default_phases", "{}"))),
             ciq_mapping=_parse_json(row.get("ciq_mapping", "{}")),
         )
 
