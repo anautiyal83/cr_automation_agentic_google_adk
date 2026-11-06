@@ -140,6 +140,12 @@ CRITICAL RULES:
   (the JAR stores the FIRST group's value under the name).
     validation: {success: {criteria: {regex: 'Average:', expr: 'cpuIdle >= 90'}}}
   Named groups of the validation regex itself are not visible to expr.
+  expr is NOT JavaScript: no functions, lists, [i], .length, .every(...) or =>. "Every pod / line
+  reports the same value" is computed in the command — `… | sort -u | wc -l` — then
+  register: [{regex: '(?<distinctCount>\\d+)'}] and expr 'distinctCount == 1'.
+- A shell variable the command sets itself is written $NAME, never ${NAME}: the framework fills
+  every ${…} before the node sees it (`DATE=$(date +%Y%m%d); … predump_${DATE}.txt` arrives as
+  `predump_.txt`) — write `DATE=$(date +%Y%m%d); … predump_$DATE.txt`.
 - sftp steps print nothing: give them no output regex (the transfer status decides).
 - The pipeline adds these itself — do NOT write them:
     - a loop over all CIQ records: write each per-record step ONCE with

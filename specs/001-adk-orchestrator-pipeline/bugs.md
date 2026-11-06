@@ -1030,3 +1030,20 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: the runner's step 4 files are the validation rules, then the CIQ JSON. The review is named "Steps 3–4 ·
   Validation Rules & CIQ JSON", lists one row per file and opens the viewer with a tab per file. Test
   `test_steps_3_4_review_shows_the_rules_and_the_ciq_json`.
+
+### DEP-72 — EIR step 6: JavaScript in criteria.expr, shell variables written ${NAME} (High, Fixed 2026-11-06)
+- The LLM checked "every pod reports the same count" with `counts.every(val => val === counts[0])`; autofix dropped
+  the parentheses and the validator said "uses val, which no step registers" — the correction rounds could not fix
+  it. `DATE=$(date +%Y%m%d); … predump_${DATE}.txt`: the JAR fills every `${…}` itself, an unregistered one with
+  '' (probed: `${DATE}` arrived as '', `$DATE` passed through). MockWire answered `DATE=…` "command not found".
+- **Fix**: autofix `shell_variables_unbraced` (`${NAME}` of a variable the command sets or loops over → `$NAME`);
+  `EXPR_UNSUPPORTED` exprs keep their parentheses and the validator explains what expr can do and what to write
+  (`… | sort -u | wc -l`, register the count, `distinctCount == 1`); step 6 prompt rules for both; MockWire
+  9a058e5 keeps `NAME=value` / `export NAME=value` as session variables.
+
+### OB-24 — A failed step offered Continue after a reload; the review never said why a step failed (Medium, Fixed 2026-11-06)
+- Reloaded reviews (page refresh, server restart) took the failure status from the ADK session state, and only for
+  steps 5/7/9: a failed step 6 came back with Continue. No review showed the step's error file.
+- **Fix**: the reloaded review is failed when the pause itself says so (`milestone_waiting`) or the step's error
+  file exists — every step; a failed review lists the reasons from `step_<n>_error.json` ("Why step N failed",
+  step 9: every failed test case). Tests `tests/test_step6_shell_vars_and_failures.py`.

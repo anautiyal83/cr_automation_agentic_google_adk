@@ -221,6 +221,11 @@ class ProgressSection:
                 self.ms_view_btn = ui.button("View artifact", icon="visibility",
                     on_click=self._show_artifact_dialog) \
                     .props("flat color=primary size=sm no-caps")
+            # Why the step failed (its step_<n>_error.json) — populated on a failed review
+            self.ms_failure_box = ui.column().classes("w-full gap-1 p-3").style(
+                "border: 1px solid var(--cr-error); border-left-width: 3px; border-radius: 8px; "
+                "background: color-mix(in srgb, var(--cr-error) 6%, var(--cr-surface))")
+            self.ms_failure_box.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
@@ -757,6 +762,7 @@ class ProgressSection:
                     self.progress_bar.value = ms_step / TOTAL_STEPS
                     artifact_file = ""
                     extra_files = []
+                    ms_state: dict = {}
                     try:
                         ms_state = await self.runner.get_state(str(run_id))
                         artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
@@ -764,12 +770,12 @@ class ProgressSection:
                         )
                     except Exception:
                         pass
-                    has_failures = False
-                    if ms_step in (5, 7, 9):
-                        try:
-                            has_failures = ms_state.get(f"step_{ms_step}_status") == "failed"
-                        except Exception:
-                            pass
+                    # failed: the pause's own status (shared dict) or the step's error file — the
+                    # session state did not say, so a failed step 6 came back with Continue
+                    from shared.state import milestone_waiting as _mw
+                    rd = self._run_dir or str(ms_state.get("run_dir", ""))
+                    has_failures = ((_mw.get(ms_step) or {}).get("status") == "failed"
+                                    or bool(_failure_reasons(rd, ms_step)))
                     self._show_milestone_review(ms_step, milestone_name, artifact_file,
                                                 has_failures=has_failures,
                                                 extra_artifact_files=extra_files)
@@ -1211,6 +1217,7 @@ class ProgressSection:
         self.ms_continue_btn.text = "Continue"
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
+        self._show_failure_reasons(step_num if has_failures else 0)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
         self.ms_edit_btn.set_visibility(step_num == 2)
@@ -1271,6 +1278,25 @@ class ProgressSection:
         else:
             self.ms_extra_files_row.set_visibility(False)
 
+    def _show_failure_reasons(self, step_num: int) -> None:
+        """The reasons in the failed step's error file(s), one line each (0 hides the box)."""
+        self.ms_failure_box.clear()
+        reasons = _failure_reasons(self._run_dir or (str(Path("data/runs") / str(self.active_run_id))
+                                                     if self.active_run_id else ""), step_num) if step_num else []
+        self.ms_failure_box.set_visibility(bool(reasons))
+        if not reasons:
+            return
+        with self.ms_failure_box:
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("error_outline", size="18px").classes("cr-text-error")
+                ui.label(f"Why step {step_num} failed").classes("font-semibold")
+            for reason in reasons[:8]:
+                ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere; white-space: pre-wrap")
+            if len(reasons) > 8:
+                with ui.expansion(f"{len(reasons) - 8} more").classes("w-full text-body2"):
+                    for reason in reasons[8:]:
+                        ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere")
+
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Show milestone row with questionnaire controls and auto-open dialog."""
         self.milestone_row.set_visibility(True)
@@ -1285,6 +1311,7 @@ class ProgressSection:
         self.ms_rerun_btn.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
+        self.ms_failure_box.set_visibility(False)
 
         # Show Answer Questions + Skip buttons
         self.ms_continue_btn.text = "Skip & Use Defaults"
@@ -2091,6 +2118,28 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
                for r in rules):
             found.append(f)
     return found[:60]
+
+
+def _failure_reasons(run_dir: str, step: int) -> list[str]:
+    """Why a step failed, one reason per entry, from its ``step_<n>_error.json`` (the steps 3-4
+    review: both files; step 9: every failed test case)."""
+    import json as _json
+    reasons: list[str] = []
+    for n in {4: (3, 4)}.get(step, (step,)):
+        try:
+            data = _json.loads((Path(run_dir) / f"step_{n}_error.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        err = str(data.get("error") or "").strip()
+        cases = [c for c in data.get("failed_test_cases") or [] if isinstance(c, dict)]
+        if cases:
+            reasons += [err] if err else []
+            reasons += [f"{c.get('id', '')} {c.get('scenario', '')}: "
+                        + "; ".join(str(e) for e in (c.get("errors") or [])[:3]) for c in cases]
+        elif err:
+            # the problems are joined with "; " after a full stop
+            reasons += [r.strip() for r in re.split(r"(?<=\.)\s*;\s+", err) if r.strip()]
+    return reasons
 
 
 _REVIEW_LABELS = {"validation-rules": "Validation rules · step 3", "json-output": "CIQ JSON config · step 4",
