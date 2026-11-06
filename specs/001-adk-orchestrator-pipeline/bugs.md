@@ -1055,3 +1055,10 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: `compiler._dict_at` / `_list_at` give a dict / list field, replacing a null one; every `setdefault(…, {})`
   / `setdefault(…, [])` and `.get(…, {})` / `.get(…, [])` in the compiler uses them / `or {}`. Test
   `test_vendor_profile_merges_into_a_node_the_llm_left_without_ssh`.
+
+### OB-26 — Edit requirements only at the step 2 review (Low, Changed 2026-11-06)
+- User: "every review step should allow user to edit requirement" (OB-21 had it at step 2 only).
+- **Change**: the button is on every review. At a later review the decision `edit` goes back to step 1 like
+  `clarify` (artifact cache cleared, no retry counted); step 1 applies the pending `requirement_edits.json` after
+  its analysis (no questionnaire), compiles again and pauses at the step 2 review; every later step runs again.
+  Test `test_edit_from_a_later_review_is_applied_when_step_1_runs_again`.

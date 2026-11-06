@@ -1220,7 +1220,8 @@ class ProgressSection:
         self._show_failure_reasons(step_num if has_failures else 0)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
-        self.ms_edit_btn.set_visibility(step_num == 2)
+        # every review: the requirements can be corrected (later steps: the run goes back to step 1)
+        self.ms_edit_btn.set_visibility(step_num >= 2)
         self._show_clarifications()
 
         # On failure: block Continue for all step types
@@ -1636,6 +1637,11 @@ class ProgressSection:
                 ui.label("Describe what needs correcting, fix the CIQ, or change an answer that was captured "
                          "wrongly. The requirements are compiled again and shown for review; the changes also "
                          "apply to the next runs of this use case.").classes("text-caption cr-text-dim")
+                review_step = getattr(self, "_current_milestone_step", 2) or 2
+                if review_step > 2:
+                    ui.label(f"From the step {review_step} review the run goes back to step 1: you check the "
+                             "updated requirements at step 2, then every later step runs again.") \
+                        .classes("text-caption font-medium").style("color: var(--cr-warning)")
             inputs: dict[str, Any] = {}
             with ui.column().classes("w-full gap-4 px-5 py-4").style("flex: 1; overflow-y: auto; min-height: 0"):
                 with ui.column().classes("w-full gap-1"):
@@ -1744,7 +1750,8 @@ class ProgressSection:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Document set of run %s not updated: %s", run_id_str[:8], e)
         dialog.close()
-        self.runner.respond_milestone(run_id_str, 2, "edit")
+        step_num = getattr(self, "_current_milestone_step", 2) or 2
+        self.runner.respond_milestone(run_id_str, step_num, "edit")
         await record("requirements.edit", target_type="run", target_id=run_id_str, run_id=run_id_str,
                      details={"answers_changed": sorted(changed), "note": text[:500],
                               "ciq_replaced": Path(new_ciq).name if new_ciq else "",
@@ -1756,8 +1763,15 @@ class ProgressSection:
         self.action_btns.set_visibility(True)
         self.status_icon.name = "sync"
         self.status_icon.classes(replace="cr-text-accent cr-spin")
-        self.status_label.text = "Updating requirements..."
-        self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
+        if step_num > 2:  # a later review: requirements again from step 1, then every later step
+            self.status_label.text = "Back to Step 1 — updating requirements"
+            self.status_detail.text = (", ".join(parts) + " — the requirements are compiled again for review "
+                                       "at step 2, then every later step runs again")
+            for s in range(1, TOTAL_STEPS + 1):
+                self._update_step_visual(s, "pending")
+        else:
+            self.status_label.text = "Updating requirements..."
+            self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
 
     def _show_artifact_dialog(self, tab: int = 0):
         """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config),

@@ -123,6 +123,21 @@ class RequirementsGathererNode(BaseAgent):
         readiness = output.readiness
         flow.flow("REQUIREMENTS Phase 2 result: readiness=%s", readiness)
 
+        # An edit made at a later review sent the run back here: applied before compiling, no
+        # questionnaire (what stays open is listed under Remaining Gaps), reviewed at step 2
+        from shared import requirement_edits
+        pending = requirement_edits.take(run_dir)
+        if pending:
+            changed = skill.apply_edit(pending.get("answers") or {}, pending.get("note") or "",
+                                       pending.get("by") or "", pending.get("at") or "",
+                                       ciq_file_path=pending.get("ciq_file_path") or "",
+                                       excluded_sheets=pending.get("excluded_sheets"))
+            flow.flow("REQUIREMENTS: Edit from a later review — %d answer(s) changed, note=%s", len(changed),
+                      bool(pending.get("note")))
+            output = await skill.incorporate_answers({})
+            output.questions = []
+            readiness = output.readiness
+
         # ── Phase 3: Questionnaire loop ──
         if output.questions:
             round_num = 0

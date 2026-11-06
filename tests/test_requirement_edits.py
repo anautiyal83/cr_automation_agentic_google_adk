@@ -189,3 +189,58 @@ def test_vendor_profile_merges_into_a_node_the_llm_left_without_ssh():
     node = out["category_1_node_activity"]["nodes"][0]
     assert node["ssh"]["user"] == "oamsys" and node["ssh"]["file_transfer"] == "scp"
     assert out["category_3_orchestration"]["ssh"]["user"] == "oamsys"
+
+
+def test_edit_from_a_later_review_is_applied_when_step_1_runs_again(tmp_path, monkeypatch):
+    """Edit requirements at e.g. the step 6 review sends the run back to step 1: the pending edit is
+    applied after the analysis, its open points ask no questionnaire, the requirements compile again."""
+    import asyncio
+    import uuid
+    from types import SimpleNamespace
+
+    import agents.requirements_agent as ra
+
+    calls = []
+
+    def out(**kw):
+        base = dict(readiness="PARTIAL", questions=[], all_answers={}, requirements={}, requirements_json="{}",
+                    requirements_html="<html/>")
+        return SimpleNamespace(**{**base, **kw})
+
+    class FakeSkill:
+        _raw_artifacts = {}
+
+        def __init__(self, llm_fn=None):
+            pass
+
+        async def parse_and_analyze(self, inp):
+            calls.append("analyze")
+            return out()
+
+        def apply_edit(self, answers, note, by, at, ciq_file_path="", excluded_sheets=None):
+            calls.append(("edit", note, tuple(excluded_sheets or ())))
+            return {}
+
+        async def incorporate_answers(self, answers):
+            calls.append("reanalyze")
+            return out(questions=[{"id": "na_q9", "question": "?"}])
+
+        async def compile_final(self):
+            calls.append("compile")
+            return out()
+
+    monkeypatch.setattr(ra, "RequirementGatheringSkill", FakeSkill)
+    requirement_edits.save(str(tmp_path), {}, "CRFRoutePriorityList is not part of it", "dev@x.io",
+                           excluded_sheets=["CRFRoutePriorityList"])
+    ctx = SimpleNamespace(session=SimpleNamespace(state={
+        "run_id": str(uuid.uuid4()), "run_dir": str(tmp_path), "uc_name": "UC_X", "document_set": {},
+        "review_milestones": False}))
+
+    async def drain():
+        async for _ in ra.RequirementsGathererNode()._run_async_impl(ctx):
+            pass
+
+    asyncio.run(asyncio.wait_for(drain(), 5))
+    assert calls == ["analyze", ("edit", "CRFRoutePriorityList is not part of it", ("CRFRoutePriorityList",)),
+                     "reanalyze", "compile"]
+    assert not (tmp_path / requirement_edits.FILE).exists()

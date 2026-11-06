@@ -185,7 +185,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
   backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
-- Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers
+- Every review (2-9): **Edit requirements** — at a later review the decision `edit` sends the run back to
+  step 1 like `clarify` (cache cleared, no retry counted), which applies the pending edit after its analysis.
+  Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers
   replace the UC's saved answers, the note joins the developer notes (also the run's document set) as
   authoritative; a corrected CIQ workbook / unticked sheets (`excluded_ciq_sheets`, kept per UC) are applied;
   step 1 re-analyses (no questionnaire), compiles again and pauses at step 2 again. Later steps take the CIQ
