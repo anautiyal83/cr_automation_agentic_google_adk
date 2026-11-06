@@ -761,7 +761,7 @@ class PipelineRunner:
         artifact_map = {
             2: f"{uc_name}_requirements-summary.html",
             3: f"{uc_name}_validation-rules.yaml",
-            4: f"{uc_name}_json-output.yaml",
+            4: f"{uc_name}_validation-rules.yaml",   # the steps 3-4 review: rules first, then the CIQ JSON
             5: f"{uc_name}_ciq-qa-report.html",
             6: f"{uc_name}.yaml",
             7: f"{uc_name}_mop-qa-report.html",
@@ -773,7 +773,7 @@ class PipelineRunner:
         artifacts = state.get("artifacts", {})
         state_artifact_map = {
             3: "validation_rules_yaml",
-            4: "json_template_yaml",
+            4: "validation_rules_yaml",
             6: "workflow_yaml",
         }
 
@@ -798,6 +798,7 @@ class PipelineRunner:
         extra: list[str] = []
         extra_map = {
             2: ["requirements.json"],
+            4: [f"{uc_name}_json-output.yaml"],
             5: [f"{uc_name}_validation-rules.yaml", f"{uc_name}_json-output.yaml"],
             7: [f"{uc_name}.yaml"],
             8: [f"{uc_name}_simulator-config.yaml", "simulator/manifest.json"],

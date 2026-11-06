@@ -413,3 +413,13 @@ def test_resumed_run_shows_the_steps_it_does_again_as_pending():
     state = PipelineRunner._resume_state("r1", {"state": dict(done), "agent_index": _AGENT_NAMES.index(mop),
                                                 "kind": "milestone"})
     assert state["step_7_status"] == "passed" and "step_8_status" not in state   # the review of step 7 again
+
+
+def test_steps_3_4_review_shows_the_rules_and_the_ciq_json(tmp_path):
+    """The steps 3-4 review listed only json-output.yaml: the runner's file map (which fills the review
+    panel) had the CIQ JSON as the only file of step 4."""
+    for name in ("UC_validation-rules.yaml", "UC_json-output.yaml"):
+        (tmp_path / name).write_text("x: 1\n", encoding="utf-8")
+    primary, extra = PipelineRunner._resolve_milestone_artifacts(None, {"run_dir": str(tmp_path), "uc_name": "UC"}, 4)
+    assert [p.split("\\")[-1].split("/")[-1] for p in [primary, *extra]] == ["UC_validation-rules.yaml",
+                                                                              "UC_json-output.yaml"]

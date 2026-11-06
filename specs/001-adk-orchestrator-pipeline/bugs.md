@@ -1022,3 +1022,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   (`excluded_ciq_sheets`, saved per UC, applied by later runs), and later steps read the corrected CIQ via
   `agents.requirements_agent.ciq_file_path`. After an edit the requirements are compiled again without a
   questionnaire; open points appear under Remaining Gaps. Tests in `tests/test_requirement_edits.py`.
+
+### OB-23 — The steps 3-4 review showed only the CIQ JSON, not the validation rules (Low, Fixed 2026-11-06)
+- Two file maps fill a review: `PipelineAgent._resolve_artifacts` and `PipelineRunner._resolve_milestone_artifacts`;
+  the runner's event comes last and also restores the review after a restart. It had `json-output.yaml` as the only
+  file of step 4, so the validation rules (step 3's output) were not offered for review.
+- **Fix**: the runner's step 4 files are the validation rules, then the CIQ JSON. The review is named "Steps 3–4 ·
+  Validation Rules & CIQ JSON", lists one row per file and opens the viewer with a tab per file. Test
+  `test_steps_3_4_review_shows_the_rules_and_the_ciq_json`.
