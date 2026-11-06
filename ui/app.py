@@ -953,6 +953,11 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
 .text-caption { font-size: 10.5px !important; }
 .q-field--outlined .q-field__control { border-radius: 8px !important; }
 .q-field--outlined .q-field__control:before { border-color: var(--cr-border) !important; }
+/* A text box the user is meant to type into: a visible box, blue when focused */
+.cr-boxed .q-field__control { background: var(--cr-surface) !important; }
+.cr-boxed.q-field--outlined .q-field__control:before { border: 1px solid var(--cr-text-dim) !important; opacity: .6; }
+.cr-boxed.q-field--outlined.q-field--focused .q-field__control:after { border-color: var(--cr-primary) !important; }
+.cr-boxed .q-field__native { font-size: 12.5px !important; line-height: 1.5 !important; padding-top: 8px !important; }
 .q-linear-progress { border-radius: 99px; }
 .q-expansion-item__content { padding: 4px 8px !important; }
 .q-slider { margin: 2px 0 !important; }

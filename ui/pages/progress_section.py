@@ -192,6 +192,12 @@ class ProgressSection:
                     "background: #f8f9fc; color: #1a1a2e"
                 )
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
+            # Pre-built "Edit requirements" dialog (step 2 review), filled on demand: one created in
+            # the click handler did not take any typing
+            self._edit_dialog = ui.dialog()
+            with self._edit_dialog:
+                self._edit_card = ui.card().classes("w-full p-0").style(
+                    "max-width: 880px; max-height: 90vh; display: flex; flex-direction: column")
         self._select_step(1, user=False)
         self._set_run_state("idle")
         ui.timer(1.0, self._tick)
@@ -1576,28 +1582,28 @@ class ProgressSection:
         answers = req.get("developer_answers") or {}
         questions = req.get("developer_questions") or {}
 
-        dialog = ui.dialog()
-        with dialog, ui.card().classes("w-full p-0").style("max-width: 880px; max-height: 90vh; display: flex; "
-                                                          "flex-direction: column"):
+        dialog, card = self._edit_dialog, self._edit_card
+        card.clear()
+        with card:
             with ui.column().classes("w-full gap-1 px-5 pt-4 pb-3").style("border-bottom: 1px solid var(--cr-border)"):
                 ui.label("Edit requirements").classes("text-h6 font-semibold")
                 ui.label("Change an answer that was captured wrongly, or describe what needs correcting or "
                          "clarifying. The requirements are compiled again and shown for review; the changed "
                          "answers also replace the saved ones for this use case.").classes("text-caption cr-text-dim")
             inputs: dict[str, Any] = {}
-            with ui.scroll_area().classes("w-full").style("flex: 1; min-height: 200px"):
-                with ui.column().classes("w-full gap-3 px-5 py-4"):
-                    note = ui.textarea("What is wrong or needs clarifying",
-                                       placeholder="e.g. VER 13.0.3.7 loads plain files; every other version, "
+            with ui.column().classes("w-full gap-4 px-5 py-4").style("flex: 1; overflow-y: auto; min-height: 0"):
+                with ui.column().classes("w-full gap-1"):
+                    ui.label("What is wrong or needs clarifying").classes("text-subtitle2 font-semibold")
+                    note = ui.textarea(placeholder="e.g. VER 13.0.3.7 loads plain files; every other version, "
                                                    "including 17.x.x.x, loads tar files") \
-                        .props("outlined autogrow").classes("w-full")
-                    if answers:
-                        ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold mt-2")
-                    for qid, val in answers.items():
-                        with ui.column().classes("w-full gap-0"):
-                            ui.label(str(questions.get(qid) or qid)).classes("text-caption font-medium")
-                            inputs[qid] = (val, ui.textarea(value="" if val is None else str(val))
-                                           .props("outlined dense autogrow").classes("w-full"))
+                        .props("outlined rows=4").classes("w-full cr-boxed")
+                if answers:
+                    ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold")
+                for qid, val in answers.items():
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label(str(questions.get(qid) or qid)).classes("text-caption font-medium")
+                        inputs[qid] = (val, ui.textarea(value="" if val is None else str(val))
+                                       .props("outlined autogrow").classes("w-full cr-boxed"))
             with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style("border-top: 1px solid var(--cr-border)"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
                 action(ui.button("Update requirements", icon="check",
