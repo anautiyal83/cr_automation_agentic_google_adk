@@ -1571,8 +1571,8 @@ class ProgressSection:
         ))
         self.progress_bar.props("stripe animate")
 
-    def _open_requirements_editor(self):
-        """Step 2 review: the captured answers, editable, and a note on what is wrong or unclear."""
+    async def _open_requirements_editor(self):
+        """Step 2 review: what is wrong, the CIQ workbook and its sheets, and the captured answers."""
         import json as _json
         run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
         try:
@@ -1581,15 +1581,25 @@ class ProgressSection:
             req = {}
         answers = req.get("developer_answers") or {}
         questions = req.get("developer_questions") or {}
+        used = list(((req.get("doc_extracted") or {}).get("ciq_sheets") or {}).keys())
+        excluded = [x for x in req.get("excluded_ciq_sheets") or [] if x not in used]
+        ciq_path = req.get("ciq_file_path") or ""
+        if not ciq_path and self.runner and self.runner._db and self.active_run_id:
+            rows = await self.runner._db.execute(
+                "SELECT d.ciq_file_path FROM pipeline_runs r JOIN uc_document_sets d ON r.document_set_id = d.id "
+                "WHERE r.id = ?", (str(self.active_run_id),))
+            ciq_path = rows[0]["ciq_file_path"] if rows else ""
+        # the CIQ part of the edit: a replacement workbook and its sheet tick boxes
+        ciq = {"path": "", "sheets": {}, "excluded": sorted(excluded)}
 
         dialog, card = self._edit_dialog, self._edit_card
         card.clear()
         with card:
             with ui.column().classes("w-full gap-1 px-5 pt-4 pb-3").style("border-bottom: 1px solid var(--cr-border)"):
                 ui.label("Edit requirements").classes("text-h6 font-semibold")
-                ui.label("Change an answer that was captured wrongly, or describe what needs correcting or "
-                         "clarifying. The requirements are compiled again and shown for review; the changed "
-                         "answers also replace the saved ones for this use case.").classes("text-caption cr-text-dim")
+                ui.label("Describe what needs correcting, fix the CIQ, or change an answer that was captured "
+                         "wrongly. The requirements are compiled again and shown for review; the changes also "
+                         "apply to the next runs of this use case.").classes("text-caption cr-text-dim")
             inputs: dict[str, Any] = {}
             with ui.column().classes("w-full gap-4 px-5 py-4").style("flex: 1; overflow-y: auto; min-height: 0"):
                 with ui.column().classes("w-full gap-1"):
@@ -1597,6 +1607,29 @@ class ProgressSection:
                     note = ui.textarea(placeholder="e.g. VER 13.0.3.7 loads plain files; every other version, "
                                                    "including 17.x.x.x, loads tar files") \
                         .props("outlined rows=4").classes("w-full cr-boxed")
+
+                with ui.column().classes("w-full gap-2"):
+                    ui.label("CIQ workbook").classes("text-subtitle2 font-semibold")
+                    ciq_label = ui.label(f"In use: {Path(ciq_path).name if ciq_path else '—'}") \
+                        .classes("text-caption cr-text-dim")
+                    ui.label("Sheets used by this activity (untick a sheet that is not part of it)") \
+                        .classes("text-caption font-medium")
+                    sheet_row = ui.row().classes("w-full gap-x-6 gap-y-1")
+
+                    def render_sheets(names: list[str], off: set[str]) -> None:
+                        sheet_row.clear()
+                        ciq["sheets"].clear()
+                        with sheet_row:
+                            for n in names:
+                                ciq["sheets"][n] = ui.checkbox(n, value=n not in off)
+                            if not names:
+                                ui.label("No sheets read from the CIQ").classes("text-caption cr-text-dim")
+
+                    render_sheets(used + excluded, set(excluded))
+                    action(ui.upload(label="Replace the CIQ workbook (.xlsx)", auto_upload=True, max_files=1,
+                                     on_upload=lambda e: self._receive_ciq_upload(e, ciq, ciq_label, render_sheets))
+                           .props('accept=".xlsx" flat bordered').classes("w-full"), "progress")
+
                 if answers:
                     ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold")
                 for qid, val in answers.items():
@@ -1607,47 +1640,88 @@ class ProgressSection:
             with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style("border-top: 1px solid var(--cr-border)"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
                 action(ui.button("Update requirements", icon="check",
-                                 on_click=lambda: self._submit_requirement_edits(dialog, inputs, note, run_dir))
+                                 on_click=lambda: self._submit_requirement_edits(dialog, inputs, note, run_dir, ciq))
                        .props("unelevated color=primary no-caps"), "progress")
         dialog.open()
 
     @requires("progress", "requirements.edit")
+    async def _receive_ciq_upload(self, e, ciq: dict, ciq_label, render_sheets) -> None:
+        """A corrected CIQ workbook: kept in the uploads, its visible sheets offered for ticking."""
+        import uuid
+        from core.config import PROJECT_ROOT
+        from skills.requirement_gathering.parsers import parse_ciq
+        uploads = PROJECT_ROOT / "data" / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        name = e.file.name
+        if not name.lower().endswith(".xlsx"):
+            ui.notify("The CIQ must be an .xlsx workbook", type="warning")
+            return
+        dest = uploads / f"{str(uuid.uuid4())[:8]}_{name}"
+        await e.file.save(dest)
+        sheets = list(parse_ciq(ciq_file_path=str(dest)))
+        if not sheets:
+            ui.notify(f"No sheet could be read from {name}", type="negative")
+            return
+        ciq["path"] = str(dest)
+        ciq_label.text = f"New: {name} (replaces the one in use when you update)"
+        render_sheets(sheets, set(ciq["excluded"]) & set(sheets))
+        ui.notify(f"Read {len(sheets)} sheets from {name}", type="info")
+        await record("document.upload", target_type="document", target_id=name, details={"slot": "ciq_edit"})
+
+    @requires("progress", "requirements.edit")
     @_own_run("requirements.edit")
-    async def _submit_requirement_edits(self, dialog, inputs: dict, note, run_dir: str):
+    async def _submit_requirement_edits(self, dialog, inputs: dict, note, run_dir: str, ciq: dict):
         """Hand the edit to step 1 (disk) and answer the step 2 review with ``edit``."""
         from shared import requirement_edits
         changed = {qid: inp.value.strip() for qid, (old, inp) in inputs.items()
                    if (inp.value or "").strip() != str("" if old is None else old).strip()}
         text = (note.value or "").strip()
-        if not changed and not text:
-            ui.notify("Change an answer or describe what needs correcting", type="warning")
+        new_ciq = ciq.get("path") or ""
+        excluded = sorted(n for n, box in ciq.get("sheets", {}).items() if not box.value)
+        sheets_changed = bool(new_ciq) or excluded != ciq.get("excluded", [])
+        if ciq.get("sheets") and len(excluded) == len(ciq["sheets"]):
+            ui.notify("Keep at least one CIQ sheet", type="warning")
+            return
+        if not changed and not text and not sheets_changed:
+            ui.notify("Describe what needs correcting, change the CIQ or change an answer", type="warning")
             return
         if not self.runner or not self.active_run_id or str(self.active_run_id) not in self.runner._active_runs:
             ui.notify("The run is not waiting for review any more", type="warning")
             return
         user = self._scope.user
         run_id_str = str(self.active_run_id)
-        edit = requirement_edits.save(run_dir, changed, text, user.email if user else "")
-        if text and self.runner._db:
-            # The next run of this use case starts with the note in its developer notes
+        edit = requirement_edits.save(run_dir, changed, text, user.email if user else "", ciq_file_path=new_ciq,
+                                      excluded_sheets=excluded if sheets_changed else None)
+        if self.runner._db and (text or new_ciq):
+            # The run's document set: the next run of this use case starts from the note, and the
+            # run's documents name the CIQ it used
             try:
-                await self.runner._db.execute(
-                    "UPDATE uc_document_sets SET developer_notes = TRIM(COALESCE(developer_notes, '') || ? ) "
-                    "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)",
-                    ("\n\n" + requirement_edits.note_block(text, edit["by"], edit["at"]), run_id_str))
+                if text:
+                    await self.runner._db.execute(
+                        "UPDATE uc_document_sets SET developer_notes = TRIM(COALESCE(developer_notes, '') || ? ) "
+                        "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)",
+                        ("\n\n" + requirement_edits.note_block(text, edit["by"], edit["at"]), run_id_str))
+                if new_ciq:
+                    await self.runner._db.execute(
+                        "UPDATE uc_document_sets SET ciq_file_path = ? "
+                        "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)", (new_ciq, run_id_str))
             except Exception as e:  # noqa: BLE001
-                logger.warning("Developer notes of run %s not updated: %s", run_id_str[:8], e)
+                logger.warning("Document set of run %s not updated: %s", run_id_str[:8], e)
         dialog.close()
         self.runner.respond_milestone(run_id_str, 2, "edit")
         await record("requirements.edit", target_type="run", target_id=run_id_str, run_id=run_id_str,
-                     details={"answers_changed": sorted(changed), "note": text[:500]})
+                     details={"answers_changed": sorted(changed), "note": text[:500],
+                              "ciq_replaced": Path(new_ciq).name if new_ciq else "",
+                              "excluded_sheets": excluded if sheets_changed else None})
+        parts = [f"{len(changed)} answer(s) changed"] if changed else []
+        parts += ["a note added"] if text else []
+        parts += ["CIQ updated"] if sheets_changed else []
         self.milestone_row.set_visibility(False)
         self.action_btns.set_visibility(True)
         self.status_icon.name = "sync"
         self.status_icon.classes(replace="cr-text-accent cr-spin")
         self.status_label.text = "Updating requirements..."
-        self.status_detail.text = (f"{len(changed)} answer(s) changed" + (" and a note added" if text else "")
-                                   + " — the document is compiled again for review")
+        self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
 
     def _show_artifact_dialog(self):
         import html as html_mod

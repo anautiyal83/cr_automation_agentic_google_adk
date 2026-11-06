@@ -181,6 +181,10 @@ def generate_summary_html(
             lines.append("</table></div>")
     else:
         lines.append("<div class='section'><p>No CIQ structure available</p></div>")
+    excluded = requirements.get("excluded_ciq_sheets") or []
+    if excluded:
+        lines.append("<p class='meta'>Not used by this activity: "
+                     + ", ".join(f"<code>{html_escape(str(s))}</code>" for s in excluded) + "</p>")
     lines.append("</details>")
 
     # -- CIQ Field Mappings --
@@ -473,6 +477,11 @@ def generate_summary_html(
             lines.append(f"<h3>Update {i} <span class='meta'>{u.get('at', '')}{who}</span></h3>")
             if u.get("note"):
                 lines.append(f"<pre>{html_escape(str(u['note']))}</pre>")
+            if u.get("ciq_file"):
+                lines.append(f"<p>CIQ workbook replaced: <code>{html_escape(str(u['ciq_file']))}</code></p>")
+            if "excluded_sheets" in u:
+                names = ", ".join(f"<code>{html_escape(str(s))}</code>" for s in u["excluded_sheets"]) or "none"
+                lines.append(f"<p>CIQ sheets not used by this activity: {names}</p>")
             changed = u.get("answers") or {}
             if changed:
                 lines.append("<table class='answer-row'><tr><th>Question</th><th>Was</th><th>Now</th></tr>")

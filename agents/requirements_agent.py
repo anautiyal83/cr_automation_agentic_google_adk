@@ -31,6 +31,14 @@ flow = get_flow_logger(__name__)
 requirements_store: dict[str, dict] = {}  # run_id -> requirements package
 
 
+def ciq_file_path(state) -> str:
+    """The run's CIQ workbook: a corrected one uploaded at the step 2 review (in the requirements)
+    or the one the run started with (shared dict first: ADK session state written by an agent is
+    not seen by the later ones)."""
+    reqs = requirements_store.get(str(state.get("run_id", ""))) or {}
+    return reqs.get("ciq_file_path") or state.get("ciq_file_path", "")
+
+
 class RunCancelled(Exception):
     """The developer pressed Cancel at a question round: the run ends, no further round."""
 
@@ -200,17 +208,16 @@ class RequirementsGathererNode(BaseAgent):
             from shared import requirement_edits
             edit = requirement_edits.take(run_dir)
             changed = skill.apply_edit(edit.get("answers") or {}, edit.get("note") or "",
-                                       edit.get("by") or "", edit.get("at") or "")
+                                       edit.get("by") or "", edit.get("at") or "",
+                                       ciq_file_path=edit.get("ciq_file_path") or "",
+                                       excluded_sheets=edit.get("excluded_sheets"))
             edit_round += 1
             flow.flow("REQUIREMENTS: Edit %d — %d answer(s) changed, note=%s", edit_round, len(changed),
                       bool(edit.get("note")))
+            # Re-analysed with the edit, compiled again and shown for review — no questionnaire: what
+            # stays open is listed under Remaining Gaps, and the developer edits again if needed
             output = await skill.incorporate_answers({})
             readiness = output.readiness
-            if output.questions:  # the edit raised new questions: asked before compiling again
-                answers = await self._ask_developer(ctx, output.questions, edit_round, "",
-                                                    output.all_answers)
-                output = await skill.incorporate_answers(answers)
-                readiness = output.readiness
 
         if decision == "cancel":
             from shared.state import pipeline_actions

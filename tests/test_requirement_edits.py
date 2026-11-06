@@ -77,13 +77,13 @@ def test_step2_edit_compiles_again_and_pauses_for_review_again(tmp_path, monkeyp
             calls.append("compile")
             return out()
 
-        def apply_edit(self, answers, note, by, at):
+        def apply_edit(self, answers, note, by, at, ciq_file_path="", excluded_sheets=None):
             calls.append(("edit", dict(answers), note))
             return {k: {"from": "", "to": v} for k, v in answers.items()}
 
         async def incorporate_answers(self, answers):
             calls.append("reanalyze")
-            return out()
+            return out(questions=[{"id": "q9", "question": "?"}])   # open points: no questionnaire
 
     monkeypatch.setattr(ra, "RequirementGatheringSkill", FakeSkill)
     run_id = str(uuid.uuid4())
@@ -92,8 +92,10 @@ def test_step2_edit_compiles_again_and_pauses_for_review_again(tmp_path, monkeyp
         "review_milestones": True}))
 
     async def wait_for_review():
-        while not (milestone_waiting.get(2) or {}).get("waiting"):
-            await asyncio.sleep(0.01)
+        async def poll():
+            while not (milestone_waiting.get(2) or {}).get("waiting"):
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(poll(), 5)
 
     async def scenario():
         task = asyncio.create_task(_drain(ra.RequirementsGathererNode()._run_async_impl(ctx)))
@@ -119,3 +121,58 @@ def test_step2_edit_compiles_again_and_pauses_for_review_again(tmp_path, monkeyp
     assert calls == ["analyze", "compile", ("edit", {"q1": "tar"}, "VER decides"), "reanalyze", "compile"]
     assert not (tmp_path / requirement_edits.FILE).exists()                    # taken once
     assert (tmp_path / "UC_X_requirements-summary.html").read_text(encoding="utf-8") == "<html>doc</html>"
+
+
+def _workbook(path, sheets, hidden=()):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(name)
+        for r in rows:
+            ws.append(r)
+        if name in hidden:
+            ws.sheet_state = "hidden"
+    wb.save(path)
+    return str(path)
+
+
+def test_hidden_ciq_sheets_are_not_read(tmp_path):
+    """EIR: CRFRoutePriorityList was hidden in the workbook, yet listed as a CIQ sheet of the activity."""
+    from skills.requirement_gathering.parsers import parse_ciq
+    path = _workbook(tmp_path / "ciq.xlsx", {"INDEX": [["ZONE", "CRGROUP"], ["EAST", "CR1"]],
+                                              "CRFRoutePriorityList": [["A"], ["1"]]},
+                     hidden=("CRFRoutePriorityList",))
+    assert list(parse_ciq(ciq_file_path=path)) == ["INDEX"]
+
+
+def test_edit_replaces_the_ciq_and_leaves_out_sheets_also_for_later_runs(tmp_path, monkeypatch):
+    docs: dict = {}
+    monkeypatch.setattr(skill_mod, "_load_uc_doc", lambda uc: dict(docs.get(uc, {})))
+    monkeypatch.setattr(skill_mod, "_save_uc_doc", lambda uc, doc: docs.update({uc: dict(doc)}))
+    monkeypatch.setattr(skill_mod, "_save_answers", lambda uc, answers: None)
+    new = _workbook(tmp_path / "fixed.xlsx", {"INDEX": [["ZONE"], ["EAST"]], "INPUT_FILE": [["FILE"], ["a.zip"]],
+                                               "Extra": [["X"], ["1"]]})
+    sk = RequirementGatheringSkill(llm_fn=None)
+    sk._uc_name, sk._doc_extracted = "UC_X", {"ciq_sheets": {"INDEX": {}}}
+
+    sk.apply_edit({}, "", "dev@x.io", "now", ciq_file_path=new, excluded_sheets=["Extra"])
+
+    assert list(sk._ciq_sheets) == ["INDEX", "INPUT_FILE"] and sk._doc_extracted["ciq_sheets"] is sk._ciq_sheets
+    assert docs["UC_X"]["excluded_ciq_sheets"] == ["Extra"]                         # next runs leave it out
+    assert sk._edits[-1]["ciq_file"] == "fixed.xlsx" and sk._edits[-1]["excluded_sheets"] == ["Extra"]
+    assert sk._ciq_replaced and sk._ciq_file_path == new
+
+    sk.apply_edit({}, "", "dev@x.io", "later", excluded_sheets=[])                   # ticked again
+    assert list(sk._ciq_sheets) == ["INDEX", "INPUT_FILE", "Extra"] and docs["UC_X"]["excluded_ciq_sheets"] == []
+
+
+def test_later_steps_read_the_corrected_ciq():
+    from agents.requirements_agent import ciq_file_path, requirements_store
+    state = {"run_id": "run-c", "ciq_file_path": "old.xlsx"}
+    assert ciq_file_path(state) == "old.xlsx"
+    requirements_store["run-c"] = {"ciq_file_path": "fixed.xlsx"}
+    try:
+        assert ciq_file_path(state) == "fixed.xlsx"
+    finally:
+        requirements_store.pop("run-c", None)

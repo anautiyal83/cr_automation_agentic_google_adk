@@ -17,9 +17,16 @@ logger = logging.getLogger(__name__)
 FILE = "requirement_edits.json"
 
 
-def save(run_dir: str, answers: dict, note: str, by: str) -> dict:
+def save(run_dir: str, answers: dict, note: str, by: str, ciq_file_path: str = "",
+         excluded_sheets: list[str] | None = None) -> dict:
+    """``ciq_file_path``: a corrected CIQ workbook replacing the run's; ``excluded_sheets``: every
+    sheet the activity does not use (the full list, None = unchanged)."""
     edit = {"answers": {k: str(v) for k, v in (answers or {}).items()}, "note": (note or "").strip(),
             "by": by or "", "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
+    if ciq_file_path:
+        edit["ciq_file_path"] = ciq_file_path
+    if excluded_sheets is not None:
+        edit["excluded_sheets"] = sorted(excluded_sheets)
     if run_dir:
         (Path(run_dir) / FILE).write_text(json.dumps(edit, indent=2), encoding="utf-8")
     return edit

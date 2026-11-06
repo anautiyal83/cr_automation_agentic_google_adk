@@ -44,7 +44,7 @@ class NetworkConfigQAAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx):
         from shared.llm import get_llm_fn
-        from agents.requirements_agent import requirements_store
+        from agents.requirements_agent import ciq_file_path, requirements_store
         from skills.network_config_test import (
             NetworkConfigTestSkill, SkillInput,
         )
@@ -75,7 +75,7 @@ class NetworkConfigQAAgent(BaseAgent):
             simulator_config_yaml=artifacts.get("simulator_config_yaml", ""),
             json_output_yaml=artifacts.get("json_template_yaml", ""),
             validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
-            ciq_file_path=state.get("ciq_file_path", ""),
+            ciq_file_path=ciq_file_path(state),
             requirements=requirements,
             run_dir=run_dir,
             cli_automation_jar=config.get("cli_automation_jar",

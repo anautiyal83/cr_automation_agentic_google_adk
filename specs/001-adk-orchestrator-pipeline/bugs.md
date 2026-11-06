@@ -1012,3 +1012,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   note becomes an authoritative developer note, also in the run's document set for the next run), re-analyses,
   asks new questions if any, compiles again and pauses at step 2 again. The document lists every update
   ("Requirement Updates": note, was / now). Audit `requirements.edit`. Tests `tests/test_requirement_edits.py`.
+
+### OB-22 — EIR: a hidden CIQ sheet became part of the activity; the CIQ could not be corrected; an edit reopened the questionnaire (Medium, Fixed 2026-11-06)
+- EIR_1029_TAC_LOADING_EIR: `CRFRoutePriorityList` is a hidden sheet of the uploaded CIQ; step 1 read hidden
+  sheets like any other. Notes in "Edit requirements" could not remove it (the sheet list comes from the
+  workbook), and after an edit the re-analysis opened the questionnaire again (5 questions).
+- **Fix**: `parse_ciq` skips hidden / very hidden sheets. Edit requirements has a CIQ section: tick the sheets the
+  activity uses, or upload a corrected workbook; `apply_edit` re-reads it, leaves unticked sheets out
+  (`excluded_ciq_sheets`, saved per UC, applied by later runs), and later steps read the corrected CIQ via
+  `agents.requirements_agent.ciq_file_path`. After an edit the requirements are compiled again without a
+  questionnaire; open points appear under Remaining Gaps. Tests in `tests/test_requirement_edits.py`.

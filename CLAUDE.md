@@ -184,7 +184,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
 - Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers
   replace the UC's saved answers, the note joins the developer notes (also the run's document set) as
-  authoritative; step 1 re-analyses, asks new questions if any, compiles again and pauses at step 2 again
+  authoritative; a corrected CIQ workbook / unticked sheets (`excluded_ciq_sheets`, kept per UC) are applied;
+  step 1 re-analyses (no questionnaire), compiles again and pauses at step 2 again. Later steps take the CIQ
+  path from `agents.requirements_agent.ciq_file_path(state)`. Hidden CIQ sheets are never read
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):

@@ -77,6 +77,10 @@ def parse_ciq(ciq_file_path: str | None = None,
             wb = openpyxl.load_workbook(ciq_file_path, read_only=True, data_only=True)
             for sn in wb.sheetnames:
                 ws = wb[sn]
+                if getattr(ws, "sheet_state", "visible") != "visible":
+                    # a hidden sheet is not part of what the user filled in (EIR: CRFRoutePriorityList)
+                    logger.info("CIQ sheet %s is %s in the workbook: not read", sn, ws.sheet_state)
+                    continue
                 rows_list = list(ws.iter_rows(min_row=1, max_row=12, values_only=True))
                 if not rows_list:
                     continue
