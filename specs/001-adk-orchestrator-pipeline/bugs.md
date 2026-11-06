@@ -1047,3 +1047,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: the reloaded review is failed when the pause itself says so (`milestone_waiting`) or the step's error
   file exists — every step; a failed review lists the reasons from `step_<n>_error.json` ("Why step N failed",
   step 9: every failed test case). Tests `tests/test_step6_shell_vars_and_failures.py`.
+
+### OB-25 — EIR steps 1-2 crashed compiling the requirements: a node with `"ssh": null` (High, Fixed 2026-11-06)
+- `merge_vendor_profile` did `en.setdefault("ssh", {})` on a node the LLM compiled with `"ssh": null`; setdefault
+  returns the existing None → `TypeError: 'NoneType' object does not support item assignment` (13:05 and 14:02,
+  after "Clarify in requirements"); the run failed.
+- **Fix**: `compiler._dict_at` / `_list_at` give a dict / list field, replacing a null one; every `setdefault(…, {})`
+  / `setdefault(…, [])` and `.get(…, {})` / `.get(…, [])` in the compiler uses them / `or {}`. Test
+  `test_vendor_profile_merges_into_a_node_the_llm_left_without_ssh`.

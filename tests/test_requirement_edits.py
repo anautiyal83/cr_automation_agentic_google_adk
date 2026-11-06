@@ -176,3 +176,16 @@ def test_later_steps_read_the_corrected_ciq():
         assert ciq_file_path(state) == "fixed.xlsx"
     finally:
         requirements_store.pop("run-c", None)
+
+
+def test_vendor_profile_merges_into_a_node_the_llm_left_without_ssh():
+    """EIR steps 1-2 crashed: the LLM compiled `"ssh": null` for a node; setdefault returned None."""
+    from skills.requirement_gathering.compiler import merge_vendor_profile
+    reqs = {"category_1_node_activity": {"nodes": [{"name": "EIR", "ssh": None, "escalation": None}]},
+            "category_3_orchestration": None}
+    profile = {"vendor": {"ssh_defaults": {"user": "oamsys", "port": 22}},
+               "category_1_node_activity": {"nodes": [{"name": "EIR", "ssh": {"user": "oamsys", "file_transfer": "scp"}}]}}
+    out = merge_vendor_profile(reqs, profile)
+    node = out["category_1_node_activity"]["nodes"][0]
+    assert node["ssh"]["user"] == "oamsys" and node["ssh"]["file_transfer"] == "scp"
+    assert out["category_3_orchestration"]["ssh"]["user"] == "oamsys"

@@ -19,6 +19,21 @@ from .schema_discovery import (
 logger = logging.getLogger(__name__)
 
 
+
+def _dict_at(d: dict, key: str) -> dict:
+    """``d[key]`` as a dict, created when missing or not a dict: the LLM writes ``"ssh": null``, and
+    ``setdefault`` then returned None (EIR steps 1-2 crashed in merge_vendor_profile)."""
+    if not isinstance(d.get(key), dict):
+        d[key] = {}
+    return d[key]
+
+
+def _list_at(d: dict, key: str) -> list:
+    """``d[key]`` as a list, created when missing or not a list (``"phase_overrides": null``)."""
+    if not isinstance(d.get(key), list):
+        d[key] = []
+    return d[key]
+
 def merge_previous_requirements(current: dict, previous: dict) -> dict:
     """Merge previously saved requirements into the current run's output.
 
@@ -51,9 +66,9 @@ def merge_previous_requirements(current: dict, previous: dict) -> dict:
                 curr_cat[key] = prev_val
 
     # Merge developer_answers from previous run
-    prev_answers = previous.get("developer_answers", {})
+    prev_answers = (previous.get("developer_answers") or {})
     if prev_answers:
-        curr_answers = current.setdefault("developer_answers", {})
+        curr_answers = _dict_at(current, "developer_answers")
         for k, v in prev_answers.items():
             if k not in curr_answers:
                 curr_answers[k] = v
@@ -102,16 +117,16 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
     if not vendor_profile:
         return requirements
 
-    vendor = vendor_profile.get("vendor", {})
-    vp_cat1 = vendor_profile.get("category_1_node_activity", {})
-    vp_cat3 = vendor_profile.get("category_3_orchestration", {})
+    vendor = (vendor_profile.get("vendor") or {})
+    vp_cat1 = (vendor_profile.get("category_1_node_activity") or {})
+    vp_cat3 = (vendor_profile.get("category_3_orchestration") or {})
 
-    cat1 = requirements.setdefault("category_1_node_activity", {})
-    cat3 = requirements.setdefault("category_3_orchestration", {})
+    cat1 = _dict_at(requirements, "category_1_node_activity")
+    cat3 = _dict_at(requirements, "category_3_orchestration")
 
     # -- Nodes: merge vendor profile nodes into requirements --
-    vp_nodes = vp_cat1.get("nodes", [])
-    existing_nodes = cat1.get("nodes", [])
+    vp_nodes = (vp_cat1.get("nodes") or [])
+    existing_nodes = (cat1.get("nodes") or [])
     existing_names = {
         n.get("name", "").upper() for n in existing_nodes if isinstance(n, dict)
     }
@@ -125,10 +140,10 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
             # Existing node — vendor profile OVERRIDES LLM values
             for en in existing_nodes:
                 if isinstance(en, dict) and en.get("name", "").upper() == name.upper():
-                    vn_ssh = vn.get("ssh", {})
-                    vn_esc = vn.get("escalation", {})
+                    vn_ssh = (vn.get("ssh") or {})
+                    vn_esc = (vn.get("escalation") or {})
                     if vn_ssh:
-                        en_ssh = en.setdefault("ssh", {})
+                        en_ssh = _dict_at(en, "ssh")
                         # Profile wins for user, prompt, port, login_via_pam, SFTP / SCP (spec 010 O-D6)
                         for k in ("user", "port", "prompt_pattern", "login_via_pam", "file_transfer"):
                             if vn_ssh.get(k):
@@ -140,15 +155,15 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
     cat1["nodes"] = existing_nodes
 
     # -- Gateway config --
-    gw = vendor.get("access_gateway", {})
+    gw = (vendor.get("access_gateway") or {})
     if gw.get("enabled"):
         cat1["access_gateway"] = gw
         cat1.setdefault("niam_failover", True)
 
     # -- SSH defaults --
-    ssh_defaults = vendor.get("ssh_defaults", {})
+    ssh_defaults = (vendor.get("ssh_defaults") or {})
     if ssh_defaults:
-        cat3_ssh = cat3.setdefault("ssh", {})
+        cat3_ssh = _dict_at(cat3, "ssh")
         for key in ("user", "port", "kex_algorithms", "host_key_algorithms", "connect_timeout_sec"):
             if ssh_defaults.get(key) and not cat3_ssh.get(key):
                 cat3_ssh[key] = ssh_defaults[key]
@@ -157,7 +172,7 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
             default_port = ssh_defaults.get("port", 22)
             for node in existing_nodes:
                 if isinstance(node, dict):
-                    node_ssh = node.setdefault("ssh", {})
+                    node_ssh = _dict_at(node, "ssh")
                     # Override LLM hallucinations (e.g. "niamuser") with profile user
                     current_user = node_ssh.get("user", "")
                     if not current_user or current_user.lower() in ("niamuser", "niam_user", ""):
@@ -166,12 +181,12 @@ def merge_vendor_profile(requirements: dict, vendor_profile: dict) -> dict:
                         node_ssh["port"] = default_port
 
     # -- Phases from vendor profile --
-    vp_phases = vp_cat3.get("phases", [])
+    vp_phases = (vp_cat3.get("phases") or [])
     if vp_phases and not cat3.get("phases"):
         cat3["phases"] = vp_phases
 
     # -- Grouping from vendor profile --
-    vp_grouping = vp_cat3.get("grouping", {})
+    vp_grouping = (vp_cat3.get("grouping") or {})
     if vp_grouping and not cat3.get("grouping"):
         cat3["grouping"] = vp_grouping
 
@@ -204,9 +219,9 @@ def merge_doc_extracted(requirements: dict, doc_extracted: dict) -> dict:
     """
     requirements["doc_extracted"] = doc_extracted
 
-    mop_commands = doc_extracted.get("mop_commands", [])
+    mop_commands = (doc_extracted.get("mop_commands") or [])
     if mop_commands:
-        existing_cmds = requirements.get("category_2_commands", {}).get("commands", [])
+        existing_cmds = (requirements.get("category_2_commands") or {}).get("commands", [])
         existing_names = {
             c.get("cmd", c.get("command", "")).lower()
             for c in existing_cmds
@@ -247,12 +262,12 @@ def enforce_answers(
     if not answers:
         return requirements
 
-    orch = requirements.get("category_3_orchestration", {})
-    nodes = requirements.get("category_1_node_activity", {})
-    hints = requirements.get("generation_hints", {})
+    orch = (requirements.get("category_3_orchestration") or {})
+    nodes = (requirements.get("category_1_node_activity") or {})
+    hints = (requirements.get("generation_hints") or {})
 
     # -- Phase enforcement --
-    phases = orch.get("phases", [])
+    phases = (orch.get("phases") or [])
 
     no_backup = any(
         "no backup" in str(v).lower() or "not required" in str(v).lower()
@@ -276,13 +291,13 @@ def enforce_answers(
     requirements["category_3_orchestration"] = orch
 
     # -- Map prompt/escalation answers to node config --
-    node_list = nodes.get("nodes", [])
+    node_list = (nodes.get("nodes") or [])
     for node in node_list:
         if not isinstance(node, dict):
             continue
         node_name = node.get("name", "").lower()
-        node_ssh = node.setdefault("ssh", {})
-        node_esc = node.setdefault("escalation", {})
+        node_ssh = _dict_at(node, "ssh")
+        node_esc = _dict_at(node, "escalation")
 
         for k, v in answers.items():
             v_str = str(v).strip()
@@ -317,14 +332,14 @@ def enforce_answers(
     requirements["category_1_node_activity"] = nodes
 
     # -- Generation hints with raw artifacts --
-    wf_hints = hints.get("workflow_yaml", {}) if isinstance(hints.get("workflow_yaml"), dict) else {}
+    wf_hints = (hints.get("workflow_yaml") or {}) if isinstance(hints.get("workflow_yaml"), dict) else {}
 
     if no_backup:
-        wf_hints.setdefault("phase_overrides", []).append(
+        _list_at(wf_hints, "phase_overrides").append(
             "DO NOT generate a backup phase. User explicitly stated backup is not required."
         )
     if no_rollback:
-        wf_hints.setdefault("phase_overrides", []).append(
+        _list_at(wf_hints, "phase_overrides").append(
             "DO NOT generate a rollback phase. User explicitly stated rollback is not required."
         )
 
@@ -359,7 +374,7 @@ def inject_schema_hints(
     if schemas is None:
         schemas = discover_schemas(schema_dir)
 
-    hints = requirements.get("generation_hints", {})
+    hints = (requirements.get("generation_hints") or {})
     if not isinstance(hints, dict):
         hints = {}
 
