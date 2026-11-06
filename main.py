@@ -1,4 +1,4 @@
-"""NetConfig Pipeline — Google ADK Orchestrator.
+"""Azalio Autonomous Network Platform — Google ADK Orchestrator.
 
 Usage:
     python main.py --ciq <ciq_file> --uc-name <uc_name> [--model <model>] [--api-key <key>]
@@ -112,7 +112,7 @@ async def run_pipeline(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NetConfig Pipeline (Google ADK)")
+    parser = argparse.ArgumentParser(description="Azalio Autonomous Network Platform (Google ADK)")
     parser.add_argument("--ciq", required=True, help="Path to CIQ Excel file")
     parser.add_argument("--uc-name", required=True, help="UC name (e.g. DSR_1058_IFC_CAPABILITY_MODIFICATION)")
     parser.add_argument("--mop", help="Path to MOP document")

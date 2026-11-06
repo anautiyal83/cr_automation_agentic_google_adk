@@ -1,4 +1,7 @@
-# CLAUDE.md — NetConfig Pipeline (Google ADK)
+# CLAUDE.md — Azalio Autonomous Network Platform (Google ADK)
+
+Product name (UI, documents, reports): **Azalio Autonomous Network Platform** — `core.config.PRODUCT_NAME`.
+Internal ids keep `netconfig` (ADK app name, `NETCONFIG_*` env vars, `admin@netconfig.local`).
 
 ## Project Overview
 - **Type**: Python agentic pipeline for network activity automation using Google ADK

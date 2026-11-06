@@ -81,7 +81,7 @@ def register(services: Callable[[], Awaitable[tuple]], css: str) -> None:
         end_session()
         return RedirectResponse("/login")
 
-    @ui.page("/login", title="NetConfig — Sign in")
+    @ui.page("/login", title="Azalio Autonomous Network Platform — Sign in")
     async def login_page(redirect_to: str = "/"):
         auth, audit = await services()
         target = safe_target(redirect_to)
@@ -113,7 +113,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 13px; background:
                 with ui.row().classes("items-center gap-2 no-wrap"):
                     with ui.element("div").classes("cr-logo"):
                         ui.icon("hub", size="18px")
-                    ui.label("NetConfig").classes("font-bold").style("font-size: 16px")
+                    ui.label("Azalio Autonomous Network Platform").classes("font-bold").style("font-size: 16px")
                 if user and user.must_change_password:
                     _change_password_form(auth, audit, user, target)
                 else:

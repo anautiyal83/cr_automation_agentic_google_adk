@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start NetConfig Pipeline Server
+# Start the Azalio Autonomous Network Platform server
 cd "$(dirname "$0")"
 
 # Activate venv if present
@@ -15,7 +15,7 @@ export PYTHONPATH="$(pwd)"
 export PYTHONWARNINGS="ignore"
 
 echo "============================================"
-echo "  NetConfig Pipeline Server"
+echo "  Azalio Autonomous Network Platform"
 echo "============================================"
 echo "  URL:  http://localhost:8000"
 echo "============================================"

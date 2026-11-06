@@ -17,6 +17,7 @@ warnings.filterwarnings("ignore", message=".*huggingface.*")
 warnings.filterwarnings("ignore", message=".*unauthenticated.*")
 import logging as _logging
 
+from core.config import PRODUCT_NAME
 from core.logging_config import setup_logging, get_flow_logger
 
 # Configure structured logging (flow.log, error.log, trace.log)
@@ -985,7 +986,7 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
             with ui.row().classes("items-center gap-3 no-wrap"):
                 with ui.element("div").classes("cr-logo"):
                     ui.icon("hub", size="18px")
-                ui.label("NetConfig").classes("font-bold").style("font-size: 15px")
+                ui.label(PRODUCT_NAME).classes("font-bold").style("font-size: 15px; white-space: nowrap")
                 ui.element("div").style("width:1px;height:20px;background:var(--cr-border);margin:0 4px")
                 with ui.row().classes("cr-breadcrumb items-center gap-1 no-wrap"):
                     breadcrumb_group = ui.label("Workspace")
@@ -1106,7 +1107,8 @@ body { font-family: "Inter", sans-serif !important; font-size: 12px !important;
             ui.element("div").style("flex:1")
             ui.element("div").classes("cr-sidebar-divider")
             with ui.column().classes("px-5 py-3 gap-0"):
-                ui.label("NetConfig v0.1.0").classes("text-[11px] cr-stat-title")
+                ui.label(PRODUCT_NAME).classes("text-[11px] cr-stat-title").style("line-height: 1.3")
+                ui.label("v0.1.0").classes("text-[11px] cr-text-dim")
 
         output_viewer = history_section = settings_section = None
         # --- Content area ---
@@ -1572,7 +1574,7 @@ def run() -> None:
     ui.run(
         host="0.0.0.0",
         port=8000,
-        title="NetConfig Agentic",
+        title=PRODUCT_NAME,
         dark=False,
         reload=False,
         favicon="🔧",

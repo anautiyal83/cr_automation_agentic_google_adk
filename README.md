@@ -1,4 +1,4 @@
-# NetConfig — Network Configuration Automation (Google ADK)
+# Azalio Autonomous Network Platform — Network Configuration Automation (Google ADK)
 
 Agentic pipeline for telecom network activity automation using Google ADK (Agent Development Kit). Parses CIQ/MOP documents, gathers requirements via interactive questionnaire, generates YAML configs via LLM, validates via Java JARs, tests against MockWire simulator, with automatic retry loops on failures.
 
