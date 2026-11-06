@@ -57,7 +57,7 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
 
 # Maps agent name → milestone config (step_num, name) for pause after execution
 _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
-    "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
+    "ciq_validation_json_gen": (4, "Steps 3–4 · Validation Rules & CIQ JSON"),
     "ciq_validation_json_qa": (5, "QA-Validation Results"),
     "helper_script_gen": (6, "Execution Workflow & Scripts"),
     "network_config_mop_qa": (7, "MOP Generation QA"),

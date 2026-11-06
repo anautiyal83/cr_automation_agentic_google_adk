@@ -1231,8 +1231,11 @@ class ProgressSection:
             self.ms_skip_btn.set_visibility(False)
 
         from pathlib import Path
+        self._current_review_files = _review_files(artifact_file, extra_artifact_files)
+        n_files = len(self._current_review_files)
         fname = Path(artifact_file).name if artifact_file else "no artifact"
-        self.ms_artifact_label.text = f"{milestone}  —  {fname}"
+        self.ms_artifact_label.text = f"{milestone}  —  " + (f"{n_files} files" if n_files > 1 else fname)
+        self.ms_view_btn.text = f"Review files ({n_files})" if n_files > 1 else "View artifact"
         self.ms_view_btn.set_visibility(bool(artifact_file))
 
         # Render extra artifact files (view + download)
@@ -1724,52 +1727,54 @@ class ProgressSection:
         self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
 
     def _show_artifact_dialog(self):
+        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config)."""
         import html as html_mod
-        from pathlib import Path
         from nicegui import app
 
-        fpath = getattr(self, "_current_artifact_file", "")
+        files = getattr(self, "_current_review_files", None) or (
+            [getattr(self, "_current_artifact_file", "")] if getattr(self, "_current_artifact_file", "") else [])
         milestone = getattr(self, "_current_milestone", "Artifact")
-        is_html = fpath.endswith(".html") if fpath else False
 
         dialog = ui.dialog().props("maximized")
         with dialog, ui.card().classes("w-full h-full p-0").style(
             "display: flex; flex-direction: column; max-height: 100vh"
         ):
-            # Header bar
             with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
                 "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
             ):
-                ui.label(f"{milestone} — {Path(fpath).name if fpath else ''}") \
-                    .classes("text-subtitle2 font-bold font-mono")
-                with ui.row().classes("items-center gap-1"):
-                    if fpath and Path(fpath).exists():
-                        dl_url = app.add_media_file(local_file=fpath)
-                        ui.button("Download", icon="download",
-                                  on_click=lambda u=dl_url, f=fpath: (record_document("document.download", f),
-                                                           ui.download(u))) \
-                            .props("flat color=positive size=sm no-caps")
-                    ui.button(icon="close", on_click=dialog.close) \
-                        .props("flat round size=sm color=grey-6")
-
-            # Content
-            if fpath and Path(fpath).exists():
-                if is_html:
-                    # Serve the file and show in iframe (no scroll_area wrapper)
-                    url = app.add_media_file(local_file=fpath)
-                    ui.element("iframe").props(f'src="{url}"').style(
-                        "width: 100%; flex: 1; border: none; min-height: 0"
-                    )
-                else:
-                    content = Path(fpath).read_text(encoding="utf-8")
-                    with ui.scroll_area().style("flex: 1; min-height: 0"):
-                        escaped = html_mod.escape(content)
-                        ui.html(
-                            f'<pre style="margin:0; padding: 16px; font-size: 12px; '
-                            f'line-height: 1.5; font-family: monospace">{escaped}</pre>'
-                        )
-            else:
+                ui.label(milestone).classes("text-subtitle2 font-bold")
+                ui.button(icon="close", on_click=dialog.close).props("flat round size=sm color=grey-6")
+            if not files:
                 ui.label("No content available").classes("p-4 cr-text-dim")
+            else:
+                with ui.tabs().classes("w-full").props("align=left dense no-caps active-color=primary "
+                                                       "indicator-color=primary").style(
+                        "flex-shrink: 0; border-bottom: 1px solid var(--cr-border)") as tabs:
+                    tab_list = [ui.tab(name=str(i), label=_review_file_label(f)) for i, f in enumerate(files)]
+                with ui.tab_panels(tabs, value=tab_list[0]).classes("w-full").style(
+                        "flex: 1; min-height: 0; display: flex; flex-direction: column"):
+                    for i, fpath in enumerate(files):
+                        with ui.tab_panel(str(i)).classes("p-0").style(
+                                "display: flex; flex-direction: column; height: 100%"):
+                            with ui.row().classes("items-center justify-between w-full px-4 py-1").style(
+                                    "flex-shrink: 0"):
+                                ui.label(Path(fpath).name).classes("text-caption font-mono cr-text-dim")
+                                url = app.add_media_file(local_file=fpath)
+                                ui.button("Download", icon="download",
+                                          on_click=lambda u=url, f=fpath: (record_document("document.download", f),
+                                                                           ui.download(u))) \
+                                    .props("flat color=positive size=sm no-caps")
+                            if fpath.endswith(".html"):
+                                ui.element("iframe").props(f'src="{url}"').style(
+                                    "width: 100%; flex: 1; border: none; min-height: 70vh")
+                            else:
+                                content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+                                with ui.scroll_area().style("flex: 1; min-height: 70vh"):
+                                    ui.html(f'<pre style="margin:0; padding: 16px; font-size: 12px; '
+                                            f'line-height: 1.5; font-family: monospace">'
+                                            f'{html_mod.escape(content)}</pre>')
+                for f in files:
+                    record_document("document.view", f)
         dialog.open()
 
     @requires("progress", "milestone.decision")
@@ -2079,6 +2084,23 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
                for r in rules):
             found.append(f)
     return found[:60]
+
+
+_REVIEW_LABELS = {"validation-rules": "Validation rules · step 3", "json-output": "CIQ JSON config · step 4",
+                  "simulator-config": "Simulator config", "simulator-report": "Simulator report"}
+_REVIEW_SUFFIXES = (".yaml", ".yml", ".json", ".py", ".html", ".txt")
+
+
+def _review_files(primary: str, extras: list[str] | None) -> list[str]:
+    """The files a review shows as tabs: the main artifact, then the readable extras (at most 12)."""
+    files = [primary] if primary and Path(primary).exists() else []
+    files += [f for f in extras or [] if f and Path(f).exists() and f.endswith(_REVIEW_SUFFIXES) and f not in files]
+    return files[:12]
+
+
+def _review_file_label(path: str) -> str:
+    name = Path(path).name
+    return next((label for key, label in _REVIEW_LABELS.items() if key in name), name)
 
 
 def _file_icon(path) -> str:
