@@ -222,7 +222,7 @@ class ProgressSection:
                     on_click=self._show_artifact_dialog) \
                     .props("flat color=primary size=sm no-caps")
             # Extra artifact files (view/download) — populated dynamically
-            self.ms_extra_files_row = ui.row().classes("w-full items-center gap-3 cr-card-inner p-3")
+            self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
             with ui.row().classes("w-full gap-2"):
@@ -1233,34 +1233,40 @@ class ProgressSection:
         from pathlib import Path
         self._current_review_files = _review_files(artifact_file, extra_artifact_files)
         n_files = len(self._current_review_files)
-        fname = Path(artifact_file).name if artifact_file else "no artifact"
-        self.ms_artifact_label.text = f"{milestone}  —  " + (f"{n_files} files" if n_files > 1 else fname)
-        self.ms_view_btn.text = f"Review files ({n_files})" if n_files > 1 else "View artifact"
+        self.ms_artifact_label.text = milestone + (f"  —  {n_files} files" if n_files > 1 else "")
+        self.ms_view_btn.text = "Review all files" if n_files > 1 else "View artifact"
         self.ms_view_btn.set_visibility(bool(artifact_file))
 
-        # Render extra artifact files (view + download)
+        # One row per file of the review: label, file name, View (its tab in the viewer), Download
         self.ms_extra_files_row.clear()
-        if extra_artifact_files:
+        listed = list(self._current_review_files)
+        listed += [f for f in extra_artifact_files or [] if f and Path(f).exists() and f not in listed]
+        if listed:
             from nicegui import app as nicegui_app
             with self.ms_extra_files_row:
-                for fpath in extra_artifact_files:
-                    if fpath and Path(fpath).exists():
-                        ef_name = Path(fpath).name
-                        try:
-                            serve_url = nicegui_app.add_media_file(local_file=fpath)
-                        except Exception:
-                            serve_url = ""
-                        ui.icon("article", size="18px").classes("cr-text-accent")
-                        ui.label(ef_name).classes("text-body2 font-mono")
-                        if serve_url:
+                for i, fpath in enumerate(listed):
+                    serve_url = nicegui_app.add_media_file(local_file=fpath)
+                    with ui.row().classes("w-full items-center gap-3 px-3 py-2 no-wrap").style(
+                            "border-top: 1px solid var(--cr-border)" if i else ""):
+                        ui.icon(_file_icon(fpath), size="18px").classes("cr-text-accent")
+                        with ui.column().classes("gap-0 flex-1 min-w-0"):
+                            ui.label(_review_file_label(fpath)).classes("text-body2 font-semibold")
+                            ui.label(Path(fpath).name).classes("text-caption font-mono cr-text-dim") \
+                                .style("overflow-wrap: anywhere")
+                        if fpath in self._current_review_files:
+                            ui.button("View", icon="visibility",
+                                      on_click=lambda t=self._current_review_files.index(fpath):
+                                      self._show_artifact_dialog(t)) \
+                                .props("flat color=primary size=sm no-caps")
+                        else:
                             ui.button("View", icon="visibility",
                                       on_click=lambda u=serve_url, f=fpath: (record_document("document.view", f),
-                                                                       ui.navigate.to(u, new_tab=True))) \
+                                                                           ui.navigate.to(u, new_tab=True))) \
                                 .props("flat color=primary size=sm no-caps")
-                            ui.button("Download", icon="download",
-                                      on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
+                        ui.button("Download", icon="download",
+                                  on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
                                                                        ui.download(u))) \
-                                .props("flat color=positive size=sm no-caps")
+                            .props("flat color=positive size=sm no-caps")
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
@@ -1726,8 +1732,9 @@ class ProgressSection:
         self.status_label.text = "Updating requirements..."
         self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
 
-    def _show_artifact_dialog(self):
-        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config)."""
+    def _show_artifact_dialog(self, tab: int = 0):
+        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config),
+        opened on ``tab``."""
         import html as html_mod
         from nicegui import app
 
@@ -1751,7 +1758,8 @@ class ProgressSection:
                                                        "indicator-color=primary").style(
                         "flex-shrink: 0; border-bottom: 1px solid var(--cr-border)") as tabs:
                     tab_list = [ui.tab(name=str(i), label=_review_file_label(f)) for i, f in enumerate(files)]
-                with ui.tab_panels(tabs, value=tab_list[0]).classes("w-full").style(
+                start = tab_list[tab] if isinstance(tab, int) and 0 <= tab < len(tab_list) else tab_list[0]
+                with ui.tab_panels(tabs, value=start).classes("w-full").style(
                         "flex: 1; min-height: 0; display: flex; flex-direction: column"):
                     for i, fpath in enumerate(files):
                         with ui.tab_panel(str(i)).classes("p-0").style(
@@ -1773,8 +1781,7 @@ class ProgressSection:
                                     ui.html(f'<pre style="margin:0; padding: 16px; font-size: 12px; '
                                             f'line-height: 1.5; font-family: monospace">'
                                             f'{html_mod.escape(content)}</pre>')
-                for f in files:
-                    record_document("document.view", f)
+                record_document("document.view", files[tab if isinstance(tab, int) and 0 <= tab < len(files) else 0])
         dialog.open()
 
     @requires("progress", "milestone.decision")
