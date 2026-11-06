@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape as html_escape
 from typing import Any
 
 _CSS = """\
@@ -461,6 +462,25 @@ def generate_summary_html(
             else:
                 content = xf.get("content", "")[:500]
                 lines.append(f"<p><strong>Sample {i}:</strong></p><pre>{content}</pre>")
+        lines.append("</div></details>")
+
+    # -- Requirement updates (Edit requirements at the step 2 review) --
+    updates = [u for u in requirements.get("requirement_updates") or [] if isinstance(u, dict)]
+    if updates:
+        lines.append(f"<details open><summary>Requirement Updates ({len(updates)})</summary><div class='section'>")
+        for i, u in enumerate(updates, 1):
+            who = f" · {u['by']}" if u.get("by") else ""
+            lines.append(f"<h3>Update {i} <span class='meta'>{u.get('at', '')}{who}</span></h3>")
+            if u.get("note"):
+                lines.append(f"<pre>{html_escape(str(u['note']))}</pre>")
+            changed = u.get("answers") or {}
+            if changed:
+                lines.append("<table class='answer-row'><tr><th>Question</th><th>Was</th><th>Now</th></tr>")
+                for k, c in changed.items():
+                    q = html_escape(question_texts.get(k, "") or k)
+                    lines.append(f"<tr><td>{q}</td><td class='meta'>{html_escape(str(c.get('from', '')))}</td>"
+                                 f"<td>{html_escape(str(c.get('to', '')))}</td></tr>")
+                lines.append("</table>")
         lines.append("</div></details>")
 
     # -- Developer Answers --

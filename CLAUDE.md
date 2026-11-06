@@ -182,6 +182,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
   backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
+- Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers
+  replace the UC's saved answers, the note joins the developer notes (also the run's document set) as
+  authoritative; step 1 re-analyses, asks new questions if any, compiles again and pauses at step 2 again
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):

@@ -99,6 +99,7 @@ class RequirementGatheringSkill:
         self._schema_dir: str | None = None
         self._vendor_profile: dict | None = None
         self._previous_requirements: dict = {}
+        self._edits: list[dict] = []  # "Edit requirements" at the step 2 review, in order
 
     # ------------------------------------------------------------------
     # Phase 1: Parse + Analyze
@@ -378,6 +379,23 @@ class RequirementGatheringSkill:
     # Phase 3: Compile final
     # ------------------------------------------------------------------
 
+    def apply_edit(self, answers: dict[str, Any], note: str, by: str = "", at: str = "") -> dict[str, Any]:
+        """The developer's edit of the compiled requirements (step 2 review): changed answers
+        replace the old ones, also in the UC's saved answers, so the next run does not bring them
+        back; the note joins the developer notes as authoritative. Returns the changed answers.
+        Call ``incorporate_answers({})`` and ``compile_final()`` afterwards."""
+        from shared.requirement_edits import note_block
+        changed = {k: {"from": self._all_answers.get(k, ""), "to": v} for k, v in (answers or {}).items()
+                   if str(self._all_answers.get(k, "")) != str(v)}
+        self._all_answers.update({k: c["to"] for k, c in changed.items()})
+        _save_answers(self._uc_name, self._all_answers)
+        if note and note.strip():
+            self._developer_notes = "\n\n".join(
+                x for x in (self._developer_notes.strip(), note_block(note, by, at)) if x)
+        self._ciq_only_round = False  # the edit is analysed again in full
+        self._edits.append({"at": at, "by": by, "note": (note or "").strip(), "answers": changed})
+        return changed
+
     async def compile_final(self) -> SkillOutput:
         """Compile final requirements package and generate HTML report.
 
@@ -443,6 +461,9 @@ class RequirementGatheringSkill:
         if self._vendor_profile:
             doc["vendor_profile"] = self._vendor_profile
         _save_uc_doc(self._uc_name, doc)
+        # This run's edits (not saved with the UC: the next run starts from their result)
+        if self._edits:
+            requirements["requirement_updates"] = list(self._edits)
 
         # Override readiness for report when we have sufficient data
         report_analysis = dict(self._analysis)

@@ -231,6 +231,13 @@ class ProgressSection:
                     on_click=lambda: self._milestone_respond("rerun")) \
                     .props("outline color=primary size=sm no-caps")
                     .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
+                # Step 2 review: correct answers or say what was captured wrongly
+                self.ms_edit_btn = action(ui.button("Edit requirements", icon="edit_note",
+                    on_click=self._open_requirements_editor) \
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Correct an answer or describe what is wrong; the requirements are compiled again"),
+                    "progress")
+                self.ms_edit_btn.set_visibility(False)
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
@@ -1198,7 +1205,9 @@ class ProgressSection:
         self.ms_continue_btn.text = "Continue"
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
-        self.ms_rerun_btn.set_visibility(True)
+        # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
+        self.ms_rerun_btn.set_visibility(step_num != 2)
+        self.ms_edit_btn.set_visibility(step_num == 2)
         self._show_clarifications()
 
         # On failure: block Continue for all step types
@@ -1555,6 +1564,84 @@ class ProgressSection:
             "background: rgba(11,95,255,0.08); border: 1px solid rgba(11,95,255,0.3)"
         ))
         self.progress_bar.props("stripe animate")
+
+    def _open_requirements_editor(self):
+        """Step 2 review: the captured answers, editable, and a note on what is wrong or unclear."""
+        import json as _json
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            req = _json.loads((Path(run_dir) / "requirements.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            req = {}
+        answers = req.get("developer_answers") or {}
+        questions = req.get("developer_questions") or {}
+
+        dialog = ui.dialog()
+        with dialog, ui.card().classes("w-full p-0").style("max-width: 880px; max-height: 90vh; display: flex; "
+                                                          "flex-direction: column"):
+            with ui.column().classes("w-full gap-1 px-5 pt-4 pb-3").style("border-bottom: 1px solid var(--cr-border)"):
+                ui.label("Edit requirements").classes("text-h6 font-semibold")
+                ui.label("Change an answer that was captured wrongly, or describe what needs correcting or "
+                         "clarifying. The requirements are compiled again and shown for review; the changed "
+                         "answers also replace the saved ones for this use case.").classes("text-caption cr-text-dim")
+            inputs: dict[str, Any] = {}
+            with ui.scroll_area().classes("w-full").style("flex: 1; min-height: 200px"):
+                with ui.column().classes("w-full gap-3 px-5 py-4"):
+                    note = ui.textarea("What is wrong or needs clarifying",
+                                       placeholder="e.g. VER 13.0.3.7 loads plain files; every other version, "
+                                                   "including 17.x.x.x, loads tar files") \
+                        .props("outlined autogrow").classes("w-full")
+                    if answers:
+                        ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold mt-2")
+                    for qid, val in answers.items():
+                        with ui.column().classes("w-full gap-0"):
+                            ui.label(str(questions.get(qid) or qid)).classes("text-caption font-medium")
+                            inputs[qid] = (val, ui.textarea(value="" if val is None else str(val))
+                                           .props("outlined dense autogrow").classes("w-full"))
+            with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style("border-top: 1px solid var(--cr-border)"):
+                ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+                action(ui.button("Update requirements", icon="check",
+                                 on_click=lambda: self._submit_requirement_edits(dialog, inputs, note, run_dir))
+                       .props("unelevated color=primary no-caps"), "progress")
+        dialog.open()
+
+    @requires("progress", "requirements.edit")
+    @_own_run("requirements.edit")
+    async def _submit_requirement_edits(self, dialog, inputs: dict, note, run_dir: str):
+        """Hand the edit to step 1 (disk) and answer the step 2 review with ``edit``."""
+        from shared import requirement_edits
+        changed = {qid: inp.value.strip() for qid, (old, inp) in inputs.items()
+                   if (inp.value or "").strip() != str("" if old is None else old).strip()}
+        text = (note.value or "").strip()
+        if not changed and not text:
+            ui.notify("Change an answer or describe what needs correcting", type="warning")
+            return
+        if not self.runner or not self.active_run_id or str(self.active_run_id) not in self.runner._active_runs:
+            ui.notify("The run is not waiting for review any more", type="warning")
+            return
+        user = self._scope.user
+        run_id_str = str(self.active_run_id)
+        edit = requirement_edits.save(run_dir, changed, text, user.email if user else "")
+        if text and self.runner._db:
+            # The next run of this use case starts with the note in its developer notes
+            try:
+                await self.runner._db.execute(
+                    "UPDATE uc_document_sets SET developer_notes = TRIM(COALESCE(developer_notes, '') || ? ) "
+                    "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)",
+                    ("\n\n" + requirement_edits.note_block(text, edit["by"], edit["at"]), run_id_str))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Developer notes of run %s not updated: %s", run_id_str[:8], e)
+        dialog.close()
+        self.runner.respond_milestone(run_id_str, 2, "edit")
+        await record("requirements.edit", target_type="run", target_id=run_id_str, run_id=run_id_str,
+                     details={"answers_changed": sorted(changed), "note": text[:500]})
+        self.milestone_row.set_visibility(False)
+        self.action_btns.set_visibility(True)
+        self.status_icon.name = "sync"
+        self.status_icon.classes(replace="cr-text-accent cr-spin")
+        self.status_label.text = "Updating requirements..."
+        self.status_detail.text = (f"{len(changed)} answer(s) changed" + (" and a note added" if text else "")
+                                   + " — the document is compiled again for review")
 
     def _show_artifact_dialog(self):
         import html as html_mod

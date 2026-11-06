@@ -163,33 +163,69 @@ class RequirementsGathererNode(BaseAgent):
                     else:
                         flow.flow("REQUIREMENTS: User chose to answer more questions")
 
-        # ── Phase 4: Compile final ──
-        flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
-        output = await skill.compile_final()
+        edit_round = 0
+        while True:
+            # ── Phase 4: Compile final ──
+            flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
+            output = await skill.compile_final()
 
-        # Store in shared dict (bypasses ADK session state)
-        requirements_store[run_id] = output.requirements
+            # Store in shared dict (bypasses ADK session state)
+            requirements_store[run_id] = output.requirements
 
-        # Write JSON to disk
-        if run_dir:
-            req_file = Path(run_dir) / "requirements.json"
-            req_file.write_text(output.requirements_json, encoding="utf-8")
+            # Write JSON to disk
+            if run_dir:
+                req_file = Path(run_dir) / "requirements.json"
+                req_file.write_text(output.requirements_json, encoding="utf-8")
 
-        # The open questions of later steps are answered now
-        from shared import clarifications
-        clarifications.clear(run_dir)
+            # The open questions of later steps are answered now
+            from shared import clarifications
+            clarifications.clear(run_dir)
 
-        # ── Phase 5: Write summary HTML ──
-        flow.flow("REQUIREMENTS Phase 5: Writing summary document")
-        if run_dir:
-            summary_path = Path(run_dir) / f"{uc_name}_requirements-summary.html"
-            summary_path.write_text(output.requirements_html, encoding="utf-8")
-            flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
+            # ── Phase 5: Write summary HTML ──
+            flow.flow("REQUIREMENTS Phase 5: Writing summary document")
+            if run_dir:
+                summary_path = Path(run_dir) / f"{uc_name}_requirements-summary.html"
+                summary_path.write_text(output.requirements_html, encoding="utf-8")
+                flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
 
-        # ── Phase 6: Milestone pause — developer reviews summary ──
-        if not ctx.session.state.get("review_milestones", True):
-            flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
-            return
+            # ── Phase 6: Milestone pause — developer reviews summary ──
+            if not ctx.session.state.get("review_milestones", True):
+                flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
+                return
+            decision = await self._review_summary()
+            if decision != "edit":
+                break
+
+            # "Edit requirements": the developer corrected answers or wrote what is wrong
+            from shared import requirement_edits
+            edit = requirement_edits.take(run_dir)
+            changed = skill.apply_edit(edit.get("answers") or {}, edit.get("note") or "",
+                                       edit.get("by") or "", edit.get("at") or "")
+            edit_round += 1
+            flow.flow("REQUIREMENTS: Edit %d — %d answer(s) changed, note=%s", edit_round, len(changed),
+                      bool(edit.get("note")))
+            output = await skill.incorporate_answers({})
+            readiness = output.readiness
+            if output.questions:  # the edit raised new questions: asked before compiling again
+                answers = await self._ask_developer(ctx, output.questions, edit_round, "",
+                                                    output.all_answers)
+                output = await skill.incorporate_answers(answers)
+                readiness = output.readiness
+
+        if decision == "cancel":
+            from shared.state import pipeline_actions
+            pipeline_actions[run_id] = {"action": "cancel"}
+
+        flow.flow(
+            "REQUIREMENTS COMPLETE — readiness=%s, %d questions answered, decision=%s",
+            readiness, len(output.all_answers), decision,
+        )
+
+        return
+        yield  # async generator
+
+    async def _review_summary(self) -> str:
+        """Step 2 review of the requirements document: continue, cancel or edit."""
         flow.flow("REQUIREMENTS: Pausing for developer review of summary")
         milestone_step = 2
         milestone_waiting[milestone_step] = {
@@ -209,18 +245,7 @@ class RequirementsGathererNode(BaseAgent):
 
         decision = milestone_decisions.pop(milestone_step, "continue")
         milestone_waiting.pop(milestone_step, None)
-
-        if decision == "cancel":
-            from shared.state import pipeline_actions
-            pipeline_actions[run_id] = {"action": "cancel"}
-
-        flow.flow(
-            "REQUIREMENTS COMPLETE — readiness=%s, %d questions answered, decision=%s",
-            readiness, len(output.all_answers), decision,
-        )
-
-        return
-        yield  # async generator
+        return decision
 
     # ------------------------------------------------------------------
     # Pipeline-specific helpers

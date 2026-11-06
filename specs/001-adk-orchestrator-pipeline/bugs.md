@@ -1002,3 +1002,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   shutdown left no checkpoint and the DB still said `running`.
 - **Fix**: `runner.mark_finished` and the Live Run button accept failed runs too (spec 008 U-D7 updated). Run
   8aee1c6d set to `cancelled` in the DB (what the user did). With OB-19 a cancel at the questions ends the run.
+
+### OB-21 — No way to correct the requirements; "Re-run step" at the step 2 review was ignored (Medium, Fixed 2026-11-06)
+- User: "if user want to correct some information in requirement document then user should be given the option
+  to again provide the info". The step 2 review offered Continue / Re-run / Cancel, and the requirements agent
+  checked only for cancel: Re-run continued the run. Wrong answers were saved per UC and came back every run.
+- **Fix**: "Edit requirements" at the step 2 review (Re-run hidden there): edit captured answers and/or write what
+  is wrong; step 1 applies it (`RequirementGatheringSkill.apply_edit`: changed answers replace the saved ones, the
+  note becomes an authoritative developer note, also in the run's document set for the next run), re-analyses,
+  asks new questions if any, compiles again and pauses at step 2 again. The document lists every update
+  ("Requirement Updates": note, was / now). Audit `requirements.edit`. Tests `tests/test_requirement_edits.py`.
