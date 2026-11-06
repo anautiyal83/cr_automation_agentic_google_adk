@@ -13,6 +13,7 @@ from pathlib import Path
 
 from google.adk.agents import BaseAgent
 
+from agents.network_simulator_setup_agent import mockwire_jar
 from core.logging_config import get_flow_logger
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ class NetworkConfigQAAgent(BaseAgent):
             html_template_path=config.get("mop_template", ""),
             java_home=config.get("java_home"),
             execution_workflow_path=str(overlay) if overlay and overlay.exists() else "",
-            mockwire_jar=config.get("mockwire_jar", "lib/mockwire/mockwire-simulator/mockwire.jar"),
+            mockwire_jar=mockwire_jar(config),
             execution_report_jar=config.get("execution_report_jar") or SkillInput.execution_report_jar,
             simulator_control=_SimulatorControl(run_id),
         )

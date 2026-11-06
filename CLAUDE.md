@@ -224,15 +224,17 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 
 ## External Dependencies
 - **JARs**: lib/ciq-processor-1.0.3-cli.jar, lib/cli-automation-standalone.jar, lib/execution-report-generator-1.0.2-cli.jar
-- **MockWire**: lib/mockwire/mockwire-simulator/mockwire.jar (embedded clone of the MockWire repo,
-  branch `feature/netconfig-testing-gaps`; source at D:\Nokia\workspace\mockwire)
+- **MockWire**: lib/mockwire.jar only (Settings → External Modules → MockWire JAR; `mockwire_jar`). Source: the
+  MockWire repo (`https://github.com/azalio-io/mockwire`, branch `feature/netconfig-testing-gaps`, local
+  D:\Nokia\workspace\mockwire). A MockWire change: commit + push there, `mvn -o test`,
+  `mvn -o -q package -Dmaven.antrun.skip=true -DskipTests`, copy `target/mockwire-1.0.0.jar` to `lib/mockwire.jar`
 - **Templates**: lib/templates/*.html
 - **Schemas**: schemas/*.yaml
 
 ## Simulator (steps 8 + 9) — spec 004
 - CIQ JSON (step 4): one `<UC>.json` with `crGroups[].nodeGroups[].nodes[]` (`json_output_builder`, from the CIQ layout);
   read it with `tools.ciq_json.node_groups` (also handles the older per-CR files with `nodeGroups` at the root)
-- How a UC simulator must behave for cli-automation: `lib/mockwire/AGENTS.md` (read before changing step 8)
+- How a UC simulator must behave for cli-automation: `AGENTS.md` of the MockWire repo (read before changing step 8)
 - Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
 - MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm …` on its VFS: step 8

@@ -189,7 +189,7 @@ cr_automation_agentic_google_adk/
   knowledge/                       # OKF-ready knowledge docs
   config/                          # Pipeline configuration
   data/                            # Runtime (runs, uploads, DB)
-  lib/                             # JARs + MockWire
+  lib/                             # JARs (incl. mockwire.jar, built from the MockWire repo) + templates
 ```
 
 ## Requirements

@@ -21,7 +21,7 @@ from skills.network_simulator_setup.autofix import parse_llm_yaml, parse_yaml
 from skills.network_simulator_setup.topology import build_instance_config, build_topology
 from skills.network_simulator_setup.validator import validate_mockwire_config
 
-MOCKWIRE_JAR = PROJECT_ROOT / "lib" / "mockwire" / "mockwire-simulator" / "mockwire.jar"
+MOCKWIRE_JAR = PROJECT_ROOT / "lib" / "mockwire.jar"
 needs_mockwire = pytest.mark.skipif(
     not MOCKWIRE_JAR.exists() or shutil.which("java") is None,
     reason="MockWire JAR or java not available",
@@ -264,3 +264,12 @@ def test_prompt_space_is_kept_off_when_the_regex_anchors_right_after_it():
     assert _with_space("rdshyd201", "rdshyd201$") == "rdshyd201"
     assert _with_space("rdshyd201$", r"rdshyd201\$\s*$") == "rdshyd201$ "
     assert _with_space("x#") == "x# "
+
+
+def test_runs_with_the_old_mockwire_path_use_lib_mockwire_jar():
+    """Runs from before 2026-11-05 carry lib/mockwire/mockwire-simulator/mockwire.jar in their config snapshot;
+    the project copy is gone (only lib/mockwire.jar is kept)."""
+    from agents.network_simulator_setup_agent import mockwire_jar
+    expected = str((PROJECT_ROOT / "lib" / "mockwire.jar").resolve())
+    assert mockwire_jar({"mockwire_jar": "./lib/mockwire/mockwire-simulator/mockwire.jar"}) == expected
+    assert mockwire_jar({}) == expected

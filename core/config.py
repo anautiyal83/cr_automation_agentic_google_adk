@@ -77,7 +77,7 @@ class PipelineConfiguration(BaseModel):
     infra_retry_limit: int = Field(default=3, ge=1, le=10)
     infra_retry_backoff: float = Field(default=2.0)
     simulator_endpoint: str = "localhost"
-    mockwire_jar: str = "./lib/mockwire/mockwire-simulator/mockwire.jar"
+    mockwire_jar: str = "./lib/mockwire.jar"
     simulator_base_port: int = 22200
     simulator_ttl_minutes: int = 60
     simulator_startup_timeout: int = 30

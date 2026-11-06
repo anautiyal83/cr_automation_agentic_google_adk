@@ -18,13 +18,20 @@ from shared.state import simulator_processes, stop_simulator
 logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
-_DEFAULT_MOCKWIRE_JAR = "lib/mockwire/mockwire-simulator/mockwire.jar"
+_DEFAULT_MOCKWIRE_JAR = "lib/mockwire.jar"
 
 
 def _resolve_path(path: str) -> str:
     """Resolve a config path relative to the project root, not the CWD."""
     p = Path(path)
     return str(p if p.is_absolute() else (PROJECT_ROOT / p).resolve())
+
+
+def mockwire_jar(config: dict) -> str:
+    """The MockWire JAR of the run's config — or ``lib/mockwire.jar`` when that file is gone: runs from
+    before 2026-11-05 carry ``lib/mockwire/mockwire-simulator/mockwire.jar`` in their config snapshot."""
+    configured = _resolve_path(config.get("mockwire_jar") or _DEFAULT_MOCKWIRE_JAR)
+    return configured if Path(configured).exists() else _resolve_path(_DEFAULT_MOCKWIRE_JAR)
 
 
 def _ciq_json_files(run_dir: str) -> list[str]:
@@ -111,7 +118,7 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             ciq_json_files=_ciq_json_files(run_dir),
             feedback=feedback,
             run_dir=run_dir,
-            mockwire_jar=_resolve_path(config.get("mockwire_jar") or _DEFAULT_MOCKWIRE_JAR),
+            mockwire_jar=mockwire_jar(config),
             java_home=config.get("java_home"),
             auto_start=True,
             host=config.get("simulator_endpoint") or "localhost",

@@ -34,7 +34,7 @@ from skills.network_simulator_setup.simulator_runner import (
 )
 from skills.network_simulator_setup.validator import validate_mockwire_config
 
-MOCKWIRE_JAR = PROJECT_ROOT / "lib" / "mockwire" / "mockwire-simulator" / "mockwire.jar"
+MOCKWIRE_JAR = PROJECT_ROOT / "lib" / "mockwire.jar"
 needs_mockwire = pytest.mark.skipif(
     not MOCKWIRE_JAR.exists() or shutil.which("java") is None,
     reason="MockWire JAR or java not available",
