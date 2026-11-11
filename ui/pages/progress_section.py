@@ -1287,16 +1287,26 @@ class ProgressSection:
         self.ms_failure_box.set_visibility(bool(reasons))
         if not reasons:
             return
+        from shared.plain_errors import summarize
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        headline, sections, what_to_do = summarize(step_num, reasons, _simulator_gaps(run_dir, step_num))
         with self.ms_failure_box:
-            with ui.row().classes("items-center gap-2"):
+            # what is missing in the user's inputs (CIQ, MOP, session logs, where a value comes from),
+            # then the AI's own problems; the technical text on request
+            with ui.row().classes("items-center gap-2 no-wrap"):
                 ui.icon("error_outline", size="18px").classes("cr-text-error")
-                ui.label(f"Why step {step_num} failed").classes("font-semibold")
-            for reason in reasons[:8]:
-                ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere; white-space: pre-wrap")
-            if len(reasons) > 8:
-                with ui.expansion(f"{len(reasons) - 8} more").classes("w-full text-body2"):
-                    for reason in reasons[8:]:
-                        ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere")
+                ui.label(headline).classes("font-semibold")
+            for section, lines in sections:
+                ui.label(section).classes("text-caption font-semibold mt-1").style("color: var(--cr-text)")
+                for line in lines[:6]:
+                    ui.label("• " + line).classes("text-body2").style("overflow-wrap: anywhere")
+                if len(lines) > 6:
+                    ui.label(f"… and {len(lines) - 6} more").classes("text-caption cr-text-dim")
+            ui.label("What you can do: " + what_to_do).classes("text-caption font-medium mt-1")
+            with ui.expansion("Technical details").classes("w-full text-caption cr-text-dim"):
+                for reason in reasons:
+                    ui.label(reason).classes("text-caption font-mono") \
+                        .style("overflow-wrap: anywhere; white-space: pre-wrap; margin-bottom: 6px")
 
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Show milestone row with questionnaire controls and auto-open dialog."""
@@ -2134,6 +2144,21 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
     return found[:60]
 
 
+def _simulator_gaps(run_dir: str, step: int) -> list[str]:
+    """Commands the simulator had no recorded output for (step 9, failure classified as simulator):
+    their real output is missing from the session logs."""
+    import json as _json
+    if step != 9:
+        return []
+    try:
+        data = _json.loads((Path(run_dir) / "step_9_error.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if data.get("classification") != "simulator":
+        return []
+    return [c for c in data.get("unmatched_commands") or [] if c and not c.strip().startswith(("fi", "then", "else"))]
+
+
 def _failure_reasons(run_dir: str, step: int) -> list[str]:
     """Why a step failed, one reason per entry, from its ``step_<n>_error.json`` (the steps 3-4
     review: both files; step 9: every failed test case)."""
@@ -2151,8 +2176,8 @@ def _failure_reasons(run_dir: str, step: int) -> list[str]:
             reasons += [f"{c.get('id', '')} {c.get('scenario', '')}: "
                         + "; ".join(str(e) for e in (c.get("errors") or [])[:3]) for c in cases]
         elif err:
-            # the problems are joined with "; " after a full stop
-            reasons += [r.strip() for r in re.split(r"(?<=\.)\s*;\s+", err) if r.strip()]
+            from shared.plain_errors import split_reasons
+            reasons += split_reasons(err)
     return reasons
 
 

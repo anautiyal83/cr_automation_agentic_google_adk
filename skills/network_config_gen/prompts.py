@@ -145,7 +145,9 @@ CRITICAL RULES:
   register: [{regex: '(?<distinctCount>\\d+)'}] and expr 'distinctCount == 1'.
 - A shell variable the command sets itself is written $NAME, never ${NAME}: the framework fills
   every ${…} before the node sees it (`DATE=$(date +%Y%m%d); … predump_${DATE}.txt` arrives as
-  `predump_.txt`) — write `DATE=$(date +%Y%m%d); … predump_$DATE.txt`.
+  `predump_.txt`) — write `DATE=$(date +%Y%m%d); … predump_$DATE.txt`. For the same reason no bash
+  arrays (`${counts[$pod]}` arrives empty): compare per-pod values in one pipeline instead, e.g.
+  `for p in …; do …; done | sort -u | wc -l`, and register that count.
 - sftp steps print nothing: give them no output regex (the transfer status decides).
 - The pipeline adds these itself — do NOT write them:
     - a loop over all CIQ records: write each per-record step ONCE with

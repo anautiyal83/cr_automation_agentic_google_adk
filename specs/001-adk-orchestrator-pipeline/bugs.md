@@ -1062,3 +1062,15 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   `clarify` (artifact cache cleared, no retry counted); step 1 applies the pending `requirement_edits.json` after
   its analysis (no questionnaire), compiles again and pauses at the step 2 review; every later step runs again.
   Test `test_edit_from_a_later_review_is_applied_when_step_1_runs_again`.
+
+### OB-27 — Review errors were written for the LLM, not for the user (Medium, Fixed 2026-11-11)
+- User: "error showing is very complex to understand … user just need to know what is missing in the requirement
+  docs, either in CIQ, or MOP or we need some input output of command or framework need to know from where a
+  particular parameter will come". The failed review listed the validator's messages (placeholders, regexes,
+  registers) verbatim.
+- **Fix**: `shared/plain_errors.summarize` sorts every problem by where the user fixes it — CIQ (empty column),
+  MOP (expected result does not match the session log), Session logs (value or command output missing), Where a
+  value comes from (a value nothing provides), and "Nothing to change in your documents" (the AI's own mistakes:
+  code in checks, shell arrays, failed test cases) — with a headline counting the things to check and what to do.
+  The technical text stays under "Technical details". Step 6 prompt + validator hint: no bash arrays (the framework
+  fills `${…}`). Tests `tests/test_plain_errors.py`.
