@@ -152,6 +152,12 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   (JAR default is stop), `validation.enabled`, and every expression as one `${…}` (`${A != "" && B == "x"}`) —
   the JAR evaluates it exactly like the plain form step 6 works with internally. Multi-line sends are `|-`
   blocks (a double-quoted `\n` reaches the shell as a newline, P-8). CIQ references stay ours (PF-D1)
+- Spec 013 node model (`sessions.py`, step 6 `_ciq_fixes`): one `niam_<type>_server` per CIQ node type (`node_types`
+  of the CIQ JSON template; `ne_id ${<TYPE>.niamID-1}`); hosts reached from it (`oc/kubectl exec -it … -- bash`,
+  `ssh user@host`, `telnet`, `su`) are nested sessions on that node (enter step with the new prompt, `exit`);
+  several NIAM entries → `failover.py` (`niam_<type>_1…n`, login probes, steps on `${Target<TYPE>}`, undone by
+  flatten). Step 8: enter commands push the nested prompt (MockWire pushPrompt / interactive password, builtin
+  `exit`); a failover group is one instance (`NodeSpec.aliases`, `file_flows.group_names`)
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)
