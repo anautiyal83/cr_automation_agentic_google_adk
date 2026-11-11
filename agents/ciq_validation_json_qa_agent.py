@@ -27,7 +27,7 @@ class CiqValidationJsonQAAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx):
         from shared.llm import get_llm_fn
-        from agents.requirements_agent import requirements_store
+        from agents.requirements_agent import ciq_file_path, requirements_store
         from skills.ciq_validation_json_test import (
             CiqValidationJsonTestSkill, SkillInput,
         )
@@ -49,7 +49,7 @@ class CiqValidationJsonQAAgent(BaseAgent):
 
         inp = SkillInput(
             uc_name=uc_name,
-            ciq_file_path=state.get("ciq_file_path", ""),
+            ciq_file_path=ciq_file_path(state),
             validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
             json_output_yaml=artifacts.get("json_template_yaml", ""),
             requirements=requirements,

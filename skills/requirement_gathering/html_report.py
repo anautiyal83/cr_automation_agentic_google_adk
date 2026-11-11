@@ -2,42 +2,80 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape as html_escape
 from typing import Any
 
 _CSS = """\
+:root {
+  --primary: #0B5FFF; --primary-soft: #EAF1FF; --ink: #101828; --muted: #667085; --line: #E4E7EC;
+  --surface: #FFFFFF; --page: #F7F8FA; --zebra: #F9FAFB; --code: #F2F4F7;
+  --ok: #039855; --ok-soft: #ECFDF3; --warn: #B54708; --warn-soft: #FFFAEB; --bad: #D92D20; --bad-soft: #FEF3F2;
+}
 * { box-sizing: border-box; }
-body { font-family: 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.5;
-  max-width: 960px; margin: 30px auto; color: #e2e4ed; background: #0f1117; padding: 20px; }
-h1 { font-size: 1.4em; color: #6c8aff; border-bottom: 2px solid #2e3348; padding-bottom: 8px; margin-bottom: 16px; }
-h2 { font-size: 1.1em; color: #38bdf8; margin-top: 24px; margin-bottom: 8px; }
-h3 { font-size: 1em; color: #a78bfa; margin-top: 12px; }
-p { margin: 4px 0; }
-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 0.92em; }
-th, td { text-align: left; padding: 6px 10px; border: 1px solid #2e3348; }
-th { background: #1a1d27; color: #8b8fa8; font-size: 0.85em; text-transform: uppercase; }
-td { background: #242836; vertical-align: top; }
-code { background: #2a2d3e; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; font-weight: 600; }
-.badge-complete { background: #1a3a2a; color: #22c55e; }
-.badge-partial { background: #3d2f10; color: #f59e0b; }
-.badge-insufficient { background: #2e1a1a; color: #ef4444; }
-.badge-critical { background: #2e1a1a; color: #ef4444; }
-.badge-cat { background: #1e2a40; color: #38bdf8; }
-.section { background: #1a1d27; border: 1px solid #2e3348; border-radius: 8px; padding: 14px; margin: 8px 0; }
-pre { background: #242836; padding: 10px; border-radius: 6px; overflow-x: auto;
-  font-size: 0.85em; white-space: pre-wrap; word-break: break-word; max-height: 300px; }
-.meta { color: #8b8fa8; font-size: 0.85em; }
-.gap-item { background: #2e1a1a; border: 1px solid #5c2020; border-radius: 4px;
-  padding: 6px 10px; margin: 4px 0; color: #fca5a5; font-size: 0.9em; }
-.answer-row td:first-child { width: 40%; font-weight: 600; color: #a78bfa; }
-.context { color: #8b8fa8; font-size: 0.85em; margin-top: 4px; }
-.default { color: #6c8aff; font-family: monospace; font-size: 0.9em; }
-details { margin: 8px 0; }
-details > summary { cursor: pointer; color: #38bdf8; font-size: 1.1em; font-weight: 600;
-  padding: 6px 0; user-select: none; list-style: none; }
-details > summary::before { content: '\\25B6  '; font-size: 0.7em; transition: transform 0.2s; display: inline-block; }
-details[open] > summary::before { transform: rotate(90deg); }
+html { background: var(--page); }
+body { font-family: Inter, 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 13.5px; line-height: 1.55;
+  color: var(--ink); background: var(--surface); max-width: 1000px; margin: 28px auto; padding: 40px 48px 48px;
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.06);
+  counter-reset: sec; }
+.doc-head { border-bottom: 2px solid var(--ink); padding-bottom: 18px; margin-bottom: 8px; }
+.doc-kicker { font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--primary); }
+h1 { font-size: 26px; line-height: 1.2; font-weight: 700; margin: 6px 0 16px; letter-spacing: -.01em; word-break: break-word; }
+.doc-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 0;
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.doc-meta div { padding: 10px 14px; border-right: 1px solid var(--line); }
+.doc-meta div:last-child { border-right: 0; }
+.doc-meta dt { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.doc-meta dd { margin: 3px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.lead { color: var(--muted); margin: 14px 0 0; max-width: 75ch; }
+h2, details > summary { counter-increment: sec; display: flex; align-items: baseline; gap: 10px;
+  font-size: 16px; font-weight: 700; color: var(--ink); margin: 30px 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--line); }
+h2::before, details > summary::before { content: counter(sec, decimal-leading-zero); font-size: 12px; font-weight: 600;
+  color: var(--primary); font-variant-numeric: tabular-nums; }
+details > summary { cursor: pointer; list-style: none; user-select: none; }
 details > summary::-webkit-details-marker { display: none; }
+details > summary::after { content: 'Show'; margin-left: auto; font-size: 11px; font-weight: 600; color: var(--primary); }
+details[open] > summary::after { content: 'Hide'; }
+h3 { font-size: 13.5px; font-weight: 700; margin: 18px 0 8px; color: var(--ink); }
+p { margin: 6px 0; }
+ul { margin: 6px 0; padding-left: 20px; }
+.section { margin: 4px 0 8px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 12.5px; border: 1px solid var(--line); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--zebra); color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; white-space: nowrap; }
+tr:nth-child(even) td { background: var(--zebra); }
+tr:last-child td { border-bottom: 0; }
+code { font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace; font-size: .9em; background: var(--code);
+  border: 1px solid var(--line); padding: 0 5px; border-radius: 4px; word-break: break-word; }
+pre { font-family: 'JetBrains Mono', Consolas, monospace; background: var(--zebra); border: 1px solid var(--line);
+  padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 12px; white-space: pre-wrap;
+  word-break: break-word; max-height: 420px; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  letter-spacing: .02em; border: 1px solid transparent; white-space: nowrap; }
+.badge-complete { background: var(--ok-soft); color: var(--ok); border-color: #ABEFC6; }
+.badge-partial { background: var(--warn-soft); color: var(--warn); border-color: #FEDF89; }
+.badge-insufficient, .badge-critical { background: var(--bad-soft); color: var(--bad); border-color: #FECDCA; }
+.badge-cat { background: var(--primary-soft); color: var(--primary); border-color: #C7D7FE; }
+.meta { color: var(--muted); font-size: .92em; }
+.gap-item { background: var(--warn-soft); border: 1px solid #FEDF89; border-left: 3px solid var(--warn);
+  border-radius: 6px; padding: 8px 12px; margin: 6px 0; }
+.ok-msg { background: var(--ok-soft); border: 1px solid #ABEFC6; border-left: 3px solid var(--ok); border-radius: 6px;
+  padding: 10px 12px; color: var(--ok); font-weight: 600; }
+.answer-row td:first-child { width: 45%; font-weight: 600; }
+.context { color: var(--muted); font-size: .92em; margin-top: 4px; }
+.default { font-family: 'JetBrains Mono', Consolas, monospace; font-size: .9em; color: var(--primary); }
+.doc-foot { margin-top: 36px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+@media (max-width: 720px) { body { margin: 0; padding: 24px 18px; border: 0; border-radius: 0; } }
+@media print {
+  html, body { background: #fff; }
+  body { margin: 0; padding: 0; border: 0; box-shadow: none; max-width: none; }
+  details > summary::after { content: ''; }
+  h2, details > summary, h3 { break-after: avoid; }
+  tr { break-inside: avoid; }
+  pre { max-height: none; }
+}
+@page { margin: 16mm; }
 """
 
 
@@ -86,15 +124,26 @@ def generate_summary_html(
     if all_gaps_empty and answers:
         readiness = "COMPLETE"
     badge_cls = {"COMPLETE": "badge-complete", "PARTIAL": "badge-partial"}.get(readiness, "badge-insufficient")
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    n_cmds = len(doc_extracted.get("mop_commands", []) or cat2_req.get("commands", [])
+                 or cat2_an.get("commands_found", []))
 
     lines = [
         "<!DOCTYPE html>",
-        f"<html><head><meta charset='utf-8'><title>Requirements Summary \u2014 {uc_name}</title>",
+        "<html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>Requirements \u2014 {uc_name}</title>",
         f"<style>{_CSS}</style></head><body>",
-        f"<h1>Requirements Summary \u2014 {uc_name}</h1>",
-        f"<p class='meta'>Generated: {now} | Answers: {len(answers)} | Readiness: "
-        f"<span class='badge {badge_cls}'>{readiness}</span></p>",
+        "<header class='doc-head'>",
+        "<div class='doc-kicker'>Azalio Autonomous Network Platform \u00b7 Requirements Document</div>",
+        f"<h1>{uc_name}</h1>",
+        "<dl class='doc-meta'>",
+        f"<div><dt>Readiness</dt><dd><span class='badge {badge_cls}'>{readiness}</span></dd></div>",
+        f"<div><dt>CIQ sheets</dt><dd>{len(ciq_sheets)}</dd></div>",
+        f"<div><dt>MOP commands</dt><dd>{n_cmds}</dd></div>",
+        f"<div><dt>Developer answers</dt><dd>{len(answers)}</dd></div>",
+        f"<div><dt>Generated</dt><dd>{now}</dd></div>",
+        "</dl></header>",
     ]
 
     # -- CIQ Structure --
@@ -132,6 +181,10 @@ def generate_summary_html(
             lines.append("</table></div>")
     else:
         lines.append("<div class='section'><p>No CIQ structure available</p></div>")
+    excluded = requirements.get("excluded_ciq_sheets") or []
+    if excluded:
+        lines.append("<p class='meta'>Not used by this activity: "
+                     + ", ".join(f"<code>{html_escape(str(s))}</code>" for s in excluded) + "</p>")
     lines.append("</details>")
 
     # -- CIQ Field Mappings --
@@ -415,6 +468,30 @@ def generate_summary_html(
                 lines.append(f"<p><strong>Sample {i}:</strong></p><pre>{content}</pre>")
         lines.append("</div></details>")
 
+    # -- Requirement updates (Edit requirements at the step 2 review) --
+    updates = [u for u in requirements.get("requirement_updates") or [] if isinstance(u, dict)]
+    if updates:
+        lines.append(f"<details open><summary>Requirement Updates ({len(updates)})</summary><div class='section'>")
+        for i, u in enumerate(updates, 1):
+            who = f" · {u['by']}" if u.get("by") else ""
+            lines.append(f"<h3>Update {i} <span class='meta'>{u.get('at', '')}{who}</span></h3>")
+            if u.get("note"):
+                lines.append(f"<pre>{html_escape(str(u['note']))}</pre>")
+            if u.get("ciq_file"):
+                lines.append(f"<p>CIQ workbook replaced: <code>{html_escape(str(u['ciq_file']))}</code></p>")
+            if "excluded_sheets" in u:
+                names = ", ".join(f"<code>{html_escape(str(s))}</code>" for s in u["excluded_sheets"]) or "none"
+                lines.append(f"<p>CIQ sheets not used by this activity: {names}</p>")
+            changed = u.get("answers") or {}
+            if changed:
+                lines.append("<table class='answer-row'><tr><th>Question</th><th>Was</th><th>Now</th></tr>")
+                for k, c in changed.items():
+                    q = html_escape(question_texts.get(k, "") or k)
+                    lines.append(f"<tr><td>{q}</td><td class='meta'>{html_escape(str(c.get('from', '')))}</td>"
+                                 f"<td>{html_escape(str(c.get('to', '')))}</td></tr>")
+                lines.append("</table>")
+        lines.append("</div></details>")
+
     # -- Developer Answers --
     if answers:
         lines.append(f"<details><summary>Developer Answers ({len(answers)})</summary><div class='section'>")
@@ -439,7 +516,7 @@ def generate_summary_html(
     if readiness == "COMPLETE":
         # When COMPLETE, show success message — any LLM-reported gaps are informational only
         lines.append("<details open><summary>Status</summary>")
-        lines.append("<div class='section'><p style='color:#22c55e'>All requirements gathered \u2014 ready for pipeline execution.</p></div></details>")
+        lines.append("<div class='section'><p class='ok-msg'>All requirements gathered \u2014 ready for pipeline execution.</p></div></details>")
     elif all_gaps:
         lines.append(f"<details open><summary>Remaining Gaps ({len(all_gaps)})</summary><div class='section'>")
         for cat_label, gap in all_gaps:
@@ -447,13 +524,15 @@ def generate_summary_html(
         lines.append("</div></details>")
     else:
         lines.append("<details open><summary>Status</summary>")
-        lines.append("<div class='section'><p style='color:#22c55e'>No remaining gaps \u2014 all requirements gathered.</p></div></details>")
+        lines.append("<div class='section'><p class='ok-msg'>No remaining gaps \u2014 all requirements gathered.</p></div></details>")
 
     # -- Developer Notes --
     if developer_notes:
         lines.append("<details><summary>Developer Notes</summary>")
         lines.append(f"<div class='section'><pre>{developer_notes}</pre></div></details>")
 
+    lines.append("<footer class='doc-foot'>Generated by Azalio Autonomous Network Platform, steps 1\u20132 (DOC Parser, DOC Analyzer) "
+                 f"\u00b7 {now}</footer>")
     lines.append("</body></html>")
     return "\n".join(lines)
 
@@ -478,16 +557,26 @@ def generate_questionnaire_html(
         "optional": ("badge-cat", "OPTIONAL"),
     }
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    critical = sum(1 for q in questions if isinstance(q, dict) and q.get("importance") == "critical")
     lines = [
         "<!DOCTYPE html>",
-        f"<html><head><meta charset='utf-8'><title>Requirements Questionnaire \u2014 {uc_name}</title>",
+        "<html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>Questionnaire \u2014 {uc_name}</title>",
         f"<style>{_CSS}</style></head><body>",
-        f"<h1>Requirements Questionnaire \u2014 Round {round_num}</h1>",
-        f"<p class='meta'>UC: <strong>{uc_name}</strong> | "
-        f"Generated: {now} | Questions: <strong>{len(questions)}</strong></p>",
-        "<p>The pipeline needs the following information to generate production-quality YAML. "
-        "Answer in the UI or provide via Developer Notes.</p>",
+        "<header class='doc-head'>",
+        f"<div class='doc-kicker'>Azalio Autonomous Network Platform \u00b7 Requirements Questionnaire \u00b7 Round {round_num}</div>",
+        f"<h1>{uc_name}</h1>",
+        "<dl class='doc-meta'>",
+        f"<div><dt>Questions</dt><dd>{len(questions)}</dd></div>",
+        f"<div><dt>Critical</dt><dd>{critical}</dd></div>",
+        f"<div><dt>Round</dt><dd>{round_num}</dd></div>",
+        f"<div><dt>Generated</dt><dd>{now}</dd></div>",
+        "</dl>",
+        "<p class='lead'>The pipeline needs the following information to generate a production-quality workflow. "
+        "Answer in the UI or provide it in the Developer Notes.</p>",
+        "</header>",
     ]
 
     by_cat: dict[str, list] = {}

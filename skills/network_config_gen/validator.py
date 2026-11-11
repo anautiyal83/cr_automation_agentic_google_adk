@@ -692,7 +692,7 @@ def check_expr_vars(parsed: dict, runtime_params: list[str] | None = None) -> li
     """``criteria.expr`` may only use registered variables (DEP-24): named groups of a
     validation regex are not visible to expr; a ``register`` on the step (or an earlier
     step) is (JAR probes 2026-11-02)."""
-    from .autofix import EXPR_IDENT, EXPR_KEYWORDS, _criteria_blocks
+    from .autofix import EXPR_IDENT, EXPR_KEYWORDS, EXPR_UNSUPPORTED, _criteria_blocks
     if runtime_params is None:
         from core.config import runtime_params as configured
         runtime_params = list(configured())
@@ -708,6 +708,15 @@ def check_expr_vars(parsed: dict, runtime_params: list[str] | None = None) -> li
         for criteria in _criteria_blocks(step):
             expr = criteria.get("expr")
             if not isinstance(expr, str):
+                continue
+            if EXPR_UNSUPPORTED.search(expr):
+                problems.append(
+                    f"Step '{str(step.get('send') or step.get('command_description'))[:80]}' ({phase_name}): expr "
+                    f"'{expr}' is not something criteria.expr can evaluate: it only compares registered values "
+                    "(a == b, n >= 90, joined with && or ||) and has no functions, lists, [i], .length or =>. "
+                    "To check that every pod / line reports the same value, compute it in the command "
+                    "(… | sort -u | wc -l), register that count (register: [{regex: '(?<distinctCount>\\d+)'}]) "
+                    "and use expr 'distinctCount == 1'.")
                 continue
             unknown = sorted({m.group(1) for m in EXPR_IDENT.finditer(expr)} - EXPR_KEYWORDS - defined)
             if unknown:

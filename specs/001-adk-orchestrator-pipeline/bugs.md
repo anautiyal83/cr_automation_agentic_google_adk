@@ -974,3 +974,91 @@ uns\…\create_xml.py`) | Fixed: the cache stores script contents, not run-dir p
   kept outside the repo).
 - Pipeline tests 308 passed (the MockWire process tests use the new JAR); replays of steps 8+9: MRF 46e5fee1 via
   repo SFTP 4/4, PGW 6db86ff8 2/2.
+
+### OB-18 — Step 1 input documents: formats the upload accepts but the parser cannot read (Medium, Open 2026-11-05)
+Found while writing the UC input guideline (code review, not yet reproduced in a run):
+- `.docx` / `.pdf` MOP: `_read_raw_artifacts` reads it with `Path.read_text` (raw bytes); no docx/pdf text
+  extraction exists. Only `.txt` MOPs parse (`skills/requirement_gathering/skill.py:558`).
+- `.xls` CIQ: openpyxl cannot open it, the error is logged at debug level → empty `ciq_sheets`, step 3 fails
+  later with "No CIQ structure" (`parsers/ciq_parser.py:101`).
+- Constraints file: stored but never read (`skill.py:141-144`).
+- Single-file slots (CIQ, MOP, constraints, command outputs) keep only the last uploaded file, silently
+  (`ui/pages/upload_section.py:450`).
+- Upload validation checks only existence + extension; command outputs count as optional there although the UI
+  marks them required (`models/validation.py`).
+- Sample I/O: only sections starting with `<` (XML) are parsed; JSON/YAML/CSV yield nothing (`xml_sample_parser.py`).
+
+### OB-19 — Cancel at a step 1 question round did not stop the run (High, Fixed 2026-11-05)
+- Run 8aee1c6d (EIR_1029_TAC_LOADING_EIR): Cancel on the questions (14:17, 17:45) was read as "Developer answered
+  0 questions"; step 1 re-analysed and asked the next round. The run stayed "running" for hours.
+- **Fix**: `RequirementsGathererNode._ask_developer` — decision `cancel` sets the run's cancel action and raises
+  `RunCancelled`; the agent ends. `PipelineAgent` checks for a cancel right after an agent returns: nothing of the
+  agent is cached or reported completed, the run ends cancelled. Tests `tests/test_requirements_cancel.py`.
+
+### OB-20 — A failed run could not be removed from Live Run (Medium, Fixed 2026-11-05)
+- After the restart, run 8aee1c6d (cancelled by the user, OB-19) was marked failed ("could not resume (no
+  checkpoint)") and Live Run kept showing it: "Mark as finished" was offered for completed runs only (U-D7).
+  Cause of "failed": the cancel set the run's in-memory status to `cancelled` while the run went on, so the
+  shutdown left no checkpoint and the DB still said `running`.
+- **Fix**: `runner.mark_finished` and the Live Run button accept failed runs too (spec 008 U-D7 updated). Run
+  8aee1c6d set to `cancelled` in the DB (what the user did). With OB-19 a cancel at the questions ends the run.
+
+### OB-21 — No way to correct the requirements; "Re-run step" at the step 2 review was ignored (Medium, Fixed 2026-11-06)
+- User: "if user want to correct some information in requirement document then user should be given the option
+  to again provide the info". The step 2 review offered Continue / Re-run / Cancel, and the requirements agent
+  checked only for cancel: Re-run continued the run. Wrong answers were saved per UC and came back every run.
+- **Fix**: "Edit requirements" at the step 2 review (Re-run hidden there): edit captured answers and/or write what
+  is wrong; step 1 applies it (`RequirementGatheringSkill.apply_edit`: changed answers replace the saved ones, the
+  note becomes an authoritative developer note, also in the run's document set for the next run), re-analyses,
+  asks new questions if any, compiles again and pauses at step 2 again. The document lists every update
+  ("Requirement Updates": note, was / now). Audit `requirements.edit`. Tests `tests/test_requirement_edits.py`.
+
+### OB-22 — EIR: a hidden CIQ sheet became part of the activity; the CIQ could not be corrected; an edit reopened the questionnaire (Medium, Fixed 2026-11-06)
+- EIR_1029_TAC_LOADING_EIR: `CRFRoutePriorityList` is a hidden sheet of the uploaded CIQ; step 1 read hidden
+  sheets like any other. Notes in "Edit requirements" could not remove it (the sheet list comes from the
+  workbook), and after an edit the re-analysis opened the questionnaire again (5 questions).
+- **Fix**: `parse_ciq` skips hidden / very hidden sheets. Edit requirements has a CIQ section: tick the sheets the
+  activity uses, or upload a corrected workbook; `apply_edit` re-reads it, leaves unticked sheets out
+  (`excluded_ciq_sheets`, saved per UC, applied by later runs), and later steps read the corrected CIQ via
+  `agents.requirements_agent.ciq_file_path`. After an edit the requirements are compiled again without a
+  questionnaire; open points appear under Remaining Gaps. Tests in `tests/test_requirement_edits.py`.
+
+### OB-23 — The steps 3-4 review showed only the CIQ JSON, not the validation rules (Low, Fixed 2026-11-06)
+- Two file maps fill a review: `PipelineAgent._resolve_artifacts` and `PipelineRunner._resolve_milestone_artifacts`;
+  the runner's event comes last and also restores the review after a restart. It had `json-output.yaml` as the only
+  file of step 4, so the validation rules (step 3's output) were not offered for review.
+- **Fix**: the runner's step 4 files are the validation rules, then the CIQ JSON. The review is named "Steps 3–4 ·
+  Validation Rules & CIQ JSON", lists one row per file and opens the viewer with a tab per file. Test
+  `test_steps_3_4_review_shows_the_rules_and_the_ciq_json`.
+
+### DEP-72 — EIR step 6: JavaScript in criteria.expr, shell variables written ${NAME} (High, Fixed 2026-11-06)
+- The LLM checked "every pod reports the same count" with `counts.every(val => val === counts[0])`; autofix dropped
+  the parentheses and the validator said "uses val, which no step registers" — the correction rounds could not fix
+  it. `DATE=$(date +%Y%m%d); … predump_${DATE}.txt`: the JAR fills every `${…}` itself, an unregistered one with
+  '' (probed: `${DATE}` arrived as '', `$DATE` passed through). MockWire answered `DATE=…` "command not found".
+- **Fix**: autofix `shell_variables_unbraced` (`${NAME}` of a variable the command sets or loops over → `$NAME`);
+  `EXPR_UNSUPPORTED` exprs keep their parentheses and the validator explains what expr can do and what to write
+  (`… | sort -u | wc -l`, register the count, `distinctCount == 1`); step 6 prompt rules for both; MockWire
+  9a058e5 keeps `NAME=value` / `export NAME=value` as session variables.
+
+### OB-24 — A failed step offered Continue after a reload; the review never said why a step failed (Medium, Fixed 2026-11-06)
+- Reloaded reviews (page refresh, server restart) took the failure status from the ADK session state, and only for
+  steps 5/7/9: a failed step 6 came back with Continue. No review showed the step's error file.
+- **Fix**: the reloaded review is failed when the pause itself says so (`milestone_waiting`) or the step's error
+  file exists — every step; a failed review lists the reasons from `step_<n>_error.json` ("Why step N failed",
+  step 9: every failed test case). Tests `tests/test_step6_shell_vars_and_failures.py`.
+
+### OB-25 — EIR steps 1-2 crashed compiling the requirements: a node with `"ssh": null` (High, Fixed 2026-11-06)
+- `merge_vendor_profile` did `en.setdefault("ssh", {})` on a node the LLM compiled with `"ssh": null`; setdefault
+  returns the existing None → `TypeError: 'NoneType' object does not support item assignment` (13:05 and 14:02,
+  after "Clarify in requirements"); the run failed.
+- **Fix**: `compiler._dict_at` / `_list_at` give a dict / list field, replacing a null one; every `setdefault(…, {})`
+  / `setdefault(…, [])` and `.get(…, {})` / `.get(…, [])` in the compiler uses them / `or {}`. Test
+  `test_vendor_profile_merges_into_a_node_the_llm_left_without_ssh`.
+
+### OB-26 — Edit requirements only at the step 2 review (Low, Changed 2026-11-06)
+- User: "every review step should allow user to edit requirement" (OB-21 had it at step 2 only).
+- **Change**: the button is on every review. At a later review the decision `edit` goes back to step 1 like
+  `clarify` (artifact cache cleared, no retry counted); step 1 applies the pending `requirement_edits.json` after
+  its analysis (no questionnaire), compiles again and pauses at the step 2 review; every later step runs again.
+  Test `test_edit_from_a_later_review_is_applied_when_step_1_runs_again`.

@@ -99,6 +99,11 @@ class RequirementGatheringSkill:
         self._schema_dir: str | None = None
         self._vendor_profile: dict | None = None
         self._previous_requirements: dict = {}
+        self._edits: list[dict] = []  # "Edit requirements" at the step 2 review, in order
+        self._ciq_file_path = ""
+        self._ciq_replaced = False                      # a corrected CIQ was uploaded at step 2
+        self._all_ciq_sheets: dict[str, dict] = {}      # every visible sheet of the workbook
+        self._excluded_sheets: set[str] = set()         # sheets the activity does not use (per UC)
 
     # ------------------------------------------------------------------
     # Phase 1: Parse + Analyze
@@ -138,10 +143,15 @@ class RequirementGatheringSkill:
         # Keep them for later runs too: steps 6/8 reuse real outputs nobody re-uploads (DEP-20)
         from tools.command_samples import add as _remember_samples
         _remember_samples(command_samples, source=inp.uc_name)
-        self._ciq_sheets = parse_ciq(
+        self._ciq_file_path = inp.ciq_file_path or ""
+        self._all_ciq_sheets = parse_ciq(
             ciq_file_path=inp.ciq_file_path,
             ciq_data=inp.ciq_data,
         )
+        # Sheets the developer said this activity does not use (Edit requirements, kept per UC)
+        self._excluded_sheets = {s for s in _load_uc_doc(inp.uc_name).get("excluded_ciq_sheets") or []
+                                 if s in self._all_ciq_sheets}
+        self._ciq_sheets = {k: v for k, v in self._all_ciq_sheets.items() if k not in self._excluded_sheets}
 
         self._doc_extracted = {
             "mop_commands": mop_parsed["commands"],
@@ -378,6 +388,41 @@ class RequirementGatheringSkill:
     # Phase 3: Compile final
     # ------------------------------------------------------------------
 
+    def apply_edit(self, answers: dict[str, Any], note: str, by: str = "", at: str = "",
+                   ciq_file_path: str = "", excluded_sheets: list[str] | None = None) -> dict[str, Any]:
+        """The developer's edit of the compiled requirements (step 2 review): changed answers
+        replace the old ones, also in the UC's saved answers, so the next run does not bring them
+        back; the note joins the developer notes as authoritative; a corrected CIQ workbook is read
+        again; ``excluded_sheets`` (all sheets the activity does not use) are left out, also in
+        later runs of the UC. Returns the changed answers.
+        Call ``incorporate_answers({})`` and ``compile_final()`` afterwards."""
+        from shared.requirement_edits import note_block
+        changed = {k: {"from": self._all_answers.get(k, ""), "to": v} for k, v in (answers or {}).items()
+                   if str(self._all_answers.get(k, "")) != str(v)}
+        self._all_answers.update({k: c["to"] for k, c in changed.items()})
+        _save_answers(self._uc_name, self._all_answers)
+        if note and note.strip():
+            self._developer_notes = "\n\n".join(
+                x for x in (self._developer_notes.strip(), note_block(note, by, at)) if x)
+        record: dict[str, Any] = {"at": at, "by": by, "note": (note or "").strip(), "answers": changed}
+        if ciq_file_path:
+            self._all_ciq_sheets = parse_ciq(ciq_file_path=ciq_file_path)
+            self._ciq_file_path, self._ciq_replaced = ciq_file_path, True
+            record["ciq_file"] = Path(ciq_file_path).name
+        if ciq_file_path or excluded_sheets is not None:
+            if excluded_sheets is not None:
+                self._excluded_sheets = set(excluded_sheets)
+            self._excluded_sheets &= set(self._all_ciq_sheets)
+            doc = _load_uc_doc(self._uc_name) or {}
+            doc["excluded_ciq_sheets"] = sorted(self._excluded_sheets)
+            _save_uc_doc(self._uc_name, doc)
+            self._ciq_sheets = {k: v for k, v in self._all_ciq_sheets.items() if k not in self._excluded_sheets}
+            self._doc_extracted["ciq_sheets"] = self._ciq_sheets
+            record["excluded_sheets"] = sorted(self._excluded_sheets)
+        self._ciq_only_round = False  # the edit is analysed again in full
+        self._edits.append(record)
+        return changed
+
     async def compile_final(self) -> SkillOutput:
         """Compile final requirements package and generate HTML report.
 
@@ -443,6 +488,13 @@ class RequirementGatheringSkill:
         if self._vendor_profile:
             doc["vendor_profile"] = self._vendor_profile
         _save_uc_doc(self._uc_name, doc)
+        # This run's edits (not saved with the UC: the next run starts from their result)
+        if self._edits:
+            requirements["requirement_updates"] = list(self._edits)
+        if self._excluded_sheets:
+            requirements["excluded_ciq_sheets"] = sorted(self._excluded_sheets)
+        if self._ciq_replaced:  # later steps read this workbook (agents.requirements_agent.ciq_file_path)
+            requirements["ciq_file_path"] = self._ciq_file_path
 
         # Override readiness for report when we have sufficient data
         report_analysis = dict(self._analysis)

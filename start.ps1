@@ -1,4 +1,4 @@
-# Start NetConfig Pipeline Server
+# Start the Azalio Autonomous Network Platform server
 Set-Location $PSScriptRoot
 
 # Activate venv if present
@@ -21,7 +21,7 @@ $env:PYTHONPATH = "$PSScriptRoot"
 $env:PYTHONWARNINGS = "ignore"
 
 Write-Host "============================================"
-Write-Host "  NetConfig Pipeline Server"
+Write-Host "  Azalio Autonomous Network Platform"
 Write-Host "============================================"
 Write-Host "  URL:  http://localhost:8000"
 Write-Host "============================================"

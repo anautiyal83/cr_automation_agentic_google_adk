@@ -192,6 +192,12 @@ class ProgressSection:
                     "background: #f8f9fc; color: #1a1a2e"
                 )
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
+            # Pre-built "Edit requirements" dialog (step 2 review), filled on demand: one created in
+            # the click handler did not take any typing
+            self._edit_dialog = ui.dialog()
+            with self._edit_dialog:
+                self._edit_card = ui.card().classes("w-full p-0").style(
+                    "max-width: 880px; max-height: 90vh; display: flex; flex-direction: column")
         self._select_step(1, user=False)
         self._set_run_state("idle")
         ui.timer(1.0, self._tick)
@@ -215,8 +221,13 @@ class ProgressSection:
                 self.ms_view_btn = ui.button("View artifact", icon="visibility",
                     on_click=self._show_artifact_dialog) \
                     .props("flat color=primary size=sm no-caps")
+            # Why the step failed (its step_<n>_error.json) — populated on a failed review
+            self.ms_failure_box = ui.column().classes("w-full gap-1 p-3").style(
+                "border: 1px solid var(--cr-error); border-left-width: 3px; border-radius: 8px; "
+                "background: color-mix(in srgb, var(--cr-error) 6%, var(--cr-surface))")
+            self.ms_failure_box.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
-            self.ms_extra_files_row = ui.row().classes("w-full items-center gap-3 cr-card-inner p-3")
+            self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
             with ui.row().classes("w-full gap-2"):
@@ -231,6 +242,13 @@ class ProgressSection:
                     on_click=lambda: self._milestone_respond("rerun")) \
                     .props("outline color=primary size=sm no-caps")
                     .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
+                # Step 2 review: correct answers or say what was captured wrongly
+                self.ms_edit_btn = action(ui.button("Edit requirements", icon="edit_note",
+                    on_click=self._open_requirements_editor) \
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Correct an answer or describe what is wrong; the requirements are compiled again"),
+                    "progress")
+                self.ms_edit_btn.set_visibility(False)
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
@@ -744,6 +762,7 @@ class ProgressSection:
                     self.progress_bar.value = ms_step / TOTAL_STEPS
                     artifact_file = ""
                     extra_files = []
+                    ms_state: dict = {}
                     try:
                         ms_state = await self.runner.get_state(str(run_id))
                         artifact_file, extra_files = self.runner._resolve_milestone_artifacts(
@@ -751,12 +770,12 @@ class ProgressSection:
                         )
                     except Exception:
                         pass
-                    has_failures = False
-                    if ms_step in (5, 7, 9):
-                        try:
-                            has_failures = ms_state.get(f"step_{ms_step}_status") == "failed"
-                        except Exception:
-                            pass
+                    # failed: the pause's own status (shared dict) or the step's error file — the
+                    # session state did not say, so a failed step 6 came back with Continue
+                    from shared.state import milestone_waiting as _mw
+                    rd = self._run_dir or str(ms_state.get("run_dir", ""))
+                    has_failures = ((_mw.get(ms_step) or {}).get("status") == "failed"
+                                    or bool(_failure_reasons(rd, ms_step)))
                     self._show_milestone_review(ms_step, milestone_name, artifact_file,
                                                 has_failures=has_failures,
                                                 extra_artifact_files=extra_files)
@@ -885,7 +904,7 @@ class ProgressSection:
         failed = [n for n, st in statuses.items() if st.startswith("failed")]
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
-        self.btn_finish.set_visibility(ok and not finished)
+        self.btn_finish.set_visibility(status in ("completed", "failed") and not finished)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -1198,7 +1217,11 @@ class ProgressSection:
         self.ms_continue_btn.text = "Continue"
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
-        self.ms_rerun_btn.set_visibility(True)
+        self._show_failure_reasons(step_num if has_failures else 0)
+        # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
+        self.ms_rerun_btn.set_visibility(step_num != 2)
+        # every review: the requirements can be corrected (later steps: the run goes back to step 1)
+        self.ms_edit_btn.set_visibility(step_num >= 2)
         self._show_clarifications()
 
         # On failure: block Continue for all step types
@@ -1216,36 +1239,64 @@ class ProgressSection:
             self.ms_skip_btn.set_visibility(False)
 
         from pathlib import Path
-        fname = Path(artifact_file).name if artifact_file else "no artifact"
-        self.ms_artifact_label.text = f"{milestone}  —  {fname}"
+        self._current_review_files = _review_files(artifact_file, extra_artifact_files)
+        n_files = len(self._current_review_files)
+        self.ms_artifact_label.text = milestone + (f"  —  {n_files} files" if n_files > 1 else "")
+        self.ms_view_btn.text = "Review all files" if n_files > 1 else "View artifact"
         self.ms_view_btn.set_visibility(bool(artifact_file))
 
-        # Render extra artifact files (view + download)
+        # One row per file of the review: label, file name, View (its tab in the viewer), Download
         self.ms_extra_files_row.clear()
-        if extra_artifact_files:
+        listed = list(self._current_review_files)
+        listed += [f for f in extra_artifact_files or [] if f and Path(f).exists() and f not in listed]
+        if listed:
             from nicegui import app as nicegui_app
             with self.ms_extra_files_row:
-                for fpath in extra_artifact_files:
-                    if fpath and Path(fpath).exists():
-                        ef_name = Path(fpath).name
-                        try:
-                            serve_url = nicegui_app.add_media_file(local_file=fpath)
-                        except Exception:
-                            serve_url = ""
-                        ui.icon("article", size="18px").classes("cr-text-accent")
-                        ui.label(ef_name).classes("text-body2 font-mono")
-                        if serve_url:
+                for i, fpath in enumerate(listed):
+                    serve_url = nicegui_app.add_media_file(local_file=fpath)
+                    with ui.row().classes("w-full items-center gap-3 px-3 py-2 no-wrap").style(
+                            "border-top: 1px solid var(--cr-border)" if i else ""):
+                        ui.icon(_file_icon(fpath), size="18px").classes("cr-text-accent")
+                        with ui.column().classes("gap-0 flex-1 min-w-0"):
+                            ui.label(_review_file_label(fpath)).classes("text-body2 font-semibold")
+                            ui.label(Path(fpath).name).classes("text-caption font-mono cr-text-dim") \
+                                .style("overflow-wrap: anywhere")
+                        if fpath in self._current_review_files:
+                            ui.button("View", icon="visibility",
+                                      on_click=lambda t=self._current_review_files.index(fpath):
+                                      self._show_artifact_dialog(t)) \
+                                .props("flat color=primary size=sm no-caps")
+                        else:
                             ui.button("View", icon="visibility",
                                       on_click=lambda u=serve_url, f=fpath: (record_document("document.view", f),
-                                                                       ui.navigate.to(u, new_tab=True))) \
+                                                                           ui.navigate.to(u, new_tab=True))) \
                                 .props("flat color=primary size=sm no-caps")
-                            ui.button("Download", icon="download",
-                                      on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
+                        ui.button("Download", icon="download",
+                                  on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
                                                                        ui.download(u))) \
-                                .props("flat color=positive size=sm no-caps")
+                            .props("flat color=positive size=sm no-caps")
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
+
+    def _show_failure_reasons(self, step_num: int) -> None:
+        """The reasons in the failed step's error file(s), one line each (0 hides the box)."""
+        self.ms_failure_box.clear()
+        reasons = _failure_reasons(self._run_dir or (str(Path("data/runs") / str(self.active_run_id))
+                                                     if self.active_run_id else ""), step_num) if step_num else []
+        self.ms_failure_box.set_visibility(bool(reasons))
+        if not reasons:
+            return
+        with self.ms_failure_box:
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("error_outline", size="18px").classes("cr-text-error")
+                ui.label(f"Why step {step_num} failed").classes("font-semibold")
+            for reason in reasons[:8]:
+                ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere; white-space: pre-wrap")
+            if len(reasons) > 8:
+                with ui.expansion(f"{len(reasons) - 8} more").classes("w-full text-body2"):
+                    for reason in reasons[8:]:
+                        ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere")
 
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Show milestone row with questionnaire controls and auto-open dialog."""
@@ -1261,6 +1312,7 @@ class ProgressSection:
         self.ms_rerun_btn.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
+        self.ms_failure_box.set_visibility(False)
 
         # Show Answer Questions + Skip buttons
         self.ms_continue_btn.text = "Skip & Use Defaults"
@@ -1556,53 +1608,221 @@ class ProgressSection:
         ))
         self.progress_bar.props("stripe animate")
 
-    def _show_artifact_dialog(self):
+    async def _open_requirements_editor(self):
+        """Step 2 review: what is wrong, the CIQ workbook and its sheets, and the captured answers."""
+        import json as _json
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            req = _json.loads((Path(run_dir) / "requirements.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            req = {}
+        answers = req.get("developer_answers") or {}
+        questions = req.get("developer_questions") or {}
+        used = list(((req.get("doc_extracted") or {}).get("ciq_sheets") or {}).keys())
+        excluded = [x for x in req.get("excluded_ciq_sheets") or [] if x not in used]
+        ciq_path = req.get("ciq_file_path") or ""
+        if not ciq_path and self.runner and self.runner._db and self.active_run_id:
+            rows = await self.runner._db.execute(
+                "SELECT d.ciq_file_path FROM pipeline_runs r JOIN uc_document_sets d ON r.document_set_id = d.id "
+                "WHERE r.id = ?", (str(self.active_run_id),))
+            ciq_path = rows[0]["ciq_file_path"] if rows else ""
+        # the CIQ part of the edit: a replacement workbook and its sheet tick boxes
+        ciq = {"path": "", "sheets": {}, "excluded": sorted(excluded)}
+
+        dialog, card = self._edit_dialog, self._edit_card
+        card.clear()
+        with card:
+            with ui.column().classes("w-full gap-1 px-5 pt-4 pb-3").style("border-bottom: 1px solid var(--cr-border)"):
+                ui.label("Edit requirements").classes("text-h6 font-semibold")
+                ui.label("Describe what needs correcting, fix the CIQ, or change an answer that was captured "
+                         "wrongly. The requirements are compiled again and shown for review; the changes also "
+                         "apply to the next runs of this use case.").classes("text-caption cr-text-dim")
+                review_step = getattr(self, "_current_milestone_step", 2) or 2
+                if review_step > 2:
+                    ui.label(f"From the step {review_step} review the run goes back to step 1: you check the "
+                             "updated requirements at step 2, then every later step runs again.") \
+                        .classes("text-caption font-medium").style("color: var(--cr-warning)")
+            inputs: dict[str, Any] = {}
+            with ui.column().classes("w-full gap-4 px-5 py-4").style("flex: 1; overflow-y: auto; min-height: 0"):
+                with ui.column().classes("w-full gap-1"):
+                    ui.label("What is wrong or needs clarifying").classes("text-subtitle2 font-semibold")
+                    note = ui.textarea(placeholder="e.g. VER 13.0.3.7 loads plain files; every other version, "
+                                                   "including 17.x.x.x, loads tar files") \
+                        .props("outlined rows=4").classes("w-full cr-boxed")
+
+                with ui.column().classes("w-full gap-2"):
+                    ui.label("CIQ workbook").classes("text-subtitle2 font-semibold")
+                    ciq_label = ui.label(f"In use: {Path(ciq_path).name if ciq_path else '—'}") \
+                        .classes("text-caption cr-text-dim")
+                    ui.label("Sheets used by this activity (untick a sheet that is not part of it)") \
+                        .classes("text-caption font-medium")
+                    sheet_row = ui.row().classes("w-full gap-x-6 gap-y-1")
+
+                    def render_sheets(names: list[str], off: set[str]) -> None:
+                        sheet_row.clear()
+                        ciq["sheets"].clear()
+                        with sheet_row:
+                            for n in names:
+                                ciq["sheets"][n] = ui.checkbox(n, value=n not in off)
+                            if not names:
+                                ui.label("No sheets read from the CIQ").classes("text-caption cr-text-dim")
+
+                    render_sheets(used + excluded, set(excluded))
+                    action(ui.upload(label="Replace the CIQ workbook (.xlsx)", auto_upload=True, max_files=1,
+                                     on_upload=lambda e: self._receive_ciq_upload(e, ciq, ciq_label, render_sheets))
+                           .props('accept=".xlsx" flat bordered').classes("w-full"), "progress")
+
+                if answers:
+                    ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold")
+                for qid, val in answers.items():
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label(str(questions.get(qid) or qid)).classes("text-caption font-medium")
+                        inputs[qid] = (val, ui.textarea(value="" if val is None else str(val))
+                                       .props("outlined autogrow").classes("w-full cr-boxed"))
+            with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style("border-top: 1px solid var(--cr-border)"):
+                ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+                action(ui.button("Update requirements", icon="check",
+                                 on_click=lambda: self._submit_requirement_edits(dialog, inputs, note, run_dir, ciq))
+                       .props("unelevated color=primary no-caps"), "progress")
+        dialog.open()
+
+    @requires("progress", "requirements.edit")
+    async def _receive_ciq_upload(self, e, ciq: dict, ciq_label, render_sheets) -> None:
+        """A corrected CIQ workbook: kept in the uploads, its visible sheets offered for ticking."""
+        import uuid
+        from core.config import PROJECT_ROOT
+        from skills.requirement_gathering.parsers import parse_ciq
+        uploads = PROJECT_ROOT / "data" / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        name = e.file.name
+        if not name.lower().endswith(".xlsx"):
+            ui.notify("The CIQ must be an .xlsx workbook", type="warning")
+            return
+        dest = uploads / f"{str(uuid.uuid4())[:8]}_{name}"
+        await e.file.save(dest)
+        sheets = list(parse_ciq(ciq_file_path=str(dest)))
+        if not sheets:
+            ui.notify(f"No sheet could be read from {name}", type="negative")
+            return
+        ciq["path"] = str(dest)
+        ciq_label.text = f"New: {name} (replaces the one in use when you update)"
+        render_sheets(sheets, set(ciq["excluded"]) & set(sheets))
+        ui.notify(f"Read {len(sheets)} sheets from {name}", type="info")
+        await record("document.upload", target_type="document", target_id=name, details={"slot": "ciq_edit"})
+
+    @requires("progress", "requirements.edit")
+    @_own_run("requirements.edit")
+    async def _submit_requirement_edits(self, dialog, inputs: dict, note, run_dir: str, ciq: dict):
+        """Hand the edit to step 1 (disk) and answer the step 2 review with ``edit``."""
+        from shared import requirement_edits
+        changed = {qid: inp.value.strip() for qid, (old, inp) in inputs.items()
+                   if (inp.value or "").strip() != str("" if old is None else old).strip()}
+        text = (note.value or "").strip()
+        new_ciq = ciq.get("path") or ""
+        excluded = sorted(n for n, box in ciq.get("sheets", {}).items() if not box.value)
+        sheets_changed = bool(new_ciq) or excluded != ciq.get("excluded", [])
+        if ciq.get("sheets") and len(excluded) == len(ciq["sheets"]):
+            ui.notify("Keep at least one CIQ sheet", type="warning")
+            return
+        if not changed and not text and not sheets_changed:
+            ui.notify("Describe what needs correcting, change the CIQ or change an answer", type="warning")
+            return
+        if not self.runner or not self.active_run_id or str(self.active_run_id) not in self.runner._active_runs:
+            ui.notify("The run is not waiting for review any more", type="warning")
+            return
+        user = self._scope.user
+        run_id_str = str(self.active_run_id)
+        edit = requirement_edits.save(run_dir, changed, text, user.email if user else "", ciq_file_path=new_ciq,
+                                      excluded_sheets=excluded if sheets_changed else None)
+        if self.runner._db and (text or new_ciq):
+            # The run's document set: the next run of this use case starts from the note, and the
+            # run's documents name the CIQ it used
+            try:
+                if text:
+                    await self.runner._db.execute(
+                        "UPDATE uc_document_sets SET developer_notes = TRIM(COALESCE(developer_notes, '') || ? ) "
+                        "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)",
+                        ("\n\n" + requirement_edits.note_block(text, edit["by"], edit["at"]), run_id_str))
+                if new_ciq:
+                    await self.runner._db.execute(
+                        "UPDATE uc_document_sets SET ciq_file_path = ? "
+                        "WHERE id = (SELECT document_set_id FROM pipeline_runs WHERE id = ?)", (new_ciq, run_id_str))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Document set of run %s not updated: %s", run_id_str[:8], e)
+        dialog.close()
+        step_num = getattr(self, "_current_milestone_step", 2) or 2
+        self.runner.respond_milestone(run_id_str, step_num, "edit")
+        await record("requirements.edit", target_type="run", target_id=run_id_str, run_id=run_id_str,
+                     details={"answers_changed": sorted(changed), "note": text[:500],
+                              "ciq_replaced": Path(new_ciq).name if new_ciq else "",
+                              "excluded_sheets": excluded if sheets_changed else None})
+        parts = [f"{len(changed)} answer(s) changed"] if changed else []
+        parts += ["a note added"] if text else []
+        parts += ["CIQ updated"] if sheets_changed else []
+        self.milestone_row.set_visibility(False)
+        self.action_btns.set_visibility(True)
+        self.status_icon.name = "sync"
+        self.status_icon.classes(replace="cr-text-accent cr-spin")
+        if step_num > 2:  # a later review: requirements again from step 1, then every later step
+            self.status_label.text = "Back to Step 1 — updating requirements"
+            self.status_detail.text = (", ".join(parts) + " — the requirements are compiled again for review "
+                                       "at step 2, then every later step runs again")
+            for s in range(1, TOTAL_STEPS + 1):
+                self._update_step_visual(s, "pending")
+        else:
+            self.status_label.text = "Updating requirements..."
+            self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
+
+    def _show_artifact_dialog(self, tab: int = 0):
+        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config),
+        opened on ``tab``."""
         import html as html_mod
-        from pathlib import Path
         from nicegui import app
 
-        fpath = getattr(self, "_current_artifact_file", "")
+        files = getattr(self, "_current_review_files", None) or (
+            [getattr(self, "_current_artifact_file", "")] if getattr(self, "_current_artifact_file", "") else [])
         milestone = getattr(self, "_current_milestone", "Artifact")
-        is_html = fpath.endswith(".html") if fpath else False
 
         dialog = ui.dialog().props("maximized")
         with dialog, ui.card().classes("w-full h-full p-0").style(
             "display: flex; flex-direction: column; max-height: 100vh"
         ):
-            # Header bar
             with ui.row().classes("items-center justify-between w-full px-4 py-2").style(
                 "border-bottom: 1px solid var(--cr-border); flex-shrink: 0"
             ):
-                ui.label(f"{milestone} — {Path(fpath).name if fpath else ''}") \
-                    .classes("text-subtitle2 font-bold font-mono")
-                with ui.row().classes("items-center gap-1"):
-                    if fpath and Path(fpath).exists():
-                        dl_url = app.add_media_file(local_file=fpath)
-                        ui.button("Download", icon="download",
-                                  on_click=lambda u=dl_url, f=fpath: (record_document("document.download", f),
-                                                           ui.download(u))) \
-                            .props("flat color=positive size=sm no-caps")
-                    ui.button(icon="close", on_click=dialog.close) \
-                        .props("flat round size=sm color=grey-6")
-
-            # Content
-            if fpath and Path(fpath).exists():
-                if is_html:
-                    # Serve the file and show in iframe (no scroll_area wrapper)
-                    url = app.add_media_file(local_file=fpath)
-                    ui.element("iframe").props(f'src="{url}"').style(
-                        "width: 100%; flex: 1; border: none; min-height: 0"
-                    )
-                else:
-                    content = Path(fpath).read_text(encoding="utf-8")
-                    with ui.scroll_area().style("flex: 1; min-height: 0"):
-                        escaped = html_mod.escape(content)
-                        ui.html(
-                            f'<pre style="margin:0; padding: 16px; font-size: 12px; '
-                            f'line-height: 1.5; font-family: monospace">{escaped}</pre>'
-                        )
-            else:
+                ui.label(milestone).classes("text-subtitle2 font-bold")
+                ui.button(icon="close", on_click=dialog.close).props("flat round size=sm color=grey-6")
+            if not files:
                 ui.label("No content available").classes("p-4 cr-text-dim")
+            else:
+                with ui.tabs().classes("w-full").props("align=left dense no-caps active-color=primary "
+                                                       "indicator-color=primary").style(
+                        "flex-shrink: 0; border-bottom: 1px solid var(--cr-border)") as tabs:
+                    tab_list = [ui.tab(name=str(i), label=_review_file_label(f)) for i, f in enumerate(files)]
+                start = tab_list[tab] if isinstance(tab, int) and 0 <= tab < len(tab_list) else tab_list[0]
+                with ui.tab_panels(tabs, value=start).classes("w-full").style(
+                        "flex: 1; min-height: 0; display: flex; flex-direction: column"):
+                    for i, fpath in enumerate(files):
+                        with ui.tab_panel(str(i)).classes("p-0").style(
+                                "display: flex; flex-direction: column; height: 100%"):
+                            with ui.row().classes("items-center justify-between w-full px-4 py-1").style(
+                                    "flex-shrink: 0"):
+                                ui.label(Path(fpath).name).classes("text-caption font-mono cr-text-dim")
+                                url = app.add_media_file(local_file=fpath)
+                                ui.button("Download", icon="download",
+                                          on_click=lambda u=url, f=fpath: (record_document("document.download", f),
+                                                                           ui.download(u))) \
+                                    .props("flat color=positive size=sm no-caps")
+                            if fpath.endswith(".html"):
+                                ui.element("iframe").props(f'src="{url}"').style(
+                                    "width: 100%; flex: 1; border: none; min-height: 70vh")
+                            else:
+                                content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+                                with ui.scroll_area().style("flex: 1; min-height: 70vh"):
+                                    ui.html(f'<pre style="margin:0; padding: 16px; font-size: 12px; '
+                                            f'line-height: 1.5; font-family: monospace">'
+                                            f'{html_mod.escape(content)}</pre>')
+                record_document("document.view", files[tab if isinstance(tab, int) and 0 <= tab < len(files) else 0])
         dialog.open()
 
     @requires("progress", "milestone.decision")
@@ -1753,7 +1973,7 @@ class ProgressSection:
         run_id = str(self.active_run_id)
         user = self._scope.user
         if not await self.runner.mark_finished(run_id, user.id if user else "cli"):
-            ui.notify("Only a completed run that is not finished yet can be marked finished", type="warning")
+            ui.notify("Only a completed or failed run that is not finished yet can be marked finished", type="warning")
             return
         await record("run.finish", target_type="run", target_id=run_id, run_id=run_id, uc_name=self._uc_name or "")
         ui.notify(f"{self._uc_name or 'Run'} marked as finished — it stays in Run History", type="positive")
@@ -1912,6 +2132,45 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
                for r in rules):
             found.append(f)
     return found[:60]
+
+
+def _failure_reasons(run_dir: str, step: int) -> list[str]:
+    """Why a step failed, one reason per entry, from its ``step_<n>_error.json`` (the steps 3-4
+    review: both files; step 9: every failed test case)."""
+    import json as _json
+    reasons: list[str] = []
+    for n in {4: (3, 4)}.get(step, (step,)):
+        try:
+            data = _json.loads((Path(run_dir) / f"step_{n}_error.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        err = str(data.get("error") or "").strip()
+        cases = [c for c in data.get("failed_test_cases") or [] if isinstance(c, dict)]
+        if cases:
+            reasons += [err] if err else []
+            reasons += [f"{c.get('id', '')} {c.get('scenario', '')}: "
+                        + "; ".join(str(e) for e in (c.get("errors") or [])[:3]) for c in cases]
+        elif err:
+            # the problems are joined with "; " after a full stop
+            reasons += [r.strip() for r in re.split(r"(?<=\.)\s*;\s+", err) if r.strip()]
+    return reasons
+
+
+_REVIEW_LABELS = {"validation-rules": "Validation rules · step 3", "json-output": "CIQ JSON config · step 4",
+                  "simulator-config": "Simulator config", "simulator-report": "Simulator report"}
+_REVIEW_SUFFIXES = (".yaml", ".yml", ".json", ".py", ".html", ".txt")
+
+
+def _review_files(primary: str, extras: list[str] | None) -> list[str]:
+    """The files a review shows as tabs: the main artifact, then the readable extras (at most 12)."""
+    files = [primary] if primary and Path(primary).exists() else []
+    files += [f for f in extras or [] if f and Path(f).exists() and f.endswith(_REVIEW_SUFFIXES) and f not in files]
+    return files[:12]
+
+
+def _review_file_label(path: str) -> str:
+    name = Path(path).name
+    return next((label for key, label in _REVIEW_LABELS.items() if key in name), name)
 
 
 def _file_icon(path) -> str:

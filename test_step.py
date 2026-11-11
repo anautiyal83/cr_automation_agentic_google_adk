@@ -407,7 +407,7 @@ def _print_step_test_summary(work: Path, uc_name: str, steps: list[str]):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NetConfig Pipeline — skill test CLI")
+    parser = argparse.ArgumentParser(description="Azalio Autonomous Network Platform — skill test CLI")
     parser.add_argument("--list-runs", action="store_true", help="List recent runs")
     parser.add_argument("--status", action="store_true", help="Show step status for a run")
     parser.add_argument("--run-id", type=str, help="Run ID")

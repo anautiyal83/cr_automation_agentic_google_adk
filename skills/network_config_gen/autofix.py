@@ -280,6 +280,7 @@ def fix_workflow(yaml_text: str) -> str:
     # --- Regex named groups + placeholders the JAR cannot resolve ---
     renames = fix_named_groups(parsed.get("phases", {}))
     rename_expr_vars(parsed.get("phases", {}), renames)
+    shell_variables_unbraced(parsed)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
     shell_guard_conditions(parsed)
@@ -1504,16 +1505,58 @@ def loop_count_nonempty(parsed: dict) -> int:
     return changed
 
 
+_SHELL_ASSIGN = re.compile(r"(?:^|[;&|(`\s])(?:export\s+|local\s+|readonly\s+)?([A-Za-z_]\w*)=(?!=)")
+_SHELL_LOOP_VAR = re.compile(r"\b(?:for|read)\s+(?:-r\s+)?([A-Za-z_]\w*)\b")
+
+
+def shell_variables_unbraced(parsed: dict) -> int:
+    """``${NAME}`` of a shell variable the command itself sets (``DATE=$(date +%Y%m%d); … ${DATE}``,
+    ``for i in …; do … ${i}``) is filled in by the JAR before the node sees it — with '' when no step
+    registers NAME (probed 2026-11-06: ``${DATE}`` arrives as '', ``$DATE`` passes through; EIR step 6):
+    it becomes ``$NAME`` (``$NAME""`` / ``$NAME''`` when a word character follows)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or "${" not in send:
+            continue
+        names = set(_SHELL_ASSIGN.findall(send)) | set(_SHELL_LOOP_VAR.findall(send))
+        new = send
+        for name in sorted(names, key=len, reverse=True):
+            pattern = re.compile(r"\$\{" + re.escape(name) + r"\}")
+
+            def unbrace(m: re.Match, n: str = name, text: str = new) -> str:
+                follows = text[m.end():m.end() + 1]
+                if not re.match(r"\w", follows):
+                    return f"${n}"
+                in_double = text[:m.start()].count('"') % 2 == 1
+                return f'${n}""' if in_double else f"${n}''"
+            replaced = pattern.sub(unbrace, new)
+            if replaced != new:
+                new = replaced
+        if new != send:
+            step["send"] = new
+            changed += 1
+    if changed:
+        logger.info("Shell variables written as $NAME in %d step(s) (the JAR fills ${NAME} itself)", changed)
+    return changed
+
+
+# What criteria.expr cannot do: it compares registered values only (EIR step 6 wrote JavaScript)
+EXPR_UNSUPPORTED = re.compile(r"=>|\.\s*(?:every|some|map|filter|reduce|length|includes|indexOf|split|trim)\b"
+                              r"|\w\s*\[|\b(?:Math|Number|parseInt|parseFloat|String|Array|Object|JSON)\b")
+
+
 def expr_without_parentheses(parsed: dict) -> int:
     """The JAR's ``criteria.expr`` fails on any parenthesis (``(TOTAL > 0)`` fails; probed
     2026-11-04) and binds ``&&`` tighter than ``||``: parentheses around an ``&&`` group or a
-    single comparison are dropped. Ones that hold ``||`` stay (the validator reports them)."""
+    single comparison are dropped. Ones that hold ``||`` stay (the validator reports them), and so
+    does an expr the JAR cannot evaluate at all (JavaScript: the validator says what to write)."""
     changed = 0
     group = re.compile(r"\(([^()'|]*(?:'[^']*'[^()'|]*)*)\)")
     for _, step in _walk_all_steps(parsed.get("phases") or {}):
         for criteria in _criteria_blocks(step):
             expr = criteria.get("expr")
-            if not isinstance(expr, str) or "(" not in expr:
+            if not isinstance(expr, str) or "(" not in expr or EXPR_UNSUPPORTED.search(expr):
                 continue
             new = expr
             while True:

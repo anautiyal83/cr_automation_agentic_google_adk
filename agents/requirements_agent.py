@@ -31,6 +31,18 @@ flow = get_flow_logger(__name__)
 requirements_store: dict[str, dict] = {}  # run_id -> requirements package
 
 
+def ciq_file_path(state) -> str:
+    """The run's CIQ workbook: a corrected one uploaded at the step 2 review (in the requirements)
+    or the one the run started with (shared dict first: ADK session state written by an agent is
+    not seen by the later ones)."""
+    reqs = requirements_store.get(str(state.get("run_id", ""))) or {}
+    return reqs.get("ciq_file_path") or state.get("ciq_file_path", "")
+
+
+class RunCancelled(Exception):
+    """The developer pressed Cancel at a question round: the run ends, no further round."""
+
+
 class RequirementsGathererNode(BaseAgent):
     """Gatekeeper agent that gathers complete requirements before YAML generation.
 
@@ -42,6 +54,15 @@ class RequirementsGathererNode(BaseAgent):
     model_config = {"arbitrary_types_allowed": True}
 
     async def _run_async_impl(self, ctx):
+        try:
+            async for event in self._gather(ctx):
+                yield event
+        except RunCancelled:
+            # Cancel at a question round was read as "0 answers" and the next round was asked —
+            # the run stayed "running" (OB-19)
+            flow.flow("REQUIREMENTS CANCELLED — run_id=%s", str(ctx.session.state.get("run_id", ""))[:8])
+
+    async def _gather(self, ctx):
         run_id = ctx.session.state.get("run_id", "")
         run_dir = ctx.session.state.get("run_dir", "")
         uc_name = ctx.session.state.get("uc_name", "")
@@ -102,6 +123,21 @@ class RequirementsGathererNode(BaseAgent):
         readiness = output.readiness
         flow.flow("REQUIREMENTS Phase 2 result: readiness=%s", readiness)
 
+        # An edit made at a later review sent the run back here: applied before compiling, no
+        # questionnaire (what stays open is listed under Remaining Gaps), reviewed at step 2
+        from shared import requirement_edits
+        pending = requirement_edits.take(run_dir)
+        if pending:
+            changed = skill.apply_edit(pending.get("answers") or {}, pending.get("note") or "",
+                                       pending.get("by") or "", pending.get("at") or "",
+                                       ciq_file_path=pending.get("ciq_file_path") or "",
+                                       excluded_sheets=pending.get("excluded_sheets"))
+            flow.flow("REQUIREMENTS: Edit from a later review — %d answer(s) changed, note=%s", len(changed),
+                      bool(pending.get("note")))
+            output = await skill.incorporate_answers({})
+            output.questions = []
+            readiness = output.readiness
+
         # ── Phase 3: Questionnaire loop ──
         if output.questions:
             round_num = 0
@@ -150,33 +186,68 @@ class RequirementsGathererNode(BaseAgent):
                     else:
                         flow.flow("REQUIREMENTS: User chose to answer more questions")
 
-        # ── Phase 4: Compile final ──
-        flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
-        output = await skill.compile_final()
+        edit_round = 0
+        while True:
+            # ── Phase 4: Compile final ──
+            flow.flow("REQUIREMENTS Phase 4: Compiling requirements package")
+            output = await skill.compile_final()
 
-        # Store in shared dict (bypasses ADK session state)
-        requirements_store[run_id] = output.requirements
+            # Store in shared dict (bypasses ADK session state)
+            requirements_store[run_id] = output.requirements
 
-        # Write JSON to disk
-        if run_dir:
-            req_file = Path(run_dir) / "requirements.json"
-            req_file.write_text(output.requirements_json, encoding="utf-8")
+            # Write JSON to disk
+            if run_dir:
+                req_file = Path(run_dir) / "requirements.json"
+                req_file.write_text(output.requirements_json, encoding="utf-8")
 
-        # The open questions of later steps are answered now
-        from shared import clarifications
-        clarifications.clear(run_dir)
+            # The open questions of later steps are answered now
+            from shared import clarifications
+            clarifications.clear(run_dir)
 
-        # ── Phase 5: Write summary HTML ──
-        flow.flow("REQUIREMENTS Phase 5: Writing summary document")
-        if run_dir:
-            summary_path = Path(run_dir) / f"{uc_name}_requirements-summary.html"
-            summary_path.write_text(output.requirements_html, encoding="utf-8")
-            flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
+            # ── Phase 5: Write summary HTML ──
+            flow.flow("REQUIREMENTS Phase 5: Writing summary document")
+            if run_dir:
+                summary_path = Path(run_dir) / f"{uc_name}_requirements-summary.html"
+                summary_path.write_text(output.requirements_html, encoding="utf-8")
+                flow.flow("REQUIREMENTS: Summary doc written to %s", summary_path)
 
-        # ── Phase 6: Milestone pause — developer reviews summary ──
-        if not ctx.session.state.get("review_milestones", True):
-            flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
-            return
+            # ── Phase 6: Milestone pause — developer reviews summary ──
+            if not ctx.session.state.get("review_milestones", True):
+                flow.flow("REQUIREMENTS COMPLETE — readiness=%s, review off, continuing", readiness)
+                return
+            decision = await self._review_summary()
+            if decision != "edit":
+                break
+
+            # "Edit requirements": the developer corrected answers or wrote what is wrong
+            from shared import requirement_edits
+            edit = requirement_edits.take(run_dir)
+            changed = skill.apply_edit(edit.get("answers") or {}, edit.get("note") or "",
+                                       edit.get("by") or "", edit.get("at") or "",
+                                       ciq_file_path=edit.get("ciq_file_path") or "",
+                                       excluded_sheets=edit.get("excluded_sheets"))
+            edit_round += 1
+            flow.flow("REQUIREMENTS: Edit %d — %d answer(s) changed, note=%s", edit_round, len(changed),
+                      bool(edit.get("note")))
+            # Re-analysed with the edit, compiled again and shown for review — no questionnaire: what
+            # stays open is listed under Remaining Gaps, and the developer edits again if needed
+            output = await skill.incorporate_answers({})
+            readiness = output.readiness
+
+        if decision == "cancel":
+            from shared.state import pipeline_actions
+            pipeline_actions[run_id] = {"action": "cancel"}
+
+        flow.flow(
+            "REQUIREMENTS COMPLETE — readiness=%s, %d questions answered, decision=%s",
+            readiness, len(output.all_answers), decision,
+        )
+
+        return
+        yield  # async generator
+
+    async def _review_summary(self) -> str:
+        """Step 2 review of the requirements document: continue, cancel or edit."""
         flow.flow("REQUIREMENTS: Pausing for developer review of summary")
         milestone_step = 2
         milestone_waiting[milestone_step] = {
@@ -196,18 +267,7 @@ class RequirementsGathererNode(BaseAgent):
 
         decision = milestone_decisions.pop(milestone_step, "continue")
         milestone_waiting.pop(milestone_step, None)
-
-        if decision == "cancel":
-            from shared.state import pipeline_actions
-            pipeline_actions[run_id] = {"action": "cancel"}
-
-        flow.flow(
-            "REQUIREMENTS COMPLETE — readiness=%s, %d questions answered, decision=%s",
-            readiness, len(output.all_answers), decision,
-        )
-
-        return
-        yield  # async generator
+        return decision
 
     # ------------------------------------------------------------------
     # Pipeline-specific helpers
@@ -259,6 +319,10 @@ class RequirementsGathererNode(BaseAgent):
 
         decision = milestone_decisions.pop(milestone_step, "continue")
         milestone_waiting.pop(milestone_step, None)
+        if decision == "cancel":
+            from shared.state import pipeline_actions
+            pipeline_actions[ctx.session.state.get("run_id", "")] = {"action": "cancel"}
+            raise RunCancelled()
 
         answers = {}
         if isinstance(decision, str) and decision.startswith("{"):

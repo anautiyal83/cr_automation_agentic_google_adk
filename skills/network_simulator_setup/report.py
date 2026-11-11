@@ -162,7 +162,7 @@ def generate_simulator_report(
   <ul>{limitations}</ul>
 </div>
 
-<div class="footer">NetConfig Pipeline &mdash; Step 8 Simulator Setup</div>
+<div class="footer">Azalio Autonomous Network Platform &mdash; Step 8 Simulator Setup</div>
 </div>
 </body>
 </html>

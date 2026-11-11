@@ -57,7 +57,7 @@ _AGENT_DISPLAY_STEPS: dict[str, list[int]] = {
 
 # Maps agent name → milestone config (step_num, name) for pause after execution
 _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
-    "ciq_validation_json_gen": (4, "CIQ Validation & JSON Output"),
+    "ciq_validation_json_gen": (4, "Steps 3–4 · Validation Rules & CIQ JSON"),
     "ciq_validation_json_qa": (5, "QA-Validation Results"),
     "helper_script_gen": (6, "Execution Workflow & Scripts"),
     "network_config_mop_qa": (7, "MOP Generation QA"),
@@ -316,6 +316,14 @@ class PipelineAgent(BaseAgent):
             elapsed = time.monotonic() - agent_t0
             flow.flow("AGENT DONE [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
 
+            # ----- CANCELLED inside the agent (Cancel at a step 1 question round): nothing of it is
+            # cached or reported as completed (OB-19)
+            if (pipeline_actions.get(run_id_str) or {}).get("action") == "cancel":
+                pipeline_actions.pop(run_id_str, None)
+                flow.flow("PIPELINE CANCELLED during %s", agent.name)
+                ctx.session.state["pipeline_cancelled"] = True
+                break
+
             # ----- SAVE TO CACHE (on success) -----
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
@@ -374,16 +382,17 @@ class PipelineAgent(BaseAgent):
                     ctx.session.state["pipeline_cancelled"] = True
                     pipeline_actions[run_id_str] = {"action": "cancel"}
                     break
-                elif decision == "clarify":
-                    # The user answers this step's open questions in step 1: requirements are
-                    # gathered again (clarifications.json is asked there) and every later step
-                    # regenerates from them
+                elif decision in ("clarify", "edit"):
+                    # The user answers this step's open questions in step 1 (clarify), or edited the
+                    # requirements at this review (edit: requirement_edits.json, applied by step 1):
+                    # requirements are gathered again and every later step regenerates from them
                     try:
                         from storage.artifact_cache import ArtifactCache
                         ArtifactCache().clear_from_step(uc_name, self._agents_list[0].name)
                     except Exception as e:
-                        logger.debug("Cache clear failed on clarify: %s", e)
-                    flow.flow("CLARIFY — step %d sent the run back to step 1", ms_step)
+                        logger.debug("Cache clear failed on %s: %s", decision, e)
+                    clear_step_statuses(ctx.session.state, 0)
+                    flow.flow("%s — step %d sent the run back to step 1", decision.upper(), ms_step)
                     await self._publish(run_id_str, "retry_started", 1)
                     index = 0
                     continue

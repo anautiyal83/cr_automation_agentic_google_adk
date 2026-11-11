@@ -280,9 +280,9 @@ def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
     assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"
 
 
-def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
-    """Spec 008 U-D7: a completed run can be marked finished (it leaves Live Run), once; a failed
-    or still running one cannot; the status stays 'completed'."""
+def test_mark_finished_only_ended_runs_once(tmp_path, monkeypatch):
+    """Spec 008 U-D7: a completed or failed run can be marked finished (it leaves Live Run), once — a
+    failed run had no way out of Live Run (OB-20); a running one cannot; the status stays."""
     runner, _ = _runner(tmp_path, monkeypatch)
 
     async def scenario():
@@ -296,7 +296,7 @@ def test_mark_finished_only_completed_runs_once(tmp_path, monkeypatch):
         row = (await db.execute("SELECT status, finished_at, finished_by FROM pipeline_runs WHERE id = 'ok'"))[0]
         return results, row
     results, row = asyncio.run(scenario())
-    assert results == [True, False, False, False, False]
+    assert results == [True, False, True, False, False]
     assert row["status"] == "completed" and row["finished_at"] and row["finished_by"] == "u1"
 
 
@@ -413,3 +413,13 @@ def test_resumed_run_shows_the_steps_it_does_again_as_pending():
     state = PipelineRunner._resume_state("r1", {"state": dict(done), "agent_index": _AGENT_NAMES.index(mop),
                                                 "kind": "milestone"})
     assert state["step_7_status"] == "passed" and "step_8_status" not in state   # the review of step 7 again
+
+
+def test_steps_3_4_review_shows_the_rules_and_the_ciq_json(tmp_path):
+    """The steps 3-4 review listed only json-output.yaml: the runner's file map (which fills the review
+    panel) had the CIQ JSON as the only file of step 4."""
+    for name in ("UC_validation-rules.yaml", "UC_json-output.yaml"):
+        (tmp_path / name).write_text("x: 1\n", encoding="utf-8")
+    primary, extra = PipelineRunner._resolve_milestone_artifacts(None, {"run_dir": str(tmp_path), "uc_name": "UC"}, 4)
+    assert [p.split("\\")[-1].split("/")[-1] for p in [primary, *extra]] == ["UC_validation-rules.yaml",
+                                                                              "UC_json-output.yaml"]

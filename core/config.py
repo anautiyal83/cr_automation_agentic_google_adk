@@ -1,5 +1,5 @@
 """
-Configuration manager for the NetConfig pipeline.
+Configuration manager for the Azalio Autonomous Network Platform pipeline.
 
 Loads configuration from YAML files, supports DB-stored overrides,
 per-step model assignments, and API key masking.
@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Project root: one level up from this file  (core/config.py -> project root)
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # cr_automation_agentic_google_adk root
+# The product's name in the UI and every generated document (internal ids keep "netconfig":
+# the ADK app name, NETCONFIG_* variables, the default admin admin@netconfig.local)
+PRODUCT_NAME = "Azalio Autonomous Network Platform"
 PIPELINE_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 

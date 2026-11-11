@@ -25,7 +25,7 @@ class CiqValidationJsonGenAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx):
         from shared.llm import get_llm_fn
-        from agents.requirements_agent import requirements_store
+        from agents.requirements_agent import ciq_file_path, requirements_store
         from skills.ciq_validation_json_gen import (
             CiqValidationJsonGenSkill, SkillInput,
         )
@@ -63,7 +63,7 @@ class CiqValidationJsonGenAgent(BaseAgent):
                 uc_name=uc_name,
                 requirements=requirements,
                 generation_hints=requirements.get("generation_hints", {}),
-                ciq_file_path=state.get("ciq_file_path", ""),
+                ciq_file_path=ciq_file_path(state),
             )
             output = await skill.generate(inp)
             # Store skill instance for potential regenerate()
