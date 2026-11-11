@@ -41,8 +41,14 @@ Rules (from the corpus, generic — any UC):
   (`production._local`; MOP of EIR/MRF/PGW unchanged)
 - Not in Stage B: repo nodes / file routes (Stage C).
 
-- [ ] PF010 Step 1/6: hosts reached from the NIAM login (pods, DS servers, other shells) become nested sessions on one
-  `niam_<type>_server` node (enter / steps / `exit`), generic prompts; one node per NIAM entry of the CIQ
+- [x] PF010 Step 6 (B1, 2026-11-11): `sessions.py` — enter commands (`oc/kubectl exec -it … -- bash`, `oc rsh`, `ssh
+  user@host`, `telnet`, `su`) by kind; one `niam_<type>_server` per CIQ node type (`node_types` from the CIQ JSON
+  template); nodes the LLM made for reached hosts folded in, `exit` added where the LLM went back outside and at
+  phase end (not for `su`, which may span phases); sessions per NIAM connection; generic `[..]$` prompts; `-- bash`;
+  `ssh -o<Opt>`, password `expect_reply`. Autofix keeps exits of nested shells; `ssh user@${IP}` no longer dropped as
+  "framework login"; phases keep `description`. Validator: `${<TYPE>.niamID-n}` against CIQ types, nested hosts
+  count as covered. Structure: repo copy / node name per CIQ type of the NIAM node. Prompt: node rules + CIQ types.
+  EIR: 1 node, 70 MOP commands (exits + fixed forms); MRF / PGW: same commands on renamed nodes
 - [ ] PF011 Validator: reject `for_each` outside `type: loop`, self-comparing expressions, a step reading a file on a
   host where no earlier step put it, a node switch right after `oc exec` / `ssh`
 - [ ] PF012 Step 8 MockWire topology: one instance per NIAM node with nested shells (enter command → new prompt,

@@ -84,7 +84,8 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
                     step_errors = _validate_step(step, j, phase_name, known_nodes, known_registers)
                     errors.extend(step_errors)
 
-    errors.extend(check_placeholders(parsed, node_fields=((expected or {}).get("record_columns") or {}).get("node_fields")))
+    rc = (expected or {}).get("record_columns") or {}
+    errors.extend(check_placeholders(parsed, node_fields=rc.get("node_fields"), node_types=rc.get("node_types")))
     errors.extend(check_file_flows(parsed))
     errors.extend(check_expr_vars(parsed))
     errors.extend(check_empty_registers(parsed))
@@ -667,8 +668,10 @@ def check_completeness(parsed: dict, expected: dict | None) -> list[str]:
             problems.append(f"The requirements have {'an' if kind == 'activity' else 'a'} {labels[kind]} phase but the workflow has no "
                             f"{labels[kind]} steps — generate the COMPLETE workflow (all phases of the MOP).")
     node_cmds: dict[str, int] = expected.get("node_commands") or {}
+    # Hosts reached from a NIAM login run as nested sessions on its node (spec 013 B-R2): covered by it
+    nested = any(n.startswith("NIAM_") for n in used_nodes)
     for node, count in sorted(node_cmds.items()):
-        if count >= 2 and node.upper() not in used_nodes:
+        if count >= 2 and node.upper() not in used_nodes and not nested:
             problems.append(f"The requirements list {count} commands on node {node} but no workflow step "
                             f"runs on {node} — include its steps.")
     wanted = sum(node_cmds.values())
@@ -1027,7 +1030,8 @@ _NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")
 
 
 def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
-                       node_fields: dict[str, list[str]] | None = None) -> list[str]:
+                       node_fields: dict[str, list[str]] | None = None,
+                       node_types: dict[str, int] | None = None) -> list[str]:
     """Report ``${…}`` placeholders the cli-automation JAR cannot resolve.
 
     ``runtime_params`` (default: config ``execution.runtime_params``) are passed by the
@@ -1058,8 +1062,13 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             expr = m.group(1).strip()
             root = expr.split(".", 1)[0]
             if "." in expr:
-                if root in _DOTTED_ROOTS or (root in node_names and re.match(
+                # ${<TYPE>.niamID-n}: the CIQ node type's NIAM entry (spec 013); older workflows name the node so
+                if root in _DOTTED_ROOTS or ((root in node_names or root in (node_types or {})) and re.match(
                         rf"^{re.escape(root)}\.niamID-\d+$", expr)):
+                    continue
+                if node_types and re.match(r"^[^.]+\.niamID-\d+$", expr):
+                    problems.setdefault(m.group(0), f"'{root}' is not a node type of the CIQ — the NIAM login is "
+                                        f"${{<TYPE>.niamID-<n>}} with TYPE one of {', '.join(sorted(node_types))}")
                     continue
                 # Node values the CIQ JSON carries on the node entry (${MRF.VER})
                 if expr.split(".", 1)[1] in ((node_fields or {}).get(root) or []):

@@ -30,6 +30,8 @@ import logging
 import re
 from typing import Any
 
+from .sessions import ciq_type
+
 logger = logging.getLogger(__name__)
 
 AUTO_ID = "nc_"
@@ -359,16 +361,21 @@ def node_login(parsed: dict, node: str) -> tuple[str, str, str]:
     return str(ssh.get("user") or "root"), str(ssh.get("host") or node), str(auth.get("password") or ssh.get("password") or "")
 
 
-def file_transfer(requirements: dict | None, node: str) -> str:
-    """``sftp`` when the node type supports SFTP, else ``scp`` (vendor profile, O-D6)."""
+def file_transfer(requirements: dict | None, node: str, parsed: dict | None = None) -> str:
+    """``sftp`` when the node type supports SFTP, else ``scp`` (vendor profile, O-D6). A NIAM node
+    (spec 013) is looked up by its CIQ node type too (``niam_eir_server`` → EIR1 / EIR)."""
+    from .sessions import ciq_type
     nodes = (((requirements or {}).get("category_1_node_activity") or {}).get("nodes") or []) \
         if isinstance(requirements, dict) else []
-    for n in nodes:
-        if isinstance(n, dict) and str(n.get("name", "")).upper() == node.upper():
-            method = str((n.get("ssh") or {}).get("file_transfer") or "").lower()
-            if method in ("sftp", "scp"):
-                return method
-    return "sftp"
+    typ = ciq_type(parsed, node) if isinstance(parsed, dict) else ""
+    names = [n.upper() for n in (node, typ, re.sub(r"\d+$", "", typ)) if n]
+    methods = {str(n.get("name", "")).upper(): str((n.get("ssh") or {}).get("file_transfer") or "").lower()
+               for n in nodes if isinstance(n, dict)}
+    for name in names:
+        if methods.get(name) in ("sftp", "scp"):
+            return methods[name]
+    found = {m for m in methods.values() if m in ("sftp", "scp")}
+    return found.pop() if node.startswith("niam_") and len(found) == 1 else "sftp"
 
 
 def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: str, to_repo: bool) -> str:
@@ -640,7 +647,7 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
             if repo_route:
                 copy_when = " && ".join(x for x in (when, f"ncArchived{k} != ''" if dest_loads else "") if x)
                 repo = _repo_node(parsed, cfg)
-                who = node_name_ref(node, requirements)
+                who = node_name_ref(ciq_type(parsed, node) or node, requirements)
                 if who:
                     repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/{who}{mirror}"
                 else:  # no node name column in the CIQ: the node's hostname
@@ -651,7 +658,7 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                     _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", copy_when,
                           send=f"mkdir -p {repo_dir}"),
                     *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
-                                    file_transfer(requirements, node), path, repo_path, True, copy_when,
+                                    file_transfer(requirements, node, parsed), path, repo_path, True, copy_when,
                                     f"{node} copies the backup {basename} to the repo server"),
                 ]
             absolute = not dest_loads and bool(sources) and all(x.startswith(("/", "${")) for x in sources)
@@ -744,7 +751,7 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
                     out.append(_step(f"{AUTO_ID}rs{k}_dir", node, "Create the restore folder on the node", when,
                                      send=f"mkdir -p {lst}"))
                     out += _repo_transfer(f"rs{k}", check_on, node, node_login(parsed, check_on),
-                                          file_transfer(requirements, node), path, repo_path, False, when,
+                                          file_transfer(requirements, node, parsed), path, repo_path, False, when,
                                           f"{node} copies the backup {basename} back from the repo server")
                 placed = True
             out.append(step)
@@ -797,7 +804,7 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
             mkdir = _step(f"{AUTO_ID}xr{count}_dir", repo, "Create the file directory on the repo server", when,
                           send=f"mkdir -p {stage_dir}")
             copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, repo),
-                                   file_transfer(requirements, node), node_path, staged, op == "download", when,
+                                   file_transfer(requirements, node, parsed), node_path, staged, op == "download", when,
                                    f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server")
             out += [mkdir, step, *copy_] if op == "upload" else [mkdir, *copy_, step]
         return out

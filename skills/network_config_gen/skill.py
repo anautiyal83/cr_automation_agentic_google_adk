@@ -187,7 +187,7 @@ def _record_columns(requirements: dict) -> dict:
     """{"sheet", "columns", "node_fields"} of the CIQ JSON as step 3's json-output builder writes
     it: record columns (``configSequences.N.records.M.data``) and node fields
     (``${<TYPE>.<field>}``, e.g. MRF.VER); {} when the CIQ layout is not recognised."""
-    from skills.ciq_validation_json_gen.json_output_builder import build_json_output, node_fields
+    from skills.ciq_validation_json_gen.json_output_builder import build_json_output, node_fields, node_types
     from skills.ciq_validation_json_gen.rules_baseline import read_ciq_rows
     sheets = (requirements.get("doc_extracted") or {}).get("ciq_sheets") or {}
     try:
@@ -203,7 +203,7 @@ def _record_columns(requirements: dict) -> dict:
     filled = [c for c in (recs.get("data") or {}) if c != link and rows and all(r.get(c) for r in rows)]
     return {"sheet": sheet, "columns": list(recs.get("data") or {}), "link": link, "filled": filled,
             "samples": {c: [r.get(c, "") for r in rows] for c in (recs.get("data") or {})},
-            "node_fields": node_fields(tpl)}
+            "node_fields": node_fields(tpl), "node_types": node_types(tpl)}
 
 
 def _request_columns(requirements: dict) -> dict[str, str]:
@@ -365,12 +365,15 @@ class NetworkConfigGenSkill:
         """Autofix steps that need the CIQ (the MOP's example directory → the CIQ path column),
         then the pipeline's structure: every CIQ record, backups on the repo server, transfer
         checksums (structure.py)."""
-        from . import structure
+        from . import sessions, structure
         from .autofix import dump_yaml, parse_yaml, use_path_columns
         parsed = parse_yaml(yaml_text)
         if not parsed:
             return yaml_text
         changed = use_path_columns(parsed, (self._expected or {}).get("record_columns"))
+        # One NIAM node per CIQ node type, hosts reached from it as nested sessions (spec 013 B-R1/B-R2)
+        changed += sessions.nested_sessions(parsed, ((self._expected or {}).get("record_columns") or {})
+                                            .get("node_types"))
         changed += structure.apply(parsed, {"uc_name": self._uc_name, **(self._requirements or {})})
         return dump_yaml(parsed) if changed else yaml_text
 
@@ -493,6 +496,13 @@ class NetworkConfigGenSkill:
             ciq_lines.append(f'  CIQ JSON records (${{configSequences.0.records.0.data.<Col>}}) come from sheet '
                              f'"{rec["sheet"]}" and hold ONLY: {", ".join(rec["columns"])} — use these per-row '
                              'values (paths, file names, parameters) instead of fixed values from the MOP')
+        from .sessions import node_name
+        taken: set = set()
+        for ntype, count in (rec.get("node_types") or {}).items():
+            name = node_name(ntype, taken)
+            taken.add(name)
+            ciq_lines.append(f"  Workflow node for CIQ node type {ntype}: {name} with ssh.host / ssh.ne_id "
+                             f"'${{{ntype}.niamID-1}}'" + (f" ({count} NIAM entries: niamID-1…{count})" if count > 1 else ""))
         for ntype, fields in (rec.get("node_fields") or {}).items():
             ciq_lines.append(f'  Node values of the current {ntype} node: '
                              + ", ".join(f"${{{ntype}.{f}}}" for f in fields)

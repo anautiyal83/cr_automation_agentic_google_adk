@@ -477,9 +477,11 @@ def _fix_nodes(nodes: dict) -> dict:
 
 # Commands that are handled by framework config, not explicit steps
 _FRAMEWORK_HANDLED = {
-    "niam login", "ssh $", "ctrl+p+e", "press ctrl+p+e",
+    "niam login", "ctrl+p+e", "press ctrl+p+e",
     "elevate_to_root", "su - root",
 }
+# `ssh ${NIAM…}` / `ssh $NODE` is the framework's own login; `ssh user@${IP}` opens a nested session (spec 013)
+_FRAMEWORK_SSH = re.compile(r"^\s*ssh\s+(?:\S+@)?\$\{?(?:niam|node|host)\w*\}?\s*$", re.I)
 
 
 def _fix_phase(phase: dict, known_nodes: set) -> dict:
@@ -489,7 +491,7 @@ def _fix_phase(phase: dict, known_nodes: set) -> dict:
     phase.pop("commands", None)
 
     # Remove phase-level keys that don't belong in framework schema
-    for bad_key in ("group_by", "niam_failover", "description"):
+    for bad_key in ("group_by", "niam_failover"):
         if bad_key in phase and bad_key != "name":
             # Keep "name" but move "description" to "name" if name is missing
             if bad_key == "description" and "name" not in phase:
@@ -504,7 +506,7 @@ def _fix_phase(phase: dict, known_nodes: set) -> dict:
                 # Skip commands that framework handles automatically
                 cmd_text = (step.get("send") or step.get("cmd") or
                             step.get("command") or step.get("name", "")).lower()
-                if any(handled in cmd_text for handled in _FRAMEWORK_HANDLED):
+                if any(handled in cmd_text for handled in _FRAMEWORK_HANDLED) or _FRAMEWORK_SSH.match(cmd_text):
                     logger.debug("Removed framework-handled command: %s", cmd_text[:60])
                     continue
                 step = _fix_step(step, known_nodes)
@@ -1757,10 +1759,11 @@ _SESSION_CLOSED = re.compile(r"(?i)connection\b.*\bclosed|logout|closed\.")
 
 
 def drop_session_exits(parsed: dict) -> int:
-    """Drop ``exit`` steps that leave no ``su`` on their node: they close the login session
-    the JAR opened and manages. An ``exit`` that leaves an ``su`` but waits for
+    """Drop ``exit`` steps that leave no ``su`` or nested shell on their node: they close the login
+    session the JAR opened and manages. An ``exit`` that leaves an ``su`` but waits for
     "Connection to .* closed." (printed by a local ssh client, never by the node) waits for
     the node's prompt instead (DEP-33)."""
+    from .sessions import enter_kind
     phases = parsed.get("phases") or {}
     bodies = list(phases.values()) if isinstance(phases, dict) else list(phases)
     nodes = parsed.get("nodes") or {}
@@ -1775,11 +1778,14 @@ def drop_session_exits(parsed: dict) -> int:
             node = str(step.get("node") or "")
             send = str(step.get("send") or "").strip()
             if node and node.upper() != "LOCAL":
-                if _SU.match(send):
+                if _SU.match(send) or enter_kind(send):
                     depth[node] = depth.get(node, 0) + 1
                 elif send in ("exit", "logout"):
-                    if depth.get(node, 0) > 0:
-                        depth[node] -= 1
+                    # the LLM may write the shell's steps (and its exit) on a node of its own: spec 013
+                    # folds them into the login node, so an exit after any open shell is kept
+                    owner = node if depth.get(node, 0) > 0 else next((n for n, d in depth.items() if d > 0), node)
+                    if depth.get(owner, 0) > 0:
+                        depth[owner] -= 1
                         # Leaving su returns to the node's own prompt, not "Connection … closed"
                         if _SESSION_CLOSED.search(str(step.get("prompt_regex") or "")):
                             node_regex = (nodes.get(node) or {}).get("prompt_regex") if isinstance(nodes, dict) else None

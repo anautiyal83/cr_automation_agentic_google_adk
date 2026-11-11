@@ -74,6 +74,14 @@ CRITICAL RULES:
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
   quoted or subscripted (data['Col'] / data.'Col' resolve to empty) — in `when` expressions too:
   when: "configSequences.0.records.0.data.Test Column != ''"   (a quoted name is always false)
+- Nodes (as production writes them): ONE node per CIQ node type — `niam_<type>_server`, ssh.host and ssh.ne_id
+  '${<TYPE>.niamID-1}' (the CIQ section lists them; the framework handles the NIAM login). Hosts reached from that
+  login are NOT nodes: a pod (`oc exec -it <pod> -n <ns> -- bash`), another server
+  (`ssh -o<Option>=<v> <user>@<ip>` with expect_reply for its password), another shell — send the command that
+  opens it on the NIAM node with a step-level prompt_regex of the new prompt, run the commands that belong there
+  on the SAME node, then `exit` (step-level prompt_regex of the outer prompt) before going on outside it.
+  One-shot forms stay single steps: `kubectl exec <pod> -- bash -c '<cmd>'`, `ssh <host> <cmd>`.
+  Linux prompts `[user@host dir]$` / `#`: prompt_regex '(?m)\\[[^\\]\\r\\n]+\\][#$][^\\r\\n]*$' (never a pod or host name)
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
@@ -220,7 +228,7 @@ Use these runtime variable patterns in the workflow YAML:
 === EXAMPLE WORKFLOW STRUCTURE ===
 
 nodes:
-  rds_node:
+  niam_rds_server:
     type: remote
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
@@ -236,7 +244,7 @@ nodes:
       host_key_algorithms: '+ssh-rsa'
       connect_timeout_sec: '30'
 
-  pgw_node:
+  niam_pgw_server:
     type: remote
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
@@ -261,7 +269,7 @@ phases:
     name: 'Pre-activity health checks'
     on_failure: continue
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: 'su - sdfrun'
         command_description: 'Switch to sdfrun user on RDS'
         prompt_regex: 'sdfrun@rdsggn01:~>'   # completes when the sdfrun prompt appears
@@ -271,7 +279,7 @@ phases:
             message: 'Switched to sdfrun user'
           failure:
             message: 'Failed to switch to sdfrun'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'sar 1 10'
         command_description: 'sar on RDS [Pre-health check: CPU idle percentage]'
         on_failure: continue
@@ -285,7 +293,7 @@ phases:
             message: 'CPU idle is healthy on RDS'
           failure:
             message: 'CPU idle is below 90% on RDS'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'ss'
         command_description: 'ss on RDS [Pre-health check: Remote node status]'
         on_failure: continue
@@ -297,7 +305,7 @@ phases:
             message: 'Remote nodes healthy'
           failure:
             message: 'Some remote nodes not UP'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'ndsLoadStats'
         command_description: 'ndsLoadStats on RDS [Pre-health check: NDS load statistics]'
         on_failure: continue
@@ -313,7 +321,7 @@ phases:
   activity_configuration:
     name: 'Main subscriber modification activity'
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: "ldapsearch -x -h localhost -p 16611 -b \\"imsi=${{configSequences.0.records.0.data.Test IMSI}},dc=IMSI,dc=C-NTDB\\" objectclass=*"
         command_description: 'Query subscriber profile before modification'
         when: "configSequences.0.records.0.data.Test IMSI != ''"
@@ -332,7 +340,7 @@ phases:
     name: 'Post-activity health checks'
     on_failure: continue
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: 'sar 1 10'
         command_description: 'sar on RDS [Post-health check: CPU idle percentage]'
         on_failure: continue
@@ -346,7 +354,8 @@ phases:
             message: 'CPU idle is below 90% on RDS (post-activity)'
 
 === INSTRUCTIONS ===
-1. Define nodes for each network element. Use ne_id for NIAM access, elevate_to_root for Ctrl+P+E.
+1. Define one node per CIQ node type (niam_<type>_server, ne_id ${{<TYPE>.niamID-1}}); hosts reached from it are
+   nested sessions on that node (enter step, commands, exit). elevate_to_root for Ctrl+P+E.
 2. Phase names MUST be exactly: preNodeHealthCheck, activity_configuration, postNodeHealthCheck
 3. For each phase, list steps using "send" and "command_description".
 4. Validation uses success/failure branches with criteria inside.
