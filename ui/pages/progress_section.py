@@ -194,6 +194,9 @@ class ProgressSection:
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
             # Pre-built "Edit requirements" dialog (step 2 review), filled on demand: one created in
             # the click handler did not take any typing
+            # Spec 012: generated files edited at a review (built once, like the dialogs above)
+            from ui.pages.file_editor import FileEditor
+            self.file_editor = FileEditor()
             self._edit_dialog = ui.dialog()
             with self._edit_dialog:
                 self._edit_card = ui.card().classes("w-full p-0").style(
@@ -254,6 +257,17 @@ class ProgressSection:
                     .tooltip("Correct an answer or describe what is wrong; the requirements are compiled again"),
                     "progress")
                 self.ms_edit_btn.set_visibility(False)
+                # Spec 012: edit the review's generated files; continue with the edit once it validates
+                self.ms_files_btn = action(ui.button("Edit files", icon="code",
+                    on_click=lambda: self._open_editor()) \
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Edit the generated files of this review (table or YAML)"), "progress")
+                self.ms_files_btn.set_visibility(False)
+                self.ms_continue_edit_btn = action(ui.button("Continue with my edit", icon="play_arrow",
+                    on_click=self._continue_with_edit) \
+                    .props("unelevated color=positive size=sm no-caps")
+                    .tooltip("Your edited files validate: the later steps run with them"), "progress")
+                self.ms_continue_edit_btn.set_visibility(False)
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
@@ -497,6 +511,89 @@ class ProgressSection:
                 .props("flat dense color=primary size=sm no-caps")
             ui.button("Download", icon="download", on_click=lambda _, p=f: download(p)) \
                 .props("flat dense color=primary size=sm no-caps")
+            review = self._review_of(self._rel(f))
+            if review:
+                ui.button("Open", icon="code", on_click=lambda _, r=self._rel(f), st=review: self._open_editor(
+                    rel=r, review_step=st)).props("flat dense color=primary size=sm no-caps") \
+                    .tooltip("Open in the editor (editable at this file's review)")
+
+    # ------------------------------------------------------------------
+    # Spec 012: editing generated files at a review
+    # ------------------------------------------------------------------
+
+    def _run_folder(self) -> str:
+        return self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+
+    def _rel(self, path) -> str:
+        try:
+            return Path(path).resolve().relative_to(Path(self._run_folder()).resolve()).as_posix()
+        except (ValueError, OSError):
+            return Path(path).name
+
+    def _editable_rels(self, step_num: int) -> list[str]:
+        from shared import run_files
+        if not self._run_folder() or not self._uc_name:
+            return []
+        return [f.rel for f in run_files.editable_files(self._run_folder(), self._uc_name, step_num)]
+
+    def _review_of(self, rel: str) -> int:
+        """The review whose files include ``rel`` (0: none)."""
+        for step in (4, 6):
+            if rel in self._editable_rels(step):
+                return step
+        return 0
+
+    def _can_edit(self, review_step: int) -> bool:
+        """Editable only while this run waits at that review, for its owner (admin: any) with Update."""
+        from ui.access import current
+        access = current()
+        info = self.runner._active_runs.get(str(self.active_run_id), {}) if self.runner and self.active_run_id else {}
+        user = self._scope.user
+        return bool(access and access.can_update("progress") and user and user.owns_run(info.get("started_by"))
+                    and info.get("status") == "paused_milestone"
+                    and getattr(self, "_current_milestone_step", 0) == review_step)
+
+    async def _open_editor(self, rel: str = "", line: int = 0, mode: str = "", review_step: int = 0) -> None:
+        from ui.pages.file_editor import load_requirements
+        step = review_step or getattr(self, "_current_milestone_step", 0) or self._review_of(rel)
+        if not step or not self._editable_rels(step):
+            ui.notify("No files to edit here", type="warning")
+            return
+        state = {}
+        if self.runner and self.active_run_id:
+            try:
+                state = await self.runner.get_state(str(self.active_run_id))
+            except Exception:  # noqa: BLE001
+                state = {}
+        user = self._scope.user
+        self.file_editor.open(run_id=str(self.active_run_id), run_dir=self._run_folder(), uc_name=self._uc_name,
+                              review_step=step, editable=self._can_edit(step),
+                              requirements=load_requirements(self._run_folder(), state),
+                              user_email=user.email if user else "", state=state, on_saved=self._refresh_edit_state,
+                              rel=rel, line=line, mode=mode)
+
+    def _refresh_edit_state(self) -> None:
+        """After a save: offer Continue with my edit when every edited file of this review validates (Y-D5),
+        and the re-run banner when a re-run replaced an edit (Y-D7)."""
+        from shared import run_files
+        step = getattr(self, "_current_milestone_step", 0)
+        rels = self._editable_rels(step) if step in (4, 6) else []
+        edited = [r for r in rels if r in run_files.edited_files(self._run_folder())]
+        valid = bool(edited) and all((run_files.versions(self._run_folder(), r)[-1].get("problems") or 0) == 0
+                                     for r in edited)
+        self.ms_continue_edit_btn.set_visibility(valid and self._can_edit(step))
+
+    @requires("progress", "milestone.decision")
+    @_own_run("milestone.decision")
+    async def _continue_with_edit(self) -> None:
+        """The edited files validate: the failed step's error goes, the run continues with the edit."""
+        step = getattr(self, "_current_milestone_step", 0)
+        for n in {4: (3, 4), 6: (6,)}.get(step, ()):
+            err = Path(self._run_folder()) / f"step_{n}_error.json"
+            if err.exists():
+                err.unlink()
+            self._update_step_visual(n, "passed")
+        await self._milestone_respond("continue")
 
     def _render_tests(self):
         import json as _json
@@ -1222,6 +1319,9 @@ class ProgressSection:
         self.ms_continue_btn.text = "Continue"
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
+        self._review_editable = self._editable_rels(step_num)
+        self.ms_files_btn.set_visibility(bool(self._review_editable))
+        self._refresh_edit_state()
         self._show_failure_reasons(step_num if has_failures else 0)
         self._show_answered_notes(0 if has_failures else step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
@@ -1252,6 +1352,7 @@ class ProgressSection:
         self.ms_view_btn.set_visibility(bool(artifact_file))
 
         # One row per file of the review: label, file name, View (its tab in the viewer), Download
+        self._review_editable = self._editable_rels(step_num)
         self.ms_extra_files_row.clear()
         listed = list(self._current_review_files)
         listed += [f for f in extra_artifact_files or [] if f and Path(f).exists() and f not in listed]
@@ -1281,6 +1382,16 @@ class ProgressSection:
                                   on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
                                                                        ui.download(u))) \
                             .props("flat color=positive size=sm no-caps")
+                        rel = self._rel(fpath)
+                        if rel in self._review_editable:
+                            from shared import run_files
+                            replaced = run_files.replaced_user_version(self._run_folder(), rel)
+                            if replaced:  # Y-D7: a re-run never silently replaces an edit
+                                ui.button(f"Re-run replaced your v{replaced} — Compare", icon="difference",
+                                          on_click=lambda _, r=rel: self._open_editor(rel=r, mode="diff")) \
+                                    .props("flat color=warning size=sm no-caps")
+                            action(ui.button("Edit", icon="edit", on_click=lambda _, r=rel: self._open_editor(rel=r))
+                                   .props("flat color=primary size=sm no-caps"), "progress")
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
@@ -1334,6 +1445,9 @@ class ProgressSection:
                 if len(lines) > 6:
                     ui.label(f"… and {len(lines) - 6} more").classes("text-caption cr-text-dim")
             ui.label("What you can do: " + what_to_do).classes("text-caption font-medium mt-1")
+            if self._editable_rels(step_num):
+                action(ui.button("Fix in editor", icon="code", on_click=lambda: self._open_editor())
+                       .props("unelevated dense no-caps size=sm color=primary"), "progress")
             with ui.expansion("Technical details").classes("w-full text-caption cr-text-dim"):
                 for reason in reasons:
                     ui.label(reason).classes("text-caption font-mono") \
@@ -1354,6 +1468,8 @@ class ProgressSection:
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
         self.ms_failure_box.set_visibility(False)
+        self.ms_files_btn.set_visibility(False)
+        self.ms_continue_edit_btn.set_visibility(False)
 
         # Show Answer Questions + Skip buttons
         self.ms_continue_btn.text = "Skip & Use Defaults"

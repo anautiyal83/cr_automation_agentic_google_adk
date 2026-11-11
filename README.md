@@ -81,6 +81,27 @@ Spec: [specs/010-run-phase-options](specs/010-run-phase-options/spec.md).
 - **Simulator** (steps 8, 9): each node's MockWire instance lists the repo instance as a transfer peer, so the copies
   really move files between the simulated hosts.
 
+## Editing Generated Files at a Review
+
+Spec: [specs/012-yaml-editor](specs/012-yaml-editor/spec.md).
+
+- **Where**: the steps 3–4 review (validation rules, CIQ JSON config) and the step 6 review (execution workflow,
+  helper scripts): **Edit files**, **Edit** on a file row, **Fix in editor** in the failure box. **Open** in the
+  step tracker's artifact list shows any of these files read-only (editable only at its own review, by the run's
+  owner with Update on Progress).
+- **Workflow as a table**: steps grouped by phase; add a step by phase + step number (the steps after it renumber),
+  edit or delete a step, Undo. Steps the platform adds (backups, checksums, record loops) show as
+  "+ N added automatically" and are rebuilt from your steps on every change.
+- **Other views**: YAML / code with problem lines, Diff against the generated file or any version, History
+  (Compare / Restore), MOP preview (the framework's MOP of the file as it is in the editor).
+- **Checks**: Validate runs the step's own checks (step 6 validator, schemas, script contract) and lists problems in
+  plain language with their line; some have a one-click fix.
+- **Save** keeps every version in `run_dir/edits/` (who, when, problems at save); the run folder is what every later
+  step reads. Unsaved changes stay as a draft when the editor is closed.
+- **Continue with my edit** appears when every file edited at this review validates: a failed step counts as passed
+  and the run goes on with the edit. A re-run of the step replaces the edit (a banner offers Compare / Restore).
+- Saves and restores are in the activity trail (`artifact.edit`, `artifact.restore`).
+
 ## Architecture
 
 ```

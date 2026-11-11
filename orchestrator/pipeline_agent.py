@@ -88,6 +88,9 @@ def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: li
             for name in proven:
                 if name in pending:
                     data, inputs, *rest = pending.pop(name)
+                    # what the user approved at the review: edits made there included (spec 012 Y-D8)
+                    from shared import run_files
+                    data = run_files.refresh_artifacts(data, run_dir, uc_name)
                     cache.save_cache(uc_name, name, data, inputs=inputs, options=rest[0] if rest else "")
         else:
             for name in proven:
@@ -433,6 +436,32 @@ class PipelineAgent(BaseAgent):
                     dropped = ctx.session.state.pop("_retry_target", None)
                     if dropped is not None:
                         flow.flow("CONTINUE — step %d accepted by the reviewer, no retry of step %s", ms_step, dropped)
+                    from shared import run_files
+                    # "Continue with my edit": the edited files validate and the UI removed the step's
+                    # error file — the step counts as passed from here on (spec 012 Y-D5)
+                    if run_dir and run_files.edited_files(run_dir):
+                        for sn in display_steps:
+                            if (ctx.session.state.get(f"step_{sn}_status") == "failed"
+                                    and not (Path(run_dir) / f"step_{sn}_error.json").exists()):
+                                ctx.session.state[f"step_{sn}_status"] = "passed"
+                                flow.flow("CONTINUE — step %d passed with the files edited at its review", sn)
+                                await self._publish(run_id_str, "step_completed", sn, {"status": "passed"})
+                    # Files edited at this review: the cache keeps what the user approved (spec 012 Y-D8;
+                    # steps 3-4 were cached before the review, step 6 is cached when step 9 passes)
+                    if run_dir and agent.name not in _CACHE_AFTER_STEP and run_files.edited_files(run_dir):
+                        try:
+                            from storage.artifact_cache import (ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint,
+                                                                options_fingerprint)
+                            if agent.name in CACHEABLE_AGENTS:
+                                doc_set = ctx.session.state.get("document_set")
+                                ArtifactCache().save_cache(
+                                    uc_name, agent.name,
+                                    run_files.refresh_artifacts(dict(ctx.session.state.get("artifacts", {})), run_dir,
+                                                                uc_name),
+                                    inputs=inputs_fingerprint(doc_set), options=options_fingerprint(doc_set))
+                                flow.flow("CACHE UPDATED %s — files edited at the step %d review", agent.name, ms_step)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("Cache update after an edit failed: %s", e)
 
             # ----- CHECK _retry_target from QA agents (auto-retry without milestone) -----
             retry_target = ctx.session.state.pop("_retry_target", None)

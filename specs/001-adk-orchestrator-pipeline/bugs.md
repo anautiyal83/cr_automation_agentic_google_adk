@@ -1095,3 +1095,12 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   answered problem. Step 6 passes when every remaining problem is one the developer answered: they go to
   `step_6_notes.json` and the review shows them in an amber "Check that the workflow follows your answers" box
   (`clarifications.plain` wording). Tests `tests/test_clarifications.py`.
+
+### OB-30 — "Continue with my edit" left the step failed in the run state (Medium, Fixed 2026-11-11, spec 012)
+- Found while building the spec 012 editor: the review's "Continue with my edit" removed `step_6_error.json` and
+  showed step 6 passed, but the session state kept `step_6_status = failed` — the step 9 cache settle would have
+  dropped the approved workflow as failed, and the report would list step 6 as failed.
+- **Fix**: on Continue at a review with edited files (`run_files.edited_files`), `pipeline_agent` marks every display
+  step of that review whose error file is gone as passed and publishes `step_completed`.
+- Preview finding (no code change): the editor's MOP preview needs the run state's `ciq_file_path` and
+  `pipeline_config` (the runner always sets both; a hand-seeded state without them renders no MOP).

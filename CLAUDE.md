@@ -192,6 +192,12 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   authoritative; a corrected CIQ workbook / unticked sheets (`excluded_ciq_sheets`, kept per UC) are applied;
   step 1 re-analyses (no questionnaire), compiles again and pauses at step 2 again. Later steps take the CIQ
   path from `agents.requirements_agent.ciq_file_path(state)`. Hidden CIQ sheets are never read
+- Spec 012 file editor (steps 3–4 + 6 reviews, `ui/pages/file_editor.py`, pre-built dialog): the run folder is
+  authoritative — agents read generated files with `shared.run_files.read(state, key)`, never `artifacts[...]`, and
+  writers call `run_files.record_generated`; versions in `run_dir/edits/`; checks `shared/edit_checks.check`;
+  workflow table `shared/workflow_table` (rows = flat form, `nc_*` rebuilt by `structure.apply` with the run's
+  options). "Continue with my edit" deletes the step's error file and continues; `pipeline_agent` then marks
+  the step passed and refreshes the cache from the run folder (`run_files.refresh_artifacts`)
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):

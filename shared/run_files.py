@@ -197,3 +197,21 @@ def diff(old: str, new: str) -> list[tuple[str, str]]:
             continue
         out.append(("" if sign == " " else sign, text))
     return out
+
+
+def refresh_artifacts(data: dict, run_dir: str, uc_name: str) -> dict:
+    """A cache entry's artifacts with the run folder's current files — what the user approved, edits
+    included (Y-D8): the generated files by their artifact key, helper scripts from ``scripts/``."""
+    out = dict(data or {})
+    if not run_dir:
+        return out
+    for key in ARTIFACT_FILES:
+        if key in out:
+            path = Path(run_dir) / file_name(key, uc_name)
+            if path.is_file():
+                out[key] = path.read_text(encoding="utf-8")
+    scripts = Path(run_dir) / "scripts"
+    if isinstance(out.get("helper_scripts"), dict) and scripts.is_dir():
+        out["helper_scripts"] = {**out["helper_scripts"],
+                                 **{f.name: f.read_text(encoding="utf-8") for f in scripts.glob("*.py")}}
+    return out

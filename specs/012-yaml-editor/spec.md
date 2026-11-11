@@ -111,7 +111,7 @@ Priority: **M** must, **S** should, **C** could. **R1** = first release (propose
 | H5 | Move a row (phase + step number, as H3) and Duplicate | S | |
 | H6 | Problems shown on their row (marker + plain-language tooltip) | M | ✓ |
 | H7 | Validation rules as a table, one row per CIQ column rule (Sheet · Column · Required · Type / pattern · Allowed values · Cross-check), same add / delete / edit | S | |
-| H8 | Rows the platform adds (backups by convention, checksums, record loops) shown as "added automatically" and locked — rebuilt from the user's rows; they count in the numbering, nothing is inserted inside them | M | ✓ |
+| H8 | Rows the platform adds (backups by convention, checksums, record loops) are not numbered rows: each phase shows "+ N added automatically"; they are locked and rebuilt from the user's rows (`structure.apply`) on every change, so nothing is inserted inside them | M | ✓ |
 | H9 | A new or changed row is checked at once (C1) | S | |
 
 ## Acceptance
