@@ -44,6 +44,22 @@ ignored anyway.
 | Y-D10 | Concurrent edits | Save refuses when the file changed since the editor opened (another tab, a re-run): "This file changed — Reload" |
 | Y-D11 | Audit | `artifact.edit` (file, version, problems count), `artifact.restore` (file, from version) — never file content (spec 006 D11) |
 
+## Opening the editor (2026-11-11)
+
+| Where | Control | Opens |
+|-------|---------|-------|
+| Review panel (steps 3–4, 6) | **Edit files** beside Approve / Re-run / Cancel | the editor on the review's first file — the workflow in Table view |
+| Review panel file row | **Edit** beside View / Download | the editor on that file's tab |
+| "Why step N failed" box | **Fix in editor** on a problem | the editor at that row (Table) / line (YAML), problem highlighted |
+| Re-run banner | **Compare** | the editor in Diff: the user's version vs the regenerated one, with Restore |
+| Step tracker → step → Artifacts tab | **Open** on a file | the editor, read-only unless the run waits at that file's review |
+| Run Artifacts / Run History | **Open** on a file | read-only: view, history, diff, download |
+
+- Full screen over the page; closing with unsaved changes asks, and keeps the draft (E4).
+- Read-only anywhere but the run's own review (F2), with "Editable at the step N review of this run".
+- View-only roles see View, never Edit / Edit files (G1).
+- The workflow opens in Table view (the plain view), YAML one click away; rules and CIQ JSON open in YAML.
+
 ## Features (2026-11-11, agreed with the user)
 
 Priority: **M** must, **S** should, **C** could. **R1** = first release (proposed: every M, plus A3, C3, E4, F3, F6).
