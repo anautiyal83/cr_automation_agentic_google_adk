@@ -155,6 +155,25 @@ def yaml11_safe(data):
     return data
 
 
+def block_scalars(data):
+    """``data`` with every multi-line string as a literal block (``|-``), as production writes long commands.
+    The JAR reads a double-quoted ``\\n`` as a real newline, so ``printf '%s\\n'`` / ``awk 'printf "…\\n"'``
+    in a double-quoted multi-line send broke (spec 013 P-8); a block keeps the text exactly."""
+    from ruamel.yaml.scalarstring import LiteralScalarString, ScalarString
+    if isinstance(data, dict):
+        for key in list(data.keys()):
+            data[key] = block_scalars(data[key])
+        return data
+    if isinstance(data, list):
+        for i, item in enumerate(data):
+            data[i] = block_scalars(item)
+        return data
+    if (isinstance(data, str) and not isinstance(data, ScalarString) and "\n" in data and "\r" not in data
+            and not any(line != line.rstrip(" \t") for line in data.split("\n"))):
+        return LiteralScalarString(data)
+    return data
+
+
 def _repair_truncated_yaml(yaml_text: str) -> str:
     """Attempt to repair YAML truncated by LLM token limits.
 

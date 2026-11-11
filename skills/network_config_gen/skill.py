@@ -163,7 +163,7 @@ def _phases_text(requirements: dict, phases: list) -> str:
         opts = run_options.normalize(requirements.get("run_options"))
         keys = run_options.selected(opts)
         text = ("use exactly these phase keys, in this order (no others): "
-                + "; ".join(f"{k} — {run_options.PURPOSE[k]}" for k in keys))
+                + "; ".join(f"{run_options.WORKFLOW_KEYS[k]} — {run_options.PURPOSE[k]}" for k in keys))
         if opts["phases"]["backup"]:
             text += (". Backups go through the repo server (the pipeline adds the transfers): write the backup "
                      "archive in /tmp on the node" if opts["backup_via_repo"] else
@@ -371,7 +371,7 @@ class NetworkConfigGenSkill:
         if not parsed:
             return yaml_text
         changed = use_path_columns(parsed, (self._expected or {}).get("record_columns"))
-        changed += structure.apply(parsed, self._requirements)
+        changed += structure.apply(parsed, {"uc_name": self._uc_name, **(self._requirements or {})})
         return dump_yaml(parsed) if changed else yaml_text
 
     def _repair_against_samples(self, yaml_text: str, errors: list[str]) -> tuple[str, list[str]]:

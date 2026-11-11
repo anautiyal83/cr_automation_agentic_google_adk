@@ -5,17 +5,22 @@ full test suite. Generic only — nothing keyed to a use case.
 
 ## Stage A — file shape (no change to what runs)
 
-- [ ] PF001 `dump_yaml`: multi-line `send` as `>-`, no double-quoted scalar with a backslash (PF-D7, P-8); test
-- [ ] PF002 `structure.apply`: `version: 1.2`, `name` (kebab of the UC), `globals.defaults`, production `globals.vars`
+Verified 2026-11-11: EIR / MRF / PGW run workflows converted — MOP `generate` gives the same commands, execution
+criteria, validations and targets as before; JAR probes: `${…}` = plain form in 18 `when` + 4 `expr` cases, step
+without `on_failure` stops (so `on_failure: stop` is explicit), rollback named `ROLLBACK_CONFIGURATION` still runs
+after a stop.
+
+- [x] PF001 `dump_yaml`: multi-line `send` as `>-`, no double-quoted scalar with a backslash (PF-D7, P-8); test
+- [x] PF002 `structure.apply`: `version: 1.2`, `name` (kebab of the UC), `globals.defaults`, production `globals.vars`
   (`ROLLBACK_REQUIRED`, `ROLLBACK_ONLY`, `RETRY_COUNT`, `LOOP_RETRY`, …); phase keys / `name` / `description` /
   `when` / `on_failure` as the production table; field order of steps
-- [ ] PF003 `${…}` expressions everywhere: autofix rewrites bare `when` / `expr` (`X != ''`, `a == b`) to
+- [x] PF003 `${…}` expressions everywhere: autofix rewrites bare `when` / `expr` (`X != ''`, `a == b`) to
   `${X != ""}` / `${a == b}`; validator, workflow_table (spec 012) and edit_checks read both
-- [ ] PF004 Drop Windows-only rules from step 6 (PF-D6): no rewrite / rejection of `"` in LOCAL steps
+- [x] PF004 Drop Windows-only rules from step 6 (PF-D6): no rewrite / rejection of `"` in LOCAL steps
 - [ ] PF006 Step 9 under WSL (PF-D5): run the cli-automation JAR in WSL (Linux Java), paths translated, simulator reachable
   from WSL; Settings → External Modules option; needs `wsl --install` + Java in WSL on the machine
-- [ ] PF005 Validation shape: `enabled: true` + `description` on every validation; `warning` + `vars` where the step
-  feeds a retry; error capture register
+- [~] PF005 Validation shape: `enabled: true` + `description` on every validation (done); `warning` + `vars` where the
+  step feeds a retry and the error capture register come with the patterns (Stage C) and the prompt (Stage D)
 
 ## Stage B — node model (PF-D2) — steps 6 + 8
 

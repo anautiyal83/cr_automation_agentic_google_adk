@@ -17,7 +17,7 @@ import re
 
 from ruamel.yaml.scalarstring import SingleQuotedScalarString
 
-from .autofix import dump_yaml, parse_yaml
+from .autofix import block_scalars, dump_yaml, parse_yaml
 from .topology import NodeSpec
 
 _REGEX_META = re.compile(r"([\\.\[\]{}()*+?^$|])")
@@ -55,7 +55,7 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         ssh["strict_host_key_checking"] = SingleQuotedScalarString("no")
     _step_prompts(workflow, nodes)
     _shorten_polls(workflow.get("phases") or {})
-    return dump_yaml(workflow)
+    return dump_yaml(block_scalars(workflow))
 
 
 def _step_prompts(workflow: dict, nodes: list[NodeSpec]) -> None:

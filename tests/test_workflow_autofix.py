@@ -251,11 +251,12 @@ def test_when_word_operators_become_symbols_outside_quotes():
     assert fix_condition_operators("brand != ''") == "brand != ''"
 
 
-def test_local_arguments_are_single_quoted():
-    from skills.network_config_gen.autofix import single_quote_arguments
-    cmd = 'python report.py --pre "${pre}" --name "it\'s" --out "r_${ORDERNO}.html"'
-    assert single_quote_arguments(cmd) == r"python report.py --pre '${pre}' --name 'it'\''s' --out 'r_${ORDERNO}.html'"
-    assert single_quote_arguments("python x.py --a 'y'") == "python x.py --a 'y'"
+def test_local_double_quotes_are_kept():
+    """Spec 013 P-6: double quotes in LOCAL steps work on Linux (production); step 6 keeps them."""
+    from skills.network_config_gen.autofix import fix_workflow
+    send = 'python report.py --pre "${pre}" --out "r_${ORDER_NO}.html"'
+    out = fix_workflow(yaml.safe_dump({"nodes": {}, "phases": {"p": {"steps": [{"node": "LOCAL", "send": send}]}}}))
+    assert yaml.safe_load(out)["phases"]["p"]["steps"][0]["send"] == send
 
 
 def test_whole_ciq_record_placeholder_is_rejected():
@@ -320,12 +321,6 @@ def test_dict_argument_becomes_one_flag_per_field():
         "python r.py --ciq_data_mandatory_cap '${configSequences.0.records.0.data.Mandatory Cap}' "
         "--ciq_data_packet_data_network_type '${configSequences.0.records.0.data.Packet Data Network Type}' --out 'r.html'")
     assert split_dict_arguments("python r.py --a 'x' --b 'y'") == "python r.py --a 'x' --b 'y'"
-
-
-def test_double_quotes_in_local_commands_are_rejected():
-    from skills.network_config_gen.validator import check_script_arguments
-    wf = {"phases": {"a": {"steps": [{"node": "LOCAL", "send": "python r.py --a '{\"k\": \"v\"}'"}]}}}
-    assert any("double quote" in e for e in check_script_arguments(wf))
 
 
 def test_absence_check_runs_before_the_upload_that_produces_the_file():
@@ -639,3 +634,14 @@ def test_when_drops_register_prefixes():
     wf = {"phases": {"p": {"steps": [step]}}}
     assert when_bare_operands(wf) == 1 and when_bare_operands(wf) == 0
     assert step["when"] == "backupTarName != null && y != '' && z == 'a'"
+
+
+def test_multiline_send_written_as_block():
+    """Spec 013 P-8: the JAR reads `\n` in a double-quoted scalar as a real newline — production's awk
+    compare broke; a multi-line send is written as a literal block and reads back unchanged."""
+    from skills.network_config_gen.autofix import dump_yaml, parse_yaml
+    send = ("printf '%s\n' '${EIRRNGRAW}' |\nawk '\n/eirBlackRng/ { black=$NF }\n"
+            "/eirWhiteRng/ { printf \"%s|%s\n\", white, black; }' | sort -u | wc -l")
+    text = dump_yaml({"phases": {"p": {"steps": [{"node": "local", "send": send, "command_description": "one\nline"}]}}})
+    assert "send: |-" in text and '"printf' not in text
+    assert parse_yaml(text)["phases"]["p"]["steps"][0]["send"] == send

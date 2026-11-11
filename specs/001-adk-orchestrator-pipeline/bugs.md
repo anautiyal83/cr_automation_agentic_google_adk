@@ -1104,3 +1104,17 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   step of that review whose error file is gone as passed and publishes `step_completed`.
 - Preview finding (no code change): the editor's MOP preview needs the run state's `ciq_file_path` and
   `pipeline_config` (the runner always sets both; a hand-seeded state without them renders no MOP).
+
+### OB-31 — Windows-only JAR behaviour taken for framework rules (Medium, Fixed 2026-11-11, spec 013)
+- Comparing EIR with production: production's LOCAL awk compare uses double quotes, which our step 6 rejected and
+  rewrote ("the framework breaks LOCAL commands at double quotes", DEP-36/44). Disassembly + probes: the JAR runs
+  `bash -c <cmd>` for commands ≤ 8000 chars on Windows (65536 on Linux) and Windows' command line drops the quotes;
+  `WindowsCommandAdapter` also turns `/word` into `C:/word`. On Linux (production) both are fine.
+- **Fix**: step 6 keeps double quotes (`single_quote_arguments` and the validator rule removed, prompt updated);
+  step 9 to run under WSL (spec 013 PF006). Test `test_local_double_quotes_are_kept`.
+
+### OB-32 — Multi-line send written double-quoted: `\n` became a newline (Medium, Fixed 2026-11-11, spec 013 P-8)
+- ruamel wrote a multi-line `send` as a double-quoted scalar; the JAR reads `\n` there as a real newline, so
+  `printf '%s\n'` / awk `printf "…\n"` broke. Production writes them as `>-` blocks.
+- **Fix**: `block_scalars` (multi-line strings → `|-`) in step 6's `dump_yaml` and the step 9 overlay. Test
+  `test_multiline_send_written_as_block`.

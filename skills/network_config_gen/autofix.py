@@ -219,8 +219,8 @@ def dump_yaml(data: dict) -> str:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.width = 200
-    from skills.network_simulator_setup.autofix import yaml11_safe  # the JAR reads YAML 1.1 too
-    yaml.dump(yaml11_safe(data), stream)
+    from skills.network_simulator_setup.autofix import block_scalars, yaml11_safe  # the JAR reads YAML 1.1 too
+    yaml.dump(block_scalars(yaml11_safe(data)), stream)
     return stream.getvalue()
 
 
@@ -569,8 +569,10 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
         step["node"] = "LOCAL"
     if isinstance(step.get("send"), str):
         step["send"] = drop_stray_quote(step["send"])
+    # Double quotes stay as written: production's LOCAL server is Linux, where they reach bash intact
+    # (only the Windows dev machine dropped them — spec 013 P-6)
     if str(step.get("node", "")).upper() == "LOCAL" and isinstance(step.get("send"), str):
-        step["send"] = single_quote_arguments(split_dict_arguments(step["send"]))
+        step["send"] = split_dict_arguments(step["send"])
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -584,7 +586,6 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
 
 
 _HELPER_CALL = re.compile(r"^\s*python3?\s+[\w.-]+\.py(?:\s|$)")
-_DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
 _DICT_ARG = re.compile(r"(--[A-Za-z][\w-]*)\s+(['\"]?)\{(.*?)\}\2(?=\s+--|\s*$)", re.DOTALL)
@@ -594,8 +595,8 @@ _DICT_PAIR = re.compile(r"""['"]?([^'":,{}]+?)['"]?\s*:\s*(?:['"]?(\$\{[^}]*\}|[
 def split_dict_arguments(command: str) -> str:
     """``--ciq_data '{'Mandatory Cap': '${…}', 'VNI': '${…}'}'`` → ``--ciq_data_mandatory_cap
     '${…}' --ciq_data_vni '${…}'``: one flag per field. The JAR's LOCAL runner breaks on any
-    double quote and nested single quotes are split by the shell, so a dict/JSON value can
-    never arrive in one argument (probed; DEP-44). Helper scripts are generated afterwards
+    nested single quotes are split by the shell, so a dict/JSON value never arrives in one
+    argument (DEP-44). Helper scripts are generated afterwards
     from these flags."""
     def expand(m: re.Match) -> str:
         pairs = [(k.strip(), v.strip()) for k, v in _DICT_PAIR.findall(m.group(3)) if k.strip()]
@@ -605,17 +606,6 @@ def split_dict_arguments(command: str) -> str:
         return " ".join(f"{flag}_{re.sub(r'[^a-z0-9]+', '_', k.lower()).strip('_')} '{v}'" for k, v in pairs)
     return _DICT_ARG.sub(expand, command)
 
-
-def single_quote_arguments(command: str) -> str:
-    """``--a "x y"`` → ``--a 'x y'`` in a LOCAL command. The JAR's LOCAL runner splits
-    double-quoted arguments at spaces and drops the rest of the line (probed:
-    ``--a "x y" --c "z"`` reached the program as ``['--a', 'x']``); single quotes arrive
-    intact, multi-line values too. ``${…}`` is filled in by the JAR before the shell runs,
-    so single quotes lose nothing (DEP-36)."""
-    def quote(m: re.Match) -> str:
-        value = re.sub(r'\\(["\\$`])', r"\1", m.group(1))
-        return "'" + value.replace("'", "'\\''") + "'"
-    return _DOUBLE_QUOTED.sub(quote, command)
 
 
 def unbalanced_quotes(command: str) -> bool:

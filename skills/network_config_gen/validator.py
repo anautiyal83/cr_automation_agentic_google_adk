@@ -375,11 +375,6 @@ def check_script_arguments(parsed: dict) -> list[str]:
         send = str(step.get("send") or "")
         if str(step.get("node", "")).upper() != "LOCAL" or not re.match(r"\s*python3?\s+\S+\.py\b", send):
             continue
-        if '"' in send:
-            problems.append(f"LOCAL step '{send[:80]}' ({phase_name}): contains a double quote — the framework "
-                            "breaks LOCAL commands at double quotes (even inside single quotes); use single "
-                            "quotes only and no quotes inside values.")
-            continue
         try:
             argv = shlex.split(_PLACEHOLDER.sub("X", send), posix=True)
         except ValueError as e:

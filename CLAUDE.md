@@ -140,12 +140,18 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - NOT supported (empty at execute): `configData.*`, `nodeGroups.*`, `node_row.*`, `register.*`, `env.*`, `${{…}}`
 - Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
 - `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
-- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
+- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (plain form inside step 6; written as `${…}`)
 - `when` joins conditions with `&&`/`||` — with `and`/`or` the step is always skipped (autofix rewrites)
-- LOCAL steps: the JAR splits double-quoted arguments at spaces (`--a "x y"` → `['--a','x']`); single quotes
-  arrive intact (autofix rewrites); `${configSequences.0.records.0.data}` (whole record) is `[object Object]`
-- LOCAL steps break on a double quote anywhere, even inside single quotes: no JSON/dict values — one flag per
+- LOCAL steps: double quotes are fine on Linux (production); only on WINDOWS the JAR's `bash -c` (commands
+  ≤ 8000 chars) loses them and `/word` becomes `C:/word` — step 9 runs under WSL (spec 013 P-6, PF-D5);
+  `${configSequences.0.records.0.data}` (whole record) is `[object Object]`; no JSON/dict values — one flag per
   field (autofix expands `--x '{'K': '${…}'}'` into `--x_k '${…}'`)
+- Spec 013 production format (`skills/network_config_gen/production.py`, last pass of `structure.apply`, undone
+  by `flatten`): `version`/`name`/`globals.defaults`, production phase keys + UPPER_SNAKE names
+  (`run_options.WORKFLOW_KEYS`/`WORKFLOW_NAMES`; the generated title → `description`), explicit `on_failure`
+  (JAR default is stop), `validation.enabled`, and every expression as one `${…}` (`${A != "" && B == "x"}`) —
+  the JAR evaluates it exactly like the plain form step 6 works with internally. Multi-line sends are `|-`
+  blocks (a double-quoted `\n` reaches the shell as a newline, P-8). CIQ references stay ours (PF-D1)
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)

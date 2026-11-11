@@ -97,11 +97,9 @@ CRITICAL RULES:
     ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
 - A CIQ column that can be empty for some rows: guard the step with
   when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
-- LOCAL commands quote arguments with SINGLE quotes (--a '${x}'): the framework splits
-  double-quoted arguments at spaces. Pass CIQ columns one by one, never the whole
-  record ${configSequences.0.records.0.data} (it arrives as '[object Object]').
-  Never pass a dict/JSON value and never use double quotes in a LOCAL command: one flag per
-  field (--ciq_vni '${configSequences.0.records.0.data.VNI}').
+- LOCAL commands pass CIQ columns one by one, never the whole record
+  ${configSequences.0.records.0.data} (it arrives as '[object Object]'). Never pass a
+  dict/JSON value: one flag per field (--ciq_vni "${configSequences.0.records.0.data.VNI}").
   Join conditions with && and || (never `and` / `or`: the step is then always skipped):
   when: "configSequences.0.records.0.data.<ColA> == '' && configSequences.0.records.0.data.<ColB> != ''"
   Conditions only COMPARE values (==, !=, <, >): no method calls (.endsWith(), .matches()) and no

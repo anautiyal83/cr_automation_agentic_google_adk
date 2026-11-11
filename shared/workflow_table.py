@@ -79,6 +79,18 @@ def _count_auto(steps: list) -> int:
     return n
 
 
+def _title(key: str, body: dict) -> str:
+    """A phase's readable title: production names are UPPER_SNAKE (spec 013) — the generated title is
+    the description; else the phase's label as in Settings → Vendor Profiles."""
+    from shared import run_options
+    model = run_options.canonical_phase(key, body)
+    desc = str(body.get("description") or "").strip()
+    if desc and desc != run_options.PURPOSE.get(model) and len(desc) <= 80:
+        return desc
+    name = str(body.get("name") or "")
+    return run_options.LABELS.get(model) if not name or name == run_options.WORKFLOW_NAMES.get(model) else name
+
+
 def table(text: str) -> list[Phase]:
     """The phases of a workflow with their rows (raises ValueError for text that is not a workflow)."""
     from skills.network_config_gen import structure
@@ -88,7 +100,7 @@ def table(text: str) -> list[Phase]:
         raise ValueError("not a workflow: no phases")
     flat = structure.flattened(parsed)
     auto = {key: _count_auto(body["steps"]) for key, body in _bodies(parsed)}
-    return [Phase(key=key, name=str(body.get("name") or key), automatic=auto.get(key, 0),
+    return [Phase(key=key, name=_title(key, body), automatic=auto.get(key, 0),
                   rows=[_row(key, i, s) for i, s in enumerate((s for s in body["steps"] if isinstance(s, dict)), 1)])
             for key, body in _bodies(flat)]
 

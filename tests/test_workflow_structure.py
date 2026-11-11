@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from skills.network_config_gen import structure
+from skills.network_config_gen.production import unwrap
 from skills.network_config_gen.autofix import dump_yaml, parse_yaml
 from skills.network_config_gen.validator import check_placeholders, validate_workflow
 
@@ -62,12 +63,14 @@ def _applied(requirements: dict | None = None) -> dict:
 
 
 def _leaves(parsed: dict, phase: str) -> list[dict]:
-    return list(structure._all_steps(parsed["phases"][phase]["steps"]))
+    """Steps of a phase by its model key — the workflow writes production keys (spec 013)."""
+    from shared.run_options import WORKFLOW_KEYS
+    return list(structure._all_steps(parsed["phases"][WORKFLOW_KEYS.get(phase, phase)]["steps"]))
 
 
 def test_record_steps_loop_over_all_records():
     parsed = _applied()
-    loop = parsed["phases"]["activityConfiguration"]["steps"][0]
+    loop = parsed["phases"]["activity_configuration"]["steps"][0]
     assert loop["type"] == "loop" and loop["for_each"] == "${configSequences.0.records}"
     assert loop["item_var"] == "rec" and loop["reverse_order"] is False  # null NPEs in the JAR
     sends = [s.get("send", "") for s in loop["steps"]]
@@ -83,7 +86,7 @@ def test_every_transfer_is_checksummed_on_both_ends():
     assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE}"
     src = before["register"][0]["regex"].split("<")[1].split(">")[0]
     dst = after["register"][0]["regex"].split("<")[1].split(">")[0]
-    assert after["validation"]["success"]["criteria"]["expr"] == f"{dst} == {src}"
+    assert unwrap(after["validation"]["success"]["criteria"]["expr"]) == f"{dst} == {src}"
 
 
 def test_backup_goes_to_repo_server_and_rollback_fetches_it():
@@ -111,12 +114,12 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     copy_ = backup[ids.index("nc_bk1_copy")]
     # no node name column in this CIQ: the node's hostname names its folder
     repo_file = "/backup/netconfig/${ORDERNO}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
-    assert copy_["node"] == "MRF" and copy_["when"] == "ncArchived1 != ''"   # only when there is an archive
+    assert copy_["node"] == "MRF" and unwrap(copy_["when"]) == "ncArchived1 != ''"   # only when there is an archive
     assert copy_["send"] == f"scp {node_file} backup@repo-server:{repo_file}"
     assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${SECRET.repo_password}\n", "timeout_sec": 30}]
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # nothing changes on the node
     check = backup[ids.index("nc_bk1_sum_repo")]
-    assert check["send"] == f"sha256sum {repo_file}" and check["validation"]["success"]["criteria"]["expr"] == "bk1Dst == bk1Src"
+    assert check["send"] == f"sha256sum {repo_file}" and unwrap(check["validation"]["success"]["criteria"]["expr"]) == "bk1Dst == bk1Src"
     assert not any("sftp" in s and s["sftp"]["remote_path"].startswith("/tmp") for s in backup)  # via the repo
     assert not any("${node}" in json.dumps(s) for s in backup)  # empties multi-node MOPs
     rollback = _leaves(parsed, "rollbackConfiguration")
@@ -131,8 +134,8 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     assert rollback[ids.index("nc_rs1_copy")]["send"] == f"scp backup@repo-server:{repo_file} {node_file}"
     restore = rollback[ids.index(None)]
     # decided by the backup file, not by what the backup step registered (unset in rollback-only)
-    assert restore["send"] == f"tar -xzvf {node_file} -C ${{rec.data.DEST}}" and restore["when"] == "ncBackup1 != ''"
-    loop = parsed["phases"]["rollbackConfiguration"]["steps"]
+    assert restore["send"] == f"tar -xzvf {node_file} -C ${{rec.data.DEST}}" and unwrap(restore["when"]) == "ncBackup1 != ''"
+    loop = parsed["phases"]["rollback_configuration"]["steps"]
     assert len(loop) == 1 and restore in loop[0]["steps"]  # extracted in the same record pass
 
 
@@ -322,14 +325,14 @@ phases:
 """)
     structure.apply(wf, reqs)
     text = json.dumps(wf)
-    assert "backupTarName}" not in text.split('"rollbackConfiguration"')[1]      # nothing registered is read
+    assert "backupTarName}" not in text.split('"rollback_configuration"')[1]      # nothing registered is read
     assert "/backup/netconfig/${ORDERNO}/${MRF.NODE_NAME}/${rec.data.DEST}/bk.tar.gz" in text
     assert "nc_bk1_host" not in text and "rsHost" not in text                     # no hostname steps
     rollback = _leaves(wf, "rollbackConfiguration")
     restore = next(s for s in rollback if "tar -x" in str(s.get("send")))
     wipe = next(s for s in rollback if "rm -rf" in str(s.get("send")))
     assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C /"
-    assert restore["when"] == "ncBackup1 != ''" and wipe["when"] == "ncBackup1 == ''"
+    assert unwrap(restore["when"]) == "ncBackup1 != ''" and unwrap(wipe["when"]) == "ncBackup1 == ''"
 
 
 def test_backup_and_rollback_touch_only_what_the_activity_loads():
@@ -407,10 +410,10 @@ phases:
     rollback = _leaves(wf, "rollbackConfiguration")
     sends = [str(s.get("send")) for s in rollback]
     restore = next(s for s in rollback if "tar -xzvf" in str(s.get("send")))
-    assert restore["when"] == "ncBackup1 != ''"                               # nothing from the backup step
+    assert unwrap(restore["when"]) == "ncBackup1 != ''"                               # nothing from the backup step
     assert not any("$(basename" in x or "announcement_backup_*" in x for x in sends)   # LLM wildcards gone
     assert "rm -f /tmp/${rec.data.FILE}" in sends                              # the activity's own input stays
-    assert "ncArchived1" not in json.dumps(wf).split('"rollbackConfiguration"')[1]
+    assert "ncArchived1" not in json.dumps(wf).split('"rollback_configuration"')[1]
 
 
 def test_llm_backup_with_dash_c_gets_the_exact_lists():
@@ -467,7 +470,7 @@ phases:
     structure.apply(wf, None)
     restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -x" in str(s.get("send")))
     assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
-    assert restore["when"] == "ncBackup1 != ''"
+    assert unwrap(restore["when"]) == "ncBackup1 != ''"
 
 
 def test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder():

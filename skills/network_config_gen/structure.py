@@ -134,8 +134,9 @@ def _step(sid: str, node: str, description: str, when: str = "", **body) -> dict
 def flatten(parsed: dict) -> int:
     """Undo ``apply``: unwrap record loops (``${rec.data.X}`` → ``records.0``) and drop the
     added ``nc_`` steps. Returns the number of changes."""
-    from . import contract
-    changed = contract.strip(parsed)
+    from . import contract, production
+    changed = production.plain(parsed)  # first: the contract recognises its own plain expressions
+    changed += contract.strip(parsed)
     changed += _unstage(parsed)
 
     def walk(steps: list) -> list:
@@ -860,8 +861,8 @@ def select_phases(parsed: dict, requirements: dict | None = None) -> int:
 
 def apply(parsed: dict, requirements: dict | None = None) -> int:
     """flatten → repo backups → record loops → transfer checksums → execution contract
-    (spec 011; idempotent)."""
-    from . import contract
+    (spec 011) → production format (spec 013); idempotent."""
+    from . import contract, production
     flatten(parsed)
     changes = select_phases(parsed, requirements)
     changes += loaded_members_only(parsed)
@@ -870,4 +871,5 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += contract.apply(parsed)
+    changes += production.apply(parsed, str((requirements or {}).get("uc_name") or ""))
     return changes
