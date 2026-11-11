@@ -49,8 +49,9 @@ Rules (from the corpus, generic — any UC):
   "framework login"; phases keep `description`. Validator: `${<TYPE>.niamID-n}` against CIQ types, nested hosts
   count as covered. Structure: repo copy / node name per CIQ type of the NIAM node. Prompt: node rules + CIQ types.
   EIR: 1 node, 70 MOP commands (exits + fixed forms); MRF / PGW: same commands on renamed nodes
-- [ ] PF011 Validator: reject `for_each` outside `type: loop`, self-comparing expressions, a step reading a file on a
-  host where no earlier step put it, a node switch right after `oc exec` / `ssh`
+- [x] PF011 Validator `check_iteration`: `for_each` outside `type: loop`, reading a `loop: true` register's variable
+  (empty), self-comparing expressions — with production's fix (one shell `for` loop). EIR: 21 findings; MRF/PGW: 0.
+  Still open: a step reading a file on a host where no earlier step put it (EIR diff on the bastion)
 - [x] PF012a Step 8 (B2): a NIAM node's instance finds its NIAM IDs and requirement node by CIQ type (else the login
   host); each enter command is a key pushing a prompt its step regex accepts (`ssh`/`telnet`: `Password:` first);
   `exit` stays MockWire's builtin pop; overlay answers `${SECRET.…}` password replies; step 9 never injects faults

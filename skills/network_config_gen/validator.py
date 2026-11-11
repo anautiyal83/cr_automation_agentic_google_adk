@@ -91,6 +91,7 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
+    errors.extend(check_iteration(parsed))
     errors.extend(check_unbalanced_quotes(parsed))
     errors.extend(check_condition_syntax(parsed))
     errors.extend(check_record_columns(parsed, (expected or {}).get("record_columns")))
@@ -364,6 +365,53 @@ def check_unbalanced_quotes(parsed: dict) -> list[str]:
             "would wait for the closing quote and the step hangs. Close or remove the stray quote."
             for phase_name, step in _iter_steps(parsed.get("phases") or {})
             if isinstance(step.get("send"), str) and unbalanced_quotes(step["send"])]
+
+
+_SELF_COMPARE = re.compile(r"(?<![\w.])([A-Za-z_][\w.]*)\s*(?:==|!=|>=|<=)\s*\1(?![\w.])")
+
+
+def check_iteration(parsed: dict) -> list[str]:
+    """Per-item work the framework does not do the way the LLM wrote it (spec 013, EIR):
+    - ``for_each`` on a step without ``type: loop`` is ignored: the command runs once;
+    - a variable a looped register (``loop: true``) captures holds no value when a step reads it (probed: '');
+    - an expression comparing a value with itself is always true (``A == A`` checked nothing).
+    Production runs a command per item as one shell loop: ``for i in `<list>`; do <cmd with $i>; done``."""
+    phases = parsed.get("phases") or {}
+    looped, plain = set(), set()
+    for _, step in _iter_steps(phases):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict):
+                names = set(_NAMED_GROUP.findall(str(reg.get("regex") or "")))
+                (looped if reg.get("loop") else plain).update(names)
+    looped -= plain
+    loop_fix = ("run the command for every item in ONE step as a shell loop over the list command: "
+                "`for i in `<command that lists them>`; do <command using $i>; done`")
+    problems, seen = [], set()
+    for phase, step in _iter_steps(phases):
+        send = str(step.get("send") or "")
+        where = f"Step '{send[:70]}' ({phase})"
+        if "for_each" in step and step.get("type") != "loop":
+            problems.append(f"{where}: `for_each` only works on a `type: loop` step — here it is ignored and the "
+                            f"command runs once; {loop_fix}.")
+        for name in sorted(looped):
+            if name not in seen and re.search(r"\$\{" + re.escape(name) + r"\}", send):
+                seen.add(name)
+                problems.append(f"{where}: ${{{name}}} comes from a register with `loop: true` (it only counts "
+                                f"matches) and is empty here; {loop_fix}.")
+        texts = [str(step.get(k) or "") for k in ("when", "skip_when")]
+        v = step.get("validation")
+        for branch in ("success", "failure", "warning"):
+            crit = (v.get(branch) or {}).get("criteria") if isinstance(v, dict) and isinstance(v.get(branch), dict) else None
+            if isinstance(crit, dict):
+                texts.append(str(crit.get("expr") or ""))
+        for t in texts:
+            m = _SELF_COMPARE.search(t)
+            if m:
+                problems.append(f"{where}: `{m.group(0)}` compares {m.group(1)} with itself — always true, it checks "
+                                "nothing. Compare the values that must agree (e.g. the counts of all items: "
+                                "`… | sort -u | wc -l` must be 1).")
+                break
+    return problems
 
 
 def check_script_arguments(parsed: dict) -> list[str]:

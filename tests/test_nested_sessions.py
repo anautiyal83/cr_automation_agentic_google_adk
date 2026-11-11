@@ -133,3 +133,17 @@ def test_simulator_answers_enter_commands_with_the_nested_prompt(tmp_path):
     assert re.search(sessions.STEP_PROMPT, pushed) and pushed != spec.login_prompt
     assert cfg[ssh_key]["interactive"][0]["question"] == "Password: "
     assert "exit" not in cfg
+
+
+def test_validator_rejects_iteration_the_framework_does_not_do():
+    from skills.network_config_gen.validator import check_iteration
+    wf = {"phases": {"pre": {"steps": [
+        {"node": "N", "send": "kubectl get pods | awk '{print $1}'",
+         "register": [{"regex": r"(?<PODS>app-\S+)", "loop": True, "count_var": "TOTAL"}]},
+        {"node": "N", "send": "kubectl exec ${PODS} -- netstat -an", "for_each": "PODS"},
+        {"node": "N", "send": "x", "validation": {"success": {"criteria": {"expr": "cntA == cntA && cntB > 0"}}}},
+        {"node": "N", "send": "for i in `kubectl get pods`; do kubectl exec $i -- netstat -an; done"},
+    ]}}}
+    problems = check_iteration(wf)
+    assert len(problems) == 3
+    assert "type: loop" in problems[0] and "loop: true" in problems[1] and "itself" in problems[2]
