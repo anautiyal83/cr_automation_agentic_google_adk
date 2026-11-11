@@ -107,3 +107,15 @@ def test_local_steps_on_undeclared_local_node():
     assert loop["type"] == "loop" and "node" not in loop
     from skills.network_config_gen.validator import validate_workflow
     assert not [e for e in validate_workflow(dump_yaml(parsed)) if "unknown node" in e]
+
+
+def test_contract_validations_worded_like_production():
+    """Spec 013: no 'Execution contract (spec 011)' text in the workflow; flatten still removes what the
+    contract added."""
+    parsed = _applied()
+    text = dump_yaml(parsed)
+    assert "Execution contract" not in text
+    rb = parsed["phases"]["activity_configuration"]["steps"][0]["steps"][0]["validation"]
+    assert rb["description"] == "Update TAC" and rb["failure"]["message"] == "Update TAC — failed."
+    flat = dump_yaml(structure.flattened(parsed))
+    assert "— failed." not in flat and "PRECHECK_FAILED" not in flat
