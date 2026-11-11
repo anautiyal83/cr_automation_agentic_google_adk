@@ -18,6 +18,10 @@ pipeline_actions: dict[str, dict] = {}  # run_id -> {"action": "rerun"/"cancel",
 # Reviewer feedback — set by MilestoneReviewerNode, read by step nodes on retry
 reviewer_feedback: dict[str, str] = {}  # "run_id:step_num" -> feedback text
 
+# Why a run stopped when a step crashed — set by PipelineAgent, read by the runner as the run's failure
+# reason (ADK session state written there does not reach the runner reliably)
+run_failures: dict[str, str] = {}  # run_id -> plain message
+
 # Running MockWire simulators — registered by step 8, stopped by step 9, on step 8
 # re-run, when the pipeline ends (any outcome), and on app shutdown
 simulator_processes: dict[str, object] = {}  # run_id -> SimulatorProcess

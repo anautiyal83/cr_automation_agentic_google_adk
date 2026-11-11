@@ -309,6 +309,13 @@ class PipelineAgent(BaseAgent):
                     flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
                     ctx.session.state["pipeline_failed"] = True
                     ctx.session.state["pipeline_error"] = str(e)
+                    from shared.state import run_failures
+                    steps = "–".join(str(n) for n in (display_steps[:1] + display_steps[-1:] if len(display_steps) > 1
+                                                       else display_steps)) or "?"
+                    run_failures[run_id_str] = (
+                        f"Step{'s' if len(display_steps) > 1 else ''} {steps} stopped on an internal error — not a "
+                        f"problem in your documents. Start the run again; if it happens again, report it. "
+                        f"({type(e).__name__}: {str(e)[:200]})")
                     for sn in display_steps:
                         await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
                     break

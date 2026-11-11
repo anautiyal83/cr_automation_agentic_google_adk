@@ -226,6 +226,11 @@ class ProgressSection:
                 "border: 1px solid var(--cr-error); border-left-width: 3px; border-radius: 8px; "
                 "background: color-mix(in srgb, var(--cr-error) 6%, var(--cr-surface))")
             self.ms_failure_box.set_visibility(False)
+            # Problems the developer already answered, not blocking (step_<n>_notes.json): check them
+            self.ms_notes_box = ui.column().classes("w-full gap-1 p-3").style(
+                "border: 1px solid var(--cr-warning); border-left-width: 3px; border-radius: 8px; "
+                "background: color-mix(in srgb, var(--cr-warning) 7%, var(--cr-surface))")
+            self.ms_notes_box.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
@@ -1218,6 +1223,7 @@ class ProgressSection:
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
         self._show_failure_reasons(step_num if has_failures else 0)
+        self._show_answered_notes(0 if has_failures else step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
         # every review: the requirements can be corrected (later steps: the run goes back to step 1)
@@ -1279,6 +1285,31 @@ class ProgressSection:
         else:
             self.ms_extra_files_row.set_visibility(False)
 
+    def _show_answered_notes(self, step_num: int) -> None:
+        """Step <n> passed although problems remain that the developer already answered: listed so the
+        reviewer checks the workflow follows the answers (0 hides the box)."""
+        import json as _json
+        from shared.clarifications import plain
+        self.ms_notes_box.clear()
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            notes = _json.loads((Path(run_dir) / f"step_{step_num}_notes.json").read_text(encoding="utf-8"))["notes"]
+        except (OSError, ValueError, KeyError, TypeError):
+            notes = []
+        self.ms_notes_box.set_visibility(bool(notes) and bool(step_num))
+        if not notes or not step_num:
+            return
+        with self.ms_notes_box:
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.icon("fact_check", size="18px").classes("cr-text-warning")
+                ui.label(f"Check that the workflow follows your answers ({len(notes)})").classes("font-semibold")
+            ui.label("You already answered these, so they no longer stop the run. The AI was given your answer; "
+                     "open the workflow and check it does what you said.").classes("text-caption cr-text-dim")
+            for note in notes[:6]:
+                ui.label("• " + plain(note)).classes("text-body2").style("overflow-wrap: anywhere")
+            ui.label("If it does not: Edit requirements to explain it more precisely, or Re-run step.") \
+                .classes("text-caption font-medium mt-1")
+
     def _show_failure_reasons(self, step_num: int) -> None:
         """The reasons in the failed step's error file(s), one line each (0 hides the box)."""
         self.ms_failure_box.clear()
@@ -1287,16 +1318,26 @@ class ProgressSection:
         self.ms_failure_box.set_visibility(bool(reasons))
         if not reasons:
             return
+        from shared.plain_errors import summarize
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        headline, sections, what_to_do = summarize(step_num, reasons, _simulator_gaps(run_dir, step_num))
         with self.ms_failure_box:
-            with ui.row().classes("items-center gap-2"):
+            # what is missing in the user's inputs (CIQ, MOP, session logs, where a value comes from),
+            # then the AI's own problems; the technical text on request
+            with ui.row().classes("items-center gap-2 no-wrap"):
                 ui.icon("error_outline", size="18px").classes("cr-text-error")
-                ui.label(f"Why step {step_num} failed").classes("font-semibold")
-            for reason in reasons[:8]:
-                ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere; white-space: pre-wrap")
-            if len(reasons) > 8:
-                with ui.expansion(f"{len(reasons) - 8} more").classes("w-full text-body2"):
-                    for reason in reasons[8:]:
-                        ui.label("• " + reason).classes("text-body2").style("overflow-wrap: anywhere")
+                ui.label(headline).classes("font-semibold")
+            for section, lines in sections:
+                ui.label(section).classes("text-caption font-semibold mt-1").style("color: var(--cr-text)")
+                for line in lines[:6]:
+                    ui.label("• " + line).classes("text-body2").style("overflow-wrap: anywhere")
+                if len(lines) > 6:
+                    ui.label(f"… and {len(lines) - 6} more").classes("text-caption cr-text-dim")
+            ui.label("What you can do: " + what_to_do).classes("text-caption font-medium mt-1")
+            with ui.expansion("Technical details").classes("w-full text-caption cr-text-dim"):
+                for reason in reasons:
+                    ui.label(reason).classes("text-caption font-mono") \
+                        .style("overflow-wrap: anywhere; white-space: pre-wrap; margin-bottom: 6px")
 
     def _show_questionnaire_dialog(self, questions: list, milestone_name: str):
         """Show milestone row with questionnaire controls and auto-open dialog."""
@@ -2134,6 +2175,21 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
     return found[:60]
 
 
+def _simulator_gaps(run_dir: str, step: int) -> list[str]:
+    """Commands the simulator had no recorded output for (step 9, failure classified as simulator):
+    their real output is missing from the session logs."""
+    import json as _json
+    if step != 9:
+        return []
+    try:
+        data = _json.loads((Path(run_dir) / "step_9_error.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if data.get("classification") != "simulator":
+        return []
+    return [c for c in data.get("unmatched_commands") or [] if c and not c.strip().startswith(("fi", "then", "else"))]
+
+
 def _failure_reasons(run_dir: str, step: int) -> list[str]:
     """Why a step failed, one reason per entry, from its ``step_<n>_error.json`` (the steps 3-4
     review: both files; step 9: every failed test case)."""
@@ -2151,8 +2207,8 @@ def _failure_reasons(run_dir: str, step: int) -> list[str]:
             reasons += [f"{c.get('id', '')} {c.get('scenario', '')}: "
                         + "; ".join(str(e) for e in (c.get("errors") or [])[:3]) for c in cases]
         elif err:
-            # the problems are joined with "; " after a full stop
-            reasons += [r.strip() for r in re.split(r"(?<=\.)\s*;\s+", err) if r.strip()]
+            from shared.plain_errors import split_reasons
+            reasons += split_reasons(err)
     return reasons
 
 

@@ -1074,7 +1074,11 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             elif expr not in defined:
                 problems.setdefault(m.group(0), "variable is never registered by a step "
                                     "(add a register with a (?<name>…) group on the step that produces it)")
-    return [f"Unresolvable placeholder {ref}: {why}" for ref, why in problems.items()]
+    return [f"Unresolvable placeholder {ref}: {why}"
+            + (" — a bash array element: the framework fills every ${…} before the node sees it, so "
+               "arrays cannot be used; compute it in one pipeline instead (e.g. `… | sort -u | wc -l`)"
+               if "[" in ref else "")
+            for ref, why in problems.items()]
 
 
 def _iter_strings(value: Any):

@@ -443,6 +443,7 @@ class RequirementGatheringSkill:
             self._all_answers,
             raw_artifacts=self._raw_artifacts,
         )
+        requirements = compiler.normalize_compiled(requirements)
 
         # Merge with previous run's requirements (fill gaps, keep existing data)
         if self._previous_requirements:

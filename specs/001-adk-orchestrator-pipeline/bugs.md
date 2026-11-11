@@ -1062,3 +1062,36 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   `clarify` (artifact cache cleared, no retry counted); step 1 applies the pending `requirement_edits.json` after
   its analysis (no questionnaire), compiles again and pauses at the step 2 review; every later step runs again.
   Test `test_edit_from_a_later_review_is_applied_when_step_1_runs_again`.
+
+### OB-27 — Review errors were written for the LLM, not for the user (Medium, Fixed 2026-11-11)
+- User: "error showing is very complex to understand … user just need to know what is missing in the requirement
+  docs, either in CIQ, or MOP or we need some input output of command or framework need to know from where a
+  particular parameter will come". The failed review listed the validator's messages (placeholders, regexes,
+  registers) verbatim.
+- **Fix**: `shared/plain_errors.summarize` sorts every problem by where the user fixes it — CIQ (empty column),
+  MOP (expected result does not match the session log), Session logs (value or command output missing), Where a
+  value comes from (a value nothing provides), and "Nothing to change in your documents" (the AI's own mistakes:
+  code in checks, shell arrays, failed test cases) — with a headline counting the things to check and what to do.
+  The technical text stays under "Technical details". Step 6 prompt + validator hint: no bash arrays (the framework
+  fills `${…}`). Tests `tests/test_plain_errors.py`.
+
+### OB-28 — EIR steps 1-2 crashed again on a null category; the run said only "Pipeline ended before completing all steps" (High, Fixed 2026-11-11)
+- Run 382d08af, after Clarify at step 6: `merge_previous_requirements` did `current.setdefault(cat_key, {})` on a
+  category the LLM compiled as null (a variable key, missed by OB-25) → `'NoneType' object has no attribute 'get'`.
+  The run's failure reason was the generic text: the pipeline wrote the error to ADK session state, which the
+  runner does not see reliably.
+- **Fix**: `compiler.normalize_compiled` right after the LLM compile (categories, developer_answers objects; nodes
+  a list of objects with object ssh / escalation); `_dict_at` for the variable key. A crashed step writes a plain
+  reason to `shared.state.run_failures` ("Steps 1–2 stopped on an internal error — not a problem in your
+  documents …"), which the runner stores as the run's failure. Test
+  `test_compiled_requirements_with_null_parts_merge_with_the_previous_run`.
+
+### OB-29 — Answered step 6 questions were asked again and kept failing step 6 (High, Fixed 2026-11-11)
+- EIR: "The requirements list 49 / 63 / 37 commands on node EIR but no workflow step runs on EIR" was asked three
+  times (the id hashed the wording, counts included) and answered three times; the DELTA_TAC_FILE question,
+  answered, failed step 6 again because the regenerated workflow still did not use the column.
+- **Fix**: `clarifications.key` identifies a problem without numbers and CIQ values; `answered_keys` reads the
+  developer's answers (requirements developer_questions / developer_answers, kept per UC); `from_errors` asks no
+  answered problem. Step 6 passes when every remaining problem is one the developer answered: they go to
+  `step_6_notes.json` and the review shows them in an amber "Check that the workflow follows your answers" box
+  (`clarifications.plain` wording). Tests `tests/test_clarifications.py`.

@@ -34,6 +34,30 @@ def _list_at(d: dict, key: str) -> list:
         d[key] = []
     return d[key]
 
+_CATEGORIES = ("category_1_node_activity", "category_2_commands", "category_3_orchestration",
+               "xml_templates", "generation_hints")
+
+
+def normalize_compiled(requirements: Any) -> dict:
+    """The LLM's compiled requirements in the shapes the merges expect: an object whose categories are
+    objects, nodes a list of objects whose ``ssh`` / ``escalation`` are objects. It writes ``null`` for
+    any of them, and steps 1-2 crashed on it twice (OB-25, OB-28)."""
+    if not isinstance(requirements, dict):
+        return {}
+    for key in _CATEGORIES + ("developer_answers",):
+        if key in requirements and not isinstance(requirements[key], dict):
+            requirements[key] = {}
+    cat1 = requirements.get("category_1_node_activity")
+    if isinstance(cat1, dict) and "nodes" in cat1:
+        nodes = cat1["nodes"] if isinstance(cat1["nodes"], list) else []
+        cat1["nodes"] = [n for n in nodes if isinstance(n, dict)]
+        for node in cat1["nodes"]:
+            for field_name in ("ssh", "escalation"):
+                if field_name in node and not isinstance(node[field_name], dict):
+                    node[field_name] = {}
+    return requirements
+
+
 def merge_previous_requirements(current: dict, previous: dict) -> dict:
     """Merge previously saved requirements into the current run's output.
 
@@ -49,7 +73,7 @@ def merge_previous_requirements(current: dict, previous: dict) -> dict:
         prev_cat = previous.get(cat_key)
         if not prev_cat or not isinstance(prev_cat, dict):
             continue
-        curr_cat = current.setdefault(cat_key, {})
+        curr_cat = _dict_at(current, cat_key)
 
         for key, prev_val in prev_cat.items():
             curr_val = curr_cat.get(key)
