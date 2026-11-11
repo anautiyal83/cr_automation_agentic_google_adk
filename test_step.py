@@ -289,8 +289,12 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         flat = parse_yaml(workflow_yaml)  # autofix works on the LLM's flat form
         workflow_yaml = fix_workflow(dump_yaml(structure.flattened(flat)) if flat else workflow_yaml)
         parsed = parse_yaml(workflow_yaml)
-        if parsed:  # records loop, repo backups, transfer checksums (as step 6 does)
-            structure.apply(parsed, json.loads(read("requirements.json") or "{}"))
+        if parsed:  # NIAM nodes + nested sessions, records loop, repo backups, checksums (as step 6 does)
+            from skills.network_config_gen import sessions
+            from skills.network_config_gen.skill import _expected_coverage as _cov
+            reqs0 = {"uc_name": uc_name, **json.loads(read("requirements.json") or "{}")}
+            sessions.nested_sessions(parsed, (_cov(reqs0).get("record_columns") or {}).get("node_types"))
+            structure.apply(parsed, reqs0)
             workflow_yaml = dump_yaml(parsed)
         (work / f"{uc_name}.yaml").write_text(workflow_yaml, encoding="utf-8")
         # with step 6's context: CIQ sheets know node values like ${MRF.VER}

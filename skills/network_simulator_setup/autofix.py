@@ -314,7 +314,16 @@ def safe_regex_key(key: str) -> str | None:
             out.append(body[i:i + 2])
             i += 2
             continue
-        if ch == "(":
+        if ch == "{":  # Java rejects a `{` that is no quantifier (awk '{print $1}': "Illegal repetition")
+            m = re.match(r"\{\d+(?:,\d*)?\}", body[i:])
+            if m:
+                out.append(m.group(0))
+                i += len(m.group(0))
+                continue
+            ch = "\\{"
+        elif ch == "}":
+            ch = "\\}"
+        elif ch == "(":
             depth += 1
         elif ch == ")":
             depth = max(0, depth - 1)

@@ -51,6 +51,10 @@ Rules (from the corpus, generic — any UC):
   EIR: 1 node, 70 MOP commands (exits + fixed forms); MRF / PGW: same commands on renamed nodes
 - [ ] PF011 Validator: reject `for_each` outside `type: loop`, self-comparing expressions, a step reading a file on a
   host where no earlier step put it, a node switch right after `oc exec` / `ssh`
+- [x] PF012a Step 8 (B2): a NIAM node's instance finds its NIAM IDs and requirement node by CIQ type (else the login
+  host); each enter command is a key pushing a prompt its step regex accepts (`ssh`/`telnet`: `Password:` first);
+  `exit` stays MockWire's builtin pop; overlay answers `${SECRET.…}` password replies; step 9 never injects faults
+  into enter steps. No MockWire change needed (pushPrompt / interactive / builtin exit)
 - [ ] PF012 Step 8 MockWire topology: one instance per NIAM node with nested shells (enter command → new prompt,
   `exit` → back), `repo_server` ssh + sftp; MockWire repo change if nested sessions need it (commit + push there,
   rebuild `lib/mockwire.jar`)

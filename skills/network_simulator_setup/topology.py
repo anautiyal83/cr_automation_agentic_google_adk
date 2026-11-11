@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skills.network_config_gen.sessions import ciq_type
+
 from .autofix import dump_yaml, extract_workflow_commands, parse_yaml
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ class NodeSpec:
     password: str = SIM_PASSWORD
     ne_ids: list[str] = field(default_factory=list)       # empty → NIAM disabled
     escalations: dict[str, str] = field(default_factory=dict)  # "su - sdfrun" → pushed prompt
+    shells: dict[str, dict] = field(default_factory=dict)  # "oc exec -it ${P} -- bash" → {prompt, password}
     commands: list[dict] = field(default_factory=list)    # workflow steps for this node
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
@@ -58,7 +61,8 @@ class NodeSpec:
         return {cmd.split()[-1]: p for cmd, p in self.escalations.items() if cmd.split()[-1] != self.user}
 
     def all_prompts(self) -> list[str]:
-        prompts = [self.login_prompt, self.root_prompt, *self.escalations.values()]
+        prompts = [self.login_prompt, self.root_prompt, *self.escalations.values(),
+                   *(s["prompt"] for s in self.shells.values())]
         return [p for i, p in enumerate(prompts) if p and p not in prompts[:i]]
 
     def summary(self) -> dict:
@@ -103,7 +107,9 @@ def build_topology(
             logger.info("Topology: node %s is used by no step — no simulator instance", name)
             continue
         ssh = node.get("ssh") or {}
-        req = req_nodes.get(str(name).lower(), {})
+        typ = ciq_type(workflow, str(name))
+        req = (req_nodes.get(str(name).lower()) or req_nodes.get(typ.lower())
+               or req_nodes.get(re.sub(r"\d+$", "", typ).lower()) or _login_req(req_nodes, str(name)))
         req_ssh = req.get("ssh") or {}
         prompt_regex = str(node.get("prompt_regex") or "")
         elevate = bool(ssh.get("elevate_to_root") or req_ssh.get("elevate_to_root"))
@@ -120,9 +126,10 @@ def build_topology(
         )
         _set_prompts(spec, req_ssh)
         spec.escalations = _escalations(spec, req)
+        spec.shells = _shells(spec)
 
         if ssh.get("ne_id") or req.get("ne_id") or req_ssh.get("niam_login_id"):
-            spec.ne_ids = niam_ids.get(spec.name.lower(), [])
+            spec.ne_ids = niam_ids.get(spec.name.lower()) or niam_ids.get(typ.lower(), [])
             if not spec.ne_ids:
                 spec.warnings.append("workflow uses NIAM ne_id but no niamID values found in CIQ JSON; "
                                      "NIAM disabled for this node")
@@ -164,6 +171,12 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         cfg["transfer"] = {"sftpPrompt": "sftp> ", "scpPrompt": "scp> "}
     if spec.vfs:
         cfg["vfs"] = spec.vfs
+    from .skill import command_key_regex
+    for cmd, shell in spec.shells.items():  # nested sessions (spec 013): `exit` (builtin) pops the prompt
+        entry = {"pushPrompt": tpl(shell["prompt"])}
+        if shell.get("password"):
+            entry = {"interactive": [{"question": "Password: ", "noEcho": True, "answers": {"default": entry}}]}
+        cfg["regex:" + command_key_regex(cmd)] = entry
 
     for key, val in (command_entries or {}).items():
         key = str(key)
@@ -308,6 +321,35 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
             chosen = f"{user}@{spec.name.lower()}:~>"
             spec.warnings.append(f"no prompt found for {text!r}; using {chosen!r}")
         result[text] = _with_space(chosen, step_regex or spec.prompt_regex)
+    return result
+
+
+def _login_req(req_nodes: dict, name: str) -> dict:
+    """The requirement node a NIAM node (``niam_<type>_server``) logs in through when no requirement node has
+    its name or CIQ type: the first remote one (the login host of the MOP / session log)."""
+    if not name.startswith("niam_"):
+        return {}
+    return next((n for n in req_nodes.values() if str(n.get("type", "remote")).lower() == "remote"
+                 and str(n.get("name", "")).upper() != "LOCAL"), {})
+
+
+def _shells(spec: NodeSpec) -> dict[str, dict]:
+    """Each command that opens a nested shell (``oc exec -it … -- bash``, ``ssh user@host``, ``telnet``) → the
+    prompt it pushes (matching the step's prompt_regex) and whether it asks for a password (spec 013 B-R2)."""
+    from skills.network_config_gen.sessions import _ssh_destination, enter_kind
+    result: dict[str, dict] = {}
+    for cmd in spec.commands:
+        text = str(cmd.get("cmd", "")).strip()
+        kind = enter_kind(text)
+        if kind not in ("exec", "ssh", "telnet") or text in result:
+            continue
+        regex = str(cmd.get("prompt_regex") or "") or spec.prompt_regex
+        dest = _ssh_destination(text) or ""
+        user = dest.split("@")[0] if "@" in dest and "${" not in dest.split("@")[0] else ("root" if kind == "exec" else "admin")
+        host = {"exec": "container", "ssh": "remote", "telnet": "remote"}[kind]
+        candidates = [f"[{user}@{host} ~]{'#' if user == 'root' else '$'} ", f"{user}@{host}:~> "] + _regex_examples(regex)
+        prompt = _first_matching(candidates, regex) or candidates[0]
+        result[text] = {"prompt": _with_space(prompt, regex), "password": kind in ("ssh", "telnet")}
     return result
 
 

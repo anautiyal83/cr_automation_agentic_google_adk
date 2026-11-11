@@ -330,3 +330,13 @@ def test_shell_pipes_in_regex_keys_never_make_a_catch_all():
     assert safe_regex_key("regex:.*") is None                                          # matches anything
     assert safe_regex_key("regex:(unclosed") is None                                    # invalid
     assert safe_regex_key("ls -l | wc -l") == "ls -l | wc -l"                          # exact keys untouched
+
+
+def test_llm_regex_key_braces_are_valid_java():
+    """An LLM key `awk '{print $1}'` has a `{` Java reads as a broken quantifier ("Illegal repetition"): MockWire
+    could not use it and answered "command not found" (spec 013 EIR run). Real quantifiers stay."""
+    from skills.network_simulator_setup.autofix import safe_regex_key
+    key = r"regex:kubectl get pods -n \S+ \| grep app \| awk '{print \$1}'"
+    assert safe_regex_key(key) == r"regex:kubectl get pods -n \S+ \| grep app \| awk '\{print \$1\}'"
+    assert safe_regex_key(r"regex:date \d{8}") == r"regex:date \d{8}"
+    assert safe_regex_key(r"regex:ls a{2,3}") == r"regex:ls a{2,3}"

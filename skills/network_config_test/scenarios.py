@@ -75,7 +75,9 @@ class WorkflowStep:
 
     @property
     def is_prompt_step(self) -> bool:
-        return bool(_PROMPT_STEP.match(self.send))
+        """su / exit and the commands that open a nested shell (spec 013): they wait for a prompt, not an output."""
+        from skills.network_config_gen.sessions import enter_kind
+        return bool(_PROMPT_STEP.match(self.send)) or bool(enter_kind(self.send))
 
 
 def phase_kind(name: str, body: dict | None = None) -> str:

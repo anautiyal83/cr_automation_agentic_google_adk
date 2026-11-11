@@ -106,3 +106,30 @@ def test_sessions_of_each_login_stay_open_across_the_other_login():
 def test_unknown_ciq_types_leave_the_workflow_alone():
     wf = _wf()
     assert sessions.nested_sessions(wf, {}) == 0 and "JUMP" in wf["nodes"]
+
+
+def test_simulator_answers_enter_commands_with_the_nested_prompt(tmp_path):
+    """Step 8: the NIAM node's instance gets its NIAM IDs by CIQ type; `oc exec … -- bash` pushes a prompt the
+    step's prompt_regex accepts, `ssh user@host` asks for a password first; `exit` stays MockWire's builtin."""
+    import json
+    import re
+
+    import yaml
+
+    from skills.network_simulator_setup.topology import build_instance_config, build_topology
+    wf = _wf()
+    sessions.nested_sessions(wf, {"APP1": 1})
+    ciq = tmp_path / "ciq.json"
+    ciq.write_text(json.dumps({"schemaVersion": "2", "crGroups": [{"crGroup": "CR1", "nodeGroups": [
+        {"nodeGroup": "NG1", "nodes": [{"node": "NG1", "APP1": {"niamID-1": "gw-1-CLI"}}]}]}]}), encoding="utf-8")
+    reqs = {"category_1_node_activity": {"nodes": [{"name": "JUMP", "type": "remote",
+                                                    "ssh": {"prompt_pattern": "[ops@jump ~]$"}}]}}
+    spec = next(s for s in build_topology(yaml.safe_dump(wf), reqs, [str(ciq)]) if s.name == "niam_app_server")
+    assert spec.ne_ids == ["gw-1-CLI"] and spec.login_prompt.startswith("[ops@jump")
+    cfg = yaml.safe_load(build_instance_config(spec, {}))
+    exec_key = next(k for k in cfg if str(k).startswith("regex:oc exec"))
+    ssh_key = next(k for k in cfg if str(k).startswith("regex:ssh"))
+    pushed = cfg[exec_key]["pushPrompt"]
+    assert re.search(sessions.STEP_PROMPT, pushed) and pushed != spec.login_prompt
+    assert cfg[ssh_key]["interactive"][0]["question"] == "Password: "
+    assert "exit" not in cfg

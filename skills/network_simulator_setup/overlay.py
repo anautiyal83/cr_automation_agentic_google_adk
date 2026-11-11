@@ -54,8 +54,24 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         # Quoted: the JAR reads YAML 1.1 (SnakeYAML), where a bare `no` is boolean false
         ssh["strict_host_key_checking"] = SingleQuotedScalarString("no")
     _step_prompts(workflow, nodes)
+    _secret_replies(workflow)
     _shorten_polls(workflow.get("phases") or {})
     return dump_yaml(block_scalars(workflow))
+
+
+def _secret_replies(workflow: dict) -> None:
+    """A password a nested login answers from ``${SECRET.…}`` (``ssh dsadmin@${IP}``, spec 013): the simulator
+    shell takes any answer, and the run has no secrets — the simulator's password."""
+    from .topology import SIM_PASSWORD
+    stack = [s for b in (workflow.get("phases") or {}).values() if isinstance(b, dict) for s in b.get("steps") or []]
+    while stack:
+        step = stack.pop()
+        if not isinstance(step, dict):
+            continue
+        stack.extend(step.get("steps") or [])
+        for reply in step.get("expect_reply") or []:
+            if isinstance(reply, dict) and "${SECRET." in str(reply.get("reply", "")):
+                reply["reply"] = SIM_PASSWORD
 
 
 def _step_prompts(workflow: dict, nodes: list[NodeSpec]) -> None:

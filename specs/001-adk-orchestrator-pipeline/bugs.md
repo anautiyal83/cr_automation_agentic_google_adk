@@ -1118,3 +1118,10 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   `printf '%s\n'` / awk `printf "…\n"` broke. Production writes them as `>-` blocks.
 - **Fix**: `block_scalars` (multi-line strings → `|-`) in step 6's `dump_yaml` and the step 9 overlay. Test
   `test_multiline_send_written_as_block`.
+
+### OB-33 — Step 8 key with awk braces unusable: "command not found" (High, Fixed 2026-11-11)
+- EIR step 9 (spec 013 Stage B run): `kubectl get pods -n nk-ei1-eir | grep eirapp | awk '{print $1}'` was answered
+  `-bash: kubectl: command not found`. The LLM's MockWire key `regex:… awk '{print \$1}'` holds a `{` that is no
+  quantifier: Python's `re` accepts it, Java rejects it ("Illegal repetition"), so MockWire could not use the key.
+- **Fix**: `safe_regex_key` escapes every `{` / `}` that is not a quantifier (`{n}`, `{n,}`, `{n,m}`). Test
+  `test_llm_regex_key_braces_are_valid_java`.
