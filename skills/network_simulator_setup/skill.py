@@ -254,7 +254,7 @@ class NetworkSimulatorSetupSkill:
             elif inp.auto_start:
                 try:
                     node_ports = allocate_ports(len(nodes), inp.base_port)
-                    instances = [SimulatorInstance(name=n.instance, port=p, nodes=[n.name])
+                    instances = [SimulatorInstance(name=n.instance, port=p, nodes=[n.name, *n.aliases])
                                  for n, p in zip(nodes, node_ports)]
                     simulator = await start_simulator(
                         sim_dir, instances,

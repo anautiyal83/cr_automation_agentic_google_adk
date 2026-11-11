@@ -47,6 +47,7 @@ class NodeSpec:
     ne_ids: list[str] = field(default_factory=list)       # empty → NIAM disabled
     escalations: dict[str, str] = field(default_factory=dict)  # "su - sdfrun" → pushed prompt
     shells: dict[str, dict] = field(default_factory=dict)  # "oc exec -it ${P} -- bash" → {prompt, password}
+    aliases: list[str] = field(default_factory=list)  # NIAM failover: niam_x_2…n and ${TargetX} use this instance
     commands: list[dict] = field(default_factory=list)    # workflow steps for this node
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
@@ -95,11 +96,25 @@ def build_topology(
     niam_ids = _niam_ids_by_node(ciq_json_files or [])
     commands = extract_workflow_commands(workflow_yaml)
 
+    # NIAM failover (spec 013 B-R3): niam_x_1…n log in to the same node — one instance serves the group,
+    # also the steps on ${Target<TYPE>} (the entry that answered)
+    aliases: dict[str, list[str]] = {}
+    for name in wf_nodes:
+        m = re.fullmatch(r"(niam_\w+)_(\d+)", str(name))
+        if m and m.group(2) != "1" and f"{m.group(1)}_1" in wf_nodes:
+            aliases.setdefault(f"{m.group(1)}_1", []).append(str(name))
+    for first in list(aliases) + [n for n in wf_nodes if re.fullmatch(r"niam_\w+_1", str(n)) and n not in aliases]:
+        typ = ciq_type(workflow, str(first))
+        if typ:
+            aliases.setdefault(str(first), []).append("${Target" + re.sub(r"\W", "", typ.upper()) + "}")
+    served = {a for group in aliases.values() for a in group}
+
     specs: list[NodeSpec] = []
     for name, node in wf_nodes.items():
-        if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")):
+        if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")) or name in served:
             continue
-        node_cmds = [c for c in commands if c.get("node") == name]
+        group = aliases.get(str(name), [])
+        node_cmds = [c for c in commands if c.get("node") == name or c.get("node") in group]
         from .file_flows import node_steps
         if not node_cmds and not node_steps(workflow, str(name)):  # sftp-only nodes are used too
             # Declared but used by no step (e.g. an invented gateway node): the JAR never
@@ -127,6 +142,7 @@ def build_topology(
         _set_prompts(spec, req_ssh)
         spec.escalations = _escalations(spec, req)
         spec.shells = _shells(spec)
+        spec.aliases = list(group)
 
         if ssh.get("ne_id") or req.get("ne_id") or req_ssh.get("niam_login_id"):
             spec.ne_ids = niam_ids.get(spec.name.lower()) or niam_ids.get(typ.lower(), [])

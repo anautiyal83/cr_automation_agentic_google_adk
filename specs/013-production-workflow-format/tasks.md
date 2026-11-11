@@ -35,7 +35,7 @@ Rules (from the corpus, generic — any UC):
   (`expect_reply` for a password); the following steps stay on that node until the matching `exit`, which gets the
   outer shell's `prompt_regex`. A session left open at the end of a phase gets an `exit`. One-shot forms
   (`su - u -c "…"`, `ssh host cmd`, `oc exec pod -- cmd`) do not nest.
-- **B-R3 Failover** (several NIAM entries): login probe per entry (`echo <TYPE>_LOGIN_OK`, `on_failure: warning`,
+- **B-R3 Failover** (several NIAM entries) — done 2026-11-11 (`failover.py`, step 8 groups): login probe per entry (`echo <TYPE>_LOGIN_OK`, `on_failure: warning`,
   computed register `Target<TYPE>`), later steps on `node: ${Target<TYPE>}` (JAR-probed 2026-11-11).
 - **B-R4 Local.** Automation-server steps: `node: local`, not declared; loops carry no `node` — done 2026-11-11
   (`production._local`; MOP of EIR/MRF/PGW unchanged)
@@ -59,7 +59,13 @@ Rules (from the corpus, generic — any UC):
 - [ ] PF012 Step 8 MockWire topology: one instance per NIAM node with nested shells (enter command → new prompt,
   `exit` → back), `repo_server` ssh + sftp; MockWire repo change if nested sessions need it (commit + push there,
   rebuild `lib/mockwire.jar`)
-- [ ] PF013 Step 9 overlay: production node names → simulator instances
+- [x] PF013 Step 9 overlay: production node names → simulator instances; a failover group (`niam_x_1…n`,
+  `${Target<TYPE>}`) is one instance (NodeSpec.aliases, `file_flows.group_names`)
+
+Simulator (2026-11-11, step 6 output of the last runs re-fixed with Stage B): PGW 2/2 (failover, 6 NIAM nodes),
+MRF 4/4 incl. rollback-only; EIR: pod / DS server sessions enter, answer, exit — its remaining failures are logic
+gaps of that LLM output (pseudo `for_each` per pod → PF011 now rejects it; rollback-only reads a namespace of a
+skipped phase → PF024)
 
 ## Stage C — runtime parameters + file routes (PF-D3, PF-D4 — after the user confirms)
 

@@ -100,8 +100,9 @@ def _expressions(parsed: dict, fn) -> int:
 
 
 def plain(parsed: dict) -> int:
-    """Undo the expression form (``structure.flatten``)."""
-    return _expressions(parsed, unwrap)
+    """Undo NIAM failover and the expression form (``structure.flatten``)."""
+    from . import failover
+    return failover.undo(parsed) + _expressions(parsed, unwrap)
 
 
 # --------------------------------------------------------------------------- file / phases / steps
@@ -237,9 +238,11 @@ def _local(parsed: dict) -> int:
     return changed
 
 
-def apply(parsed: dict, uc_name: str = "") -> int:
+def apply(parsed: dict, uc_name: str = "", node_types: dict[str, int] | None = None) -> int:
     """The production form; idempotent. Returns the number of changes."""
-    changed = _local(parsed)
+    from . import failover
+    changed = failover.apply(parsed, node_types)  # after the contract: the probes keep on_failure: warning
+    changed += _local(parsed)
     changed += _file(parsed, uc_name)
     changed += _phases(parsed)
     changed += _steps(parsed)

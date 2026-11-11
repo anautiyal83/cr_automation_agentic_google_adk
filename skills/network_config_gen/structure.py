@@ -878,5 +878,9 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += contract.apply(parsed)
-    changes += production.apply(parsed, str((requirements or {}).get("uc_name") or ""))
+    types = (requirements or {}).get("node_types")
+    if types is None and isinstance(requirements, dict) and requirements.get("doc_extracted"):
+        from .skill import _record_columns
+        types = _record_columns(requirements).get("node_types")
+    changes += production.apply(parsed, str((requirements or {}).get("uc_name") or ""), types)
     return changes

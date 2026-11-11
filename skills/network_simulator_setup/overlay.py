@@ -32,8 +32,8 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
     wf_nodes = workflow.get("nodes") or {}
     _peer_copies(workflow, nodes)
 
-    for spec in nodes:
-        node = wf_nodes.get(spec.name)
+    for spec, name, k in [(sp, n, i) for sp in nodes for i, n in enumerate([sp.name, *sp.aliases])]:
+        node = wf_nodes.get(name)  # NIAM failover entries (aliases) log in to the same instance
         port = ports.get(spec.name)
         if not isinstance(node, dict) or port is None:
             continue
@@ -48,7 +48,7 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         ssh["auth"] = {"password": spec.password}
         ssh.pop("password", None)
         if spec.ne_ids:
-            ssh["ne_id"] = spec.ne_ids[0]
+            ssh["ne_id"] = spec.ne_ids[min(k, len(spec.ne_ids) - 1)]
         else:
             ssh.pop("ne_id", None)
         # Quoted: the JAR reads YAML 1.1 (SnakeYAML), where a bare `no` is boolean false
@@ -78,7 +78,7 @@ def _step_prompts(workflow: dict, nodes: list[NodeSpec]) -> None:
     """A step's own ``prompt_regex`` replaces the node's: extend it with the simulator prompts too
     (the LLM gave the rollback `cd` a `user@host:` prompt the simulated node never shows; the step
     waited for it and failed, run c89f65c2)."""
-    by_name = {spec.name: spec for spec in nodes}
+    by_name = {name: spec for spec in nodes for name in [spec.name, *spec.aliases]}
 
     def walk(steps) -> None:
         for step in steps if isinstance(steps, list) else []:

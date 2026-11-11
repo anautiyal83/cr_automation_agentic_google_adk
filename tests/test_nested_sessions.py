@@ -147,3 +147,52 @@ def test_validator_rejects_iteration_the_framework_does_not_do():
     problems = check_iteration(wf)
     assert len(problems) == 3
     assert "type: loop" in problems[0] and "loop: true" in problems[1] and "itself" in problems[2]
+
+
+def test_niam_failover_for_types_with_several_entries():
+    """B-R3: a type with 3 NIAM entries gets niam_<type>_1…3, login probes per phase and steps on ${Target<TYPE>};
+    flatten gives the one-node form back."""
+    from skills.network_config_gen import failover, structure
+    wf = {"nodes": {"niam_pgw_server": {"type": "remote", "ssh": {"host": "${PGW.niamID-1}", "ne_id": "${PGW.niamID-1}"}}},
+          "phases": {"preNodeHealthCheck": {"steps": [{"node": "niam_pgw_server", "send": "uptime"}]},
+                     "rollbackConfiguration": {"steps": [{"node": "niam_pgw_server", "send": "restore"}]}}}
+    import copy
+    before = copy.deepcopy(wf)
+    assert failover.apply(wf, {"PGW": 3}) == 1
+    assert list(wf["nodes"]) == ["niam_pgw_1", "niam_pgw_2", "niam_pgw_3"]
+    assert wf["nodes"]["niam_pgw_3"]["ssh"]["ne_id"] == "${PGW.niamID-3}"
+    for body in wf["phases"].values():
+        probes = [s for s in body["steps"] if s.get("id", "").startswith("nc_fo_")]
+        assert [p["node"] for p in probes] == ["niam_pgw_1", "niam_pgw_2", "niam_pgw_3", "local"]
+        assert all(p["when"] == '${TargetPGW == ""}' for p in probes)
+        assert probes[0]["on_failure"] == "warning" and probes[-1]["on_failure"] == "stop"
+        assert body["steps"][-1]["node"] == "${TargetPGW}"
+    assert wf["globals"]["vars"]["TargetPGW"] == ""
+    failover.undo(wf)
+    assert wf["nodes"] == before["nodes"] and wf["phases"] == before["phases"]
+
+
+def test_simulator_serves_a_failover_group_with_one_instance(tmp_path):
+    import json
+
+    import yaml
+
+    from skills.network_config_gen import failover
+    from skills.network_simulator_setup.overlay import build_overlay
+    from skills.network_simulator_setup.topology import build_topology
+    wf = {"nodes": {"niam_pgw_server": {"type": "remote", "plugin": "ssh", "prompt_regex": r"(?m)^.*[>#$]\s*$",
+                                        "ssh": {"host": "${PGW.niamID-1}", "ne_id": "${PGW.niamID-1}"}}},
+          "phases": {"preNodeHealthCheck": {"steps": [{"node": "niam_pgw_server", "send": "uptime"}]}}}
+    failover.apply(wf, {"PGW": 3})
+    ciq = tmp_path / "ciq.json"
+    ciq.write_text(json.dumps({"schemaVersion": "2", "crGroups": [{"crGroup": "CR1", "nodeGroups": [
+        {"nodeGroup": "NG1", "nodes": [{"node": "NG1", "PGW": {"niamID-1": "a", "niamID-2": "b", "niamID-3": "c"}}]}]}]}),
+        encoding="utf-8")
+    specs = build_topology(yaml.safe_dump(wf), {}, [str(ciq)])
+    assert [s.name for s in specs] == ["niam_pgw_1"]
+    spec = specs[0]
+    assert spec.aliases == ["niam_pgw_2", "niam_pgw_3", "${TargetPGW}"] and spec.ne_ids == ["a", "b", "c"]
+    assert any(c["cmd"] == "uptime" for c in spec.commands)          # the ${TargetPGW} step
+    overlay = yaml.safe_load(build_overlay(yaml.safe_dump(wf), specs, {"niam_pgw_1": 22201}))
+    assert {n: (v["ssh"]["port"], v["ssh"]["ne_id"]) for n, v in overlay["nodes"].items()} == {
+        "niam_pgw_1": ("22201", "a"), "niam_pgw_2": ("22201", "b"), "niam_pgw_3": ("22201", "c")}

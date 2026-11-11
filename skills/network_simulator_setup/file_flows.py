@@ -23,14 +23,29 @@ _ABS_PATH = re.compile(r"(?<![\w$}])/(?:[\w.${}-]+/)*[\w.${}-]+")
 _FILE_CMD = re.compile(r"^\s*(ls|cat|test|stat|rm|head|tail|wc)\b")
 
 
+def group_names(workflow: dict, node: str) -> set[str]:
+    """``node`` and, for the first entry of a NIAM failover group (``niam_x_1``, spec 013 B-R3), the group's other
+    entries and the ``${Target<TYPE>}`` its steps run on — one simulator instance serves them all."""
+    names = {node}
+    m = re.fullmatch(r"(niam_\w+)_1", node)
+    if m:
+        from skills.network_config_gen.sessions import ciq_type
+        names |= {str(n) for n in (workflow.get("nodes") or {}) if re.fullmatch(re.escape(m.group(1)) + r"_\d+", str(n))}
+        typ = ciq_type(workflow, node)
+        if typ:
+            names.add("${Target" + re.sub(r"\W", "", typ.upper()) + "}")
+    return names
+
+
 def node_steps(workflow: dict, node: str) -> list[dict]:
-    """The node's steps in execution order (nested steps included)."""
+    """The node's steps in execution order (nested steps included; a failover group's too)."""
     out: list[dict] = []
+    names = group_names(workflow, node)
 
     def walk(steps):
         for step in steps or []:
             if isinstance(step, dict):
-                if str(step.get("node") or "") == node:
+                if str(step.get("node") or "") in names:
                     out.append(step)
                 walk(step.get("steps"))
 
