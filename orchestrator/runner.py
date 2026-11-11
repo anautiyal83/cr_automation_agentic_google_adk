@@ -484,7 +484,8 @@ class PipelineRunner:
                     payload={"run_id": run_id},
                 ))
             elif is_failed:
-                error = state.get("pipeline_error", "Pipeline failed")
+                from shared.state import run_failures
+                error = run_failures.pop(run_id, None) or state.get("pipeline_error", "Pipeline failed")
                 flow.flow("RUN FAILED — run_id=%s — %s", run_id[:8], error[:200])
                 self._active_runs[run_id]["status"] = "failed"
                 await self._persist_run_status(run_id, "failed", error)

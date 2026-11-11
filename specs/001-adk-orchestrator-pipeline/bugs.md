@@ -1074,3 +1074,14 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   code in checks, shell arrays, failed test cases) — with a headline counting the things to check and what to do.
   The technical text stays under "Technical details". Step 6 prompt + validator hint: no bash arrays (the framework
   fills `${…}`). Tests `tests/test_plain_errors.py`.
+
+### OB-28 — EIR steps 1-2 crashed again on a null category; the run said only "Pipeline ended before completing all steps" (High, Fixed 2026-11-11)
+- Run 382d08af, after Clarify at step 6: `merge_previous_requirements` did `current.setdefault(cat_key, {})` on a
+  category the LLM compiled as null (a variable key, missed by OB-25) → `'NoneType' object has no attribute 'get'`.
+  The run's failure reason was the generic text: the pipeline wrote the error to ADK session state, which the
+  runner does not see reliably.
+- **Fix**: `compiler.normalize_compiled` right after the LLM compile (categories, developer_answers objects; nodes
+  a list of objects with object ssh / escalation); `_dict_at` for the variable key. A crashed step writes a plain
+  reason to `shared.state.run_failures` ("Steps 1–2 stopped on an internal error — not a problem in your
+  documents …"), which the runner stores as the run's failure. Test
+  `test_compiled_requirements_with_null_parts_merge_with_the_previous_run`.
