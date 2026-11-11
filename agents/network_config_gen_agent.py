@@ -76,6 +76,8 @@ class NetworkConfigGenAgent(BaseAgent):
                 p = Path(run_dir) / f"{uc_name}.yaml"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(output.workflow_yaml, encoding="utf-8")
+                from shared import run_files
+                run_files.record_generated(run_dir, p.name)  # a re-run never silently replaces an edit
 
         state["artifacts"] = artifacts
 

@@ -39,6 +39,7 @@ class CiqValidationJsonQAAgent(BaseAgent):
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
         artifacts = state.get("artifacts", {})
+        from shared import run_files  # the run folder is authoritative: edits made at a review (spec 012)
 
         flow.flow("CIQ_VAL_JSON_QA START — uc=%s", uc_name)
 
@@ -50,8 +51,8 @@ class CiqValidationJsonQAAgent(BaseAgent):
         inp = SkillInput(
             uc_name=uc_name,
             ciq_file_path=ciq_file_path(state),
-            validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
-            json_output_yaml=artifacts.get("json_template_yaml", ""),
+            validation_rules_yaml=run_files.read(state, "validation_rules_yaml"),
+            json_output_yaml=run_files.read(state, "json_template_yaml"),
             requirements=requirements,
             run_dir=run_dir,
             jar_path=config.get("ciq_processor_jar", "lib/ciq-processor-1.0.3-cli.jar"),

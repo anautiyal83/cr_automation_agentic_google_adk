@@ -38,8 +38,9 @@ class HelperScriptGenAgent(BaseAgent):
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
         artifacts = state.get("artifacts", {})
+        from shared import run_files  # the run folder is authoritative: edits made at a review (spec 012)
 
-        workflow_yaml = artifacts.get("workflow_yaml", "")
+        workflow_yaml = run_files.read(state, "workflow_yaml")
         if not workflow_yaml:
             flow.flow("HELPER_SCRIPT_GEN: No workflow YAML — skipping")
             return
@@ -62,6 +63,8 @@ class HelperScriptGenAgent(BaseAgent):
             for name, content in output.scripts.items():
                 script_path = scripts_dir / name
                 script_path.write_text(content, encoding="utf-8")
+                from shared import run_files
+                run_files.record_generated(run_dir, f"scripts/{name}")  # a re-run never silently replaces an edit
                 flow.flow("HELPER_SCRIPT_GEN: Wrote %s (%d chars)", name, len(content))
 
             # Store script paths in artifacts for downstream use
