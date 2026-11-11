@@ -226,6 +226,11 @@ class ProgressSection:
                 "border: 1px solid var(--cr-error); border-left-width: 3px; border-radius: 8px; "
                 "background: color-mix(in srgb, var(--cr-error) 6%, var(--cr-surface))")
             self.ms_failure_box.set_visibility(False)
+            # Problems the developer already answered, not blocking (step_<n>_notes.json): check them
+            self.ms_notes_box = ui.column().classes("w-full gap-1 p-3").style(
+                "border: 1px solid var(--cr-warning); border-left-width: 3px; border-radius: 8px; "
+                "background: color-mix(in srgb, var(--cr-warning) 7%, var(--cr-surface))")
+            self.ms_notes_box.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
@@ -1218,6 +1223,7 @@ class ProgressSection:
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
         self._show_failure_reasons(step_num if has_failures else 0)
+        self._show_answered_notes(0 if has_failures else step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
         # every review: the requirements can be corrected (later steps: the run goes back to step 1)
@@ -1278,6 +1284,31 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
+
+    def _show_answered_notes(self, step_num: int) -> None:
+        """Step <n> passed although problems remain that the developer already answered: listed so the
+        reviewer checks the workflow follows the answers (0 hides the box)."""
+        import json as _json
+        from shared.clarifications import plain
+        self.ms_notes_box.clear()
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            notes = _json.loads((Path(run_dir) / f"step_{step_num}_notes.json").read_text(encoding="utf-8"))["notes"]
+        except (OSError, ValueError, KeyError, TypeError):
+            notes = []
+        self.ms_notes_box.set_visibility(bool(notes) and bool(step_num))
+        if not notes or not step_num:
+            return
+        with self.ms_notes_box:
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.icon("fact_check", size="18px").classes("cr-text-warning")
+                ui.label(f"Check that the workflow follows your answers ({len(notes)})").classes("font-semibold")
+            ui.label("You already answered these, so they no longer stop the run. The AI was given your answer; "
+                     "open the workflow and check it does what you said.").classes("text-caption cr-text-dim")
+            for note in notes[:6]:
+                ui.label("• " + plain(note)).classes("text-body2").style("overflow-wrap: anywhere")
+            ui.label("If it does not: Edit requirements to explain it more precisely, or Re-run step.") \
+                .classes("text-caption font-medium mt-1")
 
     def _show_failure_reasons(self, step_num: int) -> None:
         """The reasons in the failed step's error file(s), one line each (0 hides the box)."""

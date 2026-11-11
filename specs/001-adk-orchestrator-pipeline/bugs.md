@@ -1085,3 +1085,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   reason to `shared.state.run_failures` ("Steps 1–2 stopped on an internal error — not a problem in your
   documents …"), which the runner stores as the run's failure. Test
   `test_compiled_requirements_with_null_parts_merge_with_the_previous_run`.
+
+### OB-29 — Answered step 6 questions were asked again and kept failing step 6 (High, Fixed 2026-11-11)
+- EIR: "The requirements list 49 / 63 / 37 commands on node EIR but no workflow step runs on EIR" was asked three
+  times (the id hashed the wording, counts included) and answered three times; the DELTA_TAC_FILE question,
+  answered, failed step 6 again because the regenerated workflow still did not use the column.
+- **Fix**: `clarifications.key` identifies a problem without numbers and CIQ values; `answered_keys` reads the
+  developer's answers (requirements developer_questions / developer_answers, kept per UC); `from_errors` asks no
+  answered problem. Step 6 passes when every remaining problem is one the developer answered: they go to
+  `step_6_notes.json` and the review shows them in an amber "Check that the workflow follows your answers" box
+  (`clarifications.plain` wording). Tests `tests/test_clarifications.py`.

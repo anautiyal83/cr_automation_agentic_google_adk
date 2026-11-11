@@ -78,6 +78,23 @@ class NetworkConfigGenAgent(BaseAgent):
                 p.write_text(output.workflow_yaml, encoding="utf-8")
 
         state["artifacts"] = artifacts
+
+        # Problems the developer has already answered do not block step 6 again (EIR: the same question
+        # came back after every answer): the review lists them as notes to check
+        from shared import clarifications
+        answered = clarifications.answered_keys(requirements)
+        accepted = [i for i in output.developer_issues if clarifications.key(i) in answered]
+        if (output.status == "failed" and accepted and not output.error
+                and all(e in accepted for e in output.validation_errors)):
+            output.status = "passed"
+            flow.flow("NETWORK_CONFIG_GEN: %d problem(s) the developer already answered — not blocking", len(accepted))
+        if run_dir:
+            import json
+            notes_file = Path(run_dir) / "step_6_notes.json"
+            if accepted and output.status == "passed":
+                notes_file.write_text(json.dumps({"notes": accepted}, indent=2), encoding="utf-8")
+            elif notes_file.exists():
+                notes_file.unlink()
         state["step_6_status"] = output.status
 
         if output.status == "failed":
@@ -91,8 +108,7 @@ class NetworkConfigGenAgent(BaseAgent):
 
         # What the correction rounds could not fix AND a developer can answer: offered as step 1
         # questions at the milestone. Framework errors (placeholders, regexes, …) are not asked (DEP-53)
-        from shared import clarifications
-        clarifications.save(run_dir, 6, clarifications.from_errors(6, output.developer_issues)
+        clarifications.save(run_dir, 6, clarifications.from_errors(6, output.developer_issues, answered=answered)
                             if output.status == "failed" else [])
 
         flow.flow("NETWORK_CONFIG_GEN DONE — status=%s, errors=%d",
