@@ -24,6 +24,23 @@ after a stop.
 
 ## Stage B — node model (PF-D2) — steps 6 + 8
 
+Rules (from the corpus, generic — any UC):
+- **B-R1 One node per NIAM login.** A remote node of the CIQ (node type `<type>`, its NIAM entries `niamID-1…n`)
+  is `niam_<type>_server` (one entry) or `niam_<type>_1…n` (several); `ssh.host ${NIAM_IP}` etc. are Stage C, the
+  `ne_id` keeps our CIQ reference (PF-D1). Generic prompt `(?m)\[[^\]\r\n]+\][#$][^\r\n]*$` unless the node type's
+  prompt is not a Linux shell (vendor profile / recorded login prompt decides).
+- **B-R2 Nested sessions.** A command that opens an interactive shell on another host — `oc exec|kubectl exec
+  [-it] … -- bash|sh`, `ssh [opts] user@host` (no remote command), `telnet`, `su - user` without `-c`,
+  `sudo su`/`sudo -i` — runs on the node it is typed on and gets a step-level `prompt_regex` of the new shell
+  (`expect_reply` for a password); the following steps stay on that node until the matching `exit`, which gets the
+  outer shell's `prompt_regex`. A session left open at the end of a phase gets an `exit`. One-shot forms
+  (`su - u -c "…"`, `ssh host cmd`, `oc exec pod -- cmd`) do not nest.
+- **B-R3 Failover** (several NIAM entries): login probe per entry (`echo <TYPE>_LOGIN_OK`, `on_failure: warning`,
+  computed register `Target<TYPE>`), later steps on `node: ${Target<TYPE>}` (JAR-probed 2026-11-11).
+- **B-R4 Local.** Automation-server steps: `node: local`, not declared; loops carry no `node` — done 2026-11-11
+  (`production._local`; MOP of EIR/MRF/PGW unchanged)
+- Not in Stage B: repo nodes / file routes (Stage C).
+
 - [ ] PF010 Step 1/6: hosts reached from the NIAM login (pods, DS servers, other shells) become nested sessions on one
   `niam_<type>_server` node (enter / steps / `exit`), generic prompts; one node per NIAM entry of the CIQ
 - [ ] PF011 Validator: reject `for_each` outside `type: loop`, self-comparing expressions, a step reading a file on a

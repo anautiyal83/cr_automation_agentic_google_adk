@@ -39,9 +39,9 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
         errors.append("'nodes' must be a mapping")
 
     # Collect known node names
-    known_nodes = set()
+    known_nodes = {"local", "LOCAL"}  # the framework provides the automation server (production declares none)
     if isinstance(nodes, dict):
-        known_nodes = set(nodes.keys())
+        known_nodes |= set(nodes.keys())
 
     # Must have phases
     phases = parsed.get("phases", {})

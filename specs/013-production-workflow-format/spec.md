@@ -19,6 +19,13 @@ YAML scalar style. A production engineer reading our workflow sees a production 
 `${configSequences.0.records.0.data.<Column>}`, `${rec.data.<Column>}` in record loops — because production's bare
 `${niamID}` / `${BULK_PROVISIONING_FILE}` are empty with our layout (probe P-7).
 
+## Rule for every stage (user, 2026-11-11)
+
+"These changes should be generic and must be followed for further UC as well if applicable." Every change is a
+rule over what the documents show — command kinds, node types from the CIQ / vendor profile, phases, transfers —
+never a use case's names, commands or paths. EIR, MRF and PGW are the test cases, not the design. A rule that does
+not apply to a use case leaves it unchanged.
+
 ## Sources
 
 - **Corpus**: the 24 production workflows bundled in `lib/cli-automation-standalone.jar` (`templates/yaml/`, CFX, DPA,

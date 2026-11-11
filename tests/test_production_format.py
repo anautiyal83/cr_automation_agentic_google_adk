@@ -93,3 +93,17 @@ def test_wrap_unwrap():
     assert production.unwrap('${A != "" && B == "x"}') == "A != '' && B == 'x'"
     assert production.unwrap("${CHANGES_MADE}") == "${CHANGES_MADE}"  # a lone placeholder stays
     assert production.unwrap("${a} > ${b}") == "${a} > ${b}"
+
+
+def test_local_steps_on_undeclared_local_node():
+    """Spec 013 B-R4: production runs automation-server steps on `node: local` and declares no LOCAL node;
+    loops carry no node."""
+    parsed = parse_yaml(WORKFLOW)
+    parsed["phases"]["preNodeHealthCheck"]["steps"].append({"node": "LOCAL", "send": "python check.py --a 'x'"})
+    structure.apply(parsed, {"uc_name": "UC"})
+    assert "LOCAL" not in parsed["nodes"] and "local" not in parsed["nodes"]
+    assert parsed["phases"]["preNodeHealthCheck"]["steps"][-1]["node"] == "local"
+    loop = parsed["phases"]["activity_configuration"]["steps"][0]
+    assert loop["type"] == "loop" and "node" not in loop
+    from skills.network_config_gen.validator import validate_workflow
+    assert not [e for e in validate_workflow(dump_yaml(parsed)) if "unknown node" in e]

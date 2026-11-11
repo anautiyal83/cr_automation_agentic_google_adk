@@ -202,9 +202,45 @@ def _steps(parsed: dict) -> int:
     return changed
 
 
+LOCAL = "local"
+
+
+def _local(parsed: dict) -> int:
+    """Automation-server steps on ``node: local`` — the framework provides it, production declares none;
+    loops carry no node."""
+    nodes = parsed.get("nodes") if isinstance(parsed.get("nodes"), dict) else {}
+    names = {str(n) for n, v in nodes.items()
+             if isinstance(v, dict) and LOCAL in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
+    names |= {"LOCAL"}
+    changed = 0
+
+    def walk(steps: Any) -> None:
+        nonlocal changed
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            if step.get("type") == "loop" and "node" in step:
+                del step["node"]
+                changed += 1
+            elif str(step.get("node", "")) in names:
+                step["node"] = LOCAL
+                changed += 1
+            walk(step.get("steps"))
+
+    for body in (parsed.get("phases") or {}).values():
+        if isinstance(body, dict):
+            walk(body.get("steps"))
+    for n in names:
+        if n in nodes:
+            del nodes[n]
+            changed += 1
+    return changed
+
+
 def apply(parsed: dict, uc_name: str = "") -> int:
     """The production form; idempotent. Returns the number of changes."""
-    changed = _file(parsed, uc_name)
+    changed = _local(parsed)
+    changed += _file(parsed, uc_name)
     changed += _phases(parsed)
     changed += _steps(parsed)
     changed += _expressions(parsed, wrap)
