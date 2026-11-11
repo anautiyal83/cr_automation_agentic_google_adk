@@ -44,6 +44,60 @@ ignored anyway.
 | Y-D10 | Concurrent edits | Save refuses when the file changed since the editor opened (another tab, a re-run): "This file changed — Reload" |
 | Y-D11 | Audit | `artifact.edit` (file, version, problems count), `artifact.restore` (file, from version) — never file content (spec 006 D11) |
 
+## Features (2026-11-11, agreed with the user)
+
+Priority: **M** must, **S** should, **C** could. **R1** = first release (proposed: every M, plus A3, C3, E4, F3, F6).
+
+| # | Feature | Prio | R1 |
+|---|---------|------|----|
+| **A** | **Editing basics** | | |
+| A1 | Code editor: line numbers, YAML / Python highlighting, search and replace, undo / redo | M | ✓ |
+| A2 | One tab per editable file of the review | M | ✓ |
+| A3 | Outline: phases → steps, click to jump, steps with problems marked | S | ✓ |
+| A4 | Format / fix indentation | S | |
+| A5 | Shortcuts: Ctrl+S save, Ctrl+F find, Ctrl+Enter validate | S | |
+| **B** | **Help while typing** | | |
+| B1 | Autocomplete: workflow keys, node names, CIQ columns, captured variables, runtime parameters | S | |
+| B2 | Hover help on a key | C | |
+| B3 | Warnings while typing for known traps (`${NAME}` shell variables, JavaScript in checks, bash arrays, quoted CIQ columns) | S | |
+| **C** | **Checking** | | |
+| C1 | Validate with the step's own checks; plain language with line numbers; technical text on request | M | ✓ |
+| C2 | Problem markers in the margin; click a problem to jump to its line | M | ✓ |
+| C3 | Apply suggested fix for problems with a known fix | S | ✓ |
+| C4 | Check tester: a step's success check against the real recorded output | S | |
+| C5 | Live checking while typing | C | |
+| **D** | **AI help, scoped** | | |
+| D1 | Ask AI to fix this problem: only the affected step, shown as a diff before accepting | S | |
+| D2 | Explain this step in plain words | C | |
+| **E** | **Versions and safety** | | |
+| E1 | Every save is a version (who, when, generated / yours, problems at save) | M | ✓ |
+| E2 | Diff: current vs generated, or any two versions | M | ✓ |
+| E3 | Restore any version | M | ✓ |
+| E4 | Unsaved changes kept as a draft if the browser closes | S | ✓ |
+| E5 | Save refused when the file changed since it was opened | M | ✓ |
+| E6 | A re-run never silently replaces an edit: "Re-run replaced your version — Compare / Restore" | M | ✓ |
+| **F** | **Fitting into the run** | | |
+| F1 | Continue with my edit once the edited files validate; later steps use the edited files | M | ✓ |
+| F2 | Editable only while the run waits at that review; read-only elsewhere (history, diff, download) | M | ✓ |
+| F3 | MOP preview of the edited workflow (cli-automation JAR, as step 7 renders it) | S | ✓ |
+| F4 | Links between workflow steps and MOP lines (later: Activity Spec rows) | C | |
+| F5 | The approved edit is what the cache reuses for the next run of the use case | M | ✓ |
+| F6 | Download / upload a file (edit offline) | S | ✓ |
+| F7 | Run one step on the step 8 simulator from the editor | C | |
+| **G** | **Access and record** | | |
+| G1 | Update on Live Run, own run (admin: any); View-only roles read-only | M | ✓ |
+| G2 | Audit: `artifact.edit`, `artifact.restore` (file, version; never content) | M | ✓ |
+| **H** | **Table view: add, delete, edit rows** | | |
+| H1 | Workflow as a table, one row per step: # · Phase · Runs on · Command · Success check · Captures · When · On failure; Table ↔ YAML always in step | M | ✓ |
+| H2 | Edit a row in a form (node dropdown, command, success text, captures, condition, on failure) | M | ✓ |
+| H3 | Add a row: the user picks the **phase** (only the run's phases) and the **step number** in it (positions listed with the step now there, or "At the end"); the new row takes that position and the rows after it renumber, in the table and the YAML | M | ✓ |
+| H4 | Delete a row, with a confirmation and Undo | M | ✓ |
+| H5 | Move a row (phase + step number, as H3) and Duplicate | S | |
+| H6 | Problems shown on their row (marker + plain-language tooltip) | M | ✓ |
+| H7 | Validation rules as a table, one row per CIQ column rule (Sheet · Column · Required · Type / pattern · Allowed values · Cross-check), same add / delete / edit | S | |
+| H8 | Rows the platform adds (backups by convention, checksums, record loops) shown as "added automatically" and locked — rebuilt from the user's rows; they count in the numbering, nothing is inserted inside them | M | ✓ |
+| H9 | A new or changed row is checked at once (C1) | S | |
+
 ## Acceptance
 
 1. At the step 6 review, Edit opens the workflow and the scripts in an editor with highlighting and line numbers.
