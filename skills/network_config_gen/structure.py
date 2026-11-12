@@ -168,6 +168,11 @@ def flatten(parsed: dict) -> int:
     for _, body in _phase_bodies(parsed):
         body["steps"] = walk(body["steps"])
     nodes = parsed.get("nodes")
+    vars_ = (parsed.get("globals") or {}).get("vars")
+    if isinstance(vars_, dict) and "REPO_IP_V4" in vars_ and not any(
+            str(s.get("id", "")).startswith(f"{AUTO_ID}repoip") for _, b in _phase_bodies(parsed) for s in b["steps"]):
+        for k in ("REPO_IP_V4", "REPO_IP_V6", "REPO_IP"):
+            vars_.pop(k, None)
     repo = _repo_config()["node"]
     if changed and isinstance(nodes, dict):
         used = {str(s.get("node")) for _, body in _phase_bodies(parsed) for s in _all_steps(body["steps"])}
@@ -918,6 +923,48 @@ def _unstage(parsed: dict) -> int:
     return restored
 
 
+# --------------------------------------------------------------------------- repo IP
+
+REPO_IP_PROBE = ("who am i | grep -oP '(?<=\\()[^)]+(?=\\))' | "
+                 "{ read -r h; [[ $h == *:* ]] && echo IPv6 || echo IPv4; }")
+
+
+def repo_ip_probe(parsed: dict, requirements: dict | None = None) -> int:
+    """Production picks the repo server's address by the IP version the node is reached with: ``who am i`` on the
+    NIAM node, then ``REPO_IP`` = ``REPO_IP_V4`` or ``[REPO_IP_V6]`` (computed registers). Added at the start of
+    each phase that reaches the repo, only while ``REPO_IP`` is empty (once per run; a rollback-only run too) —
+    when ``execution.repo_server`` has ``ip_v4`` and ``ip_v6`` (spec 013 PF022). Ids ``nc_repoip_*``."""
+    cfg = _repo_config(requirements)
+    v4, v6 = str(cfg.get("ip_v4") or "").strip(), str(cfg.get("ip_v6") or "").strip()
+    if not (v4 and v6):
+        return 0
+    repo_nodes = {cfg["node"], f"{cfg['node']}_sftp"}
+    niam = next((n for n in (parsed.get("nodes") or {}) if str(n).startswith("niam_")), None)
+    added = 0
+    for name, body in _phase_bodies(parsed):
+        steps = [s for s in _all_steps(body["steps"]) if not str(s.get("id", "")).startswith(f"{AUTO_ID}repoip")]
+        uses = [s for s in steps if str(s.get("node")) in repo_nodes or "${REPO_IP}" in " ".join(_strings(s))]
+        if not uses:
+            continue
+        node = next((str(s.get("node")) for s in steps if "${REPO_IP}" in str(s.get("send") or "")
+                     and str(s.get("node")) not in repo_nodes), niam)
+        if not node:
+            continue
+        probe = _step(f"{AUTO_ID}repoip_{name}", node, "Identify IP version and select repository server IP",
+                      "REPO_IP == ''", send=REPO_IP_PROBE, on_failure="continue",
+                      register=[{"regex": "(?<IPTYPE>IPv4|IPv6)"},
+                                {"name": "REPO_IP", "when": "IPTYPE == 'IPv4'", "value": "${REPO_IP_V4}"},
+                                {"name": "REPO_IP", "when": "IPTYPE == 'IPv6'", "value": "[${REPO_IP_V6}]"}])
+        body["steps"] = [probe] + list(body["steps"])
+        added += 1
+    if added:
+        vars_ = parsed.setdefault("globals", {}).setdefault("vars", {})
+        vars_.setdefault("REPO_IP_V4", v4)
+        vars_.setdefault("REPO_IP_V6", v6)
+        vars_.setdefault("REPO_IP", "")
+    return added
+
+
 # --------------------------------------------------------------------------- rollback-only lookups
 
 _PLACEHOLDER_NAME = re.compile(r"\$\{([A-Za-z_]\w*)\}")
@@ -1068,6 +1115,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += rollback_lookups(parsed)
+    changes += repo_ip_probe(parsed, requirements)
     changes += contract.apply(parsed)
     types = (requirements or {}).get("node_types")
     if types is None and isinstance(requirements, dict) and requirements.get("doc_extracted"):

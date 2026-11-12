@@ -269,8 +269,10 @@ async def execute_target(
         cmd += ["--node-type", plan["node_type"]]
     if plan.get("activity"):
         cmd += ["--activity", plan["activity"]]
+    computed = _computed_registers(workflow_path)  # e.g. REPO_IP picked by IP version (spec 013): not passed
     for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
-        cmd += ["--var", f"{key}={value}"]
+        if key not in computed:
+            cmd += ["--var", f"{key}={value}"]
 
     cwd = plan.get("local_cwd")
     from core.config import wsl_distro
@@ -280,6 +282,23 @@ async def execute_target(
     result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})", cwd=cwd)
     result.update(node=node, cr_group=cr_group)
     return result
+
+
+def _computed_registers(workflow_path: str) -> set[str]:
+    """Variables the workflow computes itself (``register: - name: X``): a ``--var`` would hide its own value."""
+    import yaml
+    try:
+        doc = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return set()
+    names: set[str] = set()
+    stack = [s for b in (doc.get("phases") or {}).values() if isinstance(b, dict) for s in b.get("steps") or []]
+    while stack:
+        step = stack.pop()
+        if isinstance(step, dict):
+            stack.extend(step.get("steps") or [])
+            names |= {str(r["name"]) for r in step.get("register") or [] if isinstance(r, dict) and r.get("name")}
+    return names
 
 
 _WIN_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")

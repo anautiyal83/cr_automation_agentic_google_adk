@@ -60,6 +60,10 @@ execution:
     user: "${REPO_USER}"
     password: "${REPO_PASSWORD}"
     backup_dir: "/repo-server/config/CR_AUTOMATION"
+    # The repo server's IPv4 and IPv6 address: with both set, a workflow picks REPO_IP by the IP version the node
+    # is reached with (production's `who am i` probe); empty: REPO_IP is a runtime parameter
+    ip_v4: ""
+    ip_v6: ""
 
 storage:
   database_path: "./data/pipeline.db"

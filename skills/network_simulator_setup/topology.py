@@ -195,6 +195,9 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         cfg["transfer"] = {"sftpPrompt": "sftp> ", "scpPrompt": "scp> "}
     if spec.vfs:
         cfg["vfs"] = spec.vfs
+    from skills.network_config_gen.structure import REPO_IP_PROBE
+    if any(str(c.get("cmd", "")).strip() == REPO_IP_PROBE for c in spec.commands):
+        cfg[REPO_IP_PROBE] = {"lines": ["IPv4"]}  # who am i … → the IP version the node is reached with
     from .skill import command_key_regex
     for cmd, shell in spec.shells.items():  # nested sessions (spec 013): `exit` (builtin) pops the prompt
         entry = {"pushPrompt": tpl(shell["prompt"])}

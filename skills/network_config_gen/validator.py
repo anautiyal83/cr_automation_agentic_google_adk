@@ -1098,6 +1098,8 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             defined |= set((body.get("vars") or {}).keys())
     for regex in _iter_register_regexes(phases):
         defined |= set(_NAMED_GROUP.findall(regex))
+    for _, step in _iter_steps(phases):  # computed registers: - name: X / value: … (production)
+        defined |= {str(r["name"]) for r in step.get("register") or [] if isinstance(r, dict) and r.get("name")}
     defined |= set(_iter_count_vars(phases))
 
     problems: dict[str, str] = {}

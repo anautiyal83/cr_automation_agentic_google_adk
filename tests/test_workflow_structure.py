@@ -533,3 +533,19 @@ def test_rollback_only_runs_the_lookups_it_needs_again():
                                           "ip a", "exit"]
     assert all(s["when"] == "ROLLBACK_ONLY == 'true'" for s in added)
     assert "unrelated" not in [s["send"] for s in added]
+
+
+def test_repo_ip_chosen_by_ip_version_like_production():
+    """Spec 013 PF022: with the repo's IPv4 and IPv6 configured, each phase that reaches the repo starts with
+    production's `who am i` probe (once per run) and REPO_IP is computed; flatten removes it again."""
+    reqs = {**VIA_REPO, "repo_server": {"ip_v4": "10.0.0.4", "ip_v6": "fd00::4"}}
+    wf = _applied(reqs)
+    assert wf["globals"]["vars"]["REPO_IP_V4"] == "10.0.0.4" and wf["globals"]["vars"]["REPO_IP_V6"] == "fd00::4"
+    for key in ("backup", "rollback_configuration"):
+        probe = wf["phases"][key]["steps"][0]
+        assert probe["id"].startswith("nc_repoip") and probe["send"] == structure.REPO_IP_PROBE
+        assert unwrap(probe["when"]) == "REPO_IP == ''" and probe["node"] == "MRF"
+        assert [r.get("name") for r in probe["register"]] == [None, "REPO_IP", "REPO_IP"]
+    flat = structure.flattened(wf)
+    assert "REPO_IP_V4" not in json.dumps(flat) and "nc_repoip" not in json.dumps(flat)
+    assert "nc_repoip" not in json.dumps(_applied(VIA_REPO))      # not configured: REPO_IP stays a runtime param

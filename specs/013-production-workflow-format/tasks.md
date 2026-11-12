@@ -89,7 +89,10 @@ bye
 " | sftp -o
   StrictHostKeyChecking=no ${REPO_USER}@${REPO_IP}` (scp nodes keep scp); MockWire 4e17e37 copies such a batch with a
   peer; step 8 treats it as a peer copy, the overlay names the repo instance. MRF 4/4
-- [ ] PF022b-2 repo IP by IPv4/IPv6 (`who am i` + computed register), `repo_server_sftp` node for framework sftp
+- [x] PF022b-2 (2026-11-12) `repo_server_sftp` node for the framework's sftp (step 8: alias of the repo instance);
+  repo IP by IPv4/IPv6 — production's `who am i` probe + computed `REPO_IP` from `REPO_IP_V4` / `[REPO_IP_V6]` when
+  `execution.repo_server.ip_v4` / `ip_v6` are set (empty by default: REPO_IP stays a runtime param); step 9 passes
+  no `--var` for a variable the workflow computes. MRF 4/4 with the probe
 - [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
 - [x] PF024 Rollback-only (C1, 2026-11-12): `structure.rollback_lookups` — values a rollback reads that only earlier
   phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the
