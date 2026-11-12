@@ -80,9 +80,12 @@ def test_record_steps_loop_over_all_records():
 
 def test_every_transfer_is_checksummed_on_both_ends():
     steps = _leaves(_applied(), "backup")  # the upload moved before the backup (what it overwrites)
-    i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${rec.data.FILE}")
+    # production: the input comes from ${LOCAL_PATH} on the automation server (spec 013 C4)
+    i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${LOCAL_PATH}/${rec.data.FILE}")
     before, after = steps[i - 1], steps[i + 1]
-    assert before["node"] == "local" and before["send"] == "sha256sum ${rec.data.FILE} | awk '{print $1}'"
+    assert before["node"] == "local" and before["send"] == "sha256sum ${LOCAL_PATH}/${rec.data.FILE} | awk '{print $1}'"
+    check = steps[i - 2]
+    assert check["id"].startswith("nc_in") and check["send"] == 'ls -lrt ${LOCAL_PATH} | grep "${rec.data.FILE}"'
     assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE} | awk '{print $1}'"
     src = before["register"][0]["regex"].split("<")[1].split(">")[0]
     dst = after["register"][0]["regex"].split("<")[1].split(">")[0]

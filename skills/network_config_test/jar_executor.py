@@ -277,11 +277,34 @@ async def execute_target(
     cwd = plan.get("local_cwd")
     from core.config import wsl_distro
     distro = wsl_distro()
+    _point_local_path(workflow_path, cwd, distro)
     if distro:  # LOCAL steps as on the production (Linux) server (spec 013 PF-D5)
         cmd, cwd = in_wsl(cmd, distro, cwd), None
     result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})", cwd=cwd)
     result.update(node=node, cr_group=cr_group)
     return result
+
+
+def _point_local_path(workflow_path: str, cwd: str | None, distro: str) -> None:
+    """The workflow's ``LOCAL_PATH`` (production's input folder) in the simulator copy: the folder step 9 stages
+    the inputs in (LOCAL steps run there too)."""
+    import yaml
+    if not cwd:
+        return
+    path = Path(workflow_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "LOCAL_PATH:" not in text:
+        return
+    target = wsl_path(str(Path(cwd).resolve())) if distro else str(Path(cwd).resolve()).replace("\\", "/")
+    from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
+    doc = parse_yaml(text)
+    vars_ = ((doc or {}).get("globals") or {}).get("vars") if isinstance(doc, dict) else None
+    if isinstance(vars_, dict) and "LOCAL_PATH" in vars_ and vars_["LOCAL_PATH"] != target:
+        vars_["LOCAL_PATH"] = target
+        path.write_text(dump_yaml(doc), encoding="utf-8")
 
 
 def _computed_registers(workflow_path: str) -> set[str]:
@@ -592,7 +615,8 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
                 local_text.append(s["send"])
             sftp = s.get("sftp")
             if isinstance(sftp, dict) and sftp.get("operation") == "upload" and sftp.get("local_path"):
-                uploads.append(str(sftp["local_path"]))
+                # ${LOCAL_PATH}/<file>: step 9 points LOCAL_PATH at the staging folder (spec 013 C4)
+                uploads.append(re.sub(r"^\$\{LOCAL_PATH\}/", "", str(sftp["local_path"])))
             walk(s.get("steps"))
     for body in (workflow.get("phases") or {}).values():
         walk(body.get("steps") if isinstance(body, dict) else body)

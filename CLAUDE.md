@@ -160,6 +160,15 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   several NIAM entries → `failover.py` (`niam_<type>_1…n`, login probes, steps on `${Target<TYPE>}`, undone by
   flatten). Step 8: enter commands push the nested prompt (MockWire pushPrompt / interactive password, builtin
   `exit`); a failover group is one instance (`NodeSpec.aliases`, `file_flows.group_names`)
+- Spec 013 Stage C (structure.py): runtime params by production names (`ORDER_NO`, `CHILD_REQ_ID`, `NODE_NAME`,
+  `NIAM_IP`, `M2M*`, `REPO_*`; `${ORDERNO}` rewritten); NIAM nodes log in with them; repo nodes `repo_server` (ssh) +
+  `repo_server_sftp` (framework sftp; step 8 alias of the repo instance); `BACK_UP_LOCATION_REPO` =
+  `<backup_dir>/<UC type>/${CHILD_REQ_ID}/${NODE_NAME}` (backups in `/BACKUP/<folder>/`); inputs from `${LOCAL_PATH}`
+  with a presence check; every transfer `checked_transfer` (sha256 | awk, status, `${LOOP_RETRY}` retry loop, guard);
+  node ↔ repo sftp = `printf "put|get …
+bye
+" | sftp … user@host` (MockWire 4e17e37); repo IP by `who am i` when
+  `repo_server.ip_v4`/`ip_v6` are set; rollback-only re-runs the lookups it needs (`nc_rbl*`)
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)

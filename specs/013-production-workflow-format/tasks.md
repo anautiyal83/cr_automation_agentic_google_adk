@@ -93,7 +93,10 @@ bye
   repo IP by IPv4/IPv6 — production's `who am i` probe + computed `REPO_IP` from `REPO_IP_V4` / `[REPO_IP_V6]` when
   `execution.repo_server.ip_v4` / `ip_v6` are set (empty by default: REPO_IP stays a runtime param); step 9 passes
   no `--var` for a variable the workflow computes. MRF 4/4 with the probe
-- [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
+- [x] PF023 (C4, 2026-11-12) input files from `${LOCAL_PATH}` (`execution.local_path`, production's
+  `/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}`): an upload of a CIQ-named file reads `${LOCAL_PATH}/<file>` after
+  `ls -lrt ${LOCAL_PATH} | grep "<file>"` (missing → stop); generated files stay relative; step 9 points LOCAL_PATH
+  at its staging folder. MRF 4/4, PGW 2/2
 - [x] PF024 Rollback-only (C1, 2026-11-12): `structure.rollback_lookups` — values a rollback reads that only earlier
   phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the
   nested shell they were read in (enter + guarded exit); `nc_rbl*`. EIR rollback-only: 3 → 12 steps ran

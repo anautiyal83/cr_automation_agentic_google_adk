@@ -148,6 +148,19 @@ def max_queued_per_user() -> int:
     return int(config.max_queued_per_user) if config else 3
 
 
+def local_path() -> str:
+    """Where the activity's input files are on the automation server (execution.local_path, production's
+    ``/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}``; spec 013 C4); '' to keep them in the run folder."""
+    default = "/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}"
+    try:
+        import yaml
+        raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        value = (raw.get("execution") or {}).get("local_path", default)
+        return "" if value is None else str(value).strip()
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def wsl_distro() -> str:
     """The WSL distribution step 9 runs the cli-automation JAR in (execution.wsl_distro, spec 013 PF-D5); ''
     when not on Windows or not configured."""

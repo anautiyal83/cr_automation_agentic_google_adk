@@ -145,6 +145,7 @@ def flatten(parsed: dict) -> int:
     changed = production.plain(parsed)  # first: the contract recognises its own plain expressions
     changed += contract.strip(parsed)
     changed += _unstage(parsed)
+    changed += _local_path_undo(parsed)
 
     def walk(steps: list) -> list:
         nonlocal changed
@@ -169,6 +170,17 @@ def flatten(parsed: dict) -> int:
         body["steps"] = walk(body["steps"])
     nodes = parsed.get("nodes")
     vars_ = (parsed.get("globals") or {}).get("vars")
+    if isinstance(vars_, dict):  # globals the structure adds come back in the same order on every apply
+        for k, v in RETRY_GLOBALS.items():
+            if vars_.get(k) == v:
+                del vars_[k]
+        if str(vars_.get(BACKUP_VAR, "")).endswith("${CHILD_REQ_ID}/${NODE_NAME}"):
+            del vars_[BACKUP_VAR]
+        if not vars_:
+            parsed["globals"].pop("vars", None)
+            if not parsed["globals"]:
+                parsed.pop("globals")
+            vars_ = None
     if isinstance(vars_, dict) and "REPO_IP_V4" in vars_ and not any(
             str(s.get("id", "")).startswith(f"{AUTO_ID}repoip") for _, b in _phase_bodies(parsed) for s in b["steps"]):
         for k in ("REPO_IP_V4", "REPO_IP_V6", "REPO_IP"):
@@ -923,6 +935,77 @@ def _unstage(parsed: dict) -> int:
     return restored
 
 
+# --------------------------------------------------------------------------- input files
+
+LOCAL_PATH_VAR = "LOCAL_PATH"
+_LOCAL_PREFIX = "${" + LOCAL_PATH_VAR + "}/"
+
+
+def _local_path_value() -> str:
+    from core.config import local_path
+    return local_path()
+
+
+def inputs_from_local_path(parsed: dict) -> int:
+    """The activity's input files come from ``${LOCAL_PATH}`` on the automation server, as production writes it
+    (``/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}``, spec 013 C4): an upload whose local file is named by a
+    CIQ column takes it from there, after a check that it is present (``ls -lrt ${LOCAL_PATH} | grep "<file>"``;
+    missing → the run stops). Files the workflow makes itself (a LOCAL script's output) stay where they are.
+    Checks: ``nc_in<k>_check``."""
+    value = _local_path_value()
+    if not value:
+        return 0
+    local = _local_node(parsed)
+    count = 0
+
+    def walk(steps: list) -> list:
+        nonlocal count
+        out = []
+        for step in steps:
+            if isinstance(step, dict) and isinstance(step.get("steps"), list):
+                step["steps"] = walk(step["steps"])
+            sftp = step.get("sftp") if isinstance(step, dict) else None
+            lpath = str((sftp or {}).get("local_path") or "") if isinstance(sftp, dict) else ""
+            if (isinstance(sftp, dict) and str(sftp.get("operation") or "").lower() == "upload" and lpath
+                    and not lpath.startswith(("/", "${" + LOCAL_PATH_VAR)) and _RECORD_REF.search(lpath.replace(
+                        "${" + ITEM_VAR + ".data.", "${configSequences.0.records.0.data."))):
+                count += 1
+                name = lpath.rsplit("/", 1)[-1]
+                out.append(_step(f"{AUTO_ID}in{count}_check", local,
+                                 f"Check the input file {name} is present on the automation server",
+                                 str(step.get("when") or ""), send=f'ls -lrt ${{{LOCAL_PATH_VAR}}} | grep "{name}"',
+                                 on_failure="stop",
+                                 validation={"description": f"{name} is in ${{{LOCAL_PATH_VAR}}}",
+                                             "success": {"criteria": {"regex": r"\S"},
+                                                         "message": f"{name} is present on the automation server."},
+                                             "failure": {"message": f"{name} is not in ${{{LOCAL_PATH_VAR}}} on the "
+                                                                    "automation server."}}))
+                sftp["local_path"] = _LOCAL_PREFIX + lpath
+            out.append(step)
+        return out
+
+    for _, body in _phase_bodies(parsed):
+        body["steps"] = walk(body["steps"])
+    if count:
+        parsed.setdefault("globals", {}).setdefault("vars", {})[LOCAL_PATH_VAR] = value
+    return count
+
+
+def _local_path_undo(parsed: dict) -> int:
+    """``flatten`` for ``inputs_from_local_path``: the uploads read their files by the LLM's name again."""
+    undone = 0
+    for _, body in _phase_bodies(parsed):
+        for s in _all_steps(body["steps"]):
+            sftp = s.get("sftp")
+            if isinstance(sftp, dict) and str(sftp.get("local_path") or "").startswith(_LOCAL_PREFIX):
+                sftp["local_path"] = str(sftp["local_path"])[len(_LOCAL_PREFIX):]
+                undone += 1
+    vars_ = (parsed.get("globals") or {}).get("vars")
+    if undone and isinstance(vars_, dict):
+        vars_.pop(LOCAL_PATH_VAR, None)
+    return undone
+
+
 # --------------------------------------------------------------------------- repo IP
 
 REPO_IP_PROBE = ("who am i | grep -oP '(?<=\\()[^)]+(?=\\))' | "
@@ -1112,6 +1195,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += loaded_members_only(parsed)
     changes += backups_by_convention(parsed, requirements)
     changes += files_via_repo(parsed, requirements)
+    changes += inputs_from_local_path(parsed)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += rollback_lookups(parsed)

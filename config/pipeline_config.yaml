@@ -49,6 +49,9 @@ execution:
   # the production (Linux) server (spec 013 PF-D5). Needs Java + python in it and mirrored networking
   # (.wslconfig networkingMode=mirrored) to reach the simulator on localhost. Empty: run on Windows.
   wsl_distro: "Ubuntu-24.04"
+  # Where the activity's input files are on the automation server (production: per child request and node);
+  # workflows check them there and upload them from there. Empty: the run folder (spec 013 C4)
+  local_path: "/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}"
   # Run queue (spec 007): one pipeline runs at a time, the others wait; jobs one user may have waiting
   max_queued_per_user: 3
   # Backups are taken on this server (node `repo_server` of every workflow that uses it; it logs in with the
