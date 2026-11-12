@@ -126,8 +126,27 @@ def _password_ref(user: str) -> str:
     return "${SECRET." + re.sub(r"\W+", "_", user.lower() or "remote") + "_password}"
 
 
+def _enter_check(step: dict) -> int:
+    """A step that enters or leaves a shell is checked as production does: its exit code (``use_exit_code``) and
+    the new prompt — no output criteria (the framework strips the prompt; an LLM's "Authentication succeeded"
+    regex failed every login, EIR 2026-11-12)."""
+    changed = 0
+    validation = step.get("validation")
+    if isinstance(validation, dict):
+        for branch in ("success", "failure", "warning"):
+            b = validation.get(branch)
+            if isinstance(b, dict) and "criteria" in b:
+                del b["criteria"]
+                changed += 1
+    if step.get("use_exit_code") is not True:
+        step["use_exit_code"] = True
+        changed += 1
+    return changed
+
+
 def _exit_step(node: str, what: str, prompt: str) -> dict:
-    step = {"node": node, "command_description": f"exit (leave {what})", "send": "exit", "on_failure": "stop"}
+    step = {"node": node, "command_description": f"exit (leave {what})", "send": "exit", "on_failure": "stop",
+            "use_exit_code": True}
     if prompt:
         step["prompt_regex"] = prompt
     return step
@@ -275,6 +294,8 @@ def nested_sessions(parsed: dict, node_types: dict[str, int] | None) -> int:
                         changes += 1
                 stack.append({"step": step, "inner": None, "what": f"the {kind} session", "outer": outer,
                               "prompt": step.get("prompt_regex") or outer, "kind": kind})
+            if (kind and kind != "su") or (is_exit(send) and step.get("prompt_regex")):
+                changes += _enter_check(step)
             if step.get("node") != renamed[cur]:
                 step["node"] = renamed[cur]
                 changes += 1

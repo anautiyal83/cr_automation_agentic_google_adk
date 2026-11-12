@@ -31,6 +31,9 @@ inside quotes). A shell substitution such as $(date +%Y%m%d) contains spaces: re
 with .+? (never \\S+).
 - Output must look like the real tool's output (e.g. real `sar` prints %user %nice \
 %system %iowait %steal %idle) AND satisfy the step's success validation.
+- A loop over items (`for i in `<list command>`; do echo $i; <command>; done`) prints, for EVERY item of \
+the list, the item's name and then the inner command's full healthy output — the same values for every \
+item (a check that all items agree must pass), never just the list of names.
 - Commands that print nothing on success get `lines: []`.
 - Do NOT emit config, auth, niam, su, exit or stty entries.
 - Use SINGLE quotes for every key and every output line (never double quotes: \

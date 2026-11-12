@@ -623,9 +623,19 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
                 "expr fails on a healthy node — the register regex captures the wrong field. Real output "
                 f"(relevant lines):\n{_excerpt(matching[0]['output'], _success_regex(step) or '')}\n"
                 "Count the columns in this output and capture the right one.")
+        exprs = " ".join(str(((step.get("validation") or {}).get(b) or {}).get("criteria", {}).get("expr", ""))
+                         for b in ("success", "failure", "warning") if isinstance(step.get("validation"), dict)
+                         and isinstance((step["validation"].get(b) or {}), dict)
+                         and isinstance((step["validation"].get(b) or {}).get("criteria"), dict))
         for reg in step.get("register") or []:
             rx = reg.get("regex") if isinstance(reg, dict) else None
             if not isinstance(rx, str):
+                continue
+            # production's "must be absent" captures find nothing on a healthy node: a bad state / non-zero
+            # count the step requires empty, or an error capture (ERROR:.*|error:.*) — spec 013
+            names = _NAMED_GROUP.findall(rx)
+            if any(re.search(rf"(?<![\w.]){re.escape(n)}\s*==\s*(?:''|\"\")", exprs) for n in names) \
+                    or re.fullmatch(r"\(\?<\w+>(?:[Ee]rror|ERROR)[^|)]*(?:\|(?:[Ee]rror|ERROR)[^|)]*)*\)", rx):
                 continue
             verdict = _regex_matches_any(rx, outputs)
             if verdict is not True:
