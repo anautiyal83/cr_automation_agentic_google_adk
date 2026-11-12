@@ -85,18 +85,38 @@ def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: li
     for proof in sorted(set(_CACHE_AFTER_STEP.values()) & set(display_steps)):
         proven = [a for a, s in _CACHE_AFTER_STEP.items() if s == proof]
         if _step_ok(state, run_dir, proof):
+            from shared import run_files
+            from storage.artifact_cache import inputs_fingerprint, options_fingerprint
             for name in proven:
                 if name in pending:
                     data, inputs, *rest = pending.pop(name)
-                    # what the user approved at the review: edits made there included (spec 012 Y-D8)
-                    from shared import run_files
-                    data = run_files.refresh_artifacts(data, run_dir, uc_name)
-                    cache.save_cache(uc_name, name, data, inputs=inputs, options=rest[0] if rest else "")
+                    options = rest[0] if rest else ""
+                else:  # deferred before a server restart (held in memory only): the run folder has them (OB-48)
+                    data = dict(state.get("artifacts") or {})
+                    inputs = inputs_fingerprint(state.get("document_set"))
+                    options = options_fingerprint(state.get("document_set"))
+                # what the user approved at the review: edits made there included (spec 012 Y-D8)
+                data = run_files.refresh_artifacts(data, run_dir, uc_name)
+                cache.save_cache(uc_name, name, data, inputs=inputs, options=options)
+        elif _blames_simulator(run_dir, proof):
+            # the simulator failed, not the workflow: keep them waiting for the step to pass (OB-48)
+            flow.flow("CACHE KEPT %s — step %d failed on the simulator", ", ".join(proven), proof)
         else:
             for name in proven:
                 pending.pop(name, None)
                 cache.clear_cache(uc_name, name)
             flow.flow("CACHE DROPPED %s — step %d failed with them", ", ".join(proven), proof)
+
+
+def _blames_simulator(run_dir: str, step: int) -> bool:
+    """The step's failure was classified as the simulator's (``step_9_error.json``: classification simulator /
+    retry_target 8) — the workflow it executed is not shown wrong."""
+    try:
+        import json as _json
+        err = _json.loads((Path(run_dir) / f"step_{step}_error.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return err.get("classification") == "simulator" or str(err.get("retry_target")) == "8"
 
 
 # Maps agent name → index for retry routing

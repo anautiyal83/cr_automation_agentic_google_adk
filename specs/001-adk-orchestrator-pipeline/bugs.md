@@ -1332,3 +1332,12 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - The phase check uses the report's own phase (`ROLLBACK_CONFIGURATION` ~ `rollback_configuration`), the
     alignment only when there is none.
   - Tests `test_rollback_downloads_what_its_local_steps_read`, MockWire `listByTimeAndReversed`.
+
+### OB-48 — Step 6 artifacts dropped from the cache on a simulator failure; lost across a restart (Medium, Fixed 2026-11-12)
+- Step 6's artifacts are cached only after step 9 passes (DEP-55). Any step 9 failure dropped them, even one
+  step 9 classified as the simulator's (`retry_target` 8): the workflow was not shown wrong, yet the next run
+  generated it again. The deferred artifacts were also held in memory only, so a step 9 pass after a server
+  restart cached nothing.
+- **Fix** (`pipeline_agent._settle_deferred_cache`): a failure blamed on the simulator keeps them waiting
+  ("CACHE KEPT"). A pass with nothing deferred caches them from the run folder (the artifacts, edits included).
+  Tests `tests/test_deferred_cache.py`.
