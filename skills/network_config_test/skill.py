@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from .test_case_gen import TestCase, generate_test_cases
-from .jar_executor import run_mop_test, run_execution_test, write_yaml_to_file
+from .jar_executor import run_mop_test, run_execution_test, write_yaml_to_file, yaml_load_error
 from .result_parser import (
     TestCaseResult, MopScenario, CommandResult,
     parse_mop_results, parse_execution_results,
@@ -311,6 +311,9 @@ class NetworkConfigTestSkill:
 
         if not results:
             error_detail = mop_result.get("stderr", "") or f"exit {mop_result['exit_code']}"
+            load_error = yaml_load_error(error_detail)
+            if load_error:  # the cause first: the raw chain starts with the outermost property
+                error_detail = f"{load_error}\n{error_detail}"
             results = [TestCaseResult(
                 id="MOP_BASE",
                 description="MOP generation JAR execution",
@@ -320,7 +323,7 @@ class NetworkConfigTestSkill:
                 expected_outcome="JAR exits successfully",
                 actual_outcome="Success" if mop_result["success"] else f"Failed: {error_detail[:120]}",
                 status="PASS" if mop_result["success"] else "FAIL",
-                errors=[error_detail[:300]] if not mop_result["success"] else [],
+                errors=[error_detail[:1500]] if not mop_result["success"] else [],
             )]
 
         total = len(results)

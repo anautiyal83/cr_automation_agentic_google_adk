@@ -680,3 +680,36 @@ def test_must_be_absent_captures_need_not_match_a_healthy_node():
         assert not [p for p in check_against_samples(wf, samples) if "captures nothing" in p], wf
     wrong = step([{"regex": "N17 Error returned (?<N17ERROR>[1-9]\d*)"}], "N17ERROR > 0")
     assert [p for p in check_against_samples(wrong, samples) if "captures nothing" in p]
+
+
+def test_expect_reply_takes_the_jars_form():
+    """The JAR's ExpectReplyDefinition has expect/reply/timeout_sec/repeat only: `{regex, send}` failed loading the
+    whole workflow, step 7 on every retry (OB-38)."""
+    wf = {"nodes": {"n": {"type": "ssh"}}, "phases": {"activity": {"steps": [
+        {"node": "n", "send": "ssh u@h", "expect_reply": [{"regex": "password:", "send": "${SECRET.P}"}]},
+        {"node": "n", "send": "sftp u@h", "expect_reply": {"prompt": "assword", "response": "x", "timeout": 5}},
+        {"node": "n", "send": "su - u", "expect_reply": "${SECRET.U}"},
+        {"node": "n", "send": "scp a u@h:b", "expect_reply": [{"expect": "a", "reply": "b", "repeat": True}]},
+    ]}}}
+    steps = yaml.safe_load(fix_workflow(yaml.safe_dump(wf)))["phases"]["activity"]["steps"]
+    assert [s["expect_reply"] for s in steps] == [
+        [{"expect": "password:", "reply": "${SECRET.P}"}],
+        [{"expect": "assword", "reply": "x", "timeout_sec": 5}],
+        [{"expect": "assword:", "reply": "${SECRET.U}"}],
+        [{"expect": "a", "reply": "b", "repeat": True}],
+    ]
+
+
+def test_jar_load_error_names_the_innermost_property():
+    from skills.network_config_test.jar_executor import yaml_load_error
+    stderr = ("ERROR: Cannot create property=phases for JavaBean=cliautomation.model.WorkflowDefinition@1\n"
+              " in 'reader', line 1, column 1:\n    version: 1.2\n"
+              "Cannot create property=expect_reply for JavaBean=cliautomation.model.StepDefinition@2\n"
+              " in 'reader', line 556, column 7:\n"
+              "Cannot create property=regex for JavaBean=cliautomation.model.ExpectReplyDefinition@3\n"
+              " in 'reader', line 563, column 11:\n"
+              "Caused by: org.yaml.snakeyaml.error.YAMLException: Unable to find property 'regex' on class: "
+              "cliautomation.model.ExpectReplyDefinition\n")
+    msg = yaml_load_error(stderr)
+    assert "`regex` at line 563" in msg and "Unable to find property 'regex' on class: ExpectReplyDefinition" in msg
+    assert yaml_load_error("ERROR: Missing required option --html-template") == ""

@@ -21,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300
 
+_LOAD_PROPERTY = re.compile(r"Cannot create property=(\w+)[^\n]*\n\s*in 'reader', line (\d+)")
+_LOAD_REASON = re.compile(r"(Unable to find property '[^']+' on class: [\w.$]+|No single argument constructor[^\n]*"
+                          r"|Cannot deserialize[^\n]*|can not be cast to[^\n]*|For input string: [^\n]*)")
+
+
+def yaml_load_error(stderr: str) -> str:
+    """The cli-automation JAR's “cannot load the workflow” error in one line — the innermost property, its line and
+    the reason — instead of the outer ``Cannot create property=phases`` chain (OB-38). Empty when it is another error."""
+    props = _LOAD_PROPERTY.findall(stderr or "")
+    if not props:
+        return ""
+    prop, line = props[-1]
+    reasons = _LOAD_REASON.findall(stderr)
+    reason = reasons[-1].replace("cliautomation.model.", "") if reasons else "its value has the wrong form"
+    return (f"The workflow YAML cannot be loaded by the cli-automation JAR: `{prop}` at line {line} — "
+            f"{reason}. Use only the JAR's fields (schemas/cli-automation-workflow-schema_v1.2.yaml).")
+
 
 async def run_mop_test(
     cli_jar: str,

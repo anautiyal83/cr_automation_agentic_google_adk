@@ -590,6 +590,10 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     _fix_criteria_expr(step)
 
     _fix_prompt_change_step(step)
+    _fix_expect_reply(step)
+    for sub in step.get("steps") or [] if isinstance(step.get("steps"), list) else []:
+        if isinstance(sub, dict):  # loop body
+            _fix_expect_reply(sub)
     _fix_transfer_step(step)
     _fix_absence_check(step)
     for key in ("when", "skip_when"):
@@ -749,6 +753,47 @@ def _fix_prompt_change_step(step: dict) -> None:
     validation["description"] = (f"Prompt matches {step['prompt_regex']!r} after '{send}' "
                                  "(checked by step prompt_regex)")
     logger.info("Step %r: prompt validation moved to step prompt_regex %r", send, step["prompt_regex"])
+
+
+# The JAR's ExpectReplyDefinition has exactly these properties; any other key fails loading the whole workflow
+# (“Unable to find property 'regex'”, OB-38) — step 7 then fails on every retry
+_EXPECT_REPLY_KEYS = ("expect", "reply", "timeout_sec", "repeat")
+_EXPECT_ALIASES = ("regex", "pattern", "prompt", "match", "expect_regex", "wait_for")
+_REPLY_ALIASES = ("send", "response", "answer", "value", "input", "text")
+
+
+def _fix_expect_reply(step: dict) -> None:
+    """``expect_reply`` in the JAR's form: a list of ``{expect, reply[, timeout_sec, repeat]}``."""
+    if "expect_reply" not in step:
+        return
+    value = step["expect_reply"]
+    if isinstance(value, str):  # just the reply: the usual password prompt
+        value = [{"expect": "assword:", "reply": value}]
+    elif isinstance(value, dict):
+        value = [value]
+    fixed = []
+    for entry in value if isinstance(value, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        entry = dict(entry)
+        for alias in _EXPECT_ALIASES:
+            if alias in entry:
+                entry.setdefault("expect", entry.pop(alias))
+        for alias in _REPLY_ALIASES:
+            if alias in entry:
+                entry.setdefault("reply", entry.pop(alias))
+        if "timeout" in entry:
+            entry.setdefault("timeout_sec", entry.pop("timeout"))
+        out = {k: entry[k] for k in _EXPECT_REPLY_KEYS if k in entry}
+        if out.get("expect") and "reply" in out:
+            out["expect"] = str(out["expect"])
+            fixed.append(out)
+    if fixed != step["expect_reply"]:
+        logger.info("Step %r: expect_reply rewritten to the JAR's form", str(step.get("send", ""))[:60])
+    if fixed:
+        step["expect_reply"] = fixed
+    else:
+        step.pop("expect_reply")
 
 
 def fix_placeholders(value: Any, renames: dict[str, str] | None = None) -> Any:

@@ -1161,3 +1161,19 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: a counting register whose count the step requires `== 0` is exempt too. Test
   `test_must_be_absent_captures_need_not_match_a_healthy_node`. Remaining finding of that run: DELTA_TAC_FILE never
   used (requirements gap: what the delta file is for).
+
+### OB-38 — Step 7 failed on every retry: `expect_reply` in a form the JAR cannot load (High, Fixed 2026-11-12)
+- Run 66073576 (EIR): the LLM wrote the DSSERVER ssh password as `expect_reply: [{regex: 'password:', send: …}]`.
+  The JAR's `ExpectReplyDefinition` has only `expect`, `reply`, `timeout_sec`, `repeat`, so `generate` failed loading
+  the whole workflow ("Unable to find property 'regex'"), with no MOP. `sessions.nested_sessions` only fills a
+  missing `expect_reply`, so nothing corrected it.
+- It repeated because step 6 never learned why. (1) `regenerate` read only `exec_feedback` (step 9); `mop_feedback`
+  was written and never read. (2) A JAR crash has no MOP scenarios, so `mop_feedback` was `[]`, and the test case
+  cut the stderr at 300 characters, inside the outer `Cannot create property=phases/steps` chain. (3) Step 7 counted
+  as passed (`mop_failed` looked at scenarios only) while it sent the run back.
+- **Fix**: autofix `_fix_expect_reply` (loop bodies too) maps `regex/pattern/prompt/…` → `expect`, `send/response/…`
+  → `reply`, `timeout` → `timeout_sec`, a dict or bare string → the list form, and drops other keys.
+  `jar_executor.yaml_load_error` puts the innermost property, its line and the reason first. Step 7 passes its failed
+  test cases as `mop_feedback` (1500 characters), writes `detail` into `step_7_error.json` and counts a JAR crash as
+  failed; step 6 regenerates from `mop_feedback` first. With the autofix the run's YAML generates its MOP.
+  Tests `test_expect_reply_takes_the_jars_form`, `test_jar_load_error_names_the_innermost_property`.

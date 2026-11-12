@@ -48,7 +48,8 @@ class NetworkConfigGenAgent(BaseAgent):
         retry_count = state.get("retry_count_6", 0)
         if retry_count > 0 and state.get("_network_config_gen_skill"):
             skill = state["_network_config_gen_skill"]
-            feedback_data = state.get("exec_feedback", [])
+            # step 7's findings when it sent the run back (it runs first), otherwise step 9's
+            feedback_data = state.pop("mop_feedback", None) or state.get("exec_feedback", [])
             reviewer_analysis = state.get("_reviewer_analysis_9", state.get("_reviewer_analysis_7", ""))
 
             from skills.network_config_gen import RegenerateFeedback
