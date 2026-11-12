@@ -74,11 +74,16 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
     except SyntaxError:
         return []  # reported by check_script_contract
     texts: list[str] = []
+    shapes: list[re.Pattern] = []  # f-strings with each field as any text: `for {args.kind}` prints `for white` (OB-39)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             texts.append(node.value)
         elif isinstance(node, ast.JoinedStr):
             texts.append("".join(v.value if isinstance(v, ast.Constant) else "x" for v in node.values))
+            fixed_text = "".join(v.value for v in node.values if isinstance(v, ast.Constant))
+            if len(fixed_text.strip()) >= 8:  # `f"{x}"` would match anything
+                shapes.append(re.compile("".join(re.escape(v.value) if isinstance(v, ast.Constant) else ".+"
+                                                 for v in node.values)))
     problems = []
     for rx in regexes:
         try:
@@ -88,7 +93,7 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
         fixed = _longest_literal(rx)
         # f-string fields are unknown at check time: the regex's fixed text in a message is enough
         if not any(compiled.search(t) for t in texts) and not (
-                len(fixed) >= 8 and any(fixed in t for t in texts)):
+                len(fixed) >= 8 and (any(fixed in t for t in texts) or any(s.search(fixed) for s in shapes))):
             problems.append(f"no message the script prints matches the workflow's success regex /{rx}/ "
                             "— print exactly such a message on success")
     return problems

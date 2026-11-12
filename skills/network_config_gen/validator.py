@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any
 
-from .autofix import parse_yaml, is_placeholder
+from .autofix import _walk_all_steps, parse_yaml, is_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,9 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
+    errors.extend(check_helper_script_nodes(parsed, list((expected or {}).get("mop_commands") or [])
+                                            + [str(c.get("command") or "") for c in command_samples or []
+                                               if isinstance(c, dict)]))
     errors.extend(check_iteration(parsed))
     errors.extend(check_unbalanced_quotes(parsed))
     errors.extend(check_condition_syntax(parsed))
@@ -107,6 +110,29 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
         errors.extend(check_alternative_columns(parsed, ciq_sheets))
         errors.extend(check_request_inputs(parsed, ciq_sheets, (expected or {}).get("request_columns") or {}))
         errors.extend(check_row_variables(parsed, ciq_sheets))
+    return errors
+
+
+_PY_CALL = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+(\S*?)([\w.-]+\.py)\b")
+
+
+def check_helper_script_nodes(parsed: dict, known_commands: list[str]) -> list[str]:
+    """A Python script the MOP / recorded sessions never run is one of ours: the pipeline generates it for the
+    automation server (helper_script_gen), no node has it (OB-39: ``python3 /usr/local/bin/check_tac_counts.py`` on
+    the EIR node, an invented path). It runs on ``local``, after the files it reads are copied there."""
+    known = "\n".join(known_commands)
+    errors = []
+    for phase, step in _walk_all_steps(parsed.get("phases") or {}):
+        node = str(step.get("node") or "")
+        m = _PY_CALL.match(str(step.get("send") or ""))
+        if not m or not node or node.upper() == "LOCAL" or node.startswith("${"):
+            continue
+        if m.group(2) in known:
+            continue  # the node's own tool
+        errors.append(f"Phase '{phase}': `{m.group(1)}{m.group(2)}` runs on {node}, but no node has it — it is a "
+                      f"helper script the pipeline generates for the automation server: run `python3 {m.group(2)} …` "
+                      "on node local (bare name), after copying every node file it reads to the automation server "
+                      "(out of a pod with `oc cp`/`kubectl cp` to the node first, then an sftp download step)")
     return errors
 
 

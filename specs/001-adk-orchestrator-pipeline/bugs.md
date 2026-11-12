@@ -1177,3 +1177,24 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   test cases as `mop_feedback` (1500 characters), writes `detail` into `step_7_error.json` and counts a JAR crash as
   failed; step 6 regenerates from `mop_feedback` first. With the autofix the run's YAML generates its MOP.
   Tests `test_expect_reply_takes_the_jars_form`, `test_jar_load_error_names_the_innermost_property`.
+
+### OB-39 — Step 6 failed on a correct helper script; the workflow ran it on the node with an unset `$DATE` (High, Fixed 2026-11-12)
+- Run 4d628ae4 (EIR): the helper-script check failed step 6 twice. `check_tac_counts.py` prints
+  `f"TAC counts validated successfully for {args.tac_type}"`, but `check_output_contract` read every f-string field as
+  the literal `x`, so `…for x` never matched `/…for white/`, and the retries could not fix a script that was right.
+- Found in the same workflow and missed by every check:
+  - The script ran on `niam_eir_server` as `/usr/local/bin/check_tac_counts.py`, an invented path. Our helper
+    scripts exist only on the automation server, and the developer note says "framework will require a python
+    script". DEP-40 moved only bare-name calls to LOCAL.
+  - The registered `DATE` was used as the shell variable `$DATE`, which is empty on the node, so the dump files
+    were `predump_white_.txt`.
+- **Fix**:
+  - An f-string with at least 8 characters of fixed text matches with each field read as any text.
+  - Autofix `registered_shell_variables`: `$NAME` of a registered value becomes `${NAME}`, unless the command sets
+    NAME or loops over it.
+  - Validator `check_helper_script_nodes`: a `python …x.py` on a node that no MOP command (`_expected_coverage`
+    `mop_commands`) or recorded sample runs is reported, with the way to run it on local (copy out of the pod, sftp
+    download, bare name). The step 6 prompt states both rules.
+  - Tests `test_output_contract_reads_f_string_fields_as_any_text`,
+    `test_registered_value_is_braced_in_later_commands`,
+    `test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it`.

@@ -327,7 +327,7 @@ def test_expected_coverage_skips_local_and_niam_entries():
     req = {"category_3_orchestration": {"phases": ["activity"]},
            "category_2_commands": {"commands": [{"node": "RDS"}, {"node": "LOCAL"}, {"node": "niam_lookup"},
                                                 {"node": "RDS"}]}}
-    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2},
+    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2}, "mop_commands": [],
                                      "request_columns": {}, "record_columns": {}}
 
 
@@ -540,3 +540,13 @@ def test_step6_is_cached_only_after_step9_passes(tmp_path):
     _settle_deferred_cache(cache, "UC", pending, [9], {}, str(tmp_path))           # step 9 passed
     assert cache.saved == {"network_config_gen": {"workflow_yaml": "w"}, "helper_script_gen": {"s": "x"}}
     assert not pending and not cache.cleared
+
+
+def test_output_contract_reads_f_string_fields_as_any_text():
+    """`f"… for {args.tac_type}"` prints `… for white` when the workflow passes `--tac-type white` (OB-39)."""
+    from skills.helper_script_gen.skill import check_output_contract
+    code = 'import sys\nkind = sys.argv[1]\nprint(f"TAC counts validated successfully for {kind}")\n'
+    assert check_output_contract(code, ["TAC counts validated successfully for white",
+                                        "TAC counts validated successfully for grey"]) == []
+    assert check_output_contract(code, ["All TACs loaded"])
+    assert check_output_contract('print(f"{x}")\n', ["All TACs loaded fine"])  # no fixed text: matches nothing

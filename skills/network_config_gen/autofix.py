@@ -314,6 +314,7 @@ def fix_workflow(yaml_text: str) -> str:
     renames = fix_named_groups(parsed.get("phases", {}))
     rename_expr_vars(parsed.get("phases", {}), renames)
     shell_variables_unbraced(parsed)
+    registered_shell_variables(parsed)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
     shell_guard_conditions(parsed)
@@ -1608,6 +1609,38 @@ def shell_variables_unbraced(parsed: dict) -> int:
             changed += 1
     if changed:
         logger.info("Shell variables written as $NAME in %d step(s) (the JAR fills ${NAME} itself)", changed)
+    return changed
+
+
+_UNBRACED_VAR = re.compile(r"(?<![\\$])\$([A-Za-z_]\w*)")
+_GROUP_NAME = re.compile(r"\(\?<([A-Za-z][A-Za-z0-9]*)>")
+
+
+def registered_shell_variables(parsed: dict) -> int:
+    """``$NAME`` of a value a step registers (``date +%Y%m%d`` → ``(?<DATE>…)``) is a shell variable no one set on
+    the node — empty there, so ``predump_$DATE.txt`` is ``predump_.txt`` (OB-39, EIR): it becomes ``${NAME}``, which
+    the JAR fills in. Names the command sets or loops over stay shell variables (``shell_variables_unbraced``)."""
+    registered: set[str] = set()
+    steps = list(_walk_all_steps(parsed.get("phases") or {}))
+    for _, step in steps:
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str):
+                registered.update(_GROUP_NAME.findall(reg["regex"]))
+    if not registered:
+        return 0
+    changed = 0
+    for _, step in steps:
+        send = step.get("send")
+        if not isinstance(send, str) or "$" not in send:
+            continue
+        own = set(_SHELL_ASSIGN.findall(send)) | set(_SHELL_LOOP_VAR.findall(send))
+        new = _UNBRACED_VAR.sub(lambda m: "${" + m.group(1) + "}" if m.group(1) in registered - own
+                                else m.group(0), send)
+        if new != send:
+            step["send"] = new
+            changed += 1
+    if changed:
+        logger.info("Registered values written as ${NAME} in %d step(s) ($NAME is an unset shell variable)", changed)
     return changed
 
 

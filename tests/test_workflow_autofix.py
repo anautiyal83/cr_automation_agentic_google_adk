@@ -713,3 +713,28 @@ def test_jar_load_error_names_the_innermost_property():
     msg = yaml_load_error(stderr)
     assert "`regex` at line 563" in msg and "Unable to find property 'regex' on class: ExpectReplyDefinition" in msg
     assert yaml_load_error("ERROR: Missing required option --html-template") == ""
+
+
+def test_registered_value_is_braced_in_later_commands():
+    """`$DATE` after `date` registered DATE is an unset shell variable on the node (OB-39)."""
+    from skills.network_config_gen.autofix import registered_shell_variables
+    parsed = {"phases": {"a": {"steps": [
+        {"send": "date +%Y%m%d", "register": [{"regex": r"(?<DATE>\d{8})"}]},
+        {"send": "org -c x >/opt/p/predump_$DATE.txt; echo $HOME"},
+        {"send": "DATE=$(date); ls /tmp/$DATE"},
+        {"send": "awk '{print $1}' f"},
+    ]}}}
+    assert registered_shell_variables(parsed) == 1
+    assert [s["send"] for s in parsed["phases"]["a"]["steps"][1:]] == [
+        "org -c x >/opt/p/predump_${DATE}.txt; echo $HOME", "DATE=$(date); ls /tmp/$DATE", "awk '{print $1}' f"]
+
+
+def test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it():
+    from skills.network_config_gen.validator import check_helper_script_nodes
+    parsed = {"phases": {"a": {"steps": [
+        {"node": "niam_eir_server", "send": "python3 /usr/local/bin/check_tac_counts.py --tac-type white"},
+        {"node": "niam_eir_server", "send": "python /opt/tools/node_tool.py -x"},
+        {"node": "LOCAL", "send": "python3 check_tac_counts.py --tac-type white"},
+    ]}}}
+    found = check_helper_script_nodes(parsed, ["python /opt/tools/node_tool.py -x"])
+    assert len(found) == 1 and "check_tac_counts.py" in found[0] and "node local" in found[0]

@@ -150,7 +150,9 @@ def _expected_coverage(requirements: dict) -> dict:
                 continue
             node = next(iter(declared))
         node_commands[node] = node_commands.get(node, 0) + 1
-    return {"phases": phases, "node_commands": node_commands,
+    mop_commands = [str(c.get("command") or c.get("cmd") or "") for c in
+                    (requirements.get("category_2_commands") or {}).get("commands") or [] if isinstance(c, dict)]
+    return {"phases": phases, "node_commands": node_commands, "mop_commands": [c for c in mop_commands if c],
             "request_columns": _request_columns(requirements),
             "record_columns": _record_columns(requirements)}
 

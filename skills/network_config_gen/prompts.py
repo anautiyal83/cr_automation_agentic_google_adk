@@ -398,6 +398,12 @@ phases:
 - For XML modification UCs: create_xml.py generates ONE XML per subscriber record using CIQ data.
   Multiple XMLs are created automatically when there are multiple records.
 - Use node: LOCAL for local commands (Python scripts, file operations).
+- A script the pipeline creates runs ONLY on node LOCAL, called by its bare name (`python3 check_x.py --a …`) —
+  never on a network node and never under an invented path (/usr/local/bin/…: no node has it). Every node file
+  it reads is copied to the automation server first: a file inside a pod `oc cp`/`kubectl cp` to the node, then an
+  sftp download step; the script reads the local copy. Only a script the MOP itself runs on a node stays there.
+- A value a step registers is `${{NAME}}` in later commands (`predump_${{DATE}}.txt`); `$NAME` is a shell variable
+  that is empty unless the same command sets it.
 
 === MOP HEADER VARIABLES ===
 The framework provides these at runtime — reference them, do not define them:
