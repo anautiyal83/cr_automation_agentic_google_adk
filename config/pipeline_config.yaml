@@ -59,7 +59,7 @@ execution:
     port: "22"
     user: "${REPO_USER}"
     password: "${REPO_PASSWORD}"
-    backup_dir: "/backup/netconfig"
+    backup_dir: "/repo-server/config/CR_AUTOMATION"
 
 storage:
   database_path: "./data/pipeline.db"

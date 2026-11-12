@@ -427,6 +427,24 @@ def _order_ref() -> str:
     return "${" + key + "}" if key else "${crGroup}"
 
 
+BACKUP_VAR = "BACK_UP_LOCATION_REPO"
+
+
+def backup_location(parsed: dict, cfg: dict, requirements: dict | None) -> str:
+    """``${BACK_UP_LOCATION_REPO}`` — production's repo folder of the order and node,
+    ``<backup_dir>/<UC type>/${CHILD_REQ_ID}/${NODE_NAME}`` (a global; both runtime parameters, so a rollback-only
+    run finds it too — spec 013 PF021). '' when the framework does not pass them (the older convention)."""
+    from core.config import runtime_params
+    params = runtime_params()
+    if not ("CHILD_REQ_ID" in params and "NODE_NAME" in params):
+        return ""
+    uc = str((requirements or {}).get("uc_name") or "") if isinstance(requirements, dict) else ""
+    group = uc.split("_", 1)[0].upper() if "_" in uc else ""
+    value = "/".join(x for x in (cfg["backup_dir"].rstrip("/"), group, "${CHILD_REQ_ID}", "${NODE_NAME}") if x)
+    parsed.setdefault("globals", {}).setdefault("vars", {})[BACKUP_VAR] = value
+    return "${" + BACKUP_VAR + "}"
+
+
 def node_name_ref(node: str, requirements: dict | None) -> str:
     """``${<NODE>.<field>}`` of the node's name in the CIQ node sheet (the field whose values are
     the INDEX sheet's node names, e.g. ``${MRF.NODE_NAME}``); '' when the CIQ has none."""
@@ -647,8 +665,11 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
             if repo_route:
                 copy_when = " && ".join(x for x in (when, f"ncArchived{k} != ''" if dest_loads else "") if x)
                 repo = _repo_node(parsed, cfg)
-                who = node_name_ref(ciq_type(parsed, node) or node, requirements)
-                if who:
+                location = backup_location(parsed, cfg, requirements)
+                who = "" if location else node_name_ref(ciq_type(parsed, node) or node, requirements)
+                if location:  # production: <BACK_UP_LOCATION_REPO>/BACKUP/<source folder>
+                    repo_dir = f"{location}/BACKUP{mirror}"
+                elif who:
                     repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/{who}{mirror}"
                 else:  # no node name column in the CIQ: the node's hostname
                     out.append(_hostname_step(f"{AUTO_ID}bk{k}_host", node, f"bkHost{k}", copy_when))
@@ -774,7 +795,7 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
         return 0
     cfg = _repo_config(requirements)
     local = _local_node(parsed)
-    stage_dir = f"{cfg['backup_dir'].rstrip('/')}/${{crGroup}}/files"
+    stage_dir = backup_location(parsed, cfg, requirements) or f"{cfg['backup_dir'].rstrip('/')}/${{crGroup}}/files"
     count = 0
 
     def walk(steps: list) -> list:

@@ -230,7 +230,8 @@ def file_builtin(cmd: str) -> bool:
     return first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
 
 
-_PEER = re.compile(r"\S@(?:\\?\[|[\w.\\-]+:)")
+# user@host: — the host is a name, an IPv6 in brackets or, in an LLM's key, a regex token like \S+
+_PEER = re.compile(r"\S@(?:\\?\[|[^\s:@]+:)")
 
 
 def is_peer_copy(cmd: str) -> bool:

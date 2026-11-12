@@ -263,7 +263,7 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
 
     db = await init_database("data/pipeline.db")
     rows = await db.execute(
-        "SELECT d.uc_name, d.ciq_file_path, d.command_outputs_path, d.additional_documents "
+        "SELECT d.uc_name, d.ciq_file_path, d.command_outputs_path, d.additional_documents, d.run_options "
         "FROM pipeline_runs r "
         "JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?", (run_id,))
     if not rows:
@@ -293,6 +293,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
             from skills.network_config_gen import sessions
             from skills.network_config_gen.skill import _expected_coverage as _cov
             reqs0 = {"uc_name": uc_name, **json.loads(read("requirements.json") or "{}")}
+            if rows[0]["run_options"] and "run_options" not in reqs0:  # the run's phases / repo route (spec 010)
+                reqs0["run_options"] = json.loads(rows[0]["run_options"])
             sessions.nested_sessions(parsed, (_cov(reqs0).get("record_columns") or {}).get("node_types"))
             structure.apply(parsed, reqs0)
             workflow_yaml = dump_yaml(parsed)

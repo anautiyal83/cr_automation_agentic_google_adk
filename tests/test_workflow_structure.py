@@ -112,8 +112,8 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     assert ids.index("nc_bk1_items0") < ids.index("nc_bk1_existing") < ids.index(None, ids.index("nc_bk1_existing"))
     assert ids.index("nc_bk1_sum_node") < ids.index("nc_bk1_copy") < ids.index("nc_bk1_sum_repo")
     copy_ = backup[ids.index("nc_bk1_copy")]
-    # no node name column in this CIQ: the node's hostname names its folder
-    repo_file = "/backup/netconfig/${ORDER_NO}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
+    # production: <BACK_UP_LOCATION_REPO>/BACKUP/<source folder> (CHILD_REQ_ID / NODE_NAME passed at run time)
+    repo_file = "${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/clips_backup.tar.gz"
     assert copy_["node"] == "MRF" and unwrap(copy_["when"]) == "ncArchived1 != ''"   # only when there is an archive
     assert copy_["send"] == f"scp {node_file} ${{REPO_USER}}@${{REPO_IP}}:{repo_file}"
     assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${REPO_PASSWORD}\n", "timeout_sec": 30}]
@@ -146,10 +146,10 @@ def test_input_files_go_through_the_repo_server():
     ids = [s.get("id") for s in steps]
     stage = steps[ids.index("nc_xr1_stage")]
     assert stage["node"] == "repo_server"
-    assert stage["sftp"]["remote_path"] == "/backup/netconfig/${crGroup}/files/${rec.data.FILE}"
+    assert stage["sftp"]["remote_path"] == "${BACK_UP_LOCATION_REPO}/${rec.data.FILE}"
     copy_ = steps[ids.index("nc_xr1_copy")]
     assert copy_["node"] == "MRF"
-    assert copy_["send"] == "scp ${REPO_USER}@${REPO_IP}:/backup/netconfig/${crGroup}/files/${rec.data.FILE} /tmp/${rec.data.FILE}"
+    assert copy_["send"] == "scp ${REPO_USER}@${REPO_IP}:${BACK_UP_LOCATION_REPO}/${rec.data.FILE} /tmp/${rec.data.FILE}"
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # into /tmp
     assert ids.index("nc_xr1_stage") < ids.index("nc_xr1_copy") < ids.index("nc_xr1_sum_node")
     assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE}"
@@ -161,7 +161,7 @@ def test_sftp_node_types_and_node_changes_through_the_repo():
     sftp_reqs = {**VIA_REPO, "category_1_node_activity": {"nodes": [{"name": "MRF", "ssh": {"file_transfer": "sftp"}}]}}
     backup = _leaves(_applied(sftp_reqs), "backup")
     assert next(s for s in backup if s.get("id") == "nc_bk1_copy")["send"] == (
-        "sftp ${REPO_USER}@${REPO_IP}:/backup/netconfig/${ORDER_NO}/${bkHost1}/${rec.data.DEST} "
+        "sftp ${REPO_USER}@${REPO_IP}:${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST} "
         "<<< 'put /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz clips_backup.tar.gz'")
     assert structure.repo_copy("sftp", "u", "repo", "/opt/a/f.wav", "/r/f.wav", False) == "sftp u@repo:/r/f.wav /opt/a/f.wav"
     assert structure.repo_copy("scp", "u", "fd00::1", "/tmp/f", "/r/f", True) == "scp /tmp/f u@[fd00::1]:/r/f"
@@ -288,7 +288,7 @@ def test_step8_repo_copies_reach_the_node_instance():
     specs = [NodeSpec(name="MRF", instance="MRF", prompt="mrf:~ # "), NodeSpec(name="repo_server", instance="repo_server", prompt="$ ")]
     overlay = parse_yaml(build_overlay(dump_yaml(_applied(VIA_REPO)), specs, {"MRF": 22200, "repo_server": 22201}))
     copy_ = next(s for s in _leaves(overlay, "backup") if s.get("id") == "nc_bk1_copy")
-    assert copy_["send"].startswith("scp /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz ${REPO_USER}@repo_server:/backup/")
+    assert copy_["send"].startswith("scp /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz ${REPO_USER}@repo_server:${BACK_UP_LOCATION_REPO}/BACKUP/")
     assert copy_["expect_reply"][0]["reply"] == "netconf-sim\n"
 
 
@@ -326,7 +326,8 @@ phases:
     structure.apply(wf, reqs)
     text = json.dumps(wf)
     assert "backupTarName}" not in text.split('"rollback_configuration"')[1]      # nothing registered is read
-    assert "/backup/netconfig/${ORDER_NO}/${MRF.NODE_NAME}/${rec.data.DEST}/bk.tar.gz" in text
+    assert "${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/bk.tar.gz" in text
+    assert "/repo-server/config/CR_AUTOMATION/${CHILD_REQ_ID}/${NODE_NAME}" in text   # runtime params: rollback-only too
     assert "nc_bk1_host" not in text and "rsHost" not in text                     # no hostname steps
     rollback = _leaves(wf, "rollbackConfiguration")
     restore = next(s for s in rollback if "tar -x" in str(s.get("send")))

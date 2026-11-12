@@ -1125,3 +1125,10 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   quantifier: Python's `re` accepts it, Java rejects it ("Illegal repetition"), so MockWire could not use the key.
 - **Fix**: `safe_regex_key` escapes every `{` / `}` that is not a quantifier (`{n}`, `{n,}`, `{n,m}`). Test
   `test_llm_regex_key_braces_are_valid_java`.
+
+### OB-34 — Step 8 answered a node's copy from the repo with a canned LLM response (High, Fixed 2026-11-12)
+- MRF via repo (spec 013 C3): `sftp ${REPO_USER}@${REPO_IP}:<repo file> /tmp/<file>` got the LLM's key
+  `regex:sftp \S+@\S+:…` ("Fetching /path/to/remote/file …") instead of MockWire's peer copy, so the node never got
+  the file ("No such file or directory", checksum mismatch). `is_peer_copy` only knew literal hosts after `@`.
+- **Fix**: any `user@<host>:` — also a regex token — is a peer copy; its LLM key is dropped. Finding on the way:
+  `test_step --refix-workflow` ignored the run's options (the repo route was never simulated); it reads them now.

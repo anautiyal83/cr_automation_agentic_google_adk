@@ -41,7 +41,7 @@ DEFAULT_RUNTIME_PARAMS = {
 # Server that keeps the backups a workflow takes (node `repo_server` of every workflow that uses it, logging in
 # with the runtime parameters as production does)
 DEFAULT_REPO_SERVER = {"node": "repo_server", "host": "${REPO_IP}", "port": "22", "user": "${REPO_USER}",
-                       "password": "${REPO_PASSWORD}", "backup_dir": "/backup/netconfig"}
+                       "password": "${REPO_PASSWORD}", "backup_dir": "/repo-server/config/CR_AUTOMATION"}
 
 
 # ---------------------------------------------------------------------------

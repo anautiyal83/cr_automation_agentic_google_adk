@@ -76,7 +76,10 @@ skipped phase → PF024)
   ${M2MUSER} / ${M2MPASSWORD} + production timeouts (`production._niam_nodes`); repo node `repo_server` with
   ${REPO_IP} / ${REPO_USER} / ${REPO_PASSWORD}; `order_number: ${ORDER_NO}`. MRF 4/4, PGW 2/2. Was: `NIAM_IP`, `M2MPORT`, `M2MUSER`, `M2MPASSWORD`, `REPO_USER`, `REPO_PASSWORD`,
   `ORDER_NO`, `CHILD_REQ_ID`, `PARENT_REQ_ID`, `NODE_NAME` (test values for step 9)
-- [ ] PF021 `structure.backups_by_convention`: `BACK_UP_LOCATION_REPO` + `/BACKUP/`, `/Activity/`, `/Rollback/`
+- [x] PF021 (C3a, 2026-11-12) `BACK_UP_LOCATION_REPO` global = `<backup_dir>/<UC type>/${CHILD_REQ_ID}/${NODE_NAME}`
+  (backup_dir default /repo-server/config/CR_AUTOMATION); backups in `…/BACKUP/<source folder>/`, input files in it
+  directly; no hostname lookups. MRF via repo 4/4 (47 steps), files at production's paths. (/Activity, /Rollback:
+  evidence zips — not generated yet)
 - [ ] PF022 Transfers: production checksum + `LOOP_RETRY` loop + guard; node ↔ repo `printf "put|get …" | sftp` with
   `expect_reply`; repo IP by IPv4/IPv6
 - [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
