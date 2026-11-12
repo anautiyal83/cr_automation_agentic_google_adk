@@ -286,7 +286,7 @@ def is_peer_copy(cmd: str) -> bool:
     """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7, or production's
     ``printf "put|get …" | sftp … user@host``, spec 013): MockWire moves the file between the two instances'
     VFS (``transfer.peers``)."""
-    plain = cmd[len("regex:"):].replace("\\ ", " ") if cmd.startswith("regex:") else cmd
+    plain = cmd[len("regex:"):].lstrip("^").replace("\\ ", " ") if cmd.startswith("regex:") else cmd
     return bool(_PEER.search(cmd)) or bool(_SFTP_BATCH.match(plain))
 
 

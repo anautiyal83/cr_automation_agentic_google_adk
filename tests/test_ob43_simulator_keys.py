@@ -44,6 +44,26 @@ def test_regex_keys_match_from_the_start_of_the_command():
     assert _anchored_start("ls -l") == "ls -l"
 
 
+def test_loop_key_broken_by_an_unescaped_question_mark_is_rebuilt():
+    """OB-44: the TAC loop's key left the ternary's `?` unescaped (`\\) ? "` = optional space) and matched nothing;
+    the lookup's key, still unanchored during the checks, "answered" the loop, so the key was never rebuilt."""
+    from skills.network_simulator_setup.skill import _find_entry, rekey_unanswered
+    from skills.network_simulator_setup.topology import NodeSpec
+    lookup = "kubectl get pods -n ${NS} | grep eirapp | awk '{print $1}'"
+    loop = (f"for i in `{lookup}`; do echo $i; kubectl exec -it $i -n ${{NS}} -- bash -c 'dsClassInfo'; echo ; done"
+            " | sort -u | wc -l | awk '{print ($1 == 1) ? \"VALUES_MATCH\" : \"VALUES_MISMATCH\"}'")
+    broken = (r"regex:for i in `kubectl get pods -n \S+ \| grep eirapp \| awk '\{print \$1\}'`; do echo \$i; "
+              r"kubectl exec -it \$i -n \S+ -- bash -c 'dsClassInfo'; echo ; done \| sort -u \| wc -l \| "
+              r"awk '\{print \(\$1 == 1\) ? " + '"VALUES_MATCH" : "VALUES_MISMATCH"' + r"\}'")
+    entries = {_anchored_start(r"regex:kubectl get pods -n \S+ \| grep eirapp \| awk '\{print \$1\}'"): {"lines": ["p1"]},
+               _anchored_start(broken): {"lines": ["VALUES_MATCH"]}}
+    resolved = loop.replace("${NS}", "1")
+    assert _find_entry(entries, loop, resolved)[1] is None  # what MockWire sees: nothing answers the loop
+    node = NodeSpec(name="eir", instance="eir", prompt="$ ", commands=[{"cmd": lookup}, {"cmd": loop}])
+    fixed = rekey_unanswered(node, entries, set(), {})
+    assert _find_entry(fixed, loop, resolved)[1] == {"lines": ["VALUES_MATCH"]}
+
+
 def test_lone_quote_inside_single_quoted_item_is_repaired():
     raw = ("```yaml\n'oc cp a b':\n  lines:\n  - 'pod-1'\n"
            "  - 'tar: Removing leading `/' from member names'\n'ss':\n  lines:\n  - 'ok'\n```")

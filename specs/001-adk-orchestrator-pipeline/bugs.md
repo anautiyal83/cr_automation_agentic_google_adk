@@ -1280,3 +1280,14 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - Step 8 drops AI keys for session-entry commands (`_enters_session`), anchors every regex key at the start
     (`_anchored_start`), and doubles a lone quote inside a single-quoted key / item.
   - Tests in `tests/test_ob43_simulator_keys.py`.
+
+### OB-44 — EIR step 9: the TAC loop had no simulator answer (High, Fixed 2026-11-12)
+- Run 81e7d1a0 after OB-43. Only the TAC comparison loop failed: MockWire had no key for it and ran it in pieces
+  (`do echo $i` … unmatched, classified as a simulator issue).
+- The AI's key for the loop escaped everything except the ternary's `?` (`\) ? "` reads as an optional space), so
+  it matched nothing. `rekey_unanswered` would have rebuilt it from the command, but the checks ran on the keys
+  before OB-43's start anchoring. There the lookup key `kubectl get pods -n \S+ | grep eirapp | awk …` still
+  "answered" the loop that contains it, so the loop never counted as unanswered.
+- **Fix**: AI keys are anchored as soon as they are read, so every check sees what MockWire matches.
+  `rekey_unanswered` and `is_peer_copy` read anchored keys. Test
+  `test_loop_key_broken_by_an_unescaped_question_mark_is_rebuilt`.

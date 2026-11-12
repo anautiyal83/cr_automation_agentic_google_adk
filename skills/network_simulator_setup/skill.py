@@ -429,7 +429,11 @@ class NetworkSimulatorSetupSkill:
                 if safe is None:
                     logger.warning("Phase 2: %s — dropped response key %r: it matches any command", node.name, str(key)[:80])
                     continue
-                entries[safe] = dict(val)
+                # anchored now, as written to the config: every later check (unanswered → rekeyed) must see what
+                # MockWire matches — unanchored, the lookup key "answered" the TAC loop and its own key, broken by
+                # an unescaped `?`, was never rebuilt (OB-44)
+                from .topology import _anchored_start
+                entries[_anchored_start(safe)] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
 
@@ -509,7 +513,8 @@ def rekey_unanswered(node: NodeSpec, entries: dict, recorded: set[str], row: dic
         for key in list(entries):
             if not str(key).startswith("regex:"):
                 continue
-            head = re.split(r"\\[SdwsDWb]|\.\*|\.\+|\[|\(|\|", str(key)[6:])[0]
+            body_text = re.sub(r"^(?:\(\?[a-zA-Z]+\))?\^", "", str(key)[6:])  # keys are anchored (OB-44)
+            head = re.split(r"\\[SdwsDWb]|\.\*|\.\+|\[|\(|\|", body_text)[0]
             head = re.sub(r"\\(.)", r"\1", head)
             if len(head) >= 8 and m["resolved"].startswith(head):
                 entries["regex:" + body] = entries.pop(key)
