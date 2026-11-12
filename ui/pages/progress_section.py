@@ -238,7 +238,8 @@ class ProgressSection:
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
-            with ui.row().classes("w-full gap-2"):
+            # every review action on ONE line, vertically centred (scrolls sideways when the window is narrow)
+            with ui.row().classes("w-full gap-2 items-center no-wrap").style("overflow-x: auto"):
                 self.ms_continue_btn = action(ui.button("Approve & continue", icon="check",
                     on_click=lambda: self._milestone_respond("continue")) \
                     .props("unelevated color=primary size=sm no-caps"), "progress")
@@ -253,7 +254,7 @@ class ProgressSection:
                     .tooltip("Runs the step again; after 3 re-runs of the same step the run fails"), "progress")
                 # ticked: the re-run step regenerates (its cache is cleared); unticked: it re-runs from its cache
                 self.ms_clear_cache_cb = action(ui.checkbox("Clear cache", value=False)
-                    .props("dense size=sm")
+                    .props("dense size=xs").classes("text-caption cr-text-dim").style("white-space: nowrap")
                     .tooltip("Ticked: the step re-runs from scratch (its cache is cleared). "
                              "Unticked: it re-uses its cached result where there is one"), "progress")
                 # Step 2 review: correct answers or say what was captured wrongly
@@ -277,7 +278,6 @@ class ProgressSection:
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
-            with ui.row().classes("w-full gap-2"):
                 self.ms_clarify_btn = action(ui.button("Clarify in requirements", icon="quiz",
                     on_click=lambda: self._milestone_respond("clarify")) \
                     .props("unelevated color=primary size=sm no-caps") \
