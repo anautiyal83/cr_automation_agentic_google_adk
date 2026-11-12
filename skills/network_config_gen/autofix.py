@@ -315,6 +315,7 @@ def fix_workflow(yaml_text: str) -> str:
     rename_expr_vars(parsed.get("phases", {}), renames)
     shell_variables_unbraced(parsed)
     registered_shell_variables(parsed)
+    loop_over_lookup(parsed)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
     shell_guard_conditions(parsed)
@@ -1641,6 +1642,38 @@ def registered_shell_variables(parsed: dict) -> int:
             changed += 1
     if changed:
         logger.info("Registered values written as ${NAME} in %d step(s) ($NAME is an unset shell variable)", changed)
+    return changed
+
+
+_ECHO_LIST = re.compile(r"""`echo\s+("?)\$\{([A-Za-z]\w*)\}\1`|\$\(echo\s+("?)\$\{([A-Za-z]\w*)\}\3\)""")
+_WHOLE_OUTPUT = re.compile(r"\[\\s\\S\]|\[\\S\\s\]|\(\?s\)")
+
+
+def loop_over_lookup(parsed: dict) -> int:
+    """``for i in `echo "${PODS}"` `` where PODS captures a lookup's whole (multi-line) output → the lookup itself
+    in the backticks, as production writes it (``for i in `kubectl get pods -n ${NS} | grep app | awk …` ``). The
+    JAR puts the registered lines into the command, the shell gets a command broken over several lines
+    (``-bash: for: command not found``), and a rollback-only run has no value at all (OB-43)."""
+    lookups: dict[str, str] = {}
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if isinstance(send, str) and lookups:
+            def inline(m: re.Match) -> str:
+                name = m.group(2) or m.group(4)
+                return f"`{lookups[name]}`" if name in lookups else m.group(0)
+            new = _ECHO_LIST.sub(inline, send)
+            if new != send:
+                step["send"] = new
+                changed += 1
+        if isinstance(send, str) and "`" not in send and "$(" not in send:
+            for reg in step.get("register") or []:
+                rx = reg.get("regex") if isinstance(reg, dict) else None
+                if isinstance(rx, str) and not reg.get("loop") and _WHOLE_OUTPUT.search(rx):
+                    for name in re.findall(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", rx):
+                        lookups[name] = send.strip()
+    if changed:
+        logger.info("Loops over a registered list run its lookup instead in %d step(s)", changed)
     return changed
 
 

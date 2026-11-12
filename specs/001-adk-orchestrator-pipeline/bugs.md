@@ -1261,3 +1261,22 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - A salvage that keeps less than 80% of the entries asks the AI again; only the last attempt keeps a partial
     answer.
   - Test `test_single_quote_backslash_escapes_are_repaired`.
+
+### OB-43 — EIR step 9: registered pod lists in loops, AI keys for pod shells, lookup keys answering loops (High, Fixed 2026-11-12)
+- Runs d3aa8ed5 / 81e7d1a0 after OB-42:
+  - **Registered list in a loop (step 6).** `for i in \`echo "${EIRPODS}"\`` with EIRPODS = the lookup's whole
+    output: the JAR puts the pod lines into the command, the shell gets it broken over several lines (`-bash: for:
+    command not found`), and a rollback-only run has no value at all. Production loops over the lookup itself.
+  - **AI key for entering a pod shell (step 8).** An exact key `kubectl exec -it eirapp-… -- bash` with plain
+    lines; MockWire tries exact keys first, so our prompt-pushing session key never ran and the next `exit` ended
+    the session ("Failed to exit EIR POD", rollback timeout). Its unanchored regex form answered the TAC loop too.
+  - **Lookup key answering a loop (step 8).** `kubectl get pods -n \S+ | grep eirapp | awk …` (searched anywhere)
+    answered the loop that runs that lookup in its backticks.
+  - **Lone quote in the AI's YAML (step 8).** `- 'tar: Removing leading \`/' from member names'` failed to parse,
+    and 6 entries were lost.
+- **Fix**:
+  - Autofix `loop_over_lookup`: `` `echo "${VAR}"` `` / `$(echo ${VAR})` of a whole-output capture becomes the
+    lookup command.
+  - Step 8 drops AI keys for session-entry commands (`_enters_session`), anchors every regex key at the start
+    (`_anchored_start`), and doubles a lone quote inside a single-quoted key / item.
+  - Tests in `tests/test_ob43_simulator_keys.py`.

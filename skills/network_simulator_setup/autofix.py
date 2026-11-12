@@ -111,8 +111,17 @@ def _single_quote_escapes(text: str) -> str:
         m = _SQ_SCALAR.match(line)
         if m and "\\'" in m.group(2):
             line = m.group(1) + "'" + m.group(2).replace("\\'", "''")
+        # a lone quote inside a single-quoted key / item (`- 'tar: Removing leading `/' from member names'`): a valid
+        # scalar never holds one, so it is the LLM's own quote → doubled
+        whole = _SQ_WHOLE.match(line)
+        if whole and _LONE_QUOTE.search(whole.group(2)):
+            line = f"{whole.group(1)}'{_LONE_QUOTE.sub(chr(39) * 2, whole.group(2))}'{whole.group(3)}"
         out.append(line)
     return "\n".join(out)
+
+
+_SQ_WHOLE = re.compile(r"^(\s*(?:-\s+)?)'(.*)'(\s*:\s*|\s*)$")
+_LONE_QUOTE = re.compile(r"(?<!')'(?!')")
 
 
 def parse_yaml(text: str) -> dict | list | None:

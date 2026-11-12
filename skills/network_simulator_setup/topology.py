@@ -212,11 +212,39 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
     from .vfs_commands import key_without_redirect
     for key, val in (command_entries or {}).items():
         key = key_without_redirect(str(key))  # `cmd >/p/f` keyed on cmd: MockWire writes the file (OB-40)
+        if spec.shells and _enters_session(key):
+            continue  # entering a nested shell is ours (pushPrompt above); an LLM key answered it with plain lines
+        key = _anchored_start(key)
         if key in RESERVED_KEYS or key in cfg or _is_builtin_key(key):
             continue
         cfg[key] = val
 
     return dump_yaml(cfg)
+
+
+def _anchored_start(key: str) -> str:
+    """A regex key matches from the start of the command: MockWire searches it anywhere, and the lookup's key
+    ``kubectl get pods -n \\S+ | grep eirapp | awk …`` answered the loop that runs that lookup in its backticks
+    (``for i in `kubectl get pods …` ; do …``) — OB-43. A pipeline's first stage is still matched on its own."""
+    if not key.startswith("regex:"):
+        return key
+    body = key[len("regex:"):]
+    flags = re.match(r"^\(\?[a-zA-Z]+\)", body)
+    head, rest = (flags.group(0), body[flags.end():]) if flags else ("", body)
+    return key if rest.startswith("^") else f"regex:{head}^{rest}"
+
+
+def _enters_session(key: str) -> bool:
+    """An LLM response key for a command that opens a nested shell (``kubectl exec -it … -- bash``, ``ssh u@h``).
+    MockWire tries exact keys first, so the LLM's ``kubectl exec -it eirapp-… -- bash`` with plain lines beat the
+    session key: no prompt was pushed and the next ``exit`` ended the session; its unanchored regex form also
+    answered the per-pod loops (OB-43)."""
+    from skills.network_config_gen.sessions import enter_kind
+    text = key[len("regex:"):] if key.startswith("regex:") else key
+    if key.startswith("regex:"):
+        text = re.sub(r"^\^|\\s\*\$$|\$$", "", text)
+        text = re.sub(r"\\s[+*]", " ", text).replace("\\-", "-")
+    return enter_kind(text.strip()) in ("exec", "ssh", "telnet")
 
 
 def _is_builtin_key(key: str) -> bool:
