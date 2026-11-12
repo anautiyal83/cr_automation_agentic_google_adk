@@ -155,10 +155,25 @@ CRITICAL RULES:
   arrays (`${counts[$pod]}` arrives empty): compare per-pod values in one pipeline instead, e.g.
   `for p in …; do …; done | sort -u | wc -l`, and register that count.
 - sftp steps print nothing: give them no output regex (the transfer status decides).
+- A command for EVERY pod / host / item of a list is ONE step with a shell loop (as production writes it):
+    send: "for i in `kubectl get pods -n ${NS} | grep app | awk '{print $1}'`; do echo $i; kubectl exec $i -n ${NS} -- bash -c '<cmd>'; echo; done"
+  Never `for_each` on a plain step (only a `type: loop` step has it — elsewhere it is ignored and the command
+  runs once), and never read the variable of a `loop: true` register: such a register only COUNTS (count_var);
+  its variable is empty.
+- Check "no item is in a bad state" as production does: register the first bad line and require it empty —
+    register: [{regex: '(?<BADSTATE>tcp6?\\s+\\d+\\s+\\d+\\s+\\S+\\s+\\S+:16611\\s+(?!ESTABLISHED\\b)\\S+)'}]
+    validation: {success: {criteria: {expr: "BADSTATE == ''"}}}
+  "Every item reports 0": register a non-zero value, `(?<ERRCOUNT>[1-9]\\d*)`, and require it empty.
+  A command that can report an error gets `{regex: '(?<CMDERROR>ERROR:.*|error:.*)'}` beside its own register.
+- A wait for the network to settle: `echo 'Waiting 300 s'; sleep 300; echo 'WAIT_DONE'` with timeout_sec above
+  the delay (330); a check after it that may still fail gets retries + retry_delay_sec.
 - The pipeline adds these itself — do NOT write them:
     - a loop over all CIQ records: write each per-record step ONCE with
       ${configSequences.0.records.0.data.<Column>}; it is run for every record of the node group
-    - sha256sum checks of every sftp transfer (both ends compared)
+    - sha256sum checks of every sftp transfer (both ends compared), with the retries and the guard
+    - where input files come from (${LOCAL_PATH} on the automation server) and the check that they are there
+    - the NIAM login (and the failover between NIAM entries), the repo server's address
+    - the lookups a rollback-only run needs again (write the rollback as if the earlier phases ran)
     - moving the backup to the repo server: in the backup phase just create ONE archive on the
       node, `tar -czvf /tmp/<name>.tar.gz <dir>/` (fixed name, no $(date …)); a rollback that
       restores it extracts that same archive (tar -xzvf /tmp/<name>.tar.gz -C /)
