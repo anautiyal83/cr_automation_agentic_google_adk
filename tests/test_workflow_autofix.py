@@ -738,3 +738,31 @@ def test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it():
     ]}}}
     found = check_helper_script_nodes(parsed, ["python /opt/tools/node_tool.py -x"])
     assert len(found) == 1 and "check_tac_counts.py" in found[0] and "node local" in found[0]
+
+
+def test_count_check_in_either_order_is_held_against_the_real_output():
+    """OB-40: `ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT` counts every ESTABLISHED line (many per pod);
+    recorded as `-n ns| grep`, written as `-n ${NS} | grep` — neither the order nor the spacing was recognised."""
+    from skills.network_config_gen.validator import check_against_samples, count_check
+    step = {"node": "n", "send": "for i in `kubectl get pods -n ${NS} | grep app`; do echo $i; netstat -an; done",
+            "register": [{"regex": "ESTABLISHED", "loop": True, "count_var": "ESTABLISHED_COUNT"},
+                         {"regex": r"app-\S+", "loop": True, "count_var": "POD_COUNT"}],
+            "validation": {"success": {"criteria": {"expr": "ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT"}}}}
+    assert count_check(step)[0::2] == ("POD_COUNT", "ESTABLISHED_COUNT")
+    sample = {"command": "for i in `kubectl get pods -n nk1| grep app`; do echo $i; netstat -an; done",
+              "output": "app-1\ntcp ESTABLISHED\ntcp ESTABLISHED\n\napp-2\ntcp ESTABLISHED\ntcp ESTABLISHED\n"}
+    found = check_against_samples({"phases": {"a": {"steps": [step]}}}, [sample])
+    assert any("count check gives" in f for f in found), found
+
+
+def test_long_listing_cannot_show_file_names_side_by_side():
+    """OB-40: `ls -lrth` puts each file on its own line after its details; `a_.+?.txt\s+b_.+?.txt` never matches."""
+    from skills.network_config_gen.validator import check_file_listing_regexes
+
+    def wf(send, regex):
+        return {"phases": {"a": {"steps": [{"node": "n", "send": send,
+                                            "validation": {"success": {"criteria": {"regex": regex}}}}]}}}
+    joined = r"postdump_white_.+?.txt\s+postdump_black_.+?.txt"
+    assert check_file_listing_regexes(wf("cd /opt/p/ && ls -lrth", joined))
+    assert not check_file_listing_regexes(wf("cd /opt/p/ && ls", joined))  # plain ls: names side by side
+    assert not check_file_listing_regexes(wf("ls -l /opt/p", r"root\s+root"))

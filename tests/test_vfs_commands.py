@@ -165,3 +165,23 @@ def test_staged_inputs_are_made_again_real_ones_kept(tmp_path):
     (tmp_path / "real.tar").write_bytes(b"not ours")
     assert _staged_by_step9(tmp_path / "a.tar") and _staged_by_step9(tmp_path / "b.txt")
     assert not _staged_by_step9(tmp_path / "real.tar")
+
+
+def test_redirected_output_lands_in_the_vfs_and_cd_ls_reads_it():
+    """OB-40 (EIR rollback): `org -c … >/opt/sdf/processing/x.txt` was keyed with its redirect, so MockWire answered
+    the line and wrote no file; `cd /opt/sdf/processing/ && ls -lrth` then got a canned listing."""
+    from skills.network_simulator_setup.vfs_commands import (key_without_redirect, vfs_handled,
+                                                             workflow_prefixes)
+    assert key_without_redirect(r"regex:org -c eirWhiteRng >/opt/sdf/processing/post_white_\S+.txt") \
+        == r"regex:^org -c eirWhiteRng\s*$"
+    assert key_without_redirect(r"regex:^org\s+-c\s+x\s*>\s*/opt/p/x_\S+\.txt\s*$") == r"regex:^org\s+-c\s+x\s*$"
+    assert key_without_redirect("org -c x > /opt/p/a.txt") == "org -c x"
+    for unchanged in ("ls -l /tmp 2>/dev/null", "cat a > b", "regex:df -h"):
+        assert key_without_redirect(unchanged) == unchanged
+    cmds = [{"cmd": "org -c eirWhiteRng >/opt/sdf/processing/predump_white_${DATE}.txt"},
+            {"cmd": "cd /opt/sdf/processing/ && ls -lrth"}]
+    prefixes = workflow_prefixes(cmds, [], None)
+    assert "/opt/sdf/processing" in prefixes
+    assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth", prefixes)
+    assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth predump_white_${DATE}.txt", prefixes)
+    assert not vfs_handled("cd /etc && ls", prefixes) and not vfs_handled("ls -l", prefixes)

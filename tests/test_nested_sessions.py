@@ -127,12 +127,24 @@ def test_simulator_answers_enter_commands_with_the_nested_prompt(tmp_path):
     spec = next(s for s in build_topology(yaml.safe_dump(wf), reqs, [str(ciq)]) if s.name == "niam_app_server")
     assert spec.ne_ids == ["gw-1-CLI"] and spec.login_prompt.startswith("[ops@jump")
     cfg = yaml.safe_load(build_instance_config(spec, {}))
-    exec_key = next(k for k in cfg if str(k).startswith("regex:oc exec"))
-    ssh_key = next(k for k in cfg if str(k).startswith("regex:ssh"))
+    exec_key = next(k for k in cfg if str(k).startswith("regex:^oc exec"))
+    ssh_key = next(k for k in cfg if str(k).startswith("regex:^ssh"))
     pushed = cfg[exec_key]["pushPrompt"]
     assert re.search(sessions.STEP_PROMPT, pushed) and pushed != spec.login_prompt
-    assert cfg[ssh_key]["interactive"][0]["question"] == "Password: "
+    # asked as real ssh does, so the step's `expect` (case-sensitive in the JAR) answers it (OB-40)
+    question = cfg[ssh_key]["interactive"][0]["question"]
+    ssh_step = next(s for _, s in _walk(wf) if str(s.get("send", "")).startswith("ssh"))
+    assert all(re.search(e["expect"], question) for e in ssh_step["expect_reply"]) and question.endswith("password: ")
     assert "exit" not in cfg
+    # the whole command only: a loop that runs `oc exec … -- bash -c '…'` per pod is not entering a pod (OB-40)
+    exec_regex = exec_key[len("regex:"):]
+    entered = next(s["send"] for _, s in _walk(wf) if str(s.get("send", "")).startswith("oc exec"))
+    assert not re.search(exec_regex, f"for i in a b; do {entered} -c 'ls'; done")
+
+
+def _walk(wf):
+    from skills.network_config_gen.autofix import _walk_all_steps
+    return _walk_all_steps(wf["phases"])
 
 
 def test_validator_rejects_iteration_the_framework_does_not_do():

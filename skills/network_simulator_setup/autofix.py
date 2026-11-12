@@ -261,6 +261,7 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
                 "validation": step.get("validation", {}),
                 "register": step.get("register") or [],
                 "prompt_regex": step.get("prompt_regex", ""),
+                "expect_reply": step.get("expect_reply") or [],  # the password question it waits for
             })
     return commands
 

@@ -126,6 +126,44 @@ def _is_path(word: str) -> bool:
     return word.startswith("/") or word.startswith("${")
 
 
+# `cmd > /p/f`, `cmd >>/p/f` (not `2>`, `&>`, `>&2`): MockWire writes cmd's output there
+_REDIRECT = re.compile(r"""(?<![\d&>])>>?\s*(?!&)(['"]?[^\s;|&'"]+['"]?)""")
+
+
+def redirect_targets(simple: str) -> list[str]:
+    """The files a command's ``>`` / ``>>`` writes (``/dev/null`` left out)."""
+    return [t.strip("'\"") for t in _REDIRECT.findall(simple) if _is_path(t.strip("'\"")) and
+            t.strip("'\"") != "/dev/null"]
+
+
+_KEY_SPACE = r"(?:\s|\\s[*+]?)*"  # a space in an exact key, `\s*` / `\s+` in a regex key
+_KEY_REDIRECT = re.compile(_KEY_SPACE + r"""(?<![\d&>])>>?""" + _KEY_SPACE
+                           + r"""['"]?(?:/|\$\{)\S*?['"]?(?=(?:\\s\*)?\$?$)""")
+
+
+def key_without_redirect(key: str) -> str:
+    """A response key for ``cmd >/p/f`` keyed on ``cmd`` alone, matching only the whole command: MockWire tries
+    the keys on the whole line first and runs the redirect (writing the file into its VFS) only when none
+    matches, so the key with the redirect answered the line and no file was written (OB-40: the rollback's
+    ``org -c … >/opt/sdf/processing/postrollbackdump_white_….txt``, then ``ls`` found nothing).
+    Other keys come back unchanged."""
+    is_regex = key.startswith("regex:")
+    body = key[len("regex:"):] if is_regex else key
+    stripped = _KEY_REDIRECT.sub("", body)
+    if stripped == body or not stripped.strip():
+        return key
+    if not is_regex:
+        return stripped.rstrip()
+    core = stripped
+    if core.startswith("^"):
+        core = core[1:]
+    if core.endswith(r"\s*$"):
+        core = core[:-len(r"\s*$")]
+    elif core.endswith("$") and not core.endswith(r"\$"):
+        core = core[:-1]
+    return "regex:^" + core.rstrip() + r"\s*$"
+
+
 def _under(path: str, prefixes: set[str]) -> bool:
     p = _norm(path)
     return any(p == d or p.startswith(d.rstrip("/") + "/") for d in prefixes)
@@ -206,6 +244,8 @@ def workflow_prefixes(commands: list[dict], steps: list[dict], vfs: dict | None)
                 prefixes.add(_norm(parsed[0].rsplit("/", 1)[0]) if "/" in parsed[0] else "/tmp")
             if words[0] == "mkdir":
                 prefixes |= {_norm(a) for a in words[1:] if _is_path(a)}
+            # `org -c eirWhiteRng >/opt/sdf/processing/predump_white_${DATE}.txt`: the folder it writes to
+            prefixes |= {_norm(_dir_of(t)) for t in redirect_targets(simple)}
     # copy / move / extract targets count once what they copy is known (to a fixpoint)
     changed = True
     while changed:
@@ -232,24 +272,33 @@ def vfs_handled(cmd: str, prefixes: set[str]) -> bool:
     a file command whose paths lie under ``prefixes`` — and at least one is a file command."""
     simple = _simple_commands(cmd)
     files = 0
+    cwd = ""  # `cd /opt/sdf/processing/ && ls -lrth`: MockWire lists the VFS folder it moved to (OB-40)
     for s in simple:
         words = _words(s)
         if not words:
             continue
         name = words[0]
+        if name == "cd":
+            target = next((w for w in words[1:] if not w.startswith("-")), "")
+            if not _is_path(target) or not _under(target, prefixes):
+                return False
+            cwd = target
+            continue
         if name in FILE_COMMANDS:
             reads, dests = _paths(s)
             # tar -x … -C /: a known archive restores its own (absolute) members
             paths = reads + [d for d in dests if not (name == "tar" and _norm(d) == "/")]
             if name == "ls" and not paths and SUBST not in s:
-                return False                        # the working directory: not modelled
+                if not cwd:
+                    return False                    # the session's working directory: not modelled
+                paths = [cwd]
             if not all(_under(p, prefixes) for p in paths):
                 return False
             files += 1
         elif name not in PURE:
             return False
         else:  # `echo x >> /tmp/…/items.list`: a redirect into the VFS is a file command
-            targets = [words[i + 1] for i, w in enumerate(words[:-1]) if w in (">", ">>")]
+            targets = redirect_targets(s)
             if targets:
                 if not all(_under(t, prefixes) for t in targets):
                     return False

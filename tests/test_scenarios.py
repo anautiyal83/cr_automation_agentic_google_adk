@@ -626,3 +626,18 @@ def test_or_conditions_on_registered_values_are_not_false_positives():
     steps[2]["when"] = f"{col}Test IMSI != '' || {col}Zone == 'NORTH'"
     problems = check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
     assert problems and "EAST" in problems[0]
+
+
+def test_rollback_may_leave_the_evidence_files_the_workflow_writes(tmp_path):
+    """OB-40: production keeps `org -c … >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt` on the node."""
+    from skills.network_config_test.scenarios import WorkflowStep, node_files_diff, written_files
+    before, after = tmp_path / "b", tmp_path / "a"
+    for root in (before, after):
+        (root / "eir" / "etc").mkdir(parents=True)
+        (root / "eir" / "etc" / "conf").write_text("x")
+    (after / "eir" / "opt" / "sdf" / "processing").mkdir(parents=True)
+    (after / "eir" / "opt" / "sdf" / "processing" / "postrollbackdump_white_20240115.txt").write_text("d")
+    (after / "eir" / "etc" / "stray").write_text("y")
+    steps = [WorkflowStep(0, "rb", "rollback", "eir",
+                          "org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt", "", "stop")]
+    assert node_files_diff(before, after, written_files(steps)) == ["left behind: /etc/stray"]

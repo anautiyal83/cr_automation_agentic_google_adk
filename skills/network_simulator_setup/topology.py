@@ -202,11 +202,16 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
     for cmd, shell in spec.shells.items():  # nested sessions (spec 013): `exit` (builtin) pops the prompt
         entry = {"pushPrompt": tpl(shell["prompt"])}
         if shell.get("password"):
-            entry = {"interactive": [{"question": "Password: ", "noEcho": True, "answers": {"default": entry}}]}
-        cfg["regex:" + command_key_regex(cmd)] = entry
+            entry = {"interactive": [{"question": shell.get("question") or "Password: ", "noEcho": True,
+                                      "answers": {"default": entry}}]}
+        # the whole command only: MockWire searches a regex key, and `kubectl exec -it \S+ -n \S+ -- bash` took
+        # the per-pod loops `for i in …; do kubectl exec -it $i -n … -- bash -c '…'; done` as entering a pod —
+        # empty output, three health checks failed (OB-40)
+        cfg["regex:^" + command_key_regex(cmd) + r"\s*$"] = entry
 
+    from .vfs_commands import key_without_redirect
     for key, val in (command_entries or {}).items():
-        key = str(key)
+        key = key_without_redirect(str(key))  # `cmd >/p/f` keyed on cmd: MockWire writes the file (OB-40)
         if key in RESERVED_KEYS or key in cfg or _is_builtin_key(key):
             continue
         cfg[key] = val
@@ -383,8 +388,26 @@ def _shells(spec: NodeSpec) -> dict[str, dict]:
         host = {"exec": "container", "ssh": "remote", "telnet": "remote"}[kind]
         candidates = [f"[{user}@{host} ~]{'#' if user == 'root' else '$'} ", f"{user}@{host}:~> "] + _regex_examples(regex)
         prompt = _first_matching(candidates, regex) or candidates[0]
-        result[text] = {"prompt": _with_space(prompt, regex), "password": kind in ("ssh", "telnet")}
+        result[text] = {"prompt": _with_space(prompt, regex), "password": kind in ("ssh", "telnet"),
+                        "question": _password_question(cmd, user, dest)}
     return result
+
+
+def _password_question(cmd: dict, user: str, dest: str) -> str:
+    """The password prompt in a form the step's ``expect_reply`` matches: the JAR matches case-sensitively, and
+    `expect: 'password:'` (real ssh asks ``user@host's password:``) never saw MockWire's ``Password:`` — the rollback
+    login waited until its timeout (OB-40)."""
+    host = dest.split("@")[-1] if dest else "host"
+    candidates = [f"{user}@{host}'s password: ", "Password: ", "password: "]
+    expects = [str(e.get("expect") or "") for e in cmd.get("expect_reply") or [] if isinstance(e, dict)]
+    for expect in expects:
+        try:
+            hit = next((c for c in candidates if re.search(expect, c)), None)
+        except re.error:
+            hit = next((c for c in candidates if expect in c), None)
+        if hit:
+            return hit
+    return candidates[0] if expects else "Password: "
 
 
 def _validation_regex(cmd: dict) -> str:

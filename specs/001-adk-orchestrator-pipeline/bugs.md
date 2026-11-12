@@ -1198,3 +1198,33 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - Tests `test_output_contract_reads_f_string_fields_as_any_text`,
     `test_registered_value_is_braced_in_later_commands`,
     `test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it`.
+
+### OB-40 — Step 9 failed on simulator answers and on checks step 6 should have rejected (High, Fixed 2026-11-12)
+- Run d3aa8ed5 (EIR), sunny day and rollback only both failed:
+  - **Pod shell key too broad (step 8).** The nested-session key `regex:kubectl exec -it \S+ -n \S+ -- bash` was
+    searched anywhere in a command, so the per-pod loops (`for i in …; do kubectl exec -it $i -n … -- bash -c '…';
+    done`) counted as entering a pod. Output was empty and three health checks failed.
+  - **Password prompt case (step 8).** MockWire asked `Password: `; the step's `expect: 'password:'` (as real ssh
+    prints) is matched case-sensitively by the JAR, so the rollback's DSSERVER login waited until its timeout.
+  - **Redirects never reached the file system (step 8).** Response keys kept the redirect (`org -c … >/opt/sdf/
+    processing/postrollbackdump_white_….txt`). MockWire matched the whole line, so no file was written, and
+    `cd /opt/sdf/processing/ && ls -lrth` got a canned listing.
+  - **Count check in another order (step 6).** `ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT` counts
+    every ESTABLISHED line (many per pod). `count_check` knew only `OK == TOTAL && TOTAL > 0` and names without
+    `_`, and recorded commands (`-n ns| grep`) did not match the workflow's (`-n ${NS} | grep`).
+  - **File names side by side (step 6).** `ls -lrth` checks wanted `a_.+?.txt\s+b_.+?.txt\s+c_.+?.txt`, but long
+    listings print one file per line with its details first.
+  - **Evidence counted as left behind (step 9).** The rollback-only check called the dump files the workflow
+    writes left-overs; production keeps them on the node and zips them.
+- **Fix**:
+  - Step 8: nested-session keys are anchored to the whole command. The password question is asked in a form the
+    step's `expect` matches (`user@host's password: `); `extract_workflow_commands` keeps `expect_reply`.
+  - Step 8: `key_without_redirect` keys `cmd >/p/f` on `cmd` alone, anchored. Redirect folders are workflow
+    folders, and `vfs_handled` follows `cd <dir>` so a plain `ls` there runs on the VFS.
+  - Step 6: `count_check` takes either order and `_` in names; `_command_matches` uses the shared
+    `tools.command_samples.literal_pattern` (free spacing around shell operators); new check for `ls -l` regexes
+    with names side by side.
+  - Step 9: `node_files_diff` ignores new files under the workflow's own redirect paths.
+- Re-run on a copy: the login works and the dump files land in the simulator. The two remaining failures are the
+  generated checks, which step 6 now rejects with the real output. Tests in test_vfs_commands,
+  test_workflow_autofix, test_scenarios and test_nested_sessions.

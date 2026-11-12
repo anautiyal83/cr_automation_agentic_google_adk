@@ -30,6 +30,27 @@ def _norm(command: str) -> str:
     return re.sub(r"\s+", " ", str(command or "").strip())
 
 
+_SHELL_OPS = "|;&<>"
+
+
+def literal_pattern(part: str) -> str:
+    """A literal piece of a command as a regex: whitespace matches any whitespace, and none at all next to a shell
+    operator — the shell reads `-n ns| grep` and `-n ns | grep` alike (the EIR session log has the first, the
+    workflow the second: step 8 did not use the recorded per-pod output, spec 013; step 6 did not check the count
+    against it, OB-40)."""
+    tokens = [t for t in re.split(r"(\s+)", part) if t]
+    out = []
+    for i, t in enumerate(tokens):
+        if not t.isspace():
+            out.append(re.escape(t))
+            continue
+        before = tokens[i - 1][-1] if i > 0 else ""
+        after = tokens[i + 1][0] if i + 1 < len(tokens) else ""
+        near_op = bool(before and before in _SHELL_OPS) or bool(after and after in _SHELL_OPS)
+        out.append(r"\s*" if near_op else r"\s+")
+    return "".join(out)
+
+
 def _key(sample: dict) -> str:
     out = str(sample.get("output", ""))[:400]
     return _norm(sample.get("command", "")) + "\x00" + hashlib.sha1(out.encode("utf-8", "replace")).hexdigest()

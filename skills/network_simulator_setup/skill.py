@@ -708,24 +708,7 @@ def _first_row_values(requirements: dict) -> dict:
 _PH = re.compile(r"\$\{([^{}]+)\}")
 
 
-_SHELL_OPS = "|;&<>"
-
-
-def _literal_pattern(part: str) -> str:
-    """A literal piece of a command as a regex: whitespace matches any whitespace, and none at all next to a shell
-    operator — the shell reads `-n ns| grep` and `-n ns | grep` alike (the EIR session log has the first, the
-    workflow the second; the recorded per-pod output was not used, spec 013)."""
-    tokens = [t for t in re.split(r"(\s+)", part) if t]
-    out = []
-    for i, t in enumerate(tokens):
-        if not t.isspace():
-            out.append(re.escape(t))
-            continue
-        before = tokens[i - 1][-1] if i > 0 else ""
-        after = tokens[i + 1][0] if i + 1 < len(tokens) else ""
-        near_op = bool(before and before in _SHELL_OPS) or bool(after and after in _SHELL_OPS)
-        out.append(r"\s*" if near_op else r"\s+")
-    return "".join(out)
+from tools.command_samples import literal_pattern as _literal_pattern  # noqa: E402 — shared with step 6
 
 
 def templated_responses(commands: list[dict], samples: list[dict]) -> dict[str, tuple[str, dict]]:

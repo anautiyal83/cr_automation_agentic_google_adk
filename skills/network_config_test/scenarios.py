@@ -557,7 +557,8 @@ class ScenarioSuite:
             shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_after", dirs_exist_ok=True)
             if sc.kind == "rollback" and vfs_from is not None:
                 await self.control.stop()
-                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs")
+                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs",
+                                                      written_files(steps))
             evaluate(result, steps, node_instance)
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
@@ -755,9 +756,25 @@ def _commands(report: dict) -> list[CommandResult]:
     ) for key, info in (report.get("data") or {}).items() if isinstance(info, dict)]
 
 
-def node_files_diff(before: Path, after: Path) -> list[str]:
+def written_files(steps: list[WorkflowStep]) -> list[re.Pattern]:
+    """Files the workflow writes with ``cmd > file`` (``${…}`` = any name part): evidence such as production's
+    ``org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt``, kept on the node and zipped — a
+    rollback leaves them on purpose (OB-40)."""
+    from skills.network_simulator_setup.vfs_commands import _simple_commands, redirect_targets
+    patterns = []
+    for step in steps:
+        for simple in _simple_commands(step.send or ""):
+            for target in redirect_targets(simple):
+                if target.startswith("/") and not target.startswith("/tmp/"):
+                    parts = re.split(r"\$\{[^}]*\}", target)
+                    patterns.append(re.compile("[^/]*".join(re.escape(p) for p in parts)))
+    return patterns
+
+
+def node_files_diff(before: Path, after: Path, written: list[re.Pattern] | None = None) -> list[str]:
     """Files of the simulated nodes that differ between two VFS snapshots — outside /tmp (backups,
-    lists, staged inputs) and the repo server: what a rollback must have put back."""
+    lists, staged inputs) and the repo server: what a rollback must have put back. New files the workflow itself
+    writes (``written``, evidence dumps) are not left-overs."""
     from skills.network_config_gen.structure import _repo_config
     repo = _repo_config()["node"]
 
@@ -773,7 +790,8 @@ def node_files_diff(before: Path, after: Path) -> list[str]:
         return out
     b, a = files(Path(before)), files(Path(after))
     diff = [f"missing: /{k.partition('/')[2]}" for k in sorted(b.keys() - a.keys())]
-    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())]
+    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())
+             if not any(p.fullmatch("/" + k.partition("/")[2]) for p in written or [])]
     diff += [f"changed: /{k.partition('/')[2]}" for k in sorted(b.keys() & a.keys()) if a[k] != b[k]]
     return diff
 

@@ -489,6 +489,33 @@ def check_file_listing_regexes(parsed: dict) -> list[str]:
                     f"Step '{step.get('send')}' ({phase_name}): `ls -l` of a single file prints only the "
                     f"file's line (e.g. '-rw-r--r-- 1 user group 312 Nov  3 00:45 {m.group(1)}'), never a "
                     f"'total' line — its regex {regex!r} can never match. Match the file's line instead.")
+    problems += _long_listing_name_runs(parsed)
+    return problems
+
+
+_LS_LONG = re.compile(r"(?:^|[;&|]\s*)ls\s+-\w*l")
+# `….txt\s+name…`: two file names next to each other (an extension, then whitespace, then a name)
+_NAMES_JOINED = re.compile(r"\\?\.[A-Za-z0-9]{1,5}(?:\\s[+*]|\s+)[A-Za-z_]")
+
+
+def _long_listing_name_runs(parsed: dict) -> list[str]:
+    """``ls -l`` prints one file per line, its mode / owner / size / date before the name, in the listing's order
+    (``-t``: by time): a regex wanting the names next to each other (``a_.+?.txt\\s+b_.+?.txt\\s+c_.+?.txt``) never
+    matches — the EIR rollback's dump check failed on the files it had just written (OB-40)."""
+    problems = []
+    from .autofix import _criteria_blocks
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        if not _LS_LONG.search(send):
+            continue
+        for criteria in _criteria_blocks(step):
+            regex = str(criteria.get("regex") or "")
+            if _NAMES_JOINED.search(regex):
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): `ls -l` prints one file per line with its details before "
+                    f"the name, in the listing's order — the regex {regex!r} wants the names next to each other "
+                    "and never matches. Check each file: a loop count (register {regex: '<name pattern>', loop: "
+                    "true, count_var: N} per file, expr 'N1 > 0 && N2 > 0 …') or one `ls -l <file>` step per file.")
     return problems
 
 
@@ -849,22 +876,32 @@ def _expr_on_real_output(step: dict, outputs: list[str]) -> tuple[str, str]:
     return ("fail", ", ".join(seen)) if seen else ("n/a", "")
 
 
-_COUNT_EXPR = re.compile(r"^\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*==\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*&&\s*"
-                         r"\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*>\s*0\s*$")
+_COUNT_NAME = r"\$?\{?([A-Za-z]\w*)\}?"  # count_var names may hold `_` (only regex group names may not)
+_COUNT_EQUAL = re.compile(rf"^\s*{_COUNT_NAME}\s*==\s*{_COUNT_NAME}\s*$")
+_COUNT_POSITIVE = re.compile(rf"^\s*{_COUNT_NAME}\s*>\s*0\s*$")
 
 
 def count_check(step: dict) -> tuple[str, str, str, str] | None:
-    """(ok var, ok regex, total var, total regex) of a count check: ``register`` two loop
-    counts and ``expr: OK == TOTAL && TOTAL > 0`` (spec 011 "every item"); None otherwise."""
+    """(ok var, ok regex, total var, total regex) of a count check: ``register`` two loop counts and
+    ``expr: OK == TOTAL && TOTAL > 0`` (spec 011 "every item") — the two terms in either order, the ``> 0`` on either
+    count (``ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT``, OB-40); None otherwise."""
     validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
     success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
     criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
-    m = _COUNT_EXPR.match(str(criteria.get("expr") or ""))
-    if not m or m.group(2) != m.group(3):
+    expr = str(criteria.get("expr") or "").strip()
+    if expr.startswith("${") and expr.endswith("}"):
+        expr = expr[2:-1]
+    terms = expr.split("&&")
+    if len(terms) != 2:
+        return None
+    equal = next((m for m in map(_COUNT_EQUAL.match, terms) if m), None)
+    positive = next((m for m in map(_COUNT_POSITIVE.match, terms) if m), None)
+    if not equal or not positive or positive.group(1) not in equal.groups():
         return None
     counts = {r["count_var"]: str(r.get("regex") or "") for r in step.get("register") or []
               if isinstance(r, dict) and r.get("loop") and isinstance(r.get("count_var"), str)}
-    ok, total = m.group(1), m.group(2)
+    total = positive.group(1)
+    ok = equal.group(2) if equal.group(1) == total else equal.group(1)
     if ok not in counts or total not in counts:
         return None
     return ok, counts[ok], total, counts[total]
@@ -1040,11 +1077,15 @@ def _normalise(cmd: str) -> str:
 
 
 def _command_matches(send: str, recorded: str) -> bool:
+    """``send`` is the recorded command: ``${…}`` stands for any value, and spacing around shell operators is free
+    (``-n ${NS} | grep`` ran as ``-n nkasjock1ei1| grep`` — the per-pod count check was never held against its
+    real output, OB-40)."""
+    from tools.command_samples import literal_pattern
     send, recorded = _normalise(send), _normalise(recorded)
-    if "${" not in send:
-        return send == recorded
+    if send == recorded:
+        return True
     parts = re.split(r"\$\{[^}]*\}", send)
-    pattern = ".+?".join(re.escape(p) for p in parts)
+    pattern = ".+?".join(literal_pattern(p) for p in parts)
     return re.fullmatch(pattern, recorded) is not None
 
 
