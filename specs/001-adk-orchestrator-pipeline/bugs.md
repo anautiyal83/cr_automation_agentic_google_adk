@@ -1435,3 +1435,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     loops).
   - On `run_failed` / `run_cancelled` the page first restores every pending step's last saved result
     (`_heal_earlier_steps`); only steps that never ran are skipped. `test_pipeline_retries` updated.
+
+### OB-55 — OB-53 incomplete: the AI's answer for the pod-copied file was still dropped (High, Fixed 2026-11-12)
+- Run 6110bc53: the same failure. `vfs_handled` now left `ls -lrths /tmp/bulkProvisioning.json` to a key, and the AI
+  answered it, but Phase 2 dropped that answer through `file_flows.is_vfs_command` ("1 file commands left to the
+  VFS builtins": a file command on the VFS folder /tmp), and MockWire's ls said "No such file".
+- **Fix**: `NodeSpec.unmodelled_files` (the pod-copied files). `is_vfs_command` keeps a key that reads one of them,
+  at all four call sites. Steps 8 + 9 on a copy of the run: **2/2 test cases pass** (sunny day 69 steps,
+  rollback only 25 steps, 0 failed). Test `test_answer_for_a_pod_copied_file_is_not_dropped`.

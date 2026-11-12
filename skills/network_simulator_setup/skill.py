@@ -156,7 +156,7 @@ class NetworkSimulatorSetupSkill:
             from .vfs_commands import pod_copied_files, resolved_dirs, vfs_handled, workflow_prefixes
             prefixes = workflow_prefixes(n.commands, node_steps(workflow_doc, n.name)
                                          if isinstance(workflow_doc, dict) else [], n.vfs)
-            unmodelled = pod_copied_files(n.commands)
+            n.unmodelled_files = unmodelled = pod_copied_files(n.commands)
             n.vfs_commands = {str(c.get("cmd") or "").strip() for c in n.commands
                               if vfs_handled(str(c.get("cmd") or ""), prefixes, unmodelled)}
             if n.vfs_commands:
@@ -195,11 +195,11 @@ class NetworkSimulatorSetupSkill:
                 result = {}
             # File commands on VFS paths are answered by MockWire builtins from file state
             from .file_flows import is_vfs_command
-            dropped = [k for k in result if is_vfs_command(k, node.vfs)]
+            dropped = [k for k in result if is_vfs_command(k, node.vfs, node.unmodelled_files)]
             for k in dropped:
                 result.pop(k)
             recorded[node.name] = {k: v for k, v in recorded[node.name].items()
-                                   if not is_vfs_command(k, node.vfs)}
+                                   if not is_vfs_command(k, node.vfs, node.unmodelled_files)}
             if dropped:
                 logger.info("Phase 2: %s — %d file commands left to the VFS builtins", node.name, len(dropped))
             # Invented responses stand for a healthy node: they must pass the step's own
@@ -368,7 +368,7 @@ class NetworkSimulatorSetupSkill:
             key = safe_regex_key(str(key))
             if key is None:
                 continue
-            if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs) or key in recorded:
+            if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs, node.unmodelled_files) or key in recorded:
                 continue
             if isinstance(new, dict) and isinstance(new.get("lines"), str):
                 new = {**new, "lines": new["lines"].splitlines()}
@@ -598,7 +598,7 @@ def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: 
         cmd = str(c.get("cmd", "")).strip()
         first = cmd.split(" ", 1)[0] if cmd else ""
         if (not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or file_builtin(cmd)
-                or is_vfs_command(cmd, node.vfs) or cmd in node.vfs_commands):
+                or is_vfs_command(cmd, node.vfs, node.unmodelled_files) or cmd in node.vfs_commands):
             continue
         seen.add(cmd)
         resolved = resolve_command(cmd, row)

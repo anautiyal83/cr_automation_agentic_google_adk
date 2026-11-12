@@ -172,13 +172,16 @@ def _success_regexes(step: dict) -> list[str]:
     return found
 
 
-def is_vfs_command(key: str, vfs: dict | None) -> bool:
-    """A response key for a file command on a VFS path (answered by builtins instead)."""
+def is_vfs_command(key: str, vfs: dict | None, unmodelled: set[str] | frozenset = frozenset()) -> bool:
+    """A response key for a file command on a VFS path (answered by builtins instead) — not one reading a file in
+    ``unmodelled`` (copied into a pod: never in the VFS, its key answer stays — OB-53/55)."""
     if not vfs:
         return False
     text = str(key)
     body = text[len("regex:"):] if text.startswith("regex:") else text
     body = body.replace("\\", "")  # regex keys escape the path
+    if any(f in body for f in unmodelled):
+        return False
     return bool(_FILE_CMD.match(body.lstrip("^"))) and any(d in body for d in vfs.get("dirs", []))
 
 

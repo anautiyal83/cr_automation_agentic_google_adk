@@ -202,6 +202,15 @@ def test_file_copied_into_a_pod_is_not_read_from_the_vfs():
     assert vfs_handled("ls -l /tmp/other.txt", prefixes, unmodelled)
 
 
+def test_answer_for_a_pod_copied_file_is_not_dropped():
+    """OB-55: the AI answered `ls -lrths /tmp/bulkProvisioning.json`, but `is_vfs_command` dropped it (a file command
+    on the VFS folder /tmp) — MockWire's ls then said "No such file"."""
+    from skills.network_simulator_setup.file_flows import is_vfs_command
+    vfs = {"dirs": ["/tmp", "/opt/sdf/processing"]}
+    assert not is_vfs_command("ls -lrths /tmp/bulkProvisioning.json", vfs, {"/tmp/bulkProvisioning.json"})
+    assert is_vfs_command("ls -l /tmp/other.txt", vfs, {"/tmp/bulkProvisioning.json"})
+
+
 def test_redirected_dump_gets_the_recorded_output_of_the_command():
     """OB-49: the redirected dump recorded '' (it prints nothing), the LLM answered `lines: []`, every dump file was
     empty; `org -c eirWhiteRng | grep …` in the session log has the rows."""
