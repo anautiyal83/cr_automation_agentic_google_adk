@@ -331,14 +331,16 @@ def test_expected_coverage_skips_local_and_niam_entries():
                                      "request_columns": {}, "record_columns": {}}
 
 
-def test_cache_is_stale_after_code_or_input_change(tmp_path, monkeypatch):
+def test_cache_is_stale_after_input_change_not_code_change(tmp_path, monkeypatch):
+    """Other documents are other inputs; a generator code change keeps the cache — only the user's Rerun of the
+    step clears it (user 2026-11-12, OB-11 reversed)."""
     import storage.artifact_cache as ac
     cache = ac.ArtifactCache(str(tmp_path))
     cache.save_cache("UC", "network_config_gen", {"workflow_yaml": "phases: {}"}, inputs="a")
     assert cache.has_cache("UC", "network_config_gen", "a")
     assert not cache.has_cache("UC", "network_config_gen", "b")
     monkeypatch.setattr(ac, "code_version", lambda name: "changed")
-    assert not cache.has_cache("UC", "network_config_gen", "a")
+    assert cache.has_cache("UC", "network_config_gen", "a")
 
 
 def test_regenerated_agent_invalidates_later_caches(tmp_path):
@@ -513,10 +515,19 @@ def test_request_builder_must_get_the_request_identifiers():
     assert check_request_inputs(wf(given), sheets, columns) == []
 
 
-def test_step6_is_cached_only_after_step9_passes(tmp_path):
-    """DEP-55: step 6 passing its validator is no proof; its artifacts are cached when step 9
-    passes, not cached when step 9 fails — and the cache is never cleared then, only by the user's Rerun (OB-48)."""
+def test_step6_is_cached_at_its_review():
+    """Step 6 is cached when it passes its review, like steps 1-4 (user 2026-11-12: DEP-55's wait for step 9
+    reversed) — only the user's Rerun of step 6 clears it."""
+    from orchestrator.pipeline_agent import _CACHE_AFTER_STEP
+    assert "network_config_gen" not in _CACHE_AFTER_STEP and "helper_script_gen" not in _CACHE_AFTER_STEP
+
+
+def test_deferred_cache_waits_for_its_proof_step(tmp_path, monkeypatch):
+    """The deferral mechanism (DEP-55, now unused): cached when the proof step passes, not cached when it fails —
+    and the cache is never cleared then, only by the user's Rerun (OB-48)."""
+    from orchestrator import pipeline_agent
     from orchestrator.pipeline_agent import _settle_deferred_cache
+    monkeypatch.setattr(pipeline_agent, "_CACHE_AFTER_STEP", {"network_config_gen": 9, "helper_script_gen": 9})
 
     class Cache:
         def __init__(self):

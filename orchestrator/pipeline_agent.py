@@ -67,7 +67,9 @@ _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
 
 # Cached only once this step has executed their artifacts and passed: step 6 passing its
 # validator is not proof — a workflow that failed step 9 stayed cached and the next run reused it (DEP-55)
-_CACHE_AFTER_STEP: dict[str, int] = {"network_config_gen": 9, "helper_script_gen": 9}
+# Agents whose artifacts are cached only once a later step passed. Empty since 2026-11-12 (user): step 6 is cached
+# when it passes its review, like steps 1-4, and only the user's Rerun of step 6 clears it (DEP-55 reversed, OB-48)
+_CACHE_AFTER_STEP: dict[str, int] = {}
 
 
 def _step_ok(state: dict, run_dir: str, step: int) -> bool:

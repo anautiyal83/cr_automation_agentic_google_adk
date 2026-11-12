@@ -1381,3 +1381,10 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     `plan["sample_inputs"]`). Test `test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample`.
 - Follow-up: in production a local step should read input files from `${LOCAL_PATH}` (as uploads do since C4);
   `structure.inputs_from_local_path` covers upload sources only.
+- **Step 6 now caches at its review (user choice 2026-11-12).** Step 6 still regenerated on every run: its cache
+  was saved only after step 9 passed (DEP-55), which never happened, and every change to step 6's code
+  invalidated it (OB-11, many fixes today).
+  - `_CACHE_AFTER_STEP` is empty: step 6 caches when it passes, like steps 1–4.
+  - `has_cache` no longer compares the code version (still recorded); only other inputs or options miss.
+  - After a code fix, rerun the step to pick it up. Tests updated
+    (`test_cache_is_stale_after_input_change_not_code_change`, `test_step6_is_cached_at_its_review`).

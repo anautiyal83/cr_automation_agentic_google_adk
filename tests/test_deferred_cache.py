@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from orchestrator import pipeline_agent
 from orchestrator.pipeline_agent import _settle_deferred_cache
+
+
+@pytest.fixture(autouse=True)
+def _deferred_step6(monkeypatch):
+    """The deferral mechanism with step 6 deferred, as it was (unused since 2026-11-12: step 6 caches at review)."""
+    monkeypatch.setattr(pipeline_agent, "_CACHE_AFTER_STEP", {"network_config_gen": 9, "helper_script_gen": 9})
 
 
 class FakeCache:
