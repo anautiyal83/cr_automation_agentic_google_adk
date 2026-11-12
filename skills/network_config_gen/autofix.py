@@ -224,6 +224,38 @@ def dump_yaml(data: dict) -> str:
     return stream.getvalue()
 
 
+_PARAM_ALIASES = {"ORDERNO": "ORDER_NO", "ORDER_NUMBER": "ORDER_NO", "ORDERID": "ORDER_NO"}
+
+
+def runtime_param_aliases(parsed: dict) -> int:
+    """``${ORDERNO}`` → ``${ORDER_NO}``: runtime parameters by production's names (spec 013 PF020) — an older
+    name the framework does not pass resolves to ''. Only names that are not configured themselves."""
+    from core.config import runtime_params
+    params = runtime_params()
+    aliases = {old: new for old, new in _PARAM_ALIASES.items() if old not in params and new in params}
+    if not aliases:
+        return 0
+    pattern = re.compile(r"\$\{(" + "|".join(map(re.escape, aliases)) + r")\}")
+    count = 0
+
+    def fix(value):
+        nonlocal count
+        if isinstance(value, str):
+            new, n = pattern.subn(lambda m: "${" + aliases[m.group(1)] + "}", value)
+            count += n
+            return new
+        if isinstance(value, list):
+            return [fix(v) for v in value]
+        if isinstance(value, dict):
+            return {k: fix(v) for k, v in value.items()}
+        return value
+
+    for key in ("phases", "globals"):
+        if key in parsed:
+            parsed[key] = fix(parsed[key])
+    return count
+
+
 def fix_workflow(yaml_text: str) -> str:
     """Apply all auto-fix rules to workflow YAML.
 
@@ -277,6 +309,7 @@ def fix_workflow(yaml_text: str) -> str:
                 fixed_phases[phase_name] = _fix_phase({"steps": phase_body}, known_nodes)
         parsed["phases"] = fixed_phases
 
+    runtime_param_aliases(parsed)
     # --- Regex named groups + placeholders the JAR cannot resolve ---
     renames = fix_named_groups(parsed.get("phases", {}))
     rename_expr_vars(parsed.get("phases", {}), renames)

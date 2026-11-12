@@ -71,7 +71,10 @@ skipped phase → PF024)
 
 ## Stage C — runtime parameters + file routes (PF-D3, PF-D4 — after the user confirms)
 
-- [ ] PF020 `execution.runtime_params`: `NIAM_IP`, `M2MPORT`, `M2MUSER`, `M2MPASSWORD`, `REPO_USER`, `REPO_PASSWORD`,
+- [x] PF020 (C2, 2026-11-12) runtime params by production's names (config + defaults, test values for step 9);
+  `${ORDERNO}` → `${ORDER_NO}` (autofix `runtime_param_aliases`); NIAM nodes log in with ${NIAM_IP} / ${M2MPORT} /
+  ${M2MUSER} / ${M2MPASSWORD} + production timeouts (`production._niam_nodes`); repo node `repo_server` with
+  ${REPO_IP} / ${REPO_USER} / ${REPO_PASSWORD}; `order_number: ${ORDER_NO}`. MRF 4/4, PGW 2/2. Was: `NIAM_IP`, `M2MPORT`, `M2MUSER`, `M2MPASSWORD`, `REPO_USER`, `REPO_PASSWORD`,
   `ORDER_NO`, `CHILD_REQ_ID`, `PARENT_REQ_ID`, `NODE_NAME` (test values for step 9)
 - [ ] PF021 `structure.backups_by_convention`: `BACK_UP_LOCATION_REPO` + `/BACKUP/`, `/Activity/`, `/Rollback/`
 - [ ] PF022 Transfers: production checksum + `LOOP_RETRY` loop + guard; node ↔ repo `printf "put|get …" | sftp` with

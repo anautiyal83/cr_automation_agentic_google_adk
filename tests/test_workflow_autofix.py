@@ -153,17 +153,17 @@ def test_local_step_reading_a_node_file_by_name_gets_a_download():
     from skills.network_config_gen.autofix import fix_missing_downloads
     from skills.network_config_gen.validator import check_file_flows
     wf = {"phases": {"activity": {"steps": [
-        {"node": "LOCAL", "send": "python create_xml.py --out ${ORDERNO}.xml"},
-        {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
-                                 "remote_path": "/in/${ORDERNO}.xml"}},
-        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
-        {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"},
+        {"node": "LOCAL", "send": "python create_xml.py --out ${ORDER_NO}.xml"},
+        {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml",
+                                 "remote_path": "/in/${ORDER_NO}.xml"}},
+        {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDER_NO}.xml.res'"},
     ]}}}
-    assert len(check_file_flows(wf)) == 1  # the uploaded ${ORDERNO}.xml is local: not flagged
+    assert len(check_file_flows(wf)) == 1  # the uploaded ${ORDER_NO}.xml is local: not flagged
     assert fix_missing_downloads(wf) == 1
     steps = wf["phases"]["activity"]["steps"]
-    assert steps[3]["sftp"] == {"operation": "download", "remote_path": "/out/${ORDERNO}.xml.res",
-                                "local_path": "${ORDERNO}.xml.res", "overwrite": True}
+    assert steps[3]["sftp"] == {"operation": "download", "remote_path": "/out/${ORDER_NO}.xml.res",
+                                "local_path": "${ORDER_NO}.xml.res", "overwrite": True}
     assert check_file_flows(wf) == []
 
 
@@ -193,8 +193,8 @@ def test_ls_of_one_file_never_prints_total():
     def wf(send, regex):
         return {"phases": {"a": {"steps": [{"node": "PGW", "send": send,
                                             "validation": {"success": {"criteria": {"regex": regex}}}}]}}}
-    assert len(check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"total\s+\d+\s+.+?\.xml\.res"))) == 1
-    assert check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"^-rw\S+\s+\d+.+\.xml\.res$")) == []
+    assert len(check_file_listing_regexes(wf("ls -l /o/${ORDER_NO}.xml.res", r"total\s+\d+\s+.+?\.xml\.res"))) == 1
+    assert check_file_listing_regexes(wf("ls -l /o/${ORDER_NO}.xml.res", r"^-rw\S+\s+\d+.+\.xml\.res$")) == []
     assert check_file_listing_regexes(wf("ls -l /o/", r"total\s+\d+")) == []  # a directory has a total
 
 
@@ -209,13 +209,13 @@ def test_overlay_shortens_polls_for_the_simulator():
 def test_node_file_read_from_a_made_up_local_dir_is_downloaded():
     from skills.network_config_gen.autofix import fix_missing_downloads
     wf = {"phases": {"a": {"steps": [
-        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
-        {"node": "LOCAL", "send": "python parse_response.py --response_file '/tmp/${ORDERNO}.xml.res'"},
+        {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '/tmp/${ORDER_NO}.xml.res'"},
     ]}}}
     assert fix_missing_downloads(wf) == 1
     steps = wf["phases"]["a"]["steps"]
-    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
-    assert steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDER_NO}.xml.res"
+    assert steps[2]["send"] == "python parse_response.py --response_file '${ORDER_NO}.xml.res'"
 
 
 def test_exit_without_su_is_dropped():
@@ -269,13 +269,13 @@ def test_whole_ciq_record_placeholder_is_rejected():
 def test_single_file_listing_regex_never_expects_total():
     import re
     from skills.network_config_gen.autofix import fix_single_file_listings
-    step = {"node": "PGW", "send": "ls -l /srv/out/${ORDERNO}.xml.res 2>&1 || true",
+    step = {"node": "PGW", "send": "ls -l /srv/out/${ORDER_NO}.xml.res 2>&1 || true",
             "validation": {"description": "Response file exists and is not empty",
                            "success": {"criteria": {"regex": r"total\s+\d+\s+.*\s+.+?.xml.res"}}}}
     wf = {"phases": {"a": {"steps": [step]}}}
     assert fix_single_file_listings(wf) == 1
     regex = step["validation"]["success"]["criteria"]["regex"]
-    line = "-rw-r--r-- 1 oamsys oamsys     1647 Nov 03 09:17 /srv/out/TEST_ORDERNO.xml.res"
+    line = "-rw-r--r-- 1 oamsys oamsys     1647 Nov 03 09:17 /srv/out/TEST_ORDER_NO.xml.res"
     assert re.search(regex, line, re.M) and not re.search(regex, line.replace(" 1647 ", " 0 "), re.M)
     assert fix_single_file_listings(wf) == 0
 
@@ -285,12 +285,12 @@ def test_helper_script_called_on_a_node_runs_on_local_with_a_download():
     from skills.network_config_gen.autofix import fix_workflow
     wf = yaml.safe_load(fix_workflow(
         "nodes: {PGW: {type: remote, plugin: ssh}}\nphases:\n  a:\n    steps:\n"
-        "    - {node: PGW, send: 'ls -l /out/${ORDERNO}.xml.res'}\n"
-        "    - {node: PGW, send: \"python parse_response.py --response_file '/out/${ORDERNO}.xml.res'\"}\n"
+        "    - {node: PGW, send: 'ls -l /out/${ORDER_NO}.xml.res'}\n"
+        "    - {node: PGW, send: \"python parse_response.py --response_file '/out/${ORDER_NO}.xml.res'\"}\n"
         "    - {node: PGW, send: 'python /opt/tool/check.py'}\n"))
     steps = wf["phases"]["a"]["steps"]
-    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
-    assert steps[2]["node"] == "LOCAL" and steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDER_NO}.xml.res"
+    assert steps[2]["node"] == "LOCAL" and steps[2]["send"] == "python parse_response.py --response_file '${ORDER_NO}.xml.res'"
     assert steps[3]["node"] == "PGW"  # the node's own tool stays
 
 
@@ -325,11 +325,11 @@ def test_dict_argument_becomes_one_flag_per_field():
 
 def test_absence_check_runs_before_the_upload_that_produces_the_file():
     from skills.network_config_gen.autofix import order_absence_checks
-    absent = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res 2>&1 || true",
+    absent = {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res 2>&1 || true",
               "validation": {"success": {"criteria": {"regex": "No such file or directory"}}}}
-    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
-                                      "remote_path": "/in/${ORDERNO}.xml"}}
-    present = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml",
+                                      "remote_path": "/in/${ORDER_NO}.xml"}}
+    present = {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"}
     wf = {"phases": {"a": {"steps": [upload, absent, present]}}}
     assert order_absence_checks(wf) == 1
     assert wf["phases"]["a"]["steps"] == [absent, upload, present]

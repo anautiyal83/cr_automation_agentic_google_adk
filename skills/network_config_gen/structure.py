@@ -314,7 +314,7 @@ def _repo_node(parsed: dict, cfg: dict) -> str:
             "host": cfg["host"],
             "port": str(cfg.get("port") or "22"),
             "user": cfg["user"],
-            "auth": {"password": "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
+            "auth": {"password": cfg.get("password") or "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
             "connect_timeout_sec": "30",
         },
     }

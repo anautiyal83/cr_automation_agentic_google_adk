@@ -102,7 +102,12 @@ def _expressions(parsed: dict, fn) -> int:
 def plain(parsed: dict) -> int:
     """Undo NIAM failover and the expression form (``structure.flatten``)."""
     from . import failover
-    return failover.undo(parsed) + _expressions(parsed, unwrap)
+    changed = failover.undo(parsed) + _expressions(parsed, unwrap)
+    vars_ = (parsed.get("globals") or {}).get("vars")
+    if isinstance(vars_, dict) and vars_.get("order_number") == "${ORDER_NO}":  # added by _file
+        del vars_["order_number"]
+        changed += 1
+    return changed
 
 
 # --------------------------------------------------------------------------- file / phases / steps
@@ -140,6 +145,11 @@ def _file(parsed: dict, uc_name: str) -> int:
         if k not in defaults:
             defaults[k] = v
             changed += 1
+    vars_ = globals_.get("vars") if isinstance(globals_.get("vars"), dict) else globals_.setdefault("vars", {})
+    from core.config import runtime_params
+    if "ORDER_NO" in runtime_params() and vars_.get("order_number") != "${ORDER_NO}":
+        vars_["order_number"] = "${ORDER_NO}"
+        changed += 1
     _reorder(globals_, ("vars", "defaults"))
     return changed + _reorder(parsed, ("version", "name", "globals", "nodes", "phases"))
 
@@ -204,6 +214,38 @@ def _steps(parsed: dict) -> int:
 
 
 LOCAL = "local"
+# A NIAM node logs in as production's do: the framework passes the NIAM gateway and its M2M account at run time
+NIAM_LOGIN = {"host": "${NIAM_IP}", "port": "${M2MPORT}", "user": "${M2MUSER}"}
+NIAM_SSH = {"connect_timeout_sec": 300, "read_timeout_sec": 300, "keepalive_sec": 30, "login_retries": 2,
+            "login_retry_delay_sec": 15, "strict_host_key_checking": False}
+
+
+def _niam_nodes(parsed: dict) -> int:
+    """``niam_*`` nodes: login fields as production (``ne_id`` keeps the CIQ reference — spec 013 PF-D1); the
+    node type's own settings (kex / host key algorithms, elevate_to_root) stay."""
+    changed = 0
+    for name, spec in (parsed.get("nodes") or {}).items():
+        if not str(name).startswith("niam_") or not isinstance(spec, dict):
+            continue
+        if not isinstance(spec.get("ssh"), dict):
+            spec["ssh"] = {}
+        ssh = spec["ssh"]
+        if not ssh.get("ne_id") and "niamID" in str(ssh.get("host")):
+            ssh["ne_id"] = ssh["host"]
+        want = {**NIAM_LOGIN, "auth": {"password": "${M2MPASSWORD}"}}
+        for k, v in want.items():
+            if ssh.get(k) != v:
+                ssh[k] = v
+                changed += 1
+        for k, v in NIAM_SSH.items():
+            if k not in ssh:
+                ssh[k] = v
+                changed += 1
+        spec.setdefault("category", "internal")
+        _reorder(spec, ("type", "plugin", "prompt_regex", "category", "ssh"))
+        _reorder(ssh, ("host", "port", "user", "auth", "ne_id", "connect_timeout_sec", "read_timeout_sec",
+                       "keepalive_sec", "login_retries", "login_retry_delay_sec", "strict_host_key_checking"))
+    return changed
 
 
 def _local(parsed: dict) -> int:
@@ -243,6 +285,7 @@ def apply(parsed: dict, uc_name: str = "", node_types: dict[str, int] | None = N
     from . import failover
     changed = failover.apply(parsed, node_types)  # after the contract: the probes keep on_failure: warning
     changed += _local(parsed)
+    changed += _niam_nodes(parsed)
     changed += _file(parsed, uc_name)
     changed += _phases(parsed)
     changed += _steps(parsed)

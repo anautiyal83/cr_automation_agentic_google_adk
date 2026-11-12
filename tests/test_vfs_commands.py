@@ -18,7 +18,7 @@ MRF = [
     "systemctl status swms --no-pager",                                         # health check
     f"ls -ltrh {DEST}/ | grep \"{FILE}\" || true",                             # pre-check
     f"tar -czvf /tmp/announcement_backup.tar.gz {DEST}/ && ls -1 /tmp/announcement_backup.tar.gz",
-    f"scp backup@repo-server:/backup/netconfig/${{crGroup}}/files/{FILE} /tmp/{FILE}",
+    f"scp ${{REPO_USER}}@${{REPO_IP}}:/backup/netconfig/${{crGroup}}/files/{FILE} /tmp/{FILE}",
     f"sha256sum /tmp/{FILE}",
     GUARD % f"cp /tmp/{FILE} {DEST}/",
     GUARD % f"chmod 777 {DEST}/{FILE}",
@@ -122,9 +122,9 @@ def test_loop_pass_aligns_with_the_nearest_preceding_step():
 
     def step(i, kind, node, send):
         return WorkflowStep(index=i, phase=kind, phase_kind=kind, node=node, send=send, regex="", on_failure="stop")
-    steps = [step(0, "backup", "REPO", "sha256sum /r/x"), step(1, "rollback", "REPO", "sha256sum /r/x"),
+    steps = [step(0, "backup", "repo_server", "sha256sum /r/x"), step(1, "rollback", "repo_server", "sha256sum /r/x"),
              step(2, "rollback", "MRF", "tar -xzvf /t/x")]
-    cmds = [SimpleNamespace(node="REPO", command="sha256sum /r/x"), SimpleNamespace(node="MRF", command="tar -xzvf /t/x")]
+    cmds = [SimpleNamespace(node="repo_server", command="sha256sum /r/x"), SimpleNamespace(node="MRF", command="tar -xzvf /t/x")]
     # a loop's 2nd pass goes to the nearest preceding match, not the backup's identical command
     assert align(cmds * 2, steps)[2:] == [1, 2]
     # rollback-only: matched against the rollback steps, indexes stay the workflow's
@@ -135,7 +135,7 @@ def test_rollback_result_is_compared_with_the_node_before(tmp_path):
     """Rollback-only "passed" twice while the original file was gone: the node's files are compared."""
     from skills.network_config_test.scenarios import node_files_diff
     before, after = tmp_path / "b", tmp_path / "a"
-    for root, files in ((before, {"MRF/d/a.wav": "old", "MRF/d/x": "x", "MRF/tmp/l": "1", "REPO/bk": "1"}),
+    for root, files in ((before, {"MRF/d/a.wav": "old", "MRF/d/x": "x", "MRF/tmp/l": "1", "repo_server/bk": "1"}),
                         (after, {"MRF/d/x": "x", "MRF/d/new.wav": "n", "MRF/tmp/l": "2"})):
         for rel, text in files.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)

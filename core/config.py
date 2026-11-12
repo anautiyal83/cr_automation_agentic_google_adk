@@ -31,10 +31,17 @@ MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 
 # Parameters the production framework passes to every execution (`--var NAME=value`);
 # the value is the dummy step 9 uses against the simulator
-DEFAULT_RUNTIME_PARAMS = {"ORDERNO": "TEST_ORDERNO"}
-# Server that keeps the backups a workflow takes (a node of every workflow with a backup phase)
-DEFAULT_REPO_SERVER = {"node": "REPO", "host": "repo-server", "port": "22", "user": "backup",
-                       "password_secret": "repo_password", "backup_dir": "/backup/netconfig"}
+# Runtime parameters the production framework passes to every execution (names as production workflows use
+# them, spec 013 PF020); step 9 passes these test values
+DEFAULT_RUNTIME_PARAMS = {
+    "ORDER_NO": "TEST_ORDER_NO", "CHILD_REQ_ID": "TEST_CHILD_REQ", "PARENT_REQ_ID": "TEST_PARENT_REQ",
+    "NODE_NAME": "TEST_NODE", "NIAM_IP": "127.0.0.1", "M2MPORT": "22", "M2MUSER": "oamsys",
+    "M2MPASSWORD": "netconf-sim", "REPO_IP": "127.0.0.1", "REPO_USER": "backup", "REPO_PASSWORD": "netconf-sim",
+}
+# Server that keeps the backups a workflow takes (node `repo_server` of every workflow that uses it, logging in
+# with the runtime parameters as production does)
+DEFAULT_REPO_SERVER = {"node": "repo_server", "host": "${REPO_IP}", "port": "22", "user": "${REPO_USER}",
+                       "password": "${REPO_PASSWORD}", "backup_dir": "/backup/netconfig"}
 
 
 # ---------------------------------------------------------------------------

@@ -136,11 +136,11 @@ phases:
 def test_framework_runtime_params_count_as_defined():
     from skills.network_config_gen.validator import check_placeholders
     wf = {"phases": {"activity": {"steps": [
-        {"node": "LOCAL", "send": "python mk.py --out '${ORDERNO}.xml' --id '${batchId}'"}]}}}
-    problems = check_placeholders(wf, runtime_params=["ORDERNO"])
+        {"node": "LOCAL", "send": "python mk.py --out '${ORDER_NO}.xml' --id '${batchId}'"}]}}}
+    problems = check_placeholders(wf, runtime_params=["ORDER_NO"])
     assert len(problems) == 1 and "${batchId}" in problems[0]     # unregistered vars still flagged
-    assert any("${ORDERNO}" in p for p in check_placeholders(wf, runtime_params=[]))
-    assert not any("${ORDERNO}" in p for p in check_placeholders(wf))  # configured default
+    assert any("${ORDER_NO}" in p for p in check_placeholders(wf, runtime_params=[]))
+    assert not any("${ORDER_NO}" in p for p in check_placeholders(wf))  # configured default
 
 
 def test_step6_prompt_lists_runtime_params():
@@ -151,7 +151,7 @@ def test_step6_prompt_lists_runtime_params():
         return "nodes: {}\nphases: {}\n"
 
     asyncio.run(NetworkConfigGenSkill(llm).generate(SkillInput(uc_name="UC")))
-    assert "${ORDERNO}" in seen[0] and "never register" in seen[0]
+    assert "${ORDER_NO}" in seen[0] and "never register" in seen[0]
 
 
 def test_step9_passes_runtime_params_as_vars(tmp_path, monkeypatch):
@@ -170,10 +170,10 @@ def test_step9_passes_runtime_params_as_vars(tmp_path, monkeypatch):
     wf.write_text("nodes: {}\nphases: {}\n")
     asyncio.run(jar_executor.run_execution_test(
         "cli.jar", str(wf), str(tmp_path / "schema.yaml"), "", str(tmp_path),
-        runtime_vars={"ORDERNO": "T1", "BATCH": "B1"}))
+        runtime_vars={"ORDER_NO": "T1", "BATCH": "B1"}))
     execute = [c for c in calls if "execute" in c]
     assert execute, calls
-    assert "ORDERNO=T1" in execute[0] and "BATCH=B1" in execute[0]
+    assert "ORDER_NO=T1" in execute[0] and "BATCH=B1" in execute[0]
 
 
 def test_sample_check_mirrors_jar_regex_semantics():
@@ -466,11 +466,11 @@ def test_smoke_run_feeds_the_sample_response_to_parsers():
              "p.add_argument('--response_file')\na = p.parse_args()\nroot = ET.parse(a.response_file).getroot()\n"
              "if not root.findall('spml:response', {'spml': 'urn:x'}):\n    print('FAILURE'); raise SystemExit(1)\n"
              "print('SUCCESS')\n")
-    cmd = ["python parse.py --response_file '${ORDERNO}.xml.res'"]
-    assert smoke_run("parse.py", wrong, cmd, {"ORDERNO": "T"}, response_sample=sample)
+    cmd = ["python parse.py --response_file '${ORDER_NO}.xml.res'"]
+    assert smoke_run("parse.py", wrong, cmd, {"ORDER_NO": "T"}, response_sample=sample)
     right = wrong.replace("root.findall('spml:response', {'spml': 'urn:x'})", "root.findall('response')")
-    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["SUCCESS"]) == []
-    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["ALL OK"])
+    assert smoke_run("parse.py", right, cmd, {"ORDER_NO": "T"}, response_sample=sample, output_regexes=["SUCCESS"]) == []
+    assert smoke_run("parse.py", right, cmd, {"ORDER_NO": "T"}, response_sample=sample, output_regexes=["ALL OK"])
 
 
 def test_nested_quotes_in_script_arguments_are_rejected():
@@ -501,15 +501,15 @@ def test_request_builder_must_get_the_request_identifiers():
         {"Zone": "EAST", "Test MSISDN": "9810217635"}, {"Zone": "NORTH", "Test IMSI": "404530000000132"}]}}
     lookup = {"node": "RDS", "send": "ldapsearch msisdn=${configSequences.0.records.0.data.Test MSISDN}",
               "register": [{"regex": r"provisionedIMSI: (?<resolvedImsi>\d+)"}]}
-    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml", "remote_path": "/in/${ORDERNO}.xml"}}
-    parse = {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml", "remote_path": "/in/${ORDER_NO}.xml"}}
+    parse = {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDER_NO}.xml.res'"}
 
     def wf(build):
         return {"phases": {"a": {"steps": [lookup, {"node": "LOCAL", "send": build}, upload, parse]}}}
     columns = {"Test IMSI": "404530000000132"}
-    missing = check_request_inputs(wf("python create_xml.py --vni '6' --output_file '${ORDERNO}.xml'"), sheets, columns)
+    missing = check_request_inputs(wf("python create_xml.py --vni '6' --output_file '${ORDER_NO}.xml'"), sheets, columns)
     assert len(missing) == 1 and "create_xml.py" in missing[0] and "${resolvedImsi}" in missing[0]
-    given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDERNO}.xml'"
+    given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDER_NO}.xml'"
     assert check_request_inputs(wf(given), sheets, columns) == []
 
 
