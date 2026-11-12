@@ -1132,3 +1132,24 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   the file ("No such file or directory", checksum mismatch). `is_peer_copy` only knew literal hosts after `@`.
 - **Fix**: any `user@<host>:` — also a regex token — is a peer copy; its LLM key is dropped. Finding on the way:
   `test_step --refix-workflow` ignored the run's options (the repo route was never simulated); it reads them now.
+
+### OB-35 — Fresh EIR run (spec 013 Stage D): three rules that fought production's patterns (Medium, Fixed 2026-11-12)
+- **Validator vs "must be absent" captures**: production checks "no pod in a bad state" / "no non-zero error count"
+  by capturing the bad value and requiring it empty (`(?<N17ERROR>[1-9]\d*)` + `N17ERROR == ''`); the validator demanded
+  every register capture something from the healthy recorded output and rejected the step twice.
+  Fix: such captures (and `ERROR:.*|error:.*` captures) are exempt.
+- **Enter steps with an output regex**: the LLM checked `ssh dsadmin@…` with `regex: Authentication succeeded`; the
+  framework strips the prompt, so every DS server login failed (rollback-only). Fix: enter / exit steps are checked as
+  production does — `use_exit_code: true`, the new prompt, no output criteria (`sessions._enter_check`).
+- **Step 8 answered a per-pod loop with the pod names only**, so "all pods agree" failed. Fix: step 8 prompt rule —
+  a `for i in …; do echo $i; <cmd>; done` prints every item with its inner command's healthy output.
+- Finding: `test_step --agents 6` gave step 6 no run options (all phases, no repo route); it passes the document set now.
+
+### OB-36 — Step 6 crashed: "Workflow generation failed: 'send'" (High, Fixed 2026-11-12)
+- Run de9b2130 (EIR): a LOCAL step read two files that exist only on the node; `fix_missing_downloads` inserted the
+  first download in front of the step and then took the second hit's (old) index — the download step, which has
+  no `send` (KeyError). **Fix**: each hit keeps its step object and finds its current position before inserting.
+  Test `test_local_step_reading_two_node_files_gets_both_downloads`.
+- Also in this commit (spec 013 Stage D, fresh runs): an upload the LLM wrote in the backup phase after the backup
+  moves before the steps that read it (MRF); step 8 matches a recorded command whatever the spacing around shell
+  operators (`ns| grep` = `ns | grep`), so recorded per-pod outputs are used (EIR).

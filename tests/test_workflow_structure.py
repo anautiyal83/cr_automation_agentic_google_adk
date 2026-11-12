@@ -552,3 +552,31 @@ def test_repo_ip_chosen_by_ip_version_like_production():
     flat = structure.flattened(wf)
     assert "REPO_IP_V4" not in json.dumps(flat) and "nc_repoip" not in json.dumps(flat)
     assert "nc_repoip" not in json.dumps(_applied(VIA_REPO))      # not configured: REPO_IP stays a runtime param
+
+
+def test_upload_written_after_the_backup_moves_before_what_reads_it():
+    """Fresh MRF (spec 013): the LLM uploaded the input in the backup phase after the backup tar; the lists of what
+    the load overwrites read that file (`tar -tf /tmp/<input>`), so the upload must come first."""
+    REC = "${configSequences.0.records.0.data."
+    wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}'}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: tar -czvf /tmp/bk.tar.gz -C {REC}DEST}} .
+    - node: MRF
+      sftp: {{operation: upload, local_path: '{REC}FILE}}', remote_path: '/tmp/{REC}FILE}}'}}
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: tar -xf /tmp/{REC}FILE}} -C {REC}DEST}}
+""")
+    structure.apply(wf, {})
+    steps = _leaves(wf, "backup")
+    up = next(i for i, s in enumerate(steps) if (s.get("sftp") or {}).get("operation") == "upload")
+    reads = [i for i, s in enumerate(steps) if "tar -tf /tmp/" in str(s.get("send"))]
+    assert reads and up < min(reads)
+    assert sum(1 for s in steps if (s.get("sftp") or {}).get("operation") == "upload"
+               and not str(s.get("id", "")).endswith("_retry_copy")) == 1                     # moved, not copied

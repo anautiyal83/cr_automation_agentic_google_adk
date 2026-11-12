@@ -1846,9 +1846,10 @@ def fix_missing_downloads(parsed: dict) -> int:
     from the step that lists the file there); absolute remote paths in the LOCAL command
     are pointed at the local copy."""
     hits = remote_file_reads(parsed)
-    for hit in reversed(hits):  # later inserts first: indices stay valid
-        steps, i = hit["steps"], hit["index"]
-        step = steps[i]
+    targets = [hit["steps"][hit["index"]] for hit in hits]  # one LOCAL step may read several node files
+    for hit, step in reversed(list(zip(hits, targets))):
+        steps = hit["steps"]
+        i = next(k for k, s in enumerate(steps) if s is step)  # where the step is now (downloads inserted)
         if hit["token"].startswith("/"):
             step["send"] = str(step["send"]).replace(hit["token"], hit["local_name"])
         download = {

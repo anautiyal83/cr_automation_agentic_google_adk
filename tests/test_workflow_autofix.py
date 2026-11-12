@@ -645,3 +645,16 @@ def test_multiline_send_written_as_block():
     text = dump_yaml({"phases": {"p": {"steps": [{"node": "local", "send": send, "command_description": "one\nline"}]}}})
     assert "send: |-" in text and '"printf' not in text
     assert parse_yaml(text)["phases"]["p"]["steps"][0]["send"] == send
+
+
+def test_local_step_reading_two_node_files_gets_both_downloads():
+    """Run de9b2130: a LOCAL step read two files that exist only on a node; the second download was inserted at
+    the first one's index and the fix read `send` of a download step (KeyError: 'send')."""
+    from skills.network_config_gen.autofix import fix_missing_downloads
+    wf = {"phases": {"a": {"steps": [
+        {"node": "N", "send": "ls -l /opt/x/pre.txt /opt/x/post.txt"},
+        {"node": "LOCAL", "send": "python compare.py --pre /opt/x/pre.txt --post /opt/x/post.txt"}]}}}
+    assert fix_missing_downloads(wf) == 2
+    steps = wf["phases"]["a"]["steps"]
+    assert [s.get("sftp", {}).get("operation") for s in steps[1:3]] == ["download", "download"]
+    assert steps[3]["send"] == "python compare.py --pre pre.txt --post post.txt"

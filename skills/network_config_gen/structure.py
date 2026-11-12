@@ -671,8 +671,10 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
         phase_is_backup = bool(_BACKUP_PHASE.search(name) or _BACKUP_PHASE.search(str(body.get("name") or "")))
         if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or "")):
             continue
-        out = []
+        out, taken = [], set()
         for step in list(body["steps"]):
+            if id(step) in taken:  # an upload moved ahead of the backup that reads it
+                continue
             if not isinstance(step, dict) or _is_auto(step) or str(step.get("node", "")) == local:
                 out.append(step)
                 continue
@@ -712,7 +714,16 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                         step["when"] = " && ".join(terms)
                     else:
                         step.pop("when")
-                out += _take_uploads(parsed, body, {ld["src"] for ld in dest_loads})
+                srcs = {ld["src"] for ld in dest_loads}
+                out += _take_uploads(parsed, body, srcs)
+                # the LLM may upload in the backup phase itself, after the backup (fresh MRF, spec 013): the
+                # lists of what the load overwrites read the uploaded file, so the upload comes first
+                later = [s for s in body["steps"][body["steps"].index(step) + 1:]
+                         if isinstance(s, dict) and isinstance(s.get("sftp"), dict) and not _is_auto(s)
+                         and str(s["sftp"].get("operation", "")).lower() == "upload"
+                         and str(s["sftp"].get("remote_path") or "") in srcs]
+                taken |= {id(s) for s in later}
+                out += later
                 out += _overwritten_steps(k, step, dest_loads, src.rstrip("/"), node_dir, path)
                 step["send"] = (f"if [[ -s {node_dir}/overwritten.list ]]; then tar -czvf {path} -C {src.rstrip('/')} "
                                 f"$(cat {node_dir}/overwritten.list) && ls -1 {path}; else echo {NOTHING_TO_BACK_UP}; fi")
