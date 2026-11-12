@@ -1363,4 +1363,5 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     Test `test_redirected_dump_gets_the_recorded_output_of_the_command`.
   - **No pandas in WSL.** `ModuleNotFoundError: No module named 'pandas'`: step 9 runs local steps under WSL
     (spec 013 PF-D5), whose python has no pandas; step 6's smoke run of the script ran on Windows and passed.
-    Open: install the modules in WSL, or limit helper scripts to the standard library.
+    Decision (user 2026-11-12): install them in WSL (`sudo apt install -y python3-pandas python3-openpyxl`) —
+    helper scripts may use pandas / openpyxl, as on the production automation server.
