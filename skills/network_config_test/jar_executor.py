@@ -585,9 +585,9 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
     for record in records or [{}]:
         def resolve(text, record=record):
             return ref.sub(lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
-        for raw in uploads:
+        for raw in dict.fromkeys(uploads):  # once each: a retry loop repeats the upload step (spec 013)
             path = resolve(raw)
-            if not path or "${" in path or Path(path).is_absolute():
+            if not path or "${" in path or Path(path).is_absolute() or str(Path(cwd) / path) in created:
                 continue
             produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
             target = Path(cwd) / path

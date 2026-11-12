@@ -259,7 +259,6 @@ def verify_transfers(parsed: dict) -> int:
                 continue
             count += 1
             node, when = str(step.get("node")), str(step.get("when") or "")
-            src_var, dst_var = f"xferSrc{count}", f"xferDst{count}"
             if op == "upload":
                 src = (local, lpath, "local file")
                 dst = (node, rpath.rstrip("/") + ("/" + lpath.rsplit("/", 1)[-1] if rpath.endswith("/") else ""),
@@ -267,19 +266,8 @@ def verify_transfers(parsed: dict) -> int:
             else:
                 src = (node, rpath, f"file on {node}")
                 dst = (local, lpath, "local copy")
-            out.append(_step(f"{AUTO_ID}sum{count}_src", src[0], f"Checksum of the {src[2]} before the transfer", when,
-                             send=f"sha256sum {src[1]}",
-                             register=[{"regex": f"(?<{src_var}>{_SUM})"}]))
-            out.append(step)
-            out.append(_step(f"{AUTO_ID}sum{count}_dst", dst[0], f"Verify the transferred file: checksum of the {dst[2]} equals the source",
-                             when, send=f"sha256sum {dst[1]}",
-                             register=[{"regex": f"(?<{dst_var}>{_SUM})"}],
-                             validation={
-                                 "description": "SHA-256 of the transferred file must equal the source file's",
-                                 "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
-                                             "message": "Checksums match: the complete file was transferred."},
-                                 "failure": {"message": "Checksum mismatch: the file was not transferred completely."},
-                             }))
+            out += checked_transfer(parsed, f"xfer{count}", step, src, dst, when,
+                                    f"{AUTO_ID}sum{count}_src", f"{AUTO_ID}sum{count}_dst")
         return out
 
     for _, body in _phase_bodies(parsed):
@@ -389,33 +377,73 @@ def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: s
     return f"sftp {remote}{folder or '/'} <<< 'put {node_path} {name}'"
 
 
+RETRY_GLOBALS = {"RETRY_COUNT": 3, "LOOP_RETRY": [1, 2, 3]}
+_SUM_LINE = "(?m)^(?<{var}>[a-fA-F0-9]{{64}})$"
+
+
+def _sum_step(sid: str, node: str, path: str, var: str, description: str, when: str) -> dict:
+    return _step(sid, node, description, when, send=f"sha256sum {path} | awk '{{print $1}}'",
+                 register=[{"regex": _SUM_LINE.format(var=var)}])
+
+
+def checked_transfer(parsed: dict, tag: str, copy_: dict, src: tuple[str, str, str], dst: tuple[str, str, str],
+                     when: str, src_id: str, dst_id: str) -> list[dict]:
+    """A transfer as production writes it (spec 013 PF022): checksum at the source, the copy, the checksum at the
+    destination compared with the source (``<tag>Status`` SUCCESS, else a warning sets it FAILED), the copy and
+    the check again up to ``RETRY_COUNT`` times while it is not SUCCESS (``type: loop`` over ``${LOOP_RETRY}``,
+    ``break_when``), then a guard that stops when it still is not. ``src`` / ``dst``: (node, path, what)."""
+    from .contract import combine
+    vars_ = parsed.setdefault("globals", {}).setdefault("vars", {})
+    for k, v in RETRY_GLOBALS.items():
+        vars_.setdefault(k, v)
+    src_var, dst_var, status = f"{tag}Src", f"{tag}Dst", f"{tag}Status"
+    dst_step = _sum_step(dst_id, dst[0], dst[1], dst_var,
+                         f"Verify the transferred file: checksum of the {dst[2]} equals the source", when)
+    dst_step["on_failure"] = "continue"
+    dst_step["validation"] = {
+        "description": "SHA-256 of the transferred file must equal the source file's",
+        "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
+                    "message": "Checksums match: the complete file was transferred.", "vars": {status: "SUCCESS"}},
+        "warning": {"message": "Checksum mismatch: retrying the transfer and the checksum up to ${RETRY_COUNT} times.",
+                    "vars": {status: "FAILED"}},
+    }
+    not_ok = f"{status} != 'SUCCESS'"
+    retry_copy, retry_sum = copy.deepcopy(copy_), copy.deepcopy(dst_step)
+    retry_copy["id"], retry_sum["id"] = f"{AUTO_ID}{tag}_retry_copy", f"{AUTO_ID}{tag}_retry_sum"
+    for st in (retry_copy, retry_sum):
+        st.pop("when", None)
+    retry = {"id": f"{AUTO_ID}{tag}_retry", "type": "loop",
+             "command_description": "Retry the transfer and its checksum up to ${RETRY_COUNT} times",
+             "for_each": "${LOOP_RETRY}", "item_var": "ATTEMPT", "reverse_order": False,
+             "when": combine(not_ok, when) if when else not_ok, "break_when": f"{status} == 'SUCCESS'",
+             "hide_when_skipped": True, "steps": [retry_copy, retry_sum]}
+    guard = _step(f"{AUTO_ID}{tag}_guard", _local_node(parsed),
+                  "Abort if the checksum still does not match after ${RETRY_COUNT} retries",
+                  combine(not_ok, when) if when else not_ok, send="echo checksum-guard", hide_when_skipped=True,
+                  on_failure="stop",
+                  validation={"description": "Runs only when the checksum did not match after all retries",
+                              "success": {"criteria": {"expr": f"{status} == 'SUCCESS'"}, "message": "checksum matched"},
+                              "failure": {"message": "Checksum did not match after all retry attempts - aborting."}})
+    return [_sum_step(src_id, src[0], src[1], src_var, f"Checksum of the {src[2]} before the transfer", when),
+            copy_, dst_step, retry, guard]
+
+
 def _repo_transfer(tag: str, repo: str, node: str, login: tuple[str, str, str], method: str,
-                   node_path: str, repo_path: str, to_repo: bool, when: str, what: str) -> list[dict]:
-    """Checksum at the source, the node's copy to / from the repo server (repo password by
-    ``expect_reply``), checksum at the destination compared with the source's. Ids
-    ``nc_<tag>_sum_node`` / ``_copy`` / ``_sum_repo`` (``flatten`` reads the node side back)."""
+                   node_path: str, repo_path: str, to_repo: bool, when: str, what: str,
+                   parsed: dict | None = None) -> list[dict]:
+    """The node's copy to / from the repo server (repo password by ``expect_reply``), checked as production does
+    (``checked_transfer``). Ids ``nc_<tag>_sum_node`` / ``_copy`` / ``_sum_repo`` (``flatten`` reads the node side
+    back)."""
     user, address, password = login
-    src_var, dst_var = f"{tag}Src", f"{tag}Dst"
-    node_sum = (node, node_path, f"nc_{tag}_sum_node", f"file on {node}")
-    repo_sum = (repo, repo_path, f"nc_{tag}_sum_repo", "file on the repo server")
+    node_sum = (node, node_path, f"file on {node}")
+    repo_sum = (repo, repo_path, "file on the repo server")
     src, dst = (node_sum, repo_sum) if to_repo else (repo_sum, node_sum)
+    ids = (f"nc_{tag}_sum_node", f"nc_{tag}_sum_repo") if to_repo else (f"nc_{tag}_sum_repo", f"nc_{tag}_sum_node")
     copy_ = _step(f"nc_{tag}_copy", node, what, when,
                   send=repo_copy(method, user, address, node_path, repo_path, to_repo))
     if password:
         copy_["expect_reply"] = [{"expect": "assword:", "reply": f"{password}\n", "timeout_sec": 30}]
-    return [
-        _step(src[2], src[0], f"Checksum of the {src[3]} before the transfer", when,
-              send=f"sha256sum {src[1]}", register=[{"regex": f"(?<{src_var}>{_SUM})"}]),
-        copy_,
-        _step(dst[2], dst[0], f"Verify the transferred file: checksum of the {dst[3]} equals the source", when,
-              send=f"sha256sum {dst[1]}", register=[{"regex": f"(?<{dst_var}>{_SUM})"}],
-              validation={
-                  "description": "SHA-256 of the transferred file must equal the source file's",
-                  "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
-                              "message": "Checksums match: the complete file was transferred."},
-                  "failure": {"message": "Checksum mismatch: the file was not transferred completely."},
-              }),
-    ]
+    return checked_transfer(parsed if parsed is not None else {}, tag, copy_, src, dst, when, *ids)
 
 
 def _order_ref() -> str:
@@ -680,7 +708,7 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                           send=f"mkdir -p {repo_dir}"),
                     *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
                                     file_transfer(requirements, node, parsed), path, repo_path, True, copy_when,
-                                    f"{node} copies the backup {basename} to the repo server"),
+                                    f"{node} copies the backup {basename} to the repo server", parsed=parsed),
                 ]
             absolute = not dest_loads and bool(sources) and all(x.startswith(("/", "${")) for x in sources)
             # a rollback reads none of the backup step's values (the LLM's or ncArchived<k>): a
@@ -773,7 +801,7 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
                                      send=f"mkdir -p {lst}"))
                     out += _repo_transfer(f"rs{k}", check_on, node, node_login(parsed, check_on),
                                           file_transfer(requirements, node, parsed), path, repo_path, False, when,
-                                          f"{node} copies the backup {basename} back from the repo server")
+                                          f"{node} copies the backup {basename} back from the repo server", parsed=parsed)
                 placed = True
             out.append(step)
         body["steps"] = out
@@ -826,7 +854,7 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
                           send=f"mkdir -p {stage_dir}")
             copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, repo),
                                    file_transfer(requirements, node, parsed), node_path, staged, op == "download", when,
-                                   f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server")
+                                   f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server", parsed=parsed)
             out += [mkdir, step, *copy_] if op == "upload" else [mkdir, *copy_, step]
         return out
 
@@ -845,8 +873,8 @@ def _unstage(parsed: dict) -> int:
     for s in steps:
         m = re.fullmatch(rf"{AUTO_ID}(xr\d+)_sum_node", str(s.get("id") or ""))
         if m:
-            path = str(s.get("send", ""))[len("sha256sum "):]
-            origin[m.group(1)] = (str(s.get("node")), path.replace("${" + ITEM_VAR + ".data.", "${" + _REC0))
+            path = str(s.get("send", ""))[len("sha256sum "):].split(" | ", 1)[0]  # without `| awk '{print $1}'`
+            origin[m.group(1)] =(str(s.get("node")), path.replace("${" + ITEM_VAR + ".data.", "${" + _REC0))
     restored = 0
     for s in steps:
         m = re.fullmatch(rf"{AUTO_ID}(xr\d+)_stage", str(s.get("id") or ""))

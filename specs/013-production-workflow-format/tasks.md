@@ -80,8 +80,14 @@ skipped phase → PF024)
   (backup_dir default /repo-server/config/CR_AUTOMATION); backups in `…/BACKUP/<source folder>/`, input files in it
   directly; no hostname lookups. MRF via repo 4/4 (47 steps), files at production's paths. (/Activity, /Rollback:
   evidence zips — not generated yet)
-- [ ] PF022 Transfers: production checksum + `LOOP_RETRY` loop + guard; node ↔ repo `printf "put|get …" | sftp` with
-  `expect_reply`; repo IP by IPv4/IPv6
+- [x] PF022a (C3b, 2026-11-12) `structure.checked_transfer` for every transfer (framework sftp, node ↔ repo):
+  `sha256sum … | awk '{print $1}'` + `(?m)^(?<X>[a-fA-F0-9]{64})$`, destination check sets `<tag>Status`
+  (success) / warning FAILED, retry loop over `${LOOP_RETRY}` (`when` / `break_when`), guard (`echo checksum-guard`);
+  `RETRY_COUNT` / `LOOP_RETRY` globals; the contract leaves retried steps alone. MRF 4/4, PGW 2/2
+- [ ] PF022b node ↔ repo as production: `printf "put|get …
+bye
+" | sftp …` (today `scp` / `sftp <<<`), repo IP by
+  IPv4/IPv6 (`who am i` + computed register), `repo_server_sftp` node for framework sftp
 - [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
 - [x] PF024 Rollback-only (C1, 2026-11-12): `structure.rollback_lookups` — values a rollback reads that only earlier
   phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the

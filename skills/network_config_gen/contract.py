@@ -165,12 +165,14 @@ def _text(value: Any) -> str:
 # --------------------------------------------------------------------------- apply / strip
 
 def _leaves(steps: list):
+    """The steps the contract governs: not those a retry loop checks again (a ``warning`` branch — their
+    guard carries the failure, spec 013 PF022)."""
     for step in steps:
         if not isinstance(step, dict):
             continue
         if isinstance(step.get("steps"), list):
             yield from _leaves(step["steps"])
-        else:
+        elif not (isinstance(step.get("validation"), dict) and "warning" in step["validation"]):
             yield step
 
 

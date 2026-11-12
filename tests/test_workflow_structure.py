@@ -82,8 +82,8 @@ def test_every_transfer_is_checksummed_on_both_ends():
     steps = _leaves(_applied(), "backup")  # the upload moved before the backup (what it overwrites)
     i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${rec.data.FILE}")
     before, after = steps[i - 1], steps[i + 1]
-    assert before["node"] == "local" and before["send"] == "sha256sum ${rec.data.FILE}"
-    assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE}"
+    assert before["node"] == "local" and before["send"] == "sha256sum ${rec.data.FILE} | awk '{print $1}'"
+    assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE} | awk '{print $1}'"
     src = before["register"][0]["regex"].split("<")[1].split(">")[0]
     dst = after["register"][0]["regex"].split("<")[1].split(">")[0]
     assert unwrap(after["validation"]["success"]["criteria"]["expr"]) == f"{dst} == {src}"
@@ -119,7 +119,7 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${REPO_PASSWORD}\n", "timeout_sec": 30}]
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # nothing changes on the node
     check = backup[ids.index("nc_bk1_sum_repo")]
-    assert check["send"] == f"sha256sum {repo_file}" and unwrap(check["validation"]["success"]["criteria"]["expr"]) == "bk1Dst == bk1Src"
+    assert check["send"] == f"sha256sum {repo_file} | awk '{{print $1}}'" and unwrap(check["validation"]["success"]["criteria"]["expr"]) == "bk1Dst == bk1Src"
     assert not any("sftp" in s and s["sftp"]["remote_path"].startswith("/tmp") for s in backup)  # via the repo
     assert not any("${node}" in json.dumps(s) for s in backup)  # empties multi-node MOPs
     rollback = _leaves(parsed, "rollbackConfiguration")
@@ -152,7 +152,7 @@ def test_input_files_go_through_the_repo_server():
     assert copy_["send"] == "scp ${REPO_USER}@${REPO_IP}:${BACK_UP_LOCATION_REPO}/${rec.data.FILE} /tmp/${rec.data.FILE}"
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # into /tmp
     assert ids.index("nc_xr1_stage") < ids.index("nc_xr1_copy") < ids.index("nc_xr1_sum_node")
-    assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE}"
+    assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE} | awk '{print $1}'"
     assert not any(s.get("node") == "MRF" and "sftp" in s for s in steps)
 
 
