@@ -219,3 +219,4 @@ cr_automation_agentic_google_adk/
 - Java 8+ (for JAR modules)
 - `google-adk>=2.11.0`, `litellm`, `nicegui>=2.0`
 - OpenRouter API key
+- Windows hosts: WSL with Ubuntu 24.04, Java 8, python3 + pandas/openpyxl for step 9 — see [docs/wsl-setup.md](docs/wsl-setup.md)
