@@ -324,6 +324,8 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         "run_dir": str(work),
         "uc_name": uc_name,
         "ciq_file_path": ciq_file_path,
+        # the run's options (phases, backup via repo — spec 010), as the runner puts them in the state
+        "document_set": {"run_options": json.loads(rows[0]["run_options"] or "{}")},
         "pipeline_config": config,
         "artifacts": {
             "workflow_yaml": workflow_yaml,
