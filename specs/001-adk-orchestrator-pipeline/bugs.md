@@ -1291,3 +1291,16 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: AI keys are anchored as soon as they are read, so every check sees what MockWire matches.
   `rekey_unanswered` and `is_peer_copy` read anchored keys. Test
   `test_loop_key_broken_by_an_unescaped_question_mark_is_rebuilt`.
+
+### OB-45 — `$DATE` in sftp paths; tracker showed steps 7–8 pending while step 9 ran (High, Fixed 2026-11-12)
+- **Run 81e7d1a0, step 9.** The AI's download had `remote_path: /opt/sdf/processing/predump_white_$DATE.txt`.
+  OB-39's `registered_shell_variables` rewrote only `send`, so the download fetched the literal `$DATE` name.
+  The repo copy and checksum steps built from it failed, and `fix_missing_downloads` added a second download with
+  `${DATE}`. **Fix**: sftp `remote_path` / `local_path` get `${NAME}` for registered names too (no shell reads them).
+  After a refix of the run: no `$DATE`, 0 validator findings.
+- **Progress page.** After a server restart you chose Rerun at the step 9 review. The page guessed the rerun
+  from the in-memory step 9 classification, which the restart had emptied, so it reset steps 6–9. The pipeline went
+  back to step 8 only, so 6/7 never got a new status, and step 8 also stayed pending while step 9 ran (the saved
+  `step_results` were correct). **Fix**: the Rerun handler reads `retry_target` from the run's
+  `step_9_error.json` when the memory is empty. When a step starts, earlier steps still shown as pending take
+  their latest saved result.

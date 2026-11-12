@@ -1631,6 +1631,17 @@ def registered_shell_variables(parsed: dict) -> int:
         return 0
     changed = 0
     for _, step in steps:
+        # sftp paths reach no shell at all: `$DATE` there is the literal text (OB-45 — the download, and the
+        # checksum / repo copy steps built from it, used `predump_white_$DATE.txt`)
+        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
+        for field in ("remote_path", "local_path"):
+            path = sftp.get(field)
+            if isinstance(path, str) and "$" in path:
+                new_path = _UNBRACED_VAR.sub(lambda m: "${" + m.group(1) + "}" if m.group(1) in registered
+                                             else m.group(0), path)
+                if new_path != path:
+                    sftp[field] = new_path
+                    changed += 1
         send = step.get("send")
         if not isinstance(send, str) or "$" not in send:
             continue

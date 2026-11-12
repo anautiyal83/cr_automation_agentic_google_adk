@@ -724,6 +724,10 @@ def test_registered_value_is_braced_in_later_commands():
         {"send": "DATE=$(date); ls /tmp/$DATE"},
         {"send": "awk '{print $1}' f"},
     ]}}}
+    sftp = {"node": "n", "sftp": {"operation": "download", "remote_path": "/opt/p/predump_$DATE.txt",
+                                  "local_path": "predump_$DATE.txt"}}
+    assert registered_shell_variables({"phases": {"a": {"steps": [parsed["phases"]["a"]["steps"][0], sftp]}}}) == 2
+    assert sftp["sftp"]["remote_path"] == "/opt/p/predump_${DATE}.txt" and sftp["sftp"]["local_path"] == "predump_${DATE}.txt"
     assert registered_shell_variables(parsed) == 1
     assert [s["send"] for s in parsed["phases"]["a"]["steps"][1:]] == [
         "org -c x >/opt/p/predump_${DATE}.txt; echo $HOME", "DATE=$(date); ls /tmp/$DATE", "awk '{print $1}' f"]

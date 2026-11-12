@@ -1051,6 +1051,7 @@ class ProgressSection:
         if event.event_type == "step_started":
             self._set_run_state("running")
             self._update_step_visual(event.step_number, "in_progress")
+            await self._heal_earlier_steps(event.step_number)
             self.status_icon.name = "sync"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
             self.status_label.text = "Pipeline Running"
@@ -1257,6 +1258,50 @@ class ProgressSection:
             self._select_step(step_num)
         elif step_num == getattr(self, "_selected_step", 0) and hasattr(self, "sel_title"):
             self._refresh_selected_header()
+
+    async def _heal_earlier_steps(self, current: int) -> None:
+        """Steps before the one starting that still show pending get their latest saved result: after a server
+        restart the Rerun of step 9 reset steps 6-9 (the in-memory classification was gone) and only step 8 ran
+        again — 7 and 8 stayed pending while 9 ran (OB-45). ``step_results`` holds every step's result."""
+        if not self.runner or not self.runner._db or not self.active_run_id:
+            return
+        stale = [sn for sn, w in self.step_widgets.items()
+                 if sn < current and w.get("raw_status", "pending") == "pending"]
+        if not stale:
+            return
+        try:
+            rows = await self.runner._db.execute(
+                "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY rowid",
+                (str(self.active_run_id),))
+        except Exception:
+            return
+        latest = {r["step_number"]: str(r.get("status") or "").replace("StepStatus.", "").lower() for r in rows}
+        for sn in stale:
+            if latest.get(sn):
+                self._update_step_visual(sn, latest[sn])
+
+    def _rerun_from_step(self, default: int) -> int:
+        """The step a step-9 Rerun goes back to, from the run's own ``step_9_error.json`` (retry_target): the
+        in-memory reviewer feedback is empty after a restart and the page guessed step 6 (OB-45)."""
+        import json as _json
+        run_id_str = str(self.active_run_id) if self.active_run_id else ""
+        try:
+            from shared.state import reviewer_feedback as _fb
+            fb = _fb.get(f"{run_id_str}:9", "")
+            if fb:
+                data = _json.loads(fb) if isinstance(fb, str) else fb
+                if data.get("classification") == "simulator":
+                    return 8
+                if data.get("retry_target"):
+                    return int(data["retry_target"])
+        except Exception:
+            pass
+        run_dir = self._run_dir or (str(Path("data/runs") / run_id_str) if run_id_str else "")
+        try:
+            data = _json.loads((Path(run_dir) / "step_9_error.json").read_text(encoding="utf-8"))
+            return int(data.get("retry_target") or default)
+        except Exception:
+            return default
 
     def _mark_remaining_skipped(self):
         """Mark all steps still pending as skipped."""
@@ -2048,19 +2093,8 @@ class ProgressSection:
                 for s in (6, 7):
                     self._update_step_visual(s, "pending")
             elif ms_step == 9:
-                # Dynamic based on reviewer classification
-                rerun_from = 6  # default
-                try:
-                    import json as _json
-                    from shared.state import reviewer_feedback as _fb
-                    run_id_str = str(self.active_run_id) if self.active_run_id else ""
-                    fb = _fb.get(f"{run_id_str}:9", "")
-                    if fb:
-                        fb_data = _json.loads(fb) if isinstance(fb, str) else fb
-                        if fb_data.get("classification") == "simulator":
-                            rerun_from = 8
-                except Exception:
-                    pass
+                # where the run goes back to: the reviewer's classification, else the run's step 9 result
+                rerun_from = self._rerun_from_step(6)
                 if rerun_from == 8:
                     self.status_label.text = "Re-running Steps 8-9"
                     self.status_detail.text = "Re-generating simulator config, then re-testing execution..."
