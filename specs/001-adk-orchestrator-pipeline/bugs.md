@@ -1304,3 +1304,12 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   `step_results` were correct). **Fix**: the Rerun handler reads `retry_target` from the run's
   `step_9_error.json` when the memory is empty. When a step starts, earlier steps still shown as pending take
   their latest saved result.
+
+### OB-46 — `exit` back to the bastion timed out after a `cd` (High, Fixed 2026-11-12)
+- Run 81e7d1a0, step 9 sunny day: "Failed to exit EIR POD". The pod session worked (OB-43), but the exit step kept
+  the AI's `\[nm_user1@bastion\ \~\]\$\s*$`. An earlier `cd /opt/sdf/processing/` makes the bastion prompt
+  `[nm_user1@bastion processing]$` (MockWire's `\W`, as on a real host), so the exit waited until its timeout.
+  `nested_sessions` generalised `[user@host dir]` prompts on every step except exits.
+- **Fix**: an exit takes the outer session's prompt when its own is missing, says closed/logout, or is a
+  `[user@host dir]` prompt (an unmatched exit gets the generic prompt). Refix of the run: all 7 exits generic.
+  Test `test_exit_back_to_the_bastion_accepts_any_directory`.

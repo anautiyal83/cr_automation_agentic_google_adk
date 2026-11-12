@@ -64,6 +64,22 @@ def test_loop_key_broken_by_an_unescaped_question_mark_is_rebuilt():
     assert _find_entry(fixed, loop, resolved)[1] == {"lines": ["VALUES_MATCH"]}
 
 
+def test_exit_back_to_the_bastion_accepts_any_directory():
+    """OB-46: `exit` kept `\\[nm_user1@bastion\\ \\~\\]\\$` from the log; after `cd /opt/sdf/processing/` the
+    bastion prompt is `[nm_user1@bastion processing]$` and the exit timed out."""
+    import re
+    from skills.network_config_gen import sessions
+    wf = {"nodes": {"BASTION": {"type": "remote", "prompt_regex": r"(?m)\[[^\]\r\n]+\][#$][^\r\n]*$",
+                                "ssh": {"ne_id": "${EIR.niamID-1}"}}},
+          "phases": {"pre": {"steps": [
+              {"node": "BASTION", "send": "oc exec -it ${POD} -n ${NS} -- bash", "prompt_regex": r"\[root@pod /\]#"},
+              {"node": "BASTION", "send": "ss"},
+              {"node": "BASTION", "send": "exit", "prompt_regex": r"\[nm_user1@bastion\ \~\]\$\s*$"}]}}}
+    sessions.nested_sessions(wf, {"EIR": 1})
+    exit_step = next(s for s in wf["phases"]["pre"]["steps"] if s.get("send") == "exit")
+    assert re.search(exit_step["prompt_regex"], "[nm_user1@bastion processing]$ ")
+
+
 def test_lone_quote_inside_single_quoted_item_is_repaired():
     raw = ("```yaml\n'oc cp a b':\n  lines:\n  - 'pod-1'\n"
            "  - 'tar: Removing leading `/' from member names'\n'ss':\n  lines:\n  - 'ok'\n```")

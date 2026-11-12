@@ -269,11 +269,19 @@ def nested_sessions(parsed: dict, node_types: dict[str, int] | None) -> int:
                 step["prompt_regex"] = STEP_PROMPT
                 changes += 1
             if is_exit(send):
+                current = step.get("prompt_regex")
+                # back on the outer shell: its prompt — a `[user@host ~]$` copied from the log fails once a `cd`
+                # changed the directory (`[nm_user1@bastion processing]$`, the exit timed out — OB-46)
+                target = ""
                 if stack:
                     s = stack.pop()
-                    if not step.get("prompt_regex") or re.search(r"(?i)closed|logout", str(step.get("prompt_regex"))):
-                        if s["outer"]:
-                            step["prompt_regex"] = s["outer"]
+                    if not current or re.search(r"(?i)closed|logout", str(current)) or bracket_prompt(current):
+                        target = s["outer"]
+                elif bracket_prompt(current):
+                    target = STEP_PROMPT
+                if target and target != current:
+                    step["prompt_regex"] = target
+                    changes += 1
                 st["inner"][cur] = bool(stack) and stack[-1]["inner"] is not None
             elif kind:
                 if kind == "ssh":
