@@ -185,3 +185,17 @@ def test_redirected_output_lands_in_the_vfs_and_cd_ls_reads_it():
     assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth", prefixes)
     assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth predump_white_${DATE}.txt", prefixes)
     assert not vfs_handled("cd /etc && ls", prefixes) and not vfs_handled("ls -l", prefixes)
+
+
+def test_redirected_dump_gets_the_recorded_output_of_the_command():
+    """OB-49: the redirected dump recorded '' (it prints nothing), the LLM answered `lines: []`, every dump file was
+    empty; `org -c eirWhiteRng | grep …` in the session log has the rows."""
+    from skills.network_simulator_setup.vfs_commands import redirect_contents
+    samples = [{"command": "org -c eirWhiteRng >/opt/p/predump_white_28-July-26.txt", "output": ""},
+               {"command": "org -c eirWhiteRng | grep -i3 28-July-2026", "output": "1,sb,eir,white,9900,9901,,\n1,sb,eir,white,9902,9903,,"},
+               {"command": "org -c localsdf", "output": "Object Class = localsdf"}]
+    cmds = [{"cmd": "org -c eirWhiteRng >/opt/p/predump_white_${DATE}.txt"},
+            {"cmd": "org -c eirGreyRng >/opt/p/predump_grey_${DATE}.txt"},
+            {"cmd": "ls -l /opt/p"}]
+    assert redirect_contents(cmds, samples) == {
+        "org -c eirWhiteRng": {"lines": ["1,sb,eir,white,9900,9901,,", "1,sb,eir,white,9902,9903,,"]}}

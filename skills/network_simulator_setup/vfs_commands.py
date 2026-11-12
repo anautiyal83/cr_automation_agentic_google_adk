@@ -136,6 +136,33 @@ def redirect_targets(simple: str) -> list[str]:
             t.strip("'\"") != "/dev/null"]
 
 
+def redirect_contents(commands: list[dict], samples: list[dict]) -> dict[str, dict]:
+    """{``cmd``: {lines}} for a workflow command ``cmd >/p/f`` — what MockWire writes into the file — from the recorded
+    output of ``cmd`` itself or of ``cmd | grep …``. The redirected command prints nothing (recorded ''), so the
+    LLM answered ``lines: []`` and every dump file was empty (OB-49: ``org -c eirWhiteRng >…/predump_white_….txt``;
+    the session log has ``org -c eirWhiteRng | grep -i3 …`` with the rows)."""
+    out: dict[str, dict] = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        if not redirect_targets(cmd) or "${" in cmd.split(">", 1)[0] or ";" in cmd or "&&" in cmd:
+            continue
+        bare = cmd.split(">", 1)[0].strip()
+        if not bare or bare in out:
+            continue
+        best: list[str] = []
+        for s in samples or []:
+            if not isinstance(s, dict) or not str(s.get("output") or "").strip():
+                continue
+            first = re.split(r"\s*\|\s*", str(s.get("command") or "").strip(), maxsplit=1)[0]
+            if re.sub(r"\s+", " ", first) == re.sub(r"\s+", " ", bare):
+                lines = str(s["output"]).replace("\r\n", "\n").split("\n")
+                if len(lines) > len(best):
+                    best = lines
+        if best:
+            out[bare] = {"lines": best}
+    return out
+
+
 _KEY_SPACE = r"(?:\s|\\s[*+]?)*"  # a space in an exact key, `\s*` / `\s+` in a regex key
 _KEY_REDIRECT = re.compile(_KEY_SPACE + r"""(?<![\d&>])>>?""" + _KEY_SPACE
                            + r"""['"]?(?:/|\$\{)\S*?['"]?(?=(?:\\s\*)?\$?$)""")

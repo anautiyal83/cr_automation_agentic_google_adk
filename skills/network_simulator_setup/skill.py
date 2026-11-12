@@ -211,6 +211,9 @@ class NetworkSimulatorSetupSkill:
             from .guards import guarded_responses
             merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
             merged = drop_vfs_answers(node, merged, row)
+            # `cmd >/p/f`: the file gets cmd's recorded output (first: it beats the empty answer, OB-49)
+            from .vfs_commands import redirect_contents
+            merged = {**redirect_contents(node.commands, samples), **merged}
             instance_configs[node.instance] = build_instance_config(node, merged)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written

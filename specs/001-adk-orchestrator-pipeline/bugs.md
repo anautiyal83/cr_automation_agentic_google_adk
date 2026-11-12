@@ -1351,3 +1351,16 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - A step 9 failure blamed on the workflow: step 6's artifacts are not cached ("CACHE NOT SAVED"), nothing
     cleared. Blamed on the simulator (retry_target 8): the Rerun re-runs step 8 only and step 6's artifacts
     stay waiting.
+
+### OB-49 — EIR dump files empty in the simulator; helper script needs pandas under WSL (High, dump fixed 2026-11-12)
+- Run 72ac26c1, step 9 sunny day: `python3 validate_tac_diff.py --predump_file … --delta_tac_file …xlsx` failed.
+  - **Empty dumps.** The dump files were 0 bytes. The step 8 AI answered `org -c eirWhiteRng >…/predump_white_….txt`
+    with `lines: []` (the redirected command prints nothing; its recorded output is ''). Since OB-40 MockWire writes
+    the answer of `org -c eirWhiteRng` into the file, so the file stayed empty. **Fix**:
+    `vfs_commands.redirect_contents` gives `cmd` the recorded output of `cmd` or `cmd | grep …` (101 rows for
+    eirWhiteRng from the session log), placed ahead of the merged answers. Step 8 prompt: a redirected command is
+    keyed on `cmd` and gets the lines it prints (records), never `lines: []`.
+    Test `test_redirected_dump_gets_the_recorded_output_of_the_command`.
+  - **No pandas in WSL.** `ModuleNotFoundError: No module named 'pandas'`: step 9 runs local steps under WSL
+    (spec 013 PF-D5), whose python has no pandas; step 6's smoke run of the script ran on Windows and passed.
+    Open: install the modules in WSL, or limit helper scripts to the standard library.

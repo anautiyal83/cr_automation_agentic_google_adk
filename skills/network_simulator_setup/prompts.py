@@ -35,6 +35,9 @@ with .+? (never \\S+).
 the list, the item's name and then the inner command's full healthy output — the same values for every \
 item (a check that all items agree must pass), never just the list of names.
 - Commands that print nothing on success get `lines: []`.
+- A command whose output is redirected to a file (`cmd >/path/file`): key it on `cmd` alone (no redirect) and \
+give the lines `cmd` prints — the simulator writes them into the file, which later steps read (a dump of \
+records: a few realistic records, as the real command prints them). Never `lines: []` for it.
 - Do NOT emit config, auth, niam, su, exit or stty entries.
 - Use SINGLE quotes for every key and every output line (never double quotes: \
 regex backslashes like \\S are invalid escapes in double-quoted YAML). Double any \
