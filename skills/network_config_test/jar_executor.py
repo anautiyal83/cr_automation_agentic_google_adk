@@ -8,6 +8,7 @@ Two JARs:
 from __future__ import annotations
 
 import asyncio
+import re
 import json
 import logging
 import os
@@ -271,10 +272,34 @@ async def execute_target(
     for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
         cmd += ["--var", f"{key}={value}"]
 
-    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
-                            cwd=plan.get("local_cwd"))
+    cwd = plan.get("local_cwd")
+    from core.config import wsl_distro
+    distro = wsl_distro()
+    if distro:  # LOCAL steps as on the production (Linux) server (spec 013 PF-D5)
+        cmd, cwd = in_wsl(cmd, distro, cwd), None
+    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})", cwd=cwd)
     result.update(node=node, cr_group=cr_group)
     return result
+
+
+_WIN_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def wsl_path(path: str) -> str:
+    r"""``D:\x\y`` → ``/mnt/d/x/y``; anything else unchanged."""
+    m = _WIN_PATH.match(str(path))
+    return f"/mnt/{m.group(1).lower()}/{m.group(2).replace(chr(92), '/')}" if m else str(path)
+
+
+def in_wsl(cmd: list[str], distro: str, cwd: str | None) -> list[str]:
+    """The JAR command run inside a WSL distribution: Linux ``java``, Windows paths as ``/mnt/<drive>/…``,
+    the LOCAL steps' working directory as ``--cd``. On Windows the JAR's LOCAL runner loses double quotes and
+    rewrites ``/word`` paths (spec 013 P-6); under Linux it runs them as production does."""
+    args = ["java"] + [wsl_path(a) for a in cmd[1:]]
+    head = ["wsl.exe", "-d", distro]
+    if cwd:
+        head += ["--cd", wsl_path(str(Path(cwd).resolve()))]
+    return head + ["--exec"] + args
 
 
 def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:

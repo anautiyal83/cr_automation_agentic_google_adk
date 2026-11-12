@@ -143,7 +143,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (plain form inside step 6; written as `${…}`)
 - `when` joins conditions with `&&`/`||` — with `and`/`or` the step is always skipped (autofix rewrites)
 - LOCAL steps: double quotes are fine on Linux (production); only on WINDOWS the JAR's `bash -c` (commands
-  ≤ 8000 chars) loses them and `/word` becomes `C:/word` — step 9 runs under WSL (spec 013 P-6, PF-D5);
+  ≤ 8000 chars) loses them and `/word` becomes `C:/word` — so on Windows step 9 runs `execute` in WSL
+  (`execution.wsl_distro`, `jar_executor.in_wsl`: Java 8 — the JAR needs Nashorn —, python, `.wslconfig`
+  networkingMode=mirrored to reach MockWire on localhost; spec 013 P-6, PF-D5);
   `${configSequences.0.records.0.data}` (whole record) is `[object Object]`; no JSON/dict values — one flag per
   field (autofix expands `--x '{'K': '${…}'}'` into `--x_k '${…}'`)
 - Spec 013 production format (`skills/network_config_gen/production.py`, last pass of `structure.apply`, undone

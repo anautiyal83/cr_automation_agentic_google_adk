@@ -17,7 +17,9 @@ after a stop.
 - [x] PF003 `${…}` expressions everywhere: autofix rewrites bare `when` / `expr` (`X != ''`, `a == b`) to
   `${X != ""}` / `${a == b}`; validator, workflow_table (spec 012) and edit_checks read both
 - [x] PF004 Drop Windows-only rules from step 6 (PF-D6): no rewrite / rejection of `"` in LOCAL steps
-- [ ] PF006 Step 9 under WSL (PF-D5): run the cli-automation JAR in WSL (Linux Java), paths translated, simulator reachable
+- [x] PF006 Step 9 under WSL (PF-D5) — done 2026-11-12 (`execution.wsl_distro`, `jar_executor.in_wsl`; Ubuntu-24.04,
+  Java 8 — the JAR needs Nashorn, gone since Java 15 —, python-is-python3, `.wslconfig` networkingMode=mirrored).
+  PGW 2/2, MRF 4/4 under WSL; EIR same as on Windows (logic gaps). Was: run the cli-automation JAR in WSL (Linux Java), paths translated, simulator reachable
   from WSL; Settings → External Modules option; needs `wsl --install` + Java in WSL on the machine
 - [~] PF005 Validation shape: `enabled: true` + `description` on every validation (done); `warning` + `vars` where the
   step feeds a retry and the error capture register come with the patterns (Stage C) and the prompt (Stage D)

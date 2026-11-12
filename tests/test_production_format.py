@@ -119,3 +119,14 @@ def test_contract_validations_worded_like_production():
     assert rb["description"] == "Update TAC" and rb["failure"]["message"] == "Update TAC — failed."
     flat = dump_yaml(structure.flattened(parsed))
     assert "— failed." not in flat and "PRECHECK_FAILED" not in flat
+
+
+def test_step9_runs_the_jar_inside_wsl():
+    """Spec 013 PF-D5: on Windows step 9 runs `execute` in WSL — Linux java, /mnt/<drive> paths, LOCAL cwd as --cd."""
+    from skills.network_config_test.jar_executor import in_wsl, wsl_path
+    assert wsl_path(r"D:\work\run\wf.yaml") == "/mnt/d/work/run/wf.yaml"
+    assert wsl_path("C:/x") == "/mnt/c/x" and wsl_path("NG1") == "NG1"
+    cmd = in_wsl([r"C:\jdk\bin\java", "-jar", r"D:\lib\cli.jar", "execute", "--yaml", r"D:\r\wf.yaml",
+                  "--var", "ORDER_NO=T"], "Ubuntu-24.04", r"D:\r\scripts")
+    assert cmd == ["wsl.exe", "-d", "Ubuntu-24.04", "--cd", "/mnt/d/r/scripts", "--exec", "java", "-jar",
+                   "/mnt/d/lib/cli.jar", "execute", "--yaml", "/mnt/d/r/wf.yaml", "--var", "ORDER_NO=T"]

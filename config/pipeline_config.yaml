@@ -35,6 +35,10 @@ execution:
   # dummy values when executing against the simulator.
   runtime_params:
     ORDERNO: "TEST_ORDERNO"
+  # Step 9 on Windows: run the cli-automation JAR inside this WSL distribution, so LOCAL steps behave as on
+  # the production (Linux) server (spec 013 PF-D5). Needs Java + python in it and mirrored networking
+  # (.wslconfig networkingMode=mirrored) to reach the simulator on localhost. Empty: run on Windows.
+  wsl_distro: "Ubuntu-24.04"
   # Run queue (spec 007): one pipeline runs at a time, the others wait; jobs one user may have waiting
   max_queued_per_user: 3
   # Backups are taken on this server (step 6 adds it as node REPO to every workflow with a

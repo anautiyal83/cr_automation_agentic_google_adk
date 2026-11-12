@@ -141,6 +141,20 @@ def max_queued_per_user() -> int:
     return int(config.max_queued_per_user) if config else 3
 
 
+def wsl_distro() -> str:
+    """The WSL distribution step 9 runs the cli-automation JAR in (execution.wsl_distro, spec 013 PF-D5); ''
+    when not on Windows or not configured."""
+    import os
+    if os.name != "nt":
+        return ""
+    try:
+        import yaml
+        raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        return str((raw.get("execution") or {}).get("wsl_distro") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def repo_server() -> dict[str, str]:
     """Backup repo server (execution.repo_server) over the defaults."""
     cm = ConfigManager._live_instance
