@@ -1341,3 +1341,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix** (`pipeline_agent._settle_deferred_cache`): a failure blamed on the simulator keeps them waiting
   ("CACHE KEPT"). A pass with nothing deferred caches them from the run folder (the artifacts, edits included).
   Tests `tests/test_deferred_cache.py`.
+- **Rule (user, 2026-11-12): only the user's Rerun clears a cache, and only that of the step it re-runs.**
+  - Rerun at a review (and the action rerun): `_clear_step_cache`, the agents of the re-run display step only.
+    Step 6 = config + helper scripts, steps 3–4 = CIQ generation; later steps' caches are kept. Before, the
+    review rerun cleared every cached step after it, and the action rerun cleared nothing.
+  - Edit / clarify back to step 1: step 1's cache only (later steps' inputs fingerprints change with the edit).
+  - Automatic retry: clears nothing. The retried step's agents go in `state["_regenerate"]` and skip the cache
+    once (OB-11 kept).
+  - A step 9 failure blamed on the workflow: step 6's artifacts are not cached ("CACHE NOT SAVED"), nothing
+    cleared. Blamed on the simulator (retry_target 8): the Rerun re-runs step 8 only and step 6's artifacts
+    stay waiting.

@@ -102,10 +102,27 @@ def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: li
             # the simulator failed, not the workflow: keep them waiting for the step to pass (OB-48)
             flow.flow("CACHE KEPT %s — step %d failed on the simulator", ", ".join(proven), proof)
         else:
+            # not proven: not cached now — but the cache is never cleared here, only by a Rerun (OB-48)
             for name in proven:
                 pending.pop(name, None)
-                cache.clear_cache(uc_name, name)
-            flow.flow("CACHE DROPPED %s — step %d failed with them", ", ".join(proven), proof)
+            flow.flow("CACHE NOT SAVED %s — step %d failed with them", ", ".join(proven), proof)
+
+
+def _step_agents(index: int) -> list[str]:
+    """The agents of the display step(s) the agent at ``index`` reports into (step 6 = config + helper scripts)."""
+    steps = set(_AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], []))
+    return [a for a in _AGENT_NAMES if steps & set(_AGENT_DISPLAY_STEPS.get(a, []))]
+
+
+def _clear_step_cache(uc_name: str, index: int) -> list[str]:
+    """Clear the cache of the step being re-run — that step's agents only, never the later steps' (user rule)."""
+    from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS
+    cache, cleared = ArtifactCache(), []
+    for name in _step_agents(index):
+        if name in CACHEABLE_AGENTS:
+            cache.clear_cache(uc_name, name)
+            cleared.append(name)
+    return cleared
 
 
 def _blames_simulator(run_dir: str, step: int) -> bool:
@@ -240,7 +257,9 @@ class PipelineAgent(BaseAgent):
                 # A step an earlier agent of the same display step failed is not "passed" from
                 # cache: the cache hit hid step 6's failure and skipped its review (OB-14)
                 step_failed = any(ctx.session.state.get(f"step_{sn}_status") == "failed" for sn in display_steps)
-                if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause:
+                # an automatic retry regenerates its step without clearing the cache (only Rerun clears, OB-48)
+                regenerate = agent.name in (ctx.session.state.get("_regenerate") or [])
+                if agent.name in CACHEABLE_AGENTS and not step_failed and not resume_pause and not regenerate:
                     has = cache.has_cache(uc_name, agent.name,
                                           inputs_fingerprint(ctx.session.state.get("document_set")),
                                           options_fingerprint(ctx.session.state.get("document_set")))
@@ -354,6 +373,10 @@ class PipelineAgent(BaseAgent):
                 ctx.session.state["pipeline_cancelled"] = True
                 break
 
+            # regenerated now: a later pass may use the cache again
+            if agent.name in (ctx.session.state.get("_regenerate") or []):
+                ctx.session.state["_regenerate"] = [a for a in ctx.session.state["_regenerate"] if a != agent.name]
+
             # ----- SAVE TO CACHE (on success) -----
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
@@ -416,9 +439,8 @@ class PipelineAgent(BaseAgent):
                     # The user answers this step's open questions in step 1 (clarify), or edited the
                     # requirements at this review (edit: requirement_edits.json, applied by step 1):
                     # requirements are gathered again and every later step regenerates from them
-                    try:
-                        from storage.artifact_cache import ArtifactCache
-                        ArtifactCache().clear_from_step(uc_name, self._agents_list[0].name)
+                    try:  # step 1 is re-run: its cache only — the later steps' inputs change with the edit
+                        _clear_step_cache(uc_name, 0)
                     except Exception as e:
                         logger.debug("Cache clear failed on %s: %s", decision, e)
                     clear_step_statuses(ctx.session.state, 0)
@@ -437,12 +459,10 @@ class PipelineAgent(BaseAgent):
                         target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
                     if await self._retries_exhausted(ctx, run_id_str, target_index, ms_step):
                         break
-                    # Clear cache from rerun target onward
+                    # Rerun clears the cache of the step it re-runs, and only that step's (user rule, OB-48)
                     try:
-                        from storage.artifact_cache import ArtifactCache
-                        rerun_agent = self._agents_list[target_index].name
-                        ArtifactCache().clear_from_step(uc_name, rerun_agent)
-                        flow.flow("RERUN — cleared cache from %s onward", rerun_agent)
+                        cleared = _clear_step_cache(uc_name, target_index)
+                        flow.flow("RERUN — cleared the cache of %s", ", ".join(cleared) or "nothing (not cached)")
                     except Exception:
                         pass
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
@@ -489,12 +509,10 @@ class PipelineAgent(BaseAgent):
                 target_index = _RETRY_STEP_TO_INDEX[retry_target]
                 if await self._retries_exhausted(ctx, run_id_str, target_index, display_steps[-1] if display_steps else 0):
                     break
-                # The retried agent must regenerate, not reload what just failed (OB-11)
-                try:
-                    from storage.artifact_cache import ArtifactCache
-                    ArtifactCache().clear_from_step(uc_name, self._agents_list[target_index].name)
-                except Exception as e:
-                    logger.debug("Cache clear failed on auto-retry: %s", e)
+                # The retried step must regenerate, not reload what just failed (OB-11) — without clearing the
+                # cache: only the user's Rerun does that (OB-48)
+                ctx.session.state["_regenerate"] = sorted(set(ctx.session.state.get("_regenerate") or [])
+                                                          | set(_step_agents(target_index)))
                 flow.flow("AUTO-RETRY — step %d -> agent index %d", retry_target, target_index)
                 await self._publish(run_id_str, "retry_started", retry_target)
                 index = target_index
@@ -639,6 +657,10 @@ class PipelineAgent(BaseAgent):
             if target and target in _RETRY_STEP_TO_INDEX:
                 target_index = _RETRY_STEP_TO_INDEX[target]
                 flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
+                try:  # the user's Rerun: that step's cache only (OB-48)
+                    _clear_step_cache(ctx.session.state.get("uc_name", ""), target_index)
+                except Exception as e:
+                    logger.debug("Cache clear failed on rerun action: %s", e)
                 clear_step_statuses(ctx.session.state, target_index)
                 await self._publish(run_id_str, "retry_started", target)
                 return target_index

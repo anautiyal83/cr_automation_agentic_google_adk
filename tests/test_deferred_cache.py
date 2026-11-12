@@ -30,11 +30,24 @@ def test_simulator_failure_keeps_the_workflow_waiting(tmp_path):
     assert not cache.cleared and set(pending) == {"network_config_gen", "helper_script_gen"}
 
 
-def test_workflow_failure_drops_them(tmp_path):
+def test_workflow_failure_saves_nothing_and_clears_nothing(tmp_path):
+    """Only the user's Rerun clears a step's cache."""
     (tmp_path / "step_9_error.json").write_text(json.dumps({"classification": "workflow", "retry_target": 6}))
     cache, pending = FakeCache(), _pending()
     _settle_deferred_cache(cache, "UC", pending, [9], {"step_9_status": "failed"}, str(tmp_path))
-    assert set(cache.cleared) == {"network_config_gen", "helper_script_gen"} and not pending
+    assert not cache.cleared and not cache.saved and not pending
+
+
+def test_rerun_clears_only_the_rerun_steps_cache(monkeypatch):
+    from orchestrator import pipeline_agent
+    from storage import artifact_cache
+    cleared = []
+    monkeypatch.setattr(artifact_cache.ArtifactCache, "clear_cache", lambda self, uc, name: cleared.append(name))
+    assert pipeline_agent._clear_step_cache("UC", 3) == ["network_config_gen", "helper_script_gen"]
+    assert cleared == ["network_config_gen", "helper_script_gen"]
+    cleared.clear()
+    assert pipeline_agent._clear_step_cache("UC", 1) == ["ciq_validation_json_gen"]  # not step 6 after it
+    assert pipeline_agent._clear_step_cache("UC", 6) == []  # step 8 has no cache
 
 
 def test_pass_after_a_restart_caches_from_the_run(tmp_path):

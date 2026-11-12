@@ -515,7 +515,7 @@ def test_request_builder_must_get_the_request_identifiers():
 
 def test_step6_is_cached_only_after_step9_passes(tmp_path):
     """DEP-55: step 6 passing its validator is no proof; its artifacts are cached when step 9
-    passes, dropped (with any cached copy) when step 9 fails."""
+    passes, not cached when step 9 fails — and the cache is never cleared then, only by the user's Rerun (OB-48)."""
     from orchestrator.pipeline_agent import _settle_deferred_cache
 
     class Cache:
@@ -534,7 +534,7 @@ def test_step6_is_cached_only_after_step9_passes(tmp_path):
     assert not cache.saved and not cache.cleared and len(pending) == 2
     (tmp_path / "step_9_error.json").write_text("{}")                              # step 9 failed (disk)
     _settle_deferred_cache(cache, "UC", dict(pending), [9], {"step_9_status": "passed"}, str(tmp_path))
-    assert not cache.saved and sorted(cache.cleared) == ["helper_script_gen", "network_config_gen"]
+    assert not cache.saved and not cache.cleared
     (tmp_path / "step_9_error.json").unlink()
     cache = Cache()
     _settle_deferred_cache(cache, "UC", pending, [9], {}, str(tmp_path))           # step 9 passed
