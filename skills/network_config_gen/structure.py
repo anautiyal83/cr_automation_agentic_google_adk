@@ -105,8 +105,13 @@ def _moved_files(step: dict) -> set[str]:
     sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
     files = {str(sftp[k]) for k in ("remote_path", "local_path") if sftp.get(k) and "/" in str(sftp[k])}
     if _is_auto(step) and str(step.get("id")).endswith("_copy"):  # the node's scp / sftp with the repo
-        files |= {re.sub(r"^\S*@(?:\[[^\]]*\]|[^\s:@]+):", "", tok) for tok in str(step.get("send") or "").split()[1:]
-                  if "/" in tok and not tok.startswith("'")}
+        send = str(step.get("send") or "")
+        batch = re.search(r"\b(?:put|get)\s+(\S+)\s+(\S+?)(?:\\n|\")", send)
+        if batch:  # printf "put|get <a> <b>\nbye\n" | sftp … (production's batch)
+            files |= {batch.group(1), batch.group(2)}
+        else:
+            files |= {re.sub(r"^\S*@(?:\[[^\]]*\]|[^\s:@]+):", "", tok) for tok in send.split()[1:]
+                      if "/" in tok and not tok.startswith("'")}
     return files
 
 
@@ -371,10 +376,9 @@ def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: s
     remote = f"{user}@{f'[{address}]' if ':' in address else address}:"  # brackets for IPv6 only
     if method == "scp":
         return f"scp {node_path} {remote}{repo_path}" if to_repo else f"scp {remote}{repo_path} {node_path}"
-    if not to_repo:
-        return f"sftp {remote}{repo_path} {node_path}"
-    folder, _, name = repo_path.rpartition("/")
-    return f"sftp {remote}{folder or '/'} <<< 'put {node_path} {name}'"
+    # production: an sftp batch fed by printf (spec 013 PF022)
+    op = f"put {node_path} {repo_path}" if to_repo else f"get {repo_path} {node_path}"
+    return f'printf "{op}\\nbye\\n" | sftp -o StrictHostKeyChecking=no {remote[:-1]}'
 
 
 RETRY_GLOBALS = {"RETRY_COUNT": 3, "LOOP_RETRY": [1, 2, 3]}

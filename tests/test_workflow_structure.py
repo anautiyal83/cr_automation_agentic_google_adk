@@ -161,9 +161,11 @@ def test_sftp_node_types_and_node_changes_through_the_repo():
     sftp_reqs = {**VIA_REPO, "category_1_node_activity": {"nodes": [{"name": "MRF", "ssh": {"file_transfer": "sftp"}}]}}
     backup = _leaves(_applied(sftp_reqs), "backup")
     assert next(s for s in backup if s.get("id") == "nc_bk1_copy")["send"] == (
-        "sftp ${REPO_USER}@${REPO_IP}:${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST} "
-        "<<< 'put /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz clips_backup.tar.gz'")
-    assert structure.repo_copy("sftp", "u", "repo", "/opt/a/f.wav", "/r/f.wav", False) == "sftp u@repo:/r/f.wav /opt/a/f.wav"
+        'printf "put /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz '
+        '${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/clips_backup.tar.gz\\nbye\\n" | '
+        'sftp -o StrictHostKeyChecking=no ${REPO_USER}@${REPO_IP}')       # production's sftp batch (spec 013)
+    assert structure.repo_copy("sftp", "u", "repo", "/opt/a/f.wav", "/r/f.wav", False) == (
+        'printf "get /r/f.wav /opt/a/f.wav\\nbye\\n" | sftp -o StrictHostKeyChecking=no u@repo')
     assert structure.repo_copy("scp", "u", "fd00::1", "/tmp/f", "/r/f", True) == "scp /tmp/f u@[fd00::1]:/r/f"
     # a copy from the repo onto the node outside /tmp changes it; a copy to the repo and the repo's own
     # steps do not

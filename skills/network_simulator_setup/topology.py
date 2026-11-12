@@ -227,17 +227,23 @@ def file_builtin(cmd: str) -> bool:
     if k.lower().startswith("regex:"):
         k = k[len("regex:"):].lstrip("^").replace("\\ ", " ").replace("\\-", "-")
     first = k.split(" ", 1)[0].rstrip("\\")
-    return first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
+    return (first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
+            or (first == "printf" and is_peer_copy(k)))
 
 
 # user@host: — the host is a name, an IPv6 in brackets or, in an LLM's key, a regex token like \S+
 _PEER = re.compile(r"\S@(?:\\?\[|[^\s:@]+:)")
 
 
+_SFTP_BATCH = re.compile(r"^\s*printf\s.*\|\s*sftp\b.*\S@\S+\s*$")
+
+
 def is_peer_copy(cmd: str) -> bool:
-    """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7): MockWire
-    moves the file between the two instances' VFS (``transfer.peers``)."""
-    return bool(_PEER.search(cmd))
+    """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7, or production's
+    ``printf "put|get …" | sftp … user@host``, spec 013): MockWire moves the file between the two instances'
+    VFS (``transfer.peers``)."""
+    plain = cmd[len("regex:"):].replace("\\ ", " ") if cmd.startswith("regex:") else cmd
+    return bool(_PEER.search(cmd)) or bool(_SFTP_BATCH.match(plain))
 
 
 def add_peers(config_yaml: str, peers: dict[str, dict]) -> str:

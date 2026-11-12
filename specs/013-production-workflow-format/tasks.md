@@ -84,10 +84,12 @@ skipped phase → PF024)
   `sha256sum … | awk '{print $1}'` + `(?m)^(?<X>[a-fA-F0-9]{64})$`, destination check sets `<tag>Status`
   (success) / warning FAILED, retry loop over `${LOOP_RETRY}` (`when` / `break_when`), guard (`echo checksum-guard`);
   `RETRY_COUNT` / `LOOP_RETRY` globals; the contract leaves retried steps alone. MRF 4/4, PGW 2/2
-- [ ] PF022b node ↔ repo as production: `printf "put|get …
+- [x] PF022b-1 (2026-11-12) node ↔ repo sftp as production: `printf "put|get <a> <b>
 bye
-" | sftp …` (today `scp` / `sftp <<<`), repo IP by
-  IPv4/IPv6 (`who am i` + computed register), `repo_server_sftp` node for framework sftp
+" | sftp -o
+  StrictHostKeyChecking=no ${REPO_USER}@${REPO_IP}` (scp nodes keep scp); MockWire 4e17e37 copies such a batch with a
+  peer; step 8 treats it as a peer copy, the overlay names the repo instance. MRF 4/4
+- [ ] PF022b-2 repo IP by IPv4/IPv6 (`who am i` + computed register), `repo_server_sftp` node for framework sftp
 - [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
 - [x] PF024 Rollback-only (C1, 2026-11-12): `structure.rollback_lookups` — values a rollback reads that only earlier
   phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the

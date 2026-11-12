@@ -110,9 +110,13 @@ def _peer_copies(workflow: dict, nodes: list[NodeSpec]) -> None:
             for spec in nodes:
                 _, address, password = logins[spec.name]
                 hits = [f"@{a}:" for a in (f"[{address}]", address) if f"@{a}:" in send]
-                if not hits:
+                batch = [f"@{a}" for a in (f"[{address}]", address) if send.rstrip().endswith(f"@{a}")]
+                if hits:
+                    step["send"] = send = send.replace(hits[0], f"@{spec.name}:")
+                elif batch:  # printf "put|get …" | sftp … user@<address> (spec 013)
+                    step["send"] = send = send.rstrip()[:-len(batch[0])] + f"@{spec.name}"
+                else:
                     continue
-                step["send"] = send = send.replace(hits[0], f"@{spec.name}:")
                 for reply in step.get("expect_reply") or []:
                     if isinstance(reply, dict) and password and password in str(reply.get("reply", "")):
                         reply["reply"] = str(reply["reply"]).replace(password, spec.password)
