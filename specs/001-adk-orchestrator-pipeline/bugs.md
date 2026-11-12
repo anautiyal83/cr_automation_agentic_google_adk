@@ -1404,3 +1404,14 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     Recorded output, VFS answers and local steps stay the workflow's.
   - Tests `test_ls_of_a_literal_path_prints_the_path_as_given`, `test_failure_on_an_invented_answer_is_the_simulators`,
     `test_config_key_is_what_mockwire_reports`.
+
+### OB-52 — Re-run always cleared the step's cache: a "Clear cache" checkbox decides (user, 2026-11-12)
+- Run d4a1b9f3: the Rerun followed the run's saved step 9 verdict (retry_target 6, from before OB-51) and cleared
+  step 6's cache although the failure was the simulator's. User: "give a checkbox, if checked then clear cache
+  else reuse the cache".
+- **Change**:
+  - The review has a "Clear cache" checkbox next to "Re-run step", unticked at every review. Ticked sends
+    `rerun_clear`: `_clear_step_cache`, the re-run step's agents only. Unticked sends `rerun`: no clearing, the
+    step re-runs from its cache where there is one.
+  - The (unused) action rerun clears only with `clear_cache: true`.
+  - `test_pipeline_retries` follows the new decision names.

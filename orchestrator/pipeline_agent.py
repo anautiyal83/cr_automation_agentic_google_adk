@@ -450,7 +450,7 @@ class PipelineAgent(BaseAgent):
                     await self._publish(run_id_str, "retry_started", 1)
                     index = 0
                     continue
-                elif decision == "rerun":
+                elif decision in ("rerun", "rerun_clear"):
                     # Determine retry target from the agent's output
                     retry_target = ctx.session.state.pop("_retry_target", None)
                     if retry_target and retry_target in _RETRY_STEP_TO_INDEX:
@@ -461,12 +461,16 @@ class PipelineAgent(BaseAgent):
                         target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
                     if await self._retries_exhausted(ctx, run_id_str, target_index, ms_step):
                         break
-                    # Rerun clears the cache of the step it re-runs, and only that step's (user rule, OB-48)
-                    try:
-                        cleared = _clear_step_cache(uc_name, target_index)
-                        flow.flow("RERUN — cleared the cache of %s", ", ".join(cleared) or "nothing (not cached)")
-                    except Exception:
-                        pass
+                    # The review's "Clear this step's cache" box: ticked (rerun_clear) clears the cache of the step it
+                    # re-runs, and only that step's; unticked (rerun) re-runs it from its cache (user rule, OB-48/52)
+                    if decision == "rerun_clear":
+                        try:
+                            cleared = _clear_step_cache(uc_name, target_index)
+                            flow.flow("RERUN — cleared the cache of %s", ", ".join(cleared) or "nothing (not cached)")
+                        except Exception:
+                            pass
+                    else:
+                        flow.flow("RERUN — the cache is kept (re-run from cache where there is one)")
                     flow.flow("RERUN — jumping to agent index %d (retry_target=%s)", target_index, retry_target)
                     clear_step_statuses(ctx.session.state, target_index)
                     await self._publish(run_id_str, "retry_started", retry_target or display_steps[0] if display_steps else 0)
@@ -659,10 +663,11 @@ class PipelineAgent(BaseAgent):
             if target and target in _RETRY_STEP_TO_INDEX:
                 target_index = _RETRY_STEP_TO_INDEX[target]
                 flow.flow("RERUN — jumping to step %d (index %d)", target, target_index)
-                try:  # the user's Rerun: that step's cache only (OB-48)
-                    _clear_step_cache(ctx.session.state.get("uc_name", ""), target_index)
-                except Exception as e:
-                    logger.debug("Cache clear failed on rerun action: %s", e)
+                if action.get("clear_cache"):  # the user asked to: that step's cache only (OB-48/52)
+                    try:
+                        _clear_step_cache(ctx.session.state.get("uc_name", ""), target_index)
+                    except Exception as e:
+                        logger.debug("Cache clear failed on rerun action: %s", e)
                 clear_step_statuses(ctx.session.state, target_index)
                 await self._publish(run_id_str, "retry_started", target)
                 return target_index

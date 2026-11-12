@@ -247,9 +247,15 @@ class ProgressSection:
                     .props("unelevated color=warning size=sm no-caps"), "progress")
                 self.ms_skip_btn.set_visibility(False)
                 self.ms_rerun_btn = action(ui.button("Re-run step", icon="replay",
-                    on_click=lambda: self._milestone_respond("rerun")) \
+                    on_click=lambda: self._milestone_respond(
+                        "rerun_clear" if self.ms_clear_cache_cb.value else "rerun")) \
                     .props("outline color=primary size=sm no-caps")
-                    .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
+                    .tooltip("Runs the step again; after 3 re-runs of the same step the run fails"), "progress")
+                # ticked: the re-run step regenerates (its cache is cleared); unticked: it re-runs from its cache
+                self.ms_clear_cache_cb = action(ui.checkbox("Clear cache", value=False)
+                    .props("dense size=sm")
+                    .tooltip("Ticked: the step re-runs from scratch (its cache is cleared). "
+                             "Unticked: it re-uses its cached result where there is one"), "progress")
                 # Step 2 review: correct answers or say what was captured wrongly
                 self.ms_edit_btn = action(ui.button("Edit requirements", icon="edit_note",
                     on_click=self._open_requirements_editor) \
@@ -1371,6 +1377,8 @@ class ProgressSection:
         self._show_answered_notes(0 if has_failures else step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
+        self.ms_clear_cache_cb.set_visibility(step_num != 2)
+        self.ms_clear_cache_cb.value = False  # each review starts with "re-use the cache"
         # every review: the requirements can be corrected (later steps: the run goes back to step 1)
         self.ms_edit_btn.set_visibility(step_num >= 2)
         self._show_clarifications()
@@ -1510,6 +1518,7 @@ class ProgressSection:
         self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions need your input"
         self.ms_view_btn.set_visibility(False)
         self.ms_rerun_btn.set_visibility(False)
+        self.ms_clear_cache_cb.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
         self.ms_failure_box.set_visibility(False)
@@ -2078,7 +2087,7 @@ class ProgressSection:
             for s in range(1, TOTAL_STEPS + 1):
                 self._update_step_visual(s, "pending")
             self.action_btns.set_visibility(True)
-        elif decision == "rerun":
+        elif decision in ("rerun", "rerun_clear"):
             self.status_icon.name = "replay"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
             ms_step = step_num

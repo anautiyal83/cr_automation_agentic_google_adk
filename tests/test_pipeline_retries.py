@@ -40,7 +40,7 @@ def test_continue_on_a_failed_step_drops_the_retry():
     """OB-5: "Continue" at a review drops the QA agent's retry request before the auto-retry
     block reads it; both retry paths go through the retry limit."""
     source = inspect.getsource(pipeline_agent.PipelineAgent._run_async_impl)
-    rerun = source.index('elif decision == "rerun"')
+    rerun = source.index('elif decision in ("rerun", "rerun_clear")')
     dropped = source.index('dropped = ctx.session.state.pop("_retry_target", None)')
     auto = source.index("CHECK _retry_target from QA agents")
     assert rerun < dropped < auto
