@@ -294,9 +294,39 @@ def workflow_prefixes(commands: list[dict], steps: list[dict], vfs: dict | None)
     return prefixes
 
 
-def vfs_handled(cmd: str, prefixes: set[str]) -> bool:
+def pod_copied_files(commands: list[dict]) -> set[str]:
+    """Files the workflow copies into a pod (``oc cp X ns/$i:/tmp``, ``kubectl cp``): MockWire runs neither ``oc cp``
+    nor the ``for … do … done`` around it, so they never reach its VFS — a read of one is answered by a key, not the
+    VFS (OB-53: ``ls -lrths /tmp/bulkProvisioning.json`` on DSSERVER — "No such file")."""
+    out: set[str] = set()
+    for c in commands:
+        for simple in _simple_commands(str(c.get("cmd") or "")):
+            words = _words(simple)
+            if len(words) < 4 or words[0] not in ("oc", "kubectl") or words[1] != "cp":
+                continue
+            args, skip = [], False
+            for w in words[2:]:
+                if skip:
+                    skip = False
+                elif w in ("-c", "-n", "--container", "--namespace"):
+                    skip = True  # its value is not a path
+                elif not w.startswith("-"):
+                    args.append(w)
+            if len(args) < 2 or ":" not in args[-1]:
+                continue
+            src, dest = args[-2], args[-1].split(":", 1)[1]
+            if not dest.startswith("/"):
+                continue
+            last = dest.rstrip("/").rsplit("/", 1)[-1]
+            out.add(_norm(dest) if "." in last and not dest.endswith("/")
+                    else _norm(dest.rstrip("/") + "/" + src.rsplit("/", 1)[-1]))
+    return out
+
+
+def vfs_handled(cmd: str, prefixes: set[str], unmodelled: set[str] | frozenset = frozenset()) -> bool:
     """MockWire answers the whole command from its VFS: every part is a pure builtin / filter or
-    a file command whose paths lie under ``prefixes`` — and at least one is a file command."""
+    a file command whose paths lie under ``prefixes`` — and at least one is a file command. A command reading a file
+    in ``unmodelled`` (:func:`pod_copied_files`) is not: that file is never in the VFS."""
     simple = _simple_commands(cmd)
     files = 0
     cwd = ""  # `cd /opt/sdf/processing/ && ls -lrth`: MockWire lists the VFS folder it moved to (OB-40)
@@ -321,6 +351,8 @@ def vfs_handled(cmd: str, prefixes: set[str]) -> bool:
                 paths = [cwd]
             if not all(_under(p, prefixes) for p in paths):
                 return False
+            if any(_norm(p) in unmodelled for p in paths):
+                return False                        # copied into a pod: never in the VFS (OB-53)
             files += 1
         elif name not in PURE:
             return False

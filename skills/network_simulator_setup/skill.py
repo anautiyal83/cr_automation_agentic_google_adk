@@ -153,11 +153,12 @@ class NetworkSimulatorSetupSkill:
                 logger.info("Topology node %s: %d backup sources seeded in the VFS", n.name, len(seeds))
             # File commands on paths the workflow fills run on the VFS, not from keys (DEP-59)
             from .file_flows import node_steps
-            from .vfs_commands import resolved_dirs, vfs_handled, workflow_prefixes
+            from .vfs_commands import pod_copied_files, resolved_dirs, vfs_handled, workflow_prefixes
             prefixes = workflow_prefixes(n.commands, node_steps(workflow_doc, n.name)
                                          if isinstance(workflow_doc, dict) else [], n.vfs)
+            unmodelled = pod_copied_files(n.commands)
             n.vfs_commands = {str(c.get("cmd") or "").strip() for c in n.commands
-                              if vfs_handled(str(c.get("cmd") or ""), prefixes)}
+                              if vfs_handled(str(c.get("cmd") or ""), prefixes, unmodelled)}
             if n.vfs_commands:
                 n.vfs = n.vfs or {"dirs": []}
                 n.vfs["dirs"] = sorted(set(n.vfs.get("dirs") or []) | set(resolved_dirs(prefixes, inp.ciq_json_files)))

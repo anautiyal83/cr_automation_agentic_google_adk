@@ -187,6 +187,21 @@ def test_redirected_output_lands_in_the_vfs_and_cd_ls_reads_it():
     assert not vfs_handled("cd /etc && ls", prefixes) and not vfs_handled("ls -l", prefixes)
 
 
+def test_file_copied_into_a_pod_is_not_read_from_the_vfs():
+    """OB-53: `for i in …; do oc cp bulkProvisioning.json "ns/$i:/tmp"; done` — MockWire runs neither the loop nor
+    `oc cp`, so `ls -lrths /tmp/bulkProvisioning.json` on the VFS said "No such file"; it keeps a key answer."""
+    from skills.network_simulator_setup.vfs_commands import pod_copied_files, vfs_handled, workflow_prefixes
+    cmds = [{"cmd": "for i in `oc get pods -n ${NS} | grep -i dsserver | awk '{print $1}'`; do echo $i; "
+                    "oc cp bulkProvisioning.json \"${NS}/$i:/tmp\"; echo; done"},
+            {"cmd": "oc cp ${POD}:/opt/p/b.json_backup -c eirapp -n ${NS} b.json_backup"},
+            {"cmd": "kubectl cp /tmp/a.tar ns/pod:/var/x/b.tar -c app"}]
+    unmodelled = pod_copied_files(cmds)
+    assert unmodelled == {"/tmp/bulkProvisioning.json", "/var/x/b.tar"}
+    prefixes = workflow_prefixes(cmds, [], None)
+    assert not vfs_handled("ls -lrths /tmp/bulkProvisioning.json", prefixes, unmodelled)
+    assert vfs_handled("ls -l /tmp/other.txt", prefixes, unmodelled)
+
+
 def test_redirected_dump_gets_the_recorded_output_of_the_command():
     """OB-49: the redirected dump recorded '' (it prints nothing), the LLM answered `lines: []`, every dump file was
     empty; `org -c eirWhiteRng | grep …` in the session log has the rows."""

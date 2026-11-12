@@ -1415,3 +1415,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     step re-runs from its cache where there is one.
   - The (unused) action rerun clears only with `clear_cache: true`.
   - `test_pipeline_retries` follows the new decision names.
+
+### OB-53 — Step 9: a file copied into a pod "does not exist" in the simulator (High, Fixed 2026-11-12)
+- Run d4a1b9f3 after OB-51: `ls -lrths /tmp/bulkProvisioning.json` on DSSERVER was now answered by MockWire's VFS
+  (`/tmp` is a workflow folder): "No such file". The file gets there through
+  `for i in …; do oc cp bulkProvisioning.json "ns/$i:/tmp"; done`. MockWire runs neither the loop nor `oc cp`
+  (the loop has a key answer), so the VFS never has it, and the AI was not asked for an answer.
+- **Fix**: `vfs_commands.pod_copied_files` lists the destinations of `oc cp` / `kubectl cp` into a pod (the value
+  of `-c` / `-n` skipped). `vfs_handled` leaves a command reading one of them to a key answer, which the AI writes
+  (or the fill-in builds from the step's success text, OB-51 shows the path). If that answer is wrong, step 9 now
+  blames the simulator. Test `test_file_copied_into_a_pod_is_not_read_from_the_vfs`.
