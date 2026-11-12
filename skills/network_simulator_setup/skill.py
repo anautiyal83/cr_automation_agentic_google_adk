@@ -411,7 +411,8 @@ class NetworkSimulatorSetupSkill:
                 break
             logger.warning("Phase 2: %s — invalid YAML from LLM (attempt %d/%d)",
                            node.name, attempt, LLM_ATTEMPTS)
-            parsed = salvage_yaml_entries(raw) or None
+            # most of the answer lost: ask again (the last attempt keeps what parses)
+            parsed = salvage_yaml_entries(raw, min_share=0.8 if attempt < LLM_ATTEMPTS else 0.0) or None
             if parsed:
                 break
             user_prompt += prompts.INVALID_YAML_RETRY

@@ -273,3 +273,17 @@ def test_runs_with_the_old_mockwire_path_use_lib_mockwire_jar():
     expected = str((PROJECT_ROOT / "lib" / "mockwire.jar").resolve())
     assert mockwire_jar({"mockwire_jar": "./lib/mockwire/mockwire-simulator/mockwire.jar"}) == expected
     assert mockwire_jar({}) == expected
+
+
+def test_single_quote_backslash_escapes_are_repaired():
+    r"""OB-42: `'… awk \'{print $1}\'':` is not YAML (no escapes in single quotes); the whole EIR answer failed to
+    parse and every lookup was answered `x`."""
+    from skills.network_simulator_setup.autofix import parse_llm_yaml, salvage_yaml_entries
+    raw = ("```yaml\n" + r"'oc get ns | grep -i nk | awk \'{print $1}\'':" + "\n  lines:\n  - 'nk-ei1-eir'\n"
+           + r"'regex:for i in x; do kubectl exec -it \$i -- bash -c \'netstat\'; done':"
+           + "\n  lines:\n  - 'pod-1'\n'ss':\n  lines:\n  - 'ok'\n```")
+    parsed = parse_llm_yaml(raw)
+    assert parsed["oc get ns | grep -i nk | awk '{print $1}'"] == {"lines": ["nk-ei1-eir"]}
+    assert r"regex:for i in x; do kubectl exec -it \$i -- bash -c 'netstat'; done" in parsed
+    broken = "'a':\n  lines: [1]\n'b: [\n'c: {\n'd':\n  lines: [2]\n"
+    assert salvage_yaml_entries(broken) and not salvage_yaml_entries(broken, min_share=0.8)

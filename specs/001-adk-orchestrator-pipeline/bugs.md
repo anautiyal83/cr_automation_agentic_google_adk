@@ -1246,3 +1246,18 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - Step 6 prompt: "same values on every item" is decided across items, with production's two-step form.
   - Test `test_success_expr_false_on_healthy_output_is_reported`. The TAC step is not checkable against recorded
     output (the AI changed the command), so only the prompt covers it.
+
+### OB-42 — Step 8 answered every lookup with `x`: the AI's responses failed to parse (High, Fixed 2026-11-12)
+- Run d3aa8ed5 (EIR), third step 9 failure: the namespace and pod lookups answered `x`, so every later command ran
+  with `-n x` and the pod loops printed nothing. The TAC check failed and the netstat / N17 checks passed on empty
+  output.
+- The AI wrote its keys single-quoted with backslash escapes (`'oc get ns | … | awk \'{print $1}\'':`). YAML has
+  no escapes in single quotes, so the whole answer failed to parse. The entry-by-entry salvage kept a few entries
+  and step 8 went on. `fill_unanswered` built the rest from the steps' capture regexes (`\S+` → `x`) or left them
+  empty, and step 8 still passed.
+- **Fix**:
+  - `parse_llm_yaml` and `salvage_yaml_entries` turn `\'` inside a single-quoted key / item into `''`. The run's
+    raw answer now parses: 27 entries with the AI's values.
+  - A salvage that keeps less than 80% of the entries asks the AI again; only the last attempt keeps a partial
+    answer.
+  - Test `test_single_quote_backslash_escapes_are_repaired`.

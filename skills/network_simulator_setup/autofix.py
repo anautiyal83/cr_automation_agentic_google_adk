@@ -43,7 +43,8 @@ def parse_llm_yaml(text: str) -> dict | list | None:
     if parsed is None:
         for label, repaired in (
             ("double-quote escapes", _requote_backslash_scalars(cleaned)),
-            ("truncation", _repair_truncated_yaml(_requote_backslash_scalars(cleaned))),
+            ("single-quote escapes", _single_quote_escapes(_requote_backslash_scalars(cleaned))),
+            ("truncation", _repair_truncated_yaml(_single_quote_escapes(_requote_backslash_scalars(cleaned)))),
         ):
             parsed = parse_yaml(repaired)
             if parsed is not None:
@@ -52,12 +53,14 @@ def parse_llm_yaml(text: str) -> dict | list | None:
     return parsed
 
 
-def salvage_yaml_entries(text: str) -> dict:
+def salvage_yaml_entries(text: str, min_share: float = 0.0) -> dict:
     """Parse a top-level YAML map entry by entry, keeping every entry that parses.
 
-    Used when the whole document is invalid because of one bad entry.
+    Used when the whole document is invalid because of one bad entry. With ``min_share`` it returns {} when fewer
+    entries than that share parse — most of the answer lost is a reason to ask again, not to fill the rest with
+    placeholders (OB-42: 3 of 27 kept, every lookup answered ``x``).
     """
-    cleaned = _requote_backslash_scalars(clean_yaml_response(text))
+    cleaned = _single_quote_escapes(_requote_backslash_scalars(clean_yaml_response(text)))
     blocks: list[list[str]] = []
     for line in cleaned.split("\n"):
         if line and not line[0].isspace() and not line.startswith(("-", "#")):
@@ -71,6 +74,8 @@ def salvage_yaml_entries(text: str) -> dict:
             result.update(parsed)
     if result:
         logger.info("Salvaged %d/%d YAML entries from invalid LLM output", len(result), len(blocks))
+    if blocks and len(result) < min_share * len(blocks):
+        return {}
     return result
 
 
@@ -90,6 +95,22 @@ def _requote_backslash_scalars(text: str) -> str:
         if m and "\\" in m.group(2):
             inner = m.group(2).replace('\\"', '"').replace("\\\\", "\\").replace("'", "''")
             line = f"{m.group(1)}'{inner}'{m.group(3)}"
+        out.append(line)
+    return "\n".join(out)
+
+
+_SQ_SCALAR = re.compile(r"^(\s*(?:-\s+)?)'(.*)$")
+
+
+def _single_quote_escapes(text: str) -> str:
+    """``\\'`` inside a single-quoted key / item → ``''``: YAML has no backslash escapes there, so the LLM's
+    ``'oc get ns | awk \\'{print $1}\\'':`` ended the scalar early, the whole answer failed to parse and every
+    command was answered by the fill-in (``x`` from ``\\S+``, nothing for the loops) — OB-42."""
+    out = []
+    for line in text.split("\n"):
+        m = _SQ_SCALAR.match(line)
+        if m and "\\'" in m.group(2):
+            line = m.group(1) + "'" + m.group(2).replace("\\'", "''")
         out.append(line)
     return "\n".join(out)
 
