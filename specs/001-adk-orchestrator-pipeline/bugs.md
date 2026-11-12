@@ -1153,3 +1153,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Also in this commit (spec 013 Stage D, fresh runs): an upload the LLM wrote in the backup phase after the backup
   moves before the steps that read it (MRF); step 8 matches a recorded command whatever the spacing around shell
   operators (`ns| grep` = `ns | grep`), so recorded per-pod outputs are used (EIR).
+
+### OB-37 — Step 6 rejected a "no pod reports an error" counter (Medium, Fixed 2026-11-12)
+- Run 66073576 (EIR): `N17 Error returned (?<N17ERROR>[1-9]\d*)` with `loop: true, count_var: N17_ERROR_NON_0_COUNT`
+  and `expr: … && N17_ERROR_NON_0_COUNT == 0` — a must-be-absent check written as a counter; OB-35 exempted only the
+  "value must be empty" form, so the validator failed step 6 on the healthy recorded output.
+- **Fix**: a counting register whose count the step requires `== 0` is exempt too. Test
+  `test_must_be_absent_captures_need_not_match_a_healthy_node`. Remaining finding of that run: DELTA_TAC_FILE never
+  used (requirements gap: what the delta file is for).

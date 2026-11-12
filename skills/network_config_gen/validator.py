@@ -634,7 +634,9 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
             # production's "must be absent" captures find nothing on a healthy node: a bad state / non-zero
             # count the step requires empty, or an error capture (ERROR:.*|error:.*) — spec 013
             names = _NAMED_GROUP.findall(rx)
+            count = str(reg.get("count_var") or "") if isinstance(reg, dict) else ""
             if any(re.search(rf"(?<![\w.]){re.escape(n)}\s*==\s*(?:''|\"\")", exprs) for n in names) \
+                    or (count and re.search(rf"(?<![\w.]){re.escape(count)}\s*==\s*0(?![\d.])", exprs)) \
                     or re.fullmatch(r"\(\?<\w+>(?:[Ee]rror|ERROR)[^|)]*(?:\|(?:[Ee]rror|ERROR)[^|)]*)*\)", rx):
                 continue
             verdict = _regex_matches_any(rx, outputs)

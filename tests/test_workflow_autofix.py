@@ -658,3 +658,25 @@ def test_local_step_reading_two_node_files_gets_both_downloads():
     steps = wf["phases"]["a"]["steps"]
     assert [s.get("sftp", {}).get("operation") for s in steps[1:3]] == ["download", "download"]
     assert steps[3]["send"] == "python compare.py --pre pre.txt --post post.txt"
+
+
+def test_must_be_absent_captures_need_not_match_a_healthy_node():
+    """Production's "no item reports an error" checks find nothing on a healthy node: a value required empty, a
+    counter required 0, an error capture (runs de9b2130 / 66073576: rejected on the recorded healthy output)."""
+    from skills.network_config_gen.validator import check_against_samples
+    out = "pod-1\nEIR N17 Error returned 0\npod-2\nEIR N17 Error returned 0\n"
+    samples = [{"command": "for i in x; do echo $i; dump_stats; done", "output": out}]
+
+    def step(register, expr):
+        return {"phases": {"pre": {"steps": [{"node": "N", "send": "for i in x; do echo $i; dump_stats; done",
+                                               "register": register,
+                                               "validation": {"success": {"criteria": {"expr": expr}}}}]}}}
+    empty = step([{"regex": "N17 Error returned (?<N17ERROR>[1-9]\d*)"}], "N17ERROR == ''")
+    zero = step([{"regex": "N17 Error returned 0", "loop": True, "count_var": "OK"},
+                 {"regex": "N17 Error returned (?<BAD>[1-9]\d*)", "loop": True, "count_var": "BADN"}],
+                "OK > 0 && BADN == 0")
+    error = step([{"regex": "(?<CMDERROR>ERROR:.*|error:.*)"}], "CMDERROR == ''")
+    for wf in (empty, zero, error):
+        assert not [p for p in check_against_samples(wf, samples) if "captures nothing" in p], wf
+    wrong = step([{"regex": "N17 Error returned (?<N17ERROR>[1-9]\d*)"}], "N17ERROR > 0")
+    assert [p for p in check_against_samples(wrong, samples) if "captures nothing" in p]
