@@ -35,6 +35,11 @@ _CSS = """<style>
 .cr-ed-row { border-bottom: 1px solid var(--cr-border); }
 .cr-ed-row:hover { background: var(--cr-surface-hover); }
 .cr-ed-row.has-problem { box-shadow: inset 3px 0 0 var(--cr-error); }
+.cr-ed-row { cursor: pointer; }
+.cr-ed-row.cr-ed-picked { background: color-mix(in srgb, var(--cr-primary, #1976d2) 9%, transparent);
+  box-shadow: inset 3px 0 0 var(--cr-primary, #1976d2); }
+.cr-ed-inline { border-top: 1px dashed var(--cr-border); border-bottom: 1px solid var(--cr-border);
+  background: var(--cr-surface-light); }
 .cr-ed-mono { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 .cr-ed-grid { display: grid; grid-template-columns: 28px 96px minmax(0, 1fr) minmax(0, 190px) 64px;
   gap: 10px; align-items: start; padding: 8px 12px; width: 100%; box-sizing: border-box; }
@@ -94,6 +99,7 @@ class FileEditor:
             self.buf[f.rel] = {"file": f, "orig": text, "text": text, "problems": None}
         self.cur = rel if rel in self.buf else self.files[0].rel
         self.mode = mode or ("table" if self._file().kind == "workflow" else "yaml")
+        self.picked = None  # (phase key, step number) clicked in the table / outline
         self.diff_base, self.undo, self.notice, self.mop_url = None, None, "", ""
         self._check(self.cur)
         self._render()
@@ -108,6 +114,21 @@ class FileEditor:
 
     def _text(self) -> str:
         return self.buf[self.cur]["text"]
+
+    def _phases(self) -> list[wt.Phase]:
+        """The current file's table, parsed once per text (a render reads it several times); ValueError
+        when it is not a workflow table."""
+        text = self._text()
+        cached = getattr(self, "_table_cache", None)
+        if not cached or cached[0] != text:
+            try:
+                cached = (text, wt.table(text), None)
+            except ValueError as e:
+                cached = (text, None, e)
+            self._table_cache = cached
+        if cached[2]:
+            raise cached[2]
+        return cached[1]
 
     def _dirty(self, rel: str | None = None) -> bool:
         b = self.buf[rel or self.cur]
@@ -264,7 +285,7 @@ class FileEditor:
                         ui.label(str(n)).classes("text-caption font-bold cr-text-error")
             if self._file().kind == "workflow":
                 try:
-                    phases = wt.table(self._text())
+                    phases = self._phases()
                 except ValueError:
                     phases = []
                 if phases:
@@ -276,8 +297,11 @@ class FileEditor:
                             bad = (ph.key, r.number) in rows_with_problems
                             ui.label(f"{r.number} · {wt.show(r.send)}") \
                                 .classes("text-caption px-3 cursor-pointer cr-ed-mono cr-ed-outline"
-                                         + (" cr-text-error" if bad else "")).tooltip(wt.show(r.send)[:200]) \
-                                .on("click", lambda _, rr=r: self._jump(self._row_line(rr)))
+                                         + (" cr-text-error" if bad else "")
+                                         + (" font-bold" if getattr(self, "picked", None) == (ph.key, r.number) else "")) \
+                                .tooltip(wt.show(r.send)[:200]) \
+                                .on("click", lambda _, k=ph.key, rr=r: self._jump(self._row_line(rr))
+                                    if self.mode == "yaml" else self._pick(k, rr.number))
 
     def _render_modes(self, f: run_files.EditableFile) -> None:
         modes = ([("table", "Table")] if f.kind == "workflow" else []) + [("yaml", "YAML" if f.kind != "script" else "Code"),
@@ -309,7 +333,7 @@ class FileEditor:
 
     def _render_table(self) -> None:
         try:
-            phases = wt.table(self._text())
+            phases = self._phases()
         except ValueError as e:
             ui.label(f"This file cannot be shown as a table ({e}). Use the YAML view.").classes("p-4 cr-text-dim")
             return
@@ -339,7 +363,10 @@ class FileEditor:
                             ui.label(label)
                     for r in ph.rows:
                         bad = problems.get((ph.key, r.number), [])
-                        with ui.element("div").classes("cr-ed-grid cr-ed-row" + (" has-problem" if bad else "")):
+                        picked = getattr(self, "picked", None) == (ph.key, r.number)
+                        with ui.element("div").classes("cr-ed-grid cr-ed-row" + (" has-problem" if bad else "")
+                                                       + (" cr-ed-picked" if picked else "")) \
+                                .on("click", lambda _, k=ph.key, n=r.number: self._pick(k, n)):
                             ui.label(str(r.number)).classes("text-caption cr-text-dim")
                             ui.label(r.node).classes("text-body2").style("overflow-wrap: anywhere")
                             with ui.column().classes("gap-0"):
@@ -355,19 +382,62 @@ class FileEditor:
                             ui.label(r.success or r.condition or "—").classes("cr-ed-mono")
                             with ui.row().classes("gap-0 no-wrap"):
                                 if editable:
-                                    action(ui.button(icon="edit", on_click=lambda _, k=ph.key, rr=r: self._row_form("edit", k, rr))
-                                           .props("flat round dense size=sm").tooltip("Edit this step"), "progress")
                                     action(ui.button(icon="delete", on_click=lambda _, k=ph.key, rr=r: self._delete_row(k, rr))
                                            .props("flat round dense size=sm color=negative").tooltip("Delete this step"),
                                            "progress")
-                                else:
-                                    ui.button(icon="code", on_click=lambda _, rr=r: self._jump(self._row_line(rr))) \
-                                        .props("flat round dense size=sm").tooltip("Show in YAML")
+                                ui.button(icon="code", on_click=lambda _, rr=r: self._jump(self._row_line(rr))) \
+                                    .props("flat round dense size=sm").tooltip("Show in YAML")
+                        if picked:
+                            self._inline_editor(ph.key, r, editable)
                     if not ph.rows:
                         ui.label("No steps in this phase.").classes("text-caption cr-text-dim px-3 py-2")
 
+    def _inline_editor(self, phase: str, row: wt.Row, editable: bool) -> None:
+        """The picked step's fields under its row: typed in place, applied with Apply (the file is checked again
+        and saved with Save, like any change)."""
+        nodes = wt.nodes(self._text()) or ["local"]
+        with ui.column().classes("w-full gap-2 px-4 py-3 cr-ed-inline"):
+            if not editable:
+                ui.label("Read-only here — this file can be edited at its review, by the run's owner.") \
+                    .classes("text-caption cr-text-dim")
+            with ui.row().classes("w-full gap-3 no-wrap"):
+                node_sel = ui.select(nodes, value=row.node if row.node in nodes else nodes[0], label="Runs on") \
+                    .props("outlined dense").classes("w-56 cr-boxed")
+                fail_sel = ui.select(_ON_FAILURE, value=row.on_failure if row.on_failure in _ON_FAILURE else "",
+                                     label="If it fails").props("outlined dense").classes("w-56 cr-boxed")
+            cmd = ui.textarea("Command", value=row.send).props("outlined autogrow").classes("w-full cr-boxed cr-ed-mono")
+            desc = ui.input("What this step does", value=row.description).props("outlined dense").classes("w-full cr-boxed")
+            with ui.row().classes("w-full gap-3 no-wrap"):
+                success = ui.input("Success check — text the output must contain (regex)", value=row.success) \
+                    .props("outlined dense").classes("flex-1 cr-boxed cr-ed-mono")
+                cond = ui.input("Or a condition on captured values", value=row.condition) \
+                    .props("outlined dense").classes("w-64 cr-boxed")
+            caps = ui.textarea("Captures — one pattern per line", value="\n".join(row.captures)) \
+                .props("outlined autogrow").classes("w-full cr-boxed cr-ed-mono")
+            when = ui.input("Run only when", value=row.when).props("outlined dense").classes("w-full cr-boxed cr-ed-mono")
+            fields = (node_sel, fail_sel, cmd, desc, success, cond, caps, when)
+            if not editable:
+                for fld in fields:
+                    fld.disable()
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Close", on_click=lambda: self._pick(None, None)).props("flat no-caps")
+
+                async def apply():
+                    new = wt.Row(phase=phase, number=row.number, node=node_sel.value, send=(cmd.value or "").strip(),
+                                 description=(desc.value or "").strip(), success=(success.value or "").strip(),
+                                 condition=(cond.value or "").strip(),
+                                 captures=[c.strip() for c in (caps.value or "").splitlines() if c.strip()],
+                                 when=(when.value or "").strip(), on_failure=fail_sel.value or "")
+                    if not new.send:
+                        ui.notify("Enter the command of the step", type="warning")
+                        return
+                    await self._apply_row("edit", phase, row.number, new)
+                if editable:
+                    action(ui.button("Apply", icon="check", on_click=apply)
+                           .props("unelevated no-caps color=primary"), "progress")
+
     def _row_form(self, mode: str, phase: str, row: wt.Row | None) -> None:
-        phases = wt.table(self._text())
+        phases = self._phases()
         by_key = {p.key: p for p in phases}
         nodes = wt.nodes(self._text()) or ["LOCAL"]
         sheets = ((self.ctx["requirements"].get("doc_extracted") or {}).get("ciq_sheets") or {})
@@ -615,15 +685,36 @@ class FileEditor:
     # ---- problems panel
     def _render_problems(self) -> None:
         problems = self.buf[self.cur]["problems"] or []
+        picked = getattr(self, "picked", None)
+        owners: dict = {}
+        if self._file().kind == "workflow":
+            try:
+                owners = {id(p): key for key, ps in self._row_problems(self._phases()).items() for p in ps}
+            except ValueError:
+                owners = {}
+        if picked:
+            problems = [p for p in problems if owners.get(id(p)) == picked]
         with ui.column().classes("gap-2 p-3").style("width: 340px; flex-shrink: 0; overflow-y: auto"):
-            ui.label(f"PROBLEMS · {len(problems)}").classes("text-caption font-semibold cr-text-dim")
+            if picked:
+                with ui.row().classes("w-full items-center justify-between no-wrap"):
+                    ui.label(f"PROBLEMS OF STEP {picked[1]} · {len(problems)}") \
+                        .classes("text-caption font-semibold cr-text-dim")
+                    ui.button("Show all", on_click=lambda: self._pick(None, None)).props("flat dense no-caps size=sm")
+                if not problems:
+                    ui.label("No problems in this step.").classes("text-body2 cr-text-success font-semibold")
+            else:
+                ui.label(f"PROBLEMS · {len(problems)}").classes("text-caption font-semibold cr-text-dim")
             if self._dirty():
                 ui.label("Changed since the last check — Validate to update.").classes("text-caption cr-text-warning")
-            if not problems:
+            if not problems and not picked:
                 ui.label("No problems found.").classes("text-body2 cr-text-success font-semibold")
             for p in problems:
-                with ui.column().classes("w-full gap-1 p-3").style(
-                        "border: 1px solid var(--cr-border); border-left: 3px solid var(--cr-error); border-radius: 8px"):
+                owner = owners.get(id(p))
+                card = ui.column().classes("w-full gap-1 p-3" + (" cursor-pointer" if owner else "")).style(
+                    "border: 1px solid var(--cr-border); border-left: 3px solid var(--cr-error); border-radius: 8px")
+                if owner and not picked:  # a click shows the step the problem is in
+                    card.on("click", lambda _, o=owner: self._pick(*o))
+                with card:
                     ui.label(p.plain).classes("text-body2 font-medium").style("overflow-wrap: anywhere")
                     if p.section:
                         ui.label(p.section).classes("text-caption cr-text-dim")
@@ -647,6 +738,16 @@ class FileEditor:
         if self.mode == "table" and f.kind != "workflow" or self.mode == "mop" and f.kind != "workflow":
             self.mode = "yaml"
         self.diff_base, self.notice, self.undo = None, "", None
+        self.picked = None
+        self._render()
+
+    def _pick(self, phase: str | None, number: int | None) -> None:
+        """Select a step (its row highlighted and open for editing, the problems panel showing only its
+        problems); the same step again or None shows everything."""
+        key = (phase, number) if phase else None
+        self.picked = None if key == getattr(self, "picked", None) else key
+        if self.picked and self.mode != "table":
+            self.mode = "table"
         self._render()
 
     def _set_mode(self, mode: str) -> None:
