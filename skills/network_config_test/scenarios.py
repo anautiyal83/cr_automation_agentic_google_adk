@@ -842,8 +842,16 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
         result.actual = (f"{len(cmds)} steps ran, {len(failed)} failed; run {result.overall_status}")
     elif sc.kind == "rollback":
         # matched against the rollback's steps only: the backup's identical sha256sum came first
-        idx = align(cmds, [s for s in steps if s.phase_kind == "rollback"])
-        outside = [c for c, i in zip(cmds, idx) if i is None or steps[i].phase_kind != "rollback"]
+        rollback_steps = [s for s in steps if s.phase_kind == "rollback"]
+
+        def norm(phase: str) -> str:  # the report says ROLLBACK_CONFIGURATION, the workflow rollback_configuration
+            return re.sub(r"[_\s-]", "", str(phase or "")).lower()
+        rollback_phases = {norm(s.phase) for s in rollback_steps}
+        idx = align(cmds, rollback_steps)
+        # the report's own phase decides; the alignment only when it gives none. Its index counts the rollback
+        # steps — read as an index of all steps, a rollback download was "outside" the rollback (OB-47)
+        outside = [c for c, i in zip(cmds, idx)
+                   if (norm(c.phase) not in rollback_phases if c.phase else i is None)]
         checks.append(Check("Rollback steps ran", bool(cmds),
                             f"{len(cmds)} commands" if cmds else
                             "nothing ran: the rollback steps are skipped without values from earlier phases"))

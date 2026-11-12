@@ -80,6 +80,25 @@ def test_exit_back_to_the_bastion_accepts_any_directory():
     assert re.search(exit_step["prompt_regex"], "[nm_user1@bastion processing]$ ")
 
 
+def test_rollback_downloads_what_its_local_steps_read():
+    """OB-47: a rollback-only run executes the rollback phase alone — the predump copy the activity phase downloaded
+    is not on the automation server (`diff predump_white_….txt …` — No such file)."""
+    from skills.network_config_gen.autofix import fix_missing_downloads
+    dump = "/opt/sdf/processing/predump_white_${DATE}.txt"
+    parsed = {"phases": {
+        "backup": {"steps": [{"node": "eir", "send": f"org -c eirWhiteRng >{dump}"}]},
+        "activity_configuration": {"steps": [
+            {"node": "eir", "sftp": {"operation": "download", "remote_path": dump,
+                                     "local_path": "predump_white_${DATE}.txt"}},
+            {"node": "LOCAL", "send": "diff predump_white_${DATE}.txt postdump_white_${DATE}.txt"}]},
+        "rollback_configuration": {"steps": [
+            {"node": "LOCAL", "send": "diff predump_white_${DATE}.txt postrollbackdump_white_${DATE}.txt"}]}}}
+    assert fix_missing_downloads(parsed) == 1
+    rollback = parsed["phases"]["rollback_configuration"]["steps"]
+    assert rollback[0]["sftp"]["operation"] == "download" and rollback[0]["sftp"]["remote_path"] == dump
+    assert len(parsed["phases"]["activity_configuration"]["steps"]) == 2  # the activity's own download suffices
+
+
 def test_lone_quote_inside_single_quoted_item_is_repaired():
     raw = ("```yaml\n'oc cp a b':\n  lines:\n  - 'pod-1'\n"
            "  - 'tar: Removing leading `/' from member names'\n'ss':\n  lines:\n  - 'ok'\n```")

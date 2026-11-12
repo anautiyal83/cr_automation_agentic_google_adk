@@ -1251,7 +1251,15 @@ def remote_file_reads(parsed: dict) -> list[dict]:
             walk(phase, step.get("steps"))
 
     for phase, body in items:
+        # a rollback-only run executes the rollback phase alone: the files earlier phases downloaded are not on
+        # the automation server then (`diff predump_white_….txt postrollbackdump_…` — No such file, OB-47)
+        before = set(downloaded)
+        if re.search(r"rollback", str(phase), re.I):
+            downloaded.clear()
         walk(phase, body.get("steps") if isinstance(body, dict) else body)
+        if re.search(r"rollback", str(phase), re.I):
+            downloaded.clear()
+            downloaded.update(before)
     return hits
 
 

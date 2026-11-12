@@ -1313,3 +1313,22 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: an exit takes the outer session's prompt when its own is missing, says closed/logout, or is a
   `[user@host dir]` prompt (an unmatched exit gets the generic prompt). Refix of the run: all 7 exits generic.
   Test `test_exit_back_to_the_bastion_accepts_any_directory`.
+
+### OB-47 — EIR step 9: listing order, rollback-only files, rollback phase check (High, Fixed 2026-11-12)
+- Run 72ac26c1:
+  - **Listing order (simulator).** The sunny day's `cd /opt/sdf/processing/ && ls -lrth` expects
+    `predump_white…\n.*predump_black…\n.*predump_grey…`: oldest first, as written, which a real node prints.
+    MockWire ignored `-t` / `-r` and listed by name (black, grey, white).
+  - **Rollback-only files (step 6).** The rollback ran `diff predump_white_….txt postrollbackdump_white_….txt`
+    on local. The predump copy came from an activity-phase download, which a rollback-only run (only the
+    rollback phase) never has: "No such file". `remote_file_reads` counted downloads of every earlier phase.
+  - **Rollback phase check (step 9).** "Only the rollback phase ran" flagged a rollback download.
+    `align(cmds, rollback steps)` returns indices into the rollback steps, but they were read as indices of all
+    steps; an unaligned command also counted as outside.
+- **Fix**:
+  - MockWire 27733ff: `ls -t` sorts by modification time (newest first), `-r` reverses; `lib/mockwire.jar` rebuilt.
+  - `remote_file_reads`: a rollback phase starts with no downloaded files, so `fix_missing_downloads` adds the
+    download there.
+  - The phase check uses the report's own phase (`ROLLBACK_CONFIGURATION` ~ `rollback_configuration`), the
+    alignment only when there is none.
+  - Tests `test_rollback_downloads_what_its_local_steps_read`, MockWire `listByTimeAndReversed`.
