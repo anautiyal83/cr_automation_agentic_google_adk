@@ -561,6 +561,9 @@ class ScenarioSuite:
                 result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs",
                                                       written_files(steps))
             evaluate(result, steps, node_instance)
+            if result.status == "FAIL" and result.classification != "simulator" \
+                    and failed_on_invented_answers(result, self._synthetic_keys()):
+                result.classification = "simulator"
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
             if report and self.report_jar:
@@ -605,6 +608,16 @@ class ScenarioSuite:
              for i in instances],
             mockwire_jar=self.mockwire_jar, java_home=self.java_home, host=self.host)
         self.control.register(sim)
+
+    def _synthetic_keys(self) -> set[str]:
+        """Step 8's keys of LLM-invented answers, over all instances (``simulator/synthetic_keys.json``)."""
+        if not hasattr(self, "_synthetic_cache"):
+            try:
+                data = json.loads((self.sim_dir / "synthetic_keys.json").read_text(encoding="utf-8"))
+                self._synthetic_cache = {k for keys in data.values() for k in keys}
+            except (OSError, ValueError, AttributeError):
+                self._synthetic_cache = set()
+        return self._synthetic_cache
 
     def _collect_events(self, out_dir: Path) -> list[dict]:
         events: list[dict] = []
@@ -755,6 +768,28 @@ def _commands(report: dict) -> list[CommandResult]:
         validation_conclusion=info.get("validation_conclusion", ""),
         failure_reason=info.get("failure") or info.get("reason") or "",
     ) for key, info in (report.get("data") or {}).items() if isinstance(info, dict)]
+
+
+_STEP_CHECKS = ("Every executed step passed", "Every rollback step passed", "Run reported PASS")
+
+
+def failed_on_invented_answers(result: "ScenarioResult", synthetic: set[str]) -> bool:
+    """The case failed only on steps, and every failing remote step was answered by an answer the LLM invented
+    for the simulator: those are built to pass the step's own check, so a failure is the simulator's (retry step 8,
+    step 6's workflow kept) — `ls -lrths /tmp/bulkProvisioning.json` answered with the bare file name (OB-51).
+    Recorded real output or the VFS failing a step is the workflow's."""
+    if not synthetic or any(not c.ok and not c.description.startswith(_STEP_CHECKS) for c in result.checks):
+        return False
+    failed = [c for c in result.commands if not c.success or c.validation_status == "failed"]
+    if not failed:
+        return False
+    for c in failed:
+        if str(c.node).upper() == "LOCAL":
+            return False  # the automation server's own steps: no simulator answer involved
+        keys = [str(e.get("matchedKey") or "") for e in result.events if str(e.get("input", "")).strip() == c.command.strip()]
+        if not keys or not all(k in synthetic for k in keys):
+            return False
+    return True
 
 
 def written_files(steps: list[WorkflowStep]) -> list[re.Pattern]:

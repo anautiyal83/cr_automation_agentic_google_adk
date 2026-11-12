@@ -185,6 +185,7 @@ class NetworkSimulatorSetupSkill:
         )
         errors: list[str] = []
         instance_configs: dict[str, str] = {}
+        synthetic_keys: dict[str, list[str]] = {}
         row = _first_row_values(inp.requirements)
         for node, result in zip(nodes, results):
             if isinstance(result, Exception):
@@ -214,6 +215,10 @@ class NetworkSimulatorSetupSkill:
             # `cmd >/p/f`: the file gets cmd's recorded output (first: it beats the empty answer, OB-49)
             from .vfs_commands import redirect_contents
             merged = {**redirect_contents(node.commands, samples), **merged}
+            merged = {**ls_paths_as_given(node.commands, merged), **merged}
+            # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
+            real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
+            synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})
             instance_configs[node.instance] = build_instance_config(node, merged)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
@@ -235,6 +240,8 @@ class NetworkSimulatorSetupSkill:
             config_dir = str(sim_dir)
             for node_name, raw in self._raw_llm_outputs.items():
                 (sim_dir / "logs" / f"llm_{node_name}_raw.txt").write_text(raw, encoding="utf-8")
+            import json as _json
+            (sim_dir / SYNTHETIC_KEYS_FILE).write_text(_json.dumps(synthetic_keys, indent=1), encoding="utf-8")
             # The nodes copy files to / from the repo server (spec 010 O-D7): their instances reach
             # the repo instance's VFS (the overlay names the repo in the copy commands)
             from .topology import add_peers, is_peer_copy
@@ -596,6 +603,47 @@ def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: 
         resolved = resolve_command(cmd, row)
         if _find_entry(entries, cmd, resolved)[1] is None:
             out.append({"cmd": cmd, "resolved": resolved, "regex": _validation_regex(c)})
+    return out
+
+
+SYNTHETIC_KEYS_FILE = "synthetic_keys.json"  # {instance: [config keys of LLM-invented answers]} (OB-51)
+
+
+def config_key(key: str) -> str:
+    """The key as ``build_instance_config`` writes it (redirect dropped, regex anchored) — MockWire's matchedKey."""
+    from .topology import _anchored_start
+    from .vfs_commands import key_without_redirect
+    return _anchored_start(key_without_redirect(str(key)))
+
+
+_LS_PATHS = re.compile(r"^ls(?:\s+-[A-Za-z]+)*((?:\s+/[^\s;|&<>$`'\"]+)+)\s*$")
+
+
+def ls_paths_as_given(commands: list[dict], entries: dict) -> dict:
+    """Exact answers for ``ls -l… /abs/file …`` with literal paths: ls prints each argument as given, the LLM's
+    generic ``regex:^ls -lrths \\S+`` answered with the bare name and ``/tmp/bulkProvisioning.json`` never matched
+    (OB-51). The answering line's last field becomes the path; exact keys win in MockWire."""
+    out: dict = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        m = _LS_PATHS.match(cmd)
+        if not m or cmd in entries:
+            continue
+        key, entry = _find_entry(entries, cmd, cmd)
+        lines = [str(x) for x in (entry or {}).get("lines") or []] if isinstance(entry, dict) else []
+        if not lines:
+            continue
+        paths = m.group(1).split()
+        fixed, changed = [], False
+        for line in lines:
+            hit = next((p for p in paths if line.rstrip().endswith(" " + p.rsplit("/", 1)[-1])
+                        and not line.rstrip().endswith(" " + p)), None)
+            if hit:
+                line = line.rstrip()[: -len(hit.rsplit("/", 1)[-1])] + hit
+                changed = True
+            fixed.append(line)
+        if changed:
+            out[cmd] = {**entry, "lines": fixed}
     return out
 
 

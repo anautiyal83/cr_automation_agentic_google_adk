@@ -120,6 +120,41 @@ def test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample(tmp_pa
     assert (cwd / "SD_TAC_Addition_150926.xlsx").read_bytes() == b"PK real workbook"
 
 
+def test_ls_of_a_literal_path_prints_the_path_as_given():
+    """OB-51: the LLM's `regex:^ls -lrths \\S+` answered `… bulkProvisioning.json`; ls prints the argument as
+    given, and the step checks for `/tmp/bulkProvisioning.json`."""
+    from skills.network_simulator_setup.skill import ls_paths_as_given
+    entries = {r"regex:^ls -lrths \S+": {"lines": ["4.0K -rw-r--r--. 1 dsadmin dsadmin 1.2K Nov  8 10:00 bulkProvisioning.json"]}}
+    out = ls_paths_as_given([{"cmd": "ls -lrths /tmp/bulkProvisioning.json"}, {"cmd": "ls -l ${X}/a.txt"},
+                             {"cmd": "ls -l /tmp/other.txt"}], entries)
+    assert out == {"ls -lrths /tmp/bulkProvisioning.json": {
+        "lines": ["4.0K -rw-r--r--. 1 dsadmin dsadmin 1.2K Nov  8 10:00 /tmp/bulkProvisioning.json"]}}
+
+
+def test_failure_on_an_invented_answer_is_the_simulators():
+    """OB-51: a step failing on an answer the LLM invented for the simulator re-runs step 8, not step 6."""
+    from types import SimpleNamespace as NS
+    from skills.network_config_test.scenarios import failed_on_invented_answers
+    ls_cmd = "ls -lrths /tmp/bulkProvisioning.json"
+    result = NS(checks=[NS(ok=False, description="Every executed step passed"), NS(ok=False, description="Run reported PASS")],
+                commands=[NS(node="niam_eir_server", command=ls_cmd, success=True, validation_status="failed")],
+                events=[{"input": ls_cmd, "matchedKey": r"regex:^ls -lrths \S+"}])
+    assert failed_on_invented_answers(result, {r"regex:^ls -lrths \S+"})
+    assert not failed_on_invented_answers(result, {"other"})                   # recorded / VFS answer: workflow
+    result.events = [{"input": ls_cmd, "matchedKey": None, "source": "builtin:ls"}]
+    assert not failed_on_invented_answers(result, {r"regex:^ls -lrths \S+"})
+    result.events = [{"input": ls_cmd, "matchedKey": r"regex:^ls -lrths \S+"}]
+    result.checks.append(NS(ok=False, description="Node files restored to their state before the activity"))
+    assert not failed_on_invented_answers(result, {r"regex:^ls -lrths \S+"})   # a flow / file check failed too
+
+
+def test_config_key_is_what_mockwire_reports():
+    from skills.network_simulator_setup.skill import config_key
+    assert config_key(r"regex:ls -lrths \S+") == r"regex:^ls -lrths \S+"
+    assert config_key(r"regex:org -c x >/opt/p/d_\S+.txt") == r"regex:^org -c x\s*$"
+    assert config_key("ss") == "ss"
+
+
 def test_lone_quote_inside_single_quoted_item_is_repaired():
     raw = ("```yaml\n'oc cp a b':\n  lines:\n  - 'pod-1'\n"
            "  - 'tar: Removing leading `/' from member names'\n'ss':\n  lines:\n  - 'ok'\n```")

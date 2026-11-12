@@ -1388,3 +1388,19 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - `has_cache` no longer compares the code version (still recorded); only other inputs or options miss.
   - After a code fix, rerun the step to pick it up. Tests updated
     (`test_cache_is_stale_after_input_change_not_code_change`, `test_step6_is_cached_at_its_review`).
+
+### OB-51 — Step 9: invented `ls` answer printed the bare name; such failures blamed on the workflow (High, Fixed 2026-11-12)
+- Run d4a1b9f3, sunny day: `ls -lrths /tmp/bulkProvisioning.json` on DSSERVER, check `/tmp/bulkProvisioning.json`.
+  The step 8 AI's generic `regex:^ls -lrths \S+` answered `… 10:00 bulkProvisioning.json`, but ls prints the
+  argument as given. The file arrives through a `for … oc cp …` loop MockWire cannot run, so the VFS cannot answer
+  either. Step 9 blamed the workflow (retry_target 6), so a Rerun would regenerate step 6, which was not at fault.
+- **Fix**:
+  - Step 8 `ls_paths_as_given`: an exact answer for `ls … /literal/path` showing each path as given (from the
+    answering line).
+  - Step 8 writes `simulator/synthetic_keys.json` (per instance, the config keys of AI-invented answers,
+    `config_key` = MockWire's matchedKey).
+  - Step 9 `failed_on_invented_answers`: a case that failed only on steps, every failing remote step answered by
+    such a key, is the simulator's (retry step 8). Those answers are built to pass the step's own check.
+    Recorded output, VFS answers and local steps stay the workflow's.
+  - Tests `test_ls_of_a_literal_path_prints_the_path_as_given`, `test_failure_on_an_invented_answer_is_the_simulators`,
+    `test_config_key_is_what_mockwire_reports`.
