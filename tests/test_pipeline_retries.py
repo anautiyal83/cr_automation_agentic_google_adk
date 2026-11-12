@@ -44,7 +44,9 @@ def test_continue_on_a_failed_step_drops_the_retry():
     dropped = source.index('dropped = ctx.session.state.pop("_retry_target", None)')
     auto = source.index("CHECK _retry_target from QA agents")
     assert rerun < dropped < auto
-    assert source.count("_retries_exhausted(") == 2
+    # only automatic retries count against the limit; the reviewer's Re-run is always allowed (OB-54)
+    assert source.count("_retries_exhausted(") == 1
+    assert source.index("_retries_exhausted(") > auto
     assert "continuing pipeline" not in source
 
 

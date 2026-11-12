@@ -459,8 +459,9 @@ class PipelineAgent(BaseAgent):
                         # From the earliest agent of this step that failed: a step 6 rerun after a
                         # workflow error must regenerate the workflow, not only the scripts (OB-12)
                         target_index = self._rerun_index(run_id_str, ctx, ms_step, index)
-                    if await self._retries_exhausted(ctx, run_id_str, target_index, ms_step):
-                        break
+                    # the user's own Re-run is always allowed: the retry limit stops automatic retry loops only
+                    # (user 2026-11-12, OB-54 — run d4a1b9f3 failed on its 4th re-run of step 6)
+                    flow.flow("RERUN by the reviewer — not counted against the retry limit")
                     # The review's "Clear this step's cache" box: ticked (rerun_clear) clears the cache of the step it
                     # re-runs, and only that step's; unticked (rerun) re-runs it from its cache (user rule, OB-48/52)
                     if decision == "rerun_clear":

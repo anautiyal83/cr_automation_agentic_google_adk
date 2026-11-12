@@ -1215,13 +1215,15 @@ class ProgressSection:
             self.completion_row.set_visibility(True)
             self.progress_bar.props("color=negative")
             self.progress_bar.props(remove="stripe animate")
-            # Mark all remaining pending steps as skipped
+            # steps a Re-run click reset that never ran again keep their last result (OB-54: steps 6-8 went grey);
+            # only steps that never ran are skipped
+            await self._heal_earlier_steps(TOTAL_STEPS + 1)
             self._mark_remaining_skipped()
         elif event.event_type == "run_cancelled":
             self._reset_to_default()
             self.progress_bar.props("color=warning")
             self.progress_bar.props(remove="stripe animate")
-            # Mark all remaining pending steps as skipped
+            await self._heal_earlier_steps(TOTAL_STEPS + 1)
             self._mark_remaining_skipped()
 
     def _update_step_visual(self, step_num: int, status: str):

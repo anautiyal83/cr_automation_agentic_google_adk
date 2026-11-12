@@ -1425,3 +1425,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   of `-c` / `-n` skipped). `vfs_handled` leaves a command reading one of them to a key answer, which the AI writes
   (or the fill-in builds from the step's success text, OB-51 shows the path). If that answer is wrong, step 9 now
   blames the simulator. Test `test_file_copied_into_a_pod_is_not_read_from_the_vfs`.
+
+### OB-54 — A reviewer's Re-run failed the run (retry limit); steps 6–8 greyed out (High, Fixed 2026-11-12)
+- Run d4a1b9f3: the Re-run at the step 9 review was the 4th re-run of step 6 that day: "MAX RETRIES — Step 9 still
+  failing after 3 retries of network_config_gen", and the run failed at once. The page had already set steps 6–9 to
+  pending for the re-run, and `run_failed` marked every pending step "skipped" (grey), although 6–8 had passed.
+- **Fix** (user decision: only automatic retries count):
+  - The review Re-run no longer goes through `_retries_exhausted`; only the automatic retry does (OB-4 kept for
+    loops).
+  - On `run_failed` / `run_cancelled` the page first restores every pending step's last saved result
+    (`_heal_earlier_steps`); only steps that never ran are skipped. `test_pipeline_retries` updated.
