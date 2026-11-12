@@ -836,6 +836,114 @@ def _unstage(parsed: dict) -> int:
     return restored
 
 
+# --------------------------------------------------------------------------- rollback-only lookups
+
+_PLACEHOLDER_NAME = re.compile(r"\$\{([A-Za-z_]\w*)\}")
+
+
+def _step_registers(step: dict) -> set[str]:
+    names = _registers(step)
+    for reg in step.get("register") or []:
+        if isinstance(reg, dict):
+            if reg.get("name"):
+                names.add(str(reg["name"]))
+            if reg.get("count_var"):
+                names.add(str(reg["count_var"]))
+    return names
+
+
+def _used_names(step: dict) -> set[str]:
+    text = " ".join(_strings({k: v for k, v in step.items() if k != "register"}))
+    return set(_PLACEHOLDER_NAME.findall(text)) | {
+        n for e in _strings([step.get("when"), step.get("skip_when")]) for n in re.findall(r"[A-Za-z_]\w*", e)}
+
+
+def rollback_lookups(parsed: dict) -> int:
+    """A rollback-only run skips every earlier phase: a value the rollback reads that only an earlier phase
+    registers is empty (EIR: `oc get pods -n ${ZT2NAMESPACE}` → `oc get pods -n `). As production does, the
+    steps that produce such values run again at the start of the rollback, only in a rollback-only run
+    (``when: ROLLBACK_ONLY == 'true'``) — with the steps they need themselves and, for a step inside a nested
+    shell (pod, server), the step that opens it and an ``exit`` (spec 013 PF024). Added steps: ``nc_rbl_*``."""
+    from .sessions import enter_kind, is_exit
+    bodies = list(_phase_bodies(parsed))
+    rollbacks = [(n, b) for n, b in bodies if _ROLLBACK_PHASE.search(f"{n} {b.get('name') or ''}")]
+    earlier = [(n, b) for n, b in bodies if (n, b) not in rollbacks]
+    if not rollbacks or not earlier:
+        return 0
+    # producers: variable → (phase steps, index, enter index) of the last earlier step that registers it
+    producers: dict[str, tuple[list, int, int | None]] = {}
+    for _, body in earlier:
+        steps, open_at = body["steps"], []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or _is_auto(step):
+                continue
+            send = str(step.get("send") or "")
+            if is_exit(send):
+                if open_at:
+                    open_at.pop()
+                continue
+            for name in _step_registers(step) | {n for c in _all_steps(step.get("steps") or []) for n in _step_registers(c)}:
+                producers[name] = (steps, i, open_at[-1] if open_at else None)
+            if enter_kind(send) and enter_kind(send) != "su":
+                open_at.append(i)
+    changed = 0
+    for _, body in rollbacks:
+        own = {n for s in _all_steps(body["steps"]) if not _is_auto(s) for n in _step_registers(s)}
+        needed = {n for s in _all_steps(body["steps"]) if not _is_auto(s) for n in _used_names(s)}
+        wanted, queue = set(), [n for n in needed if n in producers and n not in own]
+        while queue:  # the producers' own inputs too
+            name = queue.pop()
+            if name in wanted:
+                continue
+            wanted.add(name)
+            steps, i, enter = producers[name]
+            inputs = _used_names(steps[i]) | (_used_names(steps[enter]) if enter is not None else set())
+            queue += [n for n in inputs if n in producers and n not in own and n not in wanted]
+        if not wanted:
+            continue
+        picked: dict[tuple[int, int], dict] = {}
+        for name in wanted:
+            steps, i, enter = producers[name]
+            picked[(id(steps), i)] = {"steps": steps, "i": i, "enter": enter}
+        order = sorted(picked.values(), key=lambda p: ([id(b["steps"]) for _, b in earlier].index(id(p["steps"])), p["i"]))
+        copies, k, current_enter = [], 0, None
+        for p in order:
+            steps, enter = p["steps"], p["enter"]
+            if current_enter is not None and (enter is None or enter != current_enter):
+                k += 1
+                copies.append(_rbl_exit(copies[-1]["node"], k))
+                current_enter = None
+            if enter is not None and enter != current_enter:
+                k += 1
+                copies.append(_rbl_copy(steps[enter], k))
+                current_enter = enter
+            k += 1
+            copies.append(_rbl_copy(steps[p["i"]], k))
+        if current_enter is not None:
+            k += 1
+            copies.append(_rbl_exit(copies[-1]["node"], k))
+        body["steps"] = copies + list(body["steps"])
+        changed += len(copies)
+    return changed
+
+
+def _rbl_exit(node: str, k: int) -> dict:
+    """Leaves the shell a rollback-only lookup opened — only then: without its enter step it would close the
+    NIAM login itself."""
+    return _step(f"nc_rbl{k}_exit", node, "exit (leave the shell opened for the rollback-only lookups)",
+                 when="ROLLBACK_ONLY == 'true'", send="exit", on_failure="stop")
+
+
+def _rbl_copy(step: dict, k: int) -> dict:
+    from .contract import combine
+    copy_ = copy.deepcopy(step)
+    copy_["id"] = f"nc_rbl{k}"
+    own = str(copy_.get("when") or "").strip()
+    copy_["when"] = combine("ROLLBACK_ONLY == 'true'", own) if own else "ROLLBACK_ONLY == 'true'"
+    copy_["command_description"] = f"Rollback-only: {copy_.get('command_description') or copy_.get('send')}"
+    return copy_
+
+
 # --------------------------------------------------------------------------- entry point
 
 def select_phases(parsed: dict, requirements: dict | None = None) -> int:
@@ -877,6 +985,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += files_via_repo(parsed, requirements)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
+    changes += rollback_lookups(parsed)
     changes += contract.apply(parsed)
     types = (requirements or {}).get("node_types")
     if types is None and isinstance(requirements, dict) and requirements.get("doc_extracted"):

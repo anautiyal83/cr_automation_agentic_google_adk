@@ -77,7 +77,9 @@ skipped phase → PF024)
 - [ ] PF022 Transfers: production checksum + `LOOP_RETRY` loop + guard; node ↔ repo `printf "put|get …" | sftp` with
   `expect_reply`; repo IP by IPv4/IPv6
 - [ ] PF023 Input files: `LOCAL_PATH` presence check → repo → node (no GitLab, PF-D4)
-- [ ] PF024 Rollback-only: rollback re-runs the lookups it needs (`when: ${ROLLBACK_ONLY == "true"}`)
+- [x] PF024 Rollback-only (C1, 2026-11-12): `structure.rollback_lookups` — values a rollback reads that only earlier
+  phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the
+  nested shell they were read in (enter + guarded exit); `nc_rbl*`. EIR rollback-only: 3 → 12 steps ran
 
 ## Stage D — prompt + docs
 

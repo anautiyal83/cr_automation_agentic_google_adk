@@ -509,3 +509,24 @@ phases:
                                       "/tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat "), backup
         back = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -xzvf" in str(s.get("send")))
         assert back["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}", restore
+
+
+def test_rollback_only_runs_the_lookups_it_needs_again():
+    """Spec 013 PF024: a value the rollback reads that only an earlier phase registers is looked up again at the
+    start of the rollback in a rollback-only run — with its own inputs, and the shell it was read in."""
+    wf = {"nodes": {"N": {"type": "remote", "ssh": {"host": "h"}}},
+          "phases": {
+              "preNodeHealthCheck": {"steps": [
+                  {"node": "N", "send": "get-ns", "register": [{"regex": "(?<NS>\S+)"}]},
+                  {"node": "N", "send": "get-pod -n ${NS}", "register": [{"regex": "(?<POD>\S+)"}]},
+                  {"node": "N", "send": "oc exec -it ${POD} -n ${NS} -- bash"},
+                  {"node": "N", "send": "ip a", "register": [{"regex": "inet (?<IP>\S+)"}]},
+                  {"node": "N", "send": "exit"},
+                  {"node": "N", "send": "unrelated", "register": [{"regex": "(?<OTHER>\S+)"}]}]},
+              "rollbackConfiguration": {"steps": [{"node": "N", "send": "restore --ip ${IP} -n ${NS}"}]}}}
+    assert structure.rollback_lookups(wf) == 5
+    added = [s for s in wf["phases"]["rollbackConfiguration"]["steps"] if s.get("id", "").startswith("nc_rbl")]
+    assert [s["send"] for s in added] == ["get-ns", "get-pod -n ${NS}", "oc exec -it ${POD} -n ${NS} -- bash",
+                                          "ip a", "exit"]
+    assert all(s["when"] == "ROLLBACK_ONLY == 'true'" for s in added)
+    assert "unrelated" not in [s["send"] for s in added]
