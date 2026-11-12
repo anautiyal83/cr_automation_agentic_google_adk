@@ -27,6 +27,10 @@ def group_names(workflow: dict, node: str) -> set[str]:
     """``node`` and, for the first entry of a NIAM failover group (``niam_x_1``, spec 013 B-R3), the group's other
     entries and the ``${Target<TYPE>}`` its steps run on — one simulator instance serves them all."""
     names = {node}
+    nodes = workflow.get("nodes") or {}
+    host = str(((nodes.get(node) or {}).get("ssh") or {}).get("host") or "")
+    names |= {str(n) for n, v in nodes.items() if isinstance(v, dict) and str(v.get("type", "")).lower() == "sftp"
+              and host and str((v.get("sftp") or {}).get("host") or "") == host}  # its sftp-only twin
     m = re.fullmatch(r"(niam_\w+)_1", node)
     if m:
         from skills.network_config_gen.sessions import ciq_type

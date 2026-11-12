@@ -37,11 +37,13 @@ def build_overlay(workflow_yaml: str, nodes: list[NodeSpec], ports: dict[str, in
         port = ports.get(spec.name)
         if not isinstance(node, dict) or port is None:
             continue
-        node["prompt_regex"] = extend_prompt_regex(str(node.get("prompt_regex") or ""), spec.all_prompts(),
-                                                   spec.prompt_templates)
-        ssh = node.get("ssh")
+        block = "sftp" if str(node.get("type", "")).lower() == "sftp" else "ssh"
+        if block == "ssh":  # an sftp-only node has no shell prompt
+            node["prompt_regex"] = extend_prompt_regex(str(node.get("prompt_regex") or ""), spec.all_prompts(),
+                                                       spec.prompt_templates)
+        ssh = node.get(block)
         if not isinstance(ssh, dict):
-            ssh = node["ssh"] = {}
+            ssh = node[block] = {}
         ssh["host"] = host
         ssh["port"] = str(port)
         ssh["user"] = spec.user

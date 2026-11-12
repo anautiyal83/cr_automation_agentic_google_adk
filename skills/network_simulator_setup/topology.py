@@ -107,6 +107,14 @@ def build_topology(
         typ = ciq_type(workflow, str(first))
         if typ:
             aliases.setdefault(str(first), []).append("${Target" + re.sub(r"\W", "", typ.upper()) + "}")
+    # an sftp-only node (repo_server_sftp) reaches the host of an ssh node: the same instance (spec 013)
+    for name, node in wf_nodes.items():
+        if isinstance(node, dict) and str(node.get("type", "")).lower() == "sftp":
+            host = str((node.get("sftp") or {}).get("host") or "")
+            twin = next((n for n, v in wf_nodes.items() if isinstance(v, dict) and n != name
+                         and str((v.get("ssh") or {}).get("host") or "") == host), None)
+            if twin:
+                aliases.setdefault(str(twin), []).append(str(name))
     served = {a for group in aliases.values() for a in group}
 
     specs: list[NodeSpec] = []

@@ -169,10 +169,11 @@ def flatten(parsed: dict) -> int:
         body["steps"] = walk(body["steps"])
     nodes = parsed.get("nodes")
     repo = _repo_config()["node"]
-    if changed and isinstance(nodes, dict) and repo in nodes:
+    if changed and isinstance(nodes, dict):
         used = {str(s.get("node")) for _, body in _phase_bodies(parsed) for s in _all_steps(body["steps"])}
-        if repo not in used:  # added by backups_by_convention
-            del nodes[repo]
+        for name in (repo, f"{repo}_sftp"):
+            if name in nodes and name not in used:  # added by backups_by_convention / files_via_repo
+                del nodes[name]
     return changed
 
 
@@ -264,12 +265,13 @@ def verify_transfers(parsed: dict) -> int:
                 continue
             count += 1
             node, when = str(step.get("node")), str(step.get("when") or "")
+            shell = shell_node(parsed, node)
             if op == "upload":
                 src = (local, lpath, "local file")
-                dst = (node, rpath.rstrip("/") + ("/" + lpath.rsplit("/", 1)[-1] if rpath.endswith("/") else ""),
-                       f"file on {node}")
+                dst = (shell, rpath.rstrip("/") + ("/" + lpath.rsplit("/", 1)[-1] if rpath.endswith("/") else ""),
+                       f"file on {shell}")
             else:
-                src = (node, rpath, f"file on {node}")
+                src = (shell, rpath, f"file on {shell}")
                 dst = (local, lpath, "local copy")
             out += checked_transfer(parsed, f"xfer{count}", step, src, dst, when,
                                     f"{AUTO_ID}sum{count}_src", f"{AUTO_ID}sum{count}_dst")
@@ -312,6 +314,31 @@ def _repo_node(parsed: dict, cfg: dict) -> str:
         },
     }
     return cfg["node"]
+
+
+def _repo_sftp_node(parsed: dict, cfg: dict) -> str:
+    """``repo_server_sftp`` — production's node for the framework's sftp steps between the automation server and
+    the repo server (``type: sftp``, ``plugin: sftp-plugin``, same login as ``repo_server``; spec 013 PF022)."""
+    name = f"{cfg['node']}_sftp"
+    nodes = parsed.setdefault("nodes", {})
+    if name not in nodes:
+        nodes[name] = {"type": "sftp", "plugin": "sftp-plugin", "sftp": {
+            "host": cfg["host"], "port": int(cfg.get("port") or 22), "user": cfg["user"],
+            "auth": {"password": cfg.get("password") or "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
+            "strict_host_key_checking": False, "connect_timeout_sec": 15}}
+    return name
+
+
+def shell_node(parsed: dict, node: str) -> str:
+    """The node that runs shell commands for ``node``: an sftp-only node's commands (a checksum of a file it
+    received) run on the ssh node with the same host; any other node is its own."""
+    nodes = parsed.get("nodes") or {}
+    spec = nodes.get(node)
+    if not (isinstance(spec, dict) and str(spec.get("type", "")).lower() == "sftp"):
+        return node
+    host = str((spec.get("sftp") or {}).get("host") or "")
+    return next((n for n, v in nodes.items() if isinstance(v, dict) and n != node
+                 and str((v.get("ssh") or {}).get("host") or "") == host), node)
 
 
 def tar_archive(send: str) -> tuple[str, list[str]] | None:
@@ -852,8 +879,10 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
             node_path = rpath.rstrip("/") + "/" + name if op == "upload" and rpath.endswith("/") else rpath
             staged = f"{stage_dir}/{name}"
             step["id"] = f"{AUTO_ID}xr{count}_stage"
-            step["node"] = repo
+            step["node"] = _repo_sftp_node(parsed, cfg)
             sftp["remote_path"] = staged
+            sftp.setdefault("overwrite", True)
+            sftp.setdefault("create_dirs", True)
             mkdir = _step(f"{AUTO_ID}xr{count}_dir", repo, "Create the file directory on the repo server", when,
                           send=f"mkdir -p {stage_dir}")
             copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, repo),

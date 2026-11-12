@@ -145,7 +145,7 @@ def test_input_files_go_through_the_repo_server():
     steps = _leaves(_applied(VIA_REPO), "backup")  # moved before the backup of what it overwrites
     ids = [s.get("id") for s in steps]
     stage = steps[ids.index("nc_xr1_stage")]
-    assert stage["node"] == "repo_server"
+    assert stage["node"] == "repo_server_sftp"   # production: framework sftp on the sftp node (spec 013)
     assert stage["sftp"]["remote_path"] == "${BACK_UP_LOCATION_REPO}/${rec.data.FILE}"
     copy_ = steps[ids.index("nc_xr1_copy")]
     assert copy_["node"] == "MRF"
