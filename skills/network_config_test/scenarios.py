@@ -535,7 +535,8 @@ class ScenarioSuite:
                 from ruamel.yaml import YAML
                 staged = stage_upload_inputs(
                     YAML(typ="safe").load(Path(self.workflow_path).read_text(encoding="utf-8")) or {},
-                    sc.target[0], sc.target[1], sc.target[2], self.plan["local_cwd"])
+                    sc.target[0], sc.target[1], sc.target[2], self.plan["local_cwd"],
+                    samples=self.plan.get("sample_inputs"))
                 if staged:
                     logger.info("Scenario %s: staged %d upload input(s): %s", sc.id, len(staged),
                                 ", ".join(Path(s).name for s in staged))

@@ -62,6 +62,8 @@ class SkillInput:
     # single-run execution test is used
     simulator_control: Any = None
     include_negatives: bool = False  # sunny day only until negative cases are enabled
+    # files uploaded with the run's documents (the delta TAC workbook…): real stand-ins for input files (OB-50)
+    sample_inputs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -226,6 +228,7 @@ class NetworkConfigTestSkill:
                                        inp.run_dir, inp.java_home,
                                        ciq_processor_jar=inp.ciq_processor_jar,
                                        validation_rules_path=rules_path)
+        plan["sample_inputs"] = list(inp.sample_inputs)  # uploaded documents that stand for input files (OB-50)
         if plan.get("error"):
             return SkillOutput(status="failed", error=plan["error"], mop_scenarios=mop_scenarios,
                                failure_classification={"classification": "workflow", "retry_target": 6,

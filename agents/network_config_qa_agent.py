@@ -20,6 +20,19 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+def _uploaded_documents(state) -> list[str]:
+    """Paths of the files uploaded with the run's documents (``additional_documents``): step 9 copies the one of
+    the same kind for an input file the workflow reads (OB-50)."""
+    import json
+    docs = (state.get("document_set") or {}).get("additional_documents") or []
+    if isinstance(docs, str):
+        try:
+            docs = json.loads(docs)
+        except ValueError:
+            docs = []
+    return [str(d.get("path")) for d in docs if isinstance(d, dict) and d.get("path")]
+
+
 class _SimulatorControl:
     """Scenario runs restart MockWire; keep it registered so every exit path stops it."""
 
@@ -89,6 +102,7 @@ class NetworkConfigQAAgent(BaseAgent):
             mockwire_jar=mockwire_jar(config),
             execution_report_jar=config.get("execution_report_jar") or SkillInput.execution_report_jar,
             simulator_control=_SimulatorControl(run_id),
+            sample_inputs=_uploaded_documents(state),
         )
 
         output = await skill.test(inp)

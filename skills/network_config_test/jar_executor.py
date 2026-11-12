@@ -601,11 +601,14 @@ def _mkdir(path: Path) -> Path:
     return path
 
 
-def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str) -> list[str]:
-    """Placeholder files for sftp uploads of the activity's INPUTS: a relative local_path no
-    LOCAL step produces (MRF uploads each CIQ ``INPUT_FILE``; nothing in a test run provides it,
-    so the upload failed with FileNotFoundException, S9-09). One per CIQ record of the target
-    (record loops upload every record's file, DEP-9). Returns the files created."""
+def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str,
+                        samples: list[str] | None = None) -> list[str]:
+    """Test copies of the activity's INPUT files: sftp upload sources no LOCAL step produces (MRF uploads each CIQ
+    ``INPUT_FILE``; nothing in a test run provides it, S9-09) and the CIQ file columns a LOCAL step reads
+    (``python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}"`` — "Delta file not found", OB-50).
+    One per CIQ record of the target (record loops handle every record's file, DEP-9). A file uploaded with the
+    run's documents of the same kind (``samples``: the delta TAC workbook) is copied in, else a placeholder.
+    Returns the files created."""
     import re
     from tools.ciq_json import node_groups
     try:
@@ -645,20 +648,44 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
     for record in records or [{}]:
         def resolve(text, record=record):
             return ref.sub(lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
-        for raw in dict.fromkeys(uploads):  # once each: a retry loop repeats the upload step (spec 013)
-            path = resolve(raw)
+        # CIQ file columns the LOCAL steps read (a value with an extension): inputs like the uploads
+        reads = [str(record.get(m.group(1).strip(), "") or "") for t in local_text for m in ref.finditer(t)]
+        reads = [v for v in reads if re.fullmatch(r"[\w.\-]+\.[A-Za-z0-9]{1,6}", v)]
+        for raw, is_read in [(u, False) for u in dict.fromkeys(uploads)] + [(r, True) for r in dict.fromkeys(reads)]:
+            path = resolve(raw)  # once each: a retry loop repeats the upload step (spec 013)
             if not path or "${" in path or Path(path).is_absolute() or str(Path(cwd) / path) in created:
                 continue
-            produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
+            produced = not is_read and any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
             target = Path(cwd) / path
             # a file staged by an earlier step 9 is made again (it must fit today's workflow — run
             # 46e5fee1 reused a 0644 archive); a real input is never touched
             if produced or (target.exists() and not _staged_by_step9(target)):
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            _write_test_input(target, path, member_mode)
+            sample = _sample_for(path, samples)
+            if sample:
+                shutil.copyfile(sample, target)
+            else:
+                _write_test_input(target, path, member_mode)
             created.append(str(target))
     return created
+
+
+def _sample_for(path: str, samples: list[str] | None) -> str:
+    """The uploaded document that stands for input file ``path`` in a test: the same extension, the name most
+    alike (``SD_TAC_Addition_230926.xlsx`` for the CIQ's ``SD_TAC_Addition_150926.xlsx``); '' when none."""
+    import difflib
+    want = Path(path)
+    best, score = "", 0.0
+    for s in samples or []:
+        p = Path(s)
+        name = re.sub(r"^[0-9a-f]{8}_", "", p.name)  # uploads are stored as <id>_<name>
+        if p.suffix.lower() != want.suffix.lower() or not p.is_file():
+            continue
+        ratio = difflib.SequenceMatcher(None, name.lower(), want.name.lower()).ratio()
+        if ratio > score:
+            best, score = str(p), ratio
+    return best if score >= 0.6 else ""
 
 
 def extracted_member_mode(workflow: dict) -> int:

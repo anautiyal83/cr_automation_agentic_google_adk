@@ -1365,3 +1365,19 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     (spec 013 PF-D5), whose python has no pandas; step 6's smoke run of the script ran on Windows and passed.
     Decision (user 2026-11-12): install them in WSL (`sudo apt install -y python3-pandas python3-openpyxl`) —
     helper scripts may use pandas / openpyxl, as on the production automation server.
+
+### OB-50 — Step 9: "Delta file not found: SD_TAC_Addition_150926.xlsx" (High, Fixed 2026-11-12)
+- Run d4a1b9f3: `python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}" …` on local. Step 9 staged
+  test copies only of files the workflow uploads to a node (`stage_upload_inputs`, S9-09). A CIQ input file that
+  a local step reads (here the delta TAC workbook) was never there. A placeholder would not do either: the script
+  opens it with pandas.
+- **Fix**:
+  - `stage_upload_inputs` also stages the CIQ file columns that local steps read (a value with an extension,
+    per record).
+  - For any staged input it copies the uploaded document of the same kind (`_sample_for`: same extension, most
+    similar name, ≥ 0.6) — the run's `SD_TAC_Addition_230926.xlsx` for the CIQ's `SD_TAC_Addition_150926.xlsx`.
+    Only without one is a placeholder written.
+  - The documents come from the document set's `additional_documents` (step 9 `SkillInput.sample_inputs` →
+    `plan["sample_inputs"]`). Test `test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample`.
+- Follow-up: in production a local step should read input files from `${LOCAL_PATH}` (as uploads do since C4);
+  `structure.inputs_from_local_path` covers upload sources only.

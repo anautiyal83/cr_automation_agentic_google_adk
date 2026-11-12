@@ -99,6 +99,27 @@ def test_rollback_downloads_what_its_local_steps_read():
     assert len(parsed["phases"]["activity_configuration"]["steps"]) == 2  # the activity's own download suffices
 
 
+def test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample(tmp_path):
+    """OB-50: `python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}"` — "Delta file not found":
+    step 9 staged only upload sources. The run's uploaded SD_TAC_Addition_230926.xlsx stands for the CIQ's file."""
+    import json as _json
+    from skills.network_config_test.jar_executor import stage_upload_inputs
+    ciq = tmp_path / "ciq.json"
+    ciq.write_text(_json.dumps({"crGroups": [{"crGroup": "CR1", "nodeGroups": [{"nodeGroup": "NG1",
+        "nodes": [{"node": "NG1"}], "configSequences": [{"records": [{"data": {"DELTA_TAC_FILE": "SD_TAC_Addition_150926.xlsx"}}]}]}]}]}))
+    sample = tmp_path / "be1a1111_SD_TAC_Addition_230926.xlsx"
+    sample.write_bytes(b"PK real workbook")
+    other = tmp_path / "abcd1234_notes.txt"
+    other.write_text("x")
+    wf = {"phases": {"activity": {"steps": [{"type": "loop", "item_var": "rec", "steps": [
+        {"node": "local", "send": 'python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}" --x y'}]}]}}}
+    cwd = tmp_path / "scripts"
+    cwd.mkdir()
+    staged = stage_upload_inputs(wf, str(ciq), "NG1", "CR1", str(cwd), samples=[str(other), str(sample)])
+    assert staged == [str(cwd / "SD_TAC_Addition_150926.xlsx")]
+    assert (cwd / "SD_TAC_Addition_150926.xlsx").read_bytes() == b"PK real workbook"
+
+
 def test_lone_quote_inside_single_quoted_item_is_repaired():
     raw = ("```yaml\n'oc cp a b':\n  lines:\n  - 'pod-1'\n"
            "  - 'tar: Removing leading `/' from member names'\n'ss':\n  lines:\n  - 'ok'\n```")
