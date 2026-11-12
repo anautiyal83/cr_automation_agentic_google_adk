@@ -676,6 +676,17 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
                 "expr fails on a healthy node — the register regex captures the wrong field. Real output "
                 f"(relevant lines):\n{_excerpt(matching[0]['output'], _success_regex(step) or '')}\n"
                 "Count the columns in this output and capture the right one.")
+        if not counted and not captured:
+            false = _expr_false_on_real_output(step, outputs)
+            if false:
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): its success expr "
+                    f"{((step.get('validation') or {}).get('success') or {}).get('criteria', {}).get('expr')!r} is "
+                    f"false on the real output of a healthy node ({false}). Every line of the output counts — item "
+                    "names, notices like 'Defaulted container …', blank lines. Check for the bad state instead: "
+                    "register a capture of a line in a wrong state (e.g. (?<BADSTATE>… (?!ESTABLISHED\\b)\\S+)) and "
+                    "expr 'BADSTATE == \"\"'. Real output (relevant lines):\n"
+                    f"{_excerpt(matching[0]['output'], '')}")
         exprs = " ".join(str(((step.get("validation") or {}).get(b) or {}).get("criteria", {}).get("expr", ""))
                          for b in ("success", "failure", "warning") if isinstance(step.get("validation"), dict)
                          and isinstance((step["validation"].get(b) or {}), dict)
@@ -874,6 +885,92 @@ def _expr_on_real_output(step: dict, outputs: list[str]) -> tuple[str, str]:
                 return "pass", f"{var}={raw.strip()}"
             seen.append(f"{var}={raw.strip()}")
     return ("fail", ", ".join(seen)) if seen else ("n/a", "")
+
+
+_EXPR_TERM = re.compile(r"""^\s*([A-Za-z]\w*|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*(==|!=|>=|<=|>|<)\s*"""
+                        r"""([A-Za-z]\w*|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*$""")
+
+
+def _register_values(step: dict, output: str) -> dict[str, str | int] | None:
+    """What the JAR registers from ``output``: a loop ``count_var`` → how many matches, a named group → the first
+    match's FIRST group ("" when nothing matched). None when a regex does not compile."""
+    values: dict[str, str | int] = {}
+    text = output.replace("\r\n", "\n")
+    for reg in step.get("register") or []:
+        rx = reg.get("regex") if isinstance(reg, dict) else None
+        if not isinstance(rx, str):
+            continue
+        compiled = _py(rx)
+        if compiled is None:
+            return None
+        if reg.get("loop") and isinstance(reg.get("count_var"), str):
+            values[reg["count_var"]] = sum(1 for _ in compiled.finditer(text))
+        for name in _NAMED_GROUP.findall(rx):
+            hit = compiled.search(text)
+            values.setdefault(name, (hit.group(1) or "") if hit and hit.re.groups else "")
+    return values
+
+
+def _evaluate_expr(expr: str, values: dict) -> bool | None:
+    """``A OP B`` terms joined by ``&&`` / ``||`` (``&&`` binds tighter, as in the JAR), operands registered names,
+    numbers or quoted strings. None when it uses anything else (a name the step does not register, parentheses…)."""
+    expr = expr.strip()
+    if expr.startswith("${") and expr.endswith("}"):
+        expr = expr[2:-1]
+    if "(" in expr or not expr:
+        return None
+
+    def operand(tok: str):
+        if tok[0] in "'\"":
+            return tok[1:-1]
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", tok):
+            return tok
+        return values[tok] if tok in values else KeyError
+
+    def term(text: str) -> bool | None:
+        m = _EXPR_TERM.match(text)
+        if not m:
+            return None
+        a, op, b = operand(m.group(1)), m.group(2), operand(m.group(3))
+        if a is KeyError or b is KeyError:
+            return None
+        try:
+            a, b = float(a), float(b)
+        except (TypeError, ValueError):
+            a, b = str(a), str(b)
+            if op not in ("==", "!="):
+                return None
+        return {"==": a == b, "!=": a != b, ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b}[op]
+
+    any_of = []
+    for alternative in expr.split("||"):
+        parts = [term(t) for t in alternative.split("&&")]
+        if any(p is None for p in parts):
+            return None
+        any_of.append(all(parts))
+    return any(any_of)
+
+
+def _expr_false_on_real_output(step: dict, outputs: list[str]) -> str:
+    """'NAME=value, …' when the step's success expr is false on every recorded (healthy) output — e.g. a count of
+    lines WITHOUT "ESTABLISHED" that must be 0, while every pod also prints its name (OB-41). Empty otherwise."""
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+    expr = str(criteria.get("expr") or "")
+    if not expr or not outputs:
+        return ""
+    seen = []
+    for out in outputs:
+        values = _register_values(step, out)
+        if values is None:
+            return ""
+        verdict = _evaluate_expr(expr, values)
+        if verdict is None or verdict:
+            return ""
+        used = [n for n in re.findall(r"[A-Za-z]\w*", expr) if n in values]
+        seen.append(", ".join(f"{n}={values[n]!r}" for n in dict.fromkeys(used)))
+    return "; ".join(seen[:2])
 
 
 _COUNT_NAME = r"\$?\{?([A-Za-z]\w*)\}?"  # count_var names may hold `_` (only regex group names may not)

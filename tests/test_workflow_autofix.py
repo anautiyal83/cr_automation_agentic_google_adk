@@ -766,3 +766,24 @@ def test_long_listing_cannot_show_file_names_side_by_side():
     assert check_file_listing_regexes(wf("cd /opt/p/ && ls -lrth", joined))
     assert not check_file_listing_regexes(wf("cd /opt/p/ && ls", joined))  # plain ls: names side by side
     assert not check_file_listing_regexes(wf("ls -l /opt/p", r"root\s+root"))
+
+
+def test_success_expr_false_on_healthy_output_is_reported():
+    """OB-41: `NON_ESTABLISHED_COUNT == 0` counted every line without ESTABLISHED — pod names, notices — so a healthy
+    node failed; production's bad-state capture passes on the same output."""
+    from skills.network_config_gen.validator import check_against_samples
+    out = ("app-1\nDefaulted container \"eirapp\"\ntcp 0 0 10.0.0.1:3478 10.0.0.2:16611 ESTABLISHED 1/C\n\n"
+           "app-2\ntcp 0 0 10.0.0.3:3479 10.0.0.2:16611 ESTABLISHED 1/C\n")
+    send = "for i in `kubectl get pods -n ${NS} | grep app`; do echo $i; netstat -anp|grep -i 16611; done"
+    sample = {"command": send.replace("${NS}", "nk1"), "output": out}
+
+    def wf(register, expr):
+        return {"phases": {"a": {"steps": [{"node": "n", "send": send, "register": register,
+                                            "validation": {"success": {"criteria": {"expr": expr}}}}]}}}
+    wrong = wf([{"regex": "ESTABLISHED", "loop": True, "count_var": "ESTABLISHED_COUNT"},
+                {"regex": "^(?!.+ESTABLISHED).+$", "loop": True, "count_var": "NON_ESTABLISHED_COUNT"}],
+               "ESTABLISHED_COUNT > 0 && NON_ESTABLISHED_COUNT == 0")
+    assert any("is false on the real output" in p for p in check_against_samples(wrong, [sample]))
+    production = wf([{"regex": r"(?<BADSTATE>tcp6?\s+\d+\s+\d+\s+\S+\s+\S+:16611\s+(?!ESTABLISHED\b)\S+)"}],
+                    "${BADSTATE == \"\"}")
+    assert not any("is false on the real output" in p for p in check_against_samples(production, [sample]))

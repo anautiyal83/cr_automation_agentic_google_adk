@@ -1228,3 +1228,21 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Re-run on a copy: the login works and the dump files land in the simulator. The two remaining failures are the
   generated checks, which step 6 now rejects with the real output. Tests in test_vfs_commands,
   test_workflow_autofix, test_scenarios and test_nested_sessions.
+
+### OB-41 — Regenerated EIR checks still failed on healthy output (High, Fixed 2026-11-12)
+- Run d3aa8ed5, after OB-40: step 6 rewrote both checks and step 9 failed again.
+  - **ESTABLISHED:** `ESTABLISHED_COUNT > 0 && NON_ESTABLISHED_COUNT == 0`, where NON_ESTABLISHED_COUNT counts every
+    line without "ESTABLISHED". Every pod also prints its name and `Defaulted container …`, so a healthy node
+    fails. Step 6 evaluated only `OK == TOTAL` counts and `var OP number` exprs on the recorded output.
+  - **TAC consistency:** `… bash -c '… | awk "{print \$NF}" | sort -u | wc -l'` per pod with
+    `distinctTacCount == 1`. Each pod has three different counts (white, black, grey), so the result is 3. The MOP
+    wants the counts identical ACROSS pods; production compares them on local (raw capture → awk line per pod →
+    `sort -u | wc -l` → TAC_MATCH).
+- **Fix**:
+  - Validator `_expr_false_on_real_output`: works out what every register gives on the recorded output (a loop
+    count = matches, a capture = first group or "") and evaluates the whole success expr (`&&`, `||`,
+    comparisons). It reports a step whose expr is false on a healthy node and points to production's bad-state
+    capture.
+  - Step 6 prompt: "same values on every item" is decided across items, with production's two-step form.
+  - Test `test_success_expr_false_on_healthy_output_is_reported`. The TAC step is not checkable against recorded
+    output (the AI changed the command), so only the prompt covers it.

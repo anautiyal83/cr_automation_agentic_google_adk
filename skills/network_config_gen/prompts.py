@@ -154,6 +154,12 @@ CRITICAL RULES:
   `predump_.txt`) — write `DATE=$(date +%Y%m%d); … predump_$DATE.txt`. For the same reason no bash
   arrays (`${counts[$pod]}` arrives empty): compare per-pod values in one pipeline instead, e.g.
   `for p in …; do …; done | sort -u | wc -l`, and register that count.
+- "The same values on every pod / item" (TAC counts identical across pods) is decided ACROSS the items, never
+  inside one: `sort -u | wc -l` within a pod's `bash -c '…'` counts that pod's own different values (white,
+  black, grey → 3). Production's form: step 1 registers the loop's raw output (`(?<RAW>[\\s\\S]+)`, expr
+  `RAW != ""`); step 2 on node local turns it into ONE line per item and requires one distinct line:
+    send: "printf '%s\\n' '${RAW}' | awk '/eirBlackRng/ {b=$NF} /eirGreyRng/ {g=$NF} /eirWhiteRng/ {printf \"%s|%s|%s\\n\", $NF, b, g}' | sort -u | wc -l | awk '{print ($1 == 1) ? \"VALUES_MATCH\" : \"VALUES_MISMATCH\"}'"
+    register: [{regex: '(?<RESULT>VALUES_MATCH|VALUES_MISMATCH)'}]   validation expr: RESULT == "VALUES_MATCH"
 - sftp steps print nothing: give them no output regex (the transfer status decides).
 - A command for EVERY pod / host / item of a list is ONE step with a shell loop (as production writes it):
     send: "for i in `kubectl get pods -n ${NS} | grep app | awk '{print $1}'`; do echo $i; kubectl exec $i -n ${NS} -- bash -c '<cmd>'; echo; done"
