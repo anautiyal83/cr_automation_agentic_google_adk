@@ -264,3 +264,11 @@ def test_a_read_changes_after_the_activity_on_another_node():
     assert chain[-1]["lines"] == entries[read]["lines"]
     # nothing on another node between the reads: no change
     assert asyncio.run(state_changes.apply(llm, "UC", rds, entries, {}, [], others=[])) == entries
+    # a lookup on RDS between the reads does not take the change over (run 61561981: a skipped `if [[ IFC … ]]`)
+    rds.commands.insert(2, {"cmd": "org -c hssGlobalFilterCriteria", "phase": "activity_configuration", "order": 5})
+    entries2 = {**entries, "org -c hssGlobalFilterCriteria": {"lines": ["x"]}}
+    out = asyncio.run(state_changes.apply(llm, "UC", rds, entries2, {}, [], others=pgw))
+    assert "setState" not in out["org -c hssGlobalFilterCriteria"] and out[read]["responses"][0]["lines"][1] == "scscfMandCap: 10"
+    # a repository server's transfers are no change
+    repo = [{**o, "node": "repo_server"} for o in pgw]
+    assert asyncio.run(state_changes.apply(llm, "UC", rds, entries, {}, [], others=repo)) == entries

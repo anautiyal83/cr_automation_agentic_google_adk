@@ -1407,10 +1407,18 @@ def fix_single_file_listings(parsed: dict) -> int:
         name = re.sub(r"\\\$\\\{[^}]*\\\}", ".+?", re.escape(m.group(2)))
         about = json_text(step.get("validation")).lower()
         size = r"[1-9]\d*" if "empty" in about else r"\d+"
+        line = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
         for criteria in _criteria_blocks(step):
             regex = str(criteria.get("regex") or "")
             if re.search(r"(?<![A-Za-z])total\b", regex):
-                criteria["regex"] = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
+                criteria["regex"] = line
+                changed += 1
+        # the same in a count register (OB-86, run 61561981: `total\s+\d+\s+.*\s+.+?.xml.res` counted 0 on the
+        # PGW response file that was there — `responseFileCount > 0` failed on every node)
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and reg.get("count_var") and isinstance(reg.get("regex"), str) \
+                    and re.search(r"(?<![A-Za-z])total\b", reg["regex"]):
+                reg["regex"] = line
                 changed += 1
     return changed
 

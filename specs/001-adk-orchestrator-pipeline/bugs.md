@@ -1717,3 +1717,17 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   also appended its message to the earlier ones.
 - **Fix** (`helper_script_gen_agent`): a passing attempt removes the helper part of `step_6_error.json` (the file
   when nothing else failed, and step 6 is passed again); a failing attempt replaces the earlier helper message.
+
+### OB-86 — A count register wanting `total` on one file's listing (High, Fixed 2026-11-13)
+- Run 61561981: `ls -l <outbox>/${ORDER_NO}.xml.res` counted with `total\s+\d+\s+.*\s+.+?.xml.res`; `ls -l` of one
+  file never prints `total`, so `responseFileCount > 0` failed with the response file there (on a real PGW too).
+  DEP-39's autofix rewrote such a success regex only.
+- **Fix**: `fix_single_file_listings` also rewrites a count register's regex to the file's long-listing line.
+
+### OB-84 (follow-up) — Another node's activity takes priority over a lookup on the read's node
+- Same run: an RDS `if [[ IFC … ]]` lookup between the reads was taken as the change command and never ran for the
+  record, so the post read stayed unchanged. Now another (non-repository) node's activity between two reads makes
+  them a before / after pair whatever runs on the read's own node; a repository server's transfers change nothing.
+- Open: the post-activity profile is one answer for every test case, but the CIQ values differ per record (EAST
+  expects Mandatory Cap 10, NORTH others), and the LLM copied CIQ cells literally (`UNCHANGED`, which means keep the
+  value). The comparison report of run 61561981 still fails on the copy.

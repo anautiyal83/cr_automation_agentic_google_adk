@@ -114,6 +114,21 @@ def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = N
                 or not any(str(x).strip() for x in entry["lines"])):
             continue
         for a, b in zip(occ, occ[1:]):
+            # another node's activity between the two reads applies the change (the order uploaded to PGW, read
+            # back on RDS — OB-84): the read itself counts, whatever runs on its own node in between (run
+            # 61561981: an `if [[ IFC … ]]` lookup there was taken as the change and never ran). A repository
+            # server only stores files: its transfers change nothing
+            lo, hi = seq[a].get("order"), seq[b].get("order")
+            cross = [o for o in others or [] if lo is not None and hi is not None
+                     and "repo" not in str(o.get("node") or "").lower()
+                     and _kind(o.get("phase", "")) == "activity" and lo < (o.get("order") or -1) < hi
+                     and (o.get("transfer") or str(o.get("cmd") or "").strip())]
+            if cross:
+                first = min(o["order"] for o in cross)
+                out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": [],
+                            "dump": bare != str(c["cmd"]).strip(), "cross": cross[:8],
+                            "n_pre": sum(1 for k in occ if (seq[k].get("order") or 0) < first)})
+                break
             setters = []
             for t in range(a + 1, b):
                 cmd = str(seq[t]["cmd"]).strip()
@@ -128,16 +143,6 @@ def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = N
             if setters:
                 out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": setters,
                             "dump": bare != str(c["cmd"]).strip()})
-                break
-            lo, hi = seq[a].get("order"), seq[b].get("order")
-            cross = [o for o in others or [] if lo is not None and hi is not None
-                     and _kind(o.get("phase", "")) == "activity" and lo < (o.get("order") or -1) < hi
-                     and (o.get("transfer") or str(o.get("cmd") or "").strip())]
-            if cross:
-                first = min(o["order"] for o in cross)
-                out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": [],
-                            "dump": bare != str(c["cmd"]).strip(), "cross": cross[:8],
-                            "n_pre": sum(1 for k in occ if (seq[k].get("order") or 0) < first)})
                 break
     out.sort(key=lambda r: not r["dump"])  # reads saved to a file (pre / post dumps) first
     return out[:MAX_READS]

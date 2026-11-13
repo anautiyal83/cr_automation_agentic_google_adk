@@ -998,3 +998,19 @@ def test_a_grep_filter_check_that_can_never_pass_is_reported():
     ]}}}
     found = check_grep_filter_checks(parsed)
     assert len(found) == 1 and "can never pass" in found[0]
+
+
+
+def test_a_count_over_one_files_listing_does_not_want_total():
+    """OB-86 (run 61561981): `ls -l <outbox>/${ORDER_NO}.xml.res` counted with `total\s+\d+\s+.*\s+.+?.xml.res` —
+    `ls -l` of one file never prints `total`, the count stayed 0 with the file there."""
+    import re
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "ls -l /srv/outbox/${ORDER_NO}.xml.res", "command_description": "a",
+         "register": [{"regex": r"total\s+\d+\s+.*\s+.+?.xml.res", "count_var": "responseFileCount", "loop": True}],
+         "validation": {"description": "File exists and is not empty",
+                        "success": {"criteria": {"expr": "responseFileCount > 0"}}}}]}}}))
+    rx = yaml.safe_load(wf)["phases"]["p"]["steps"][0]["register"][0]["regex"]
+    assert "total" not in rx
+    line = "-rw-r--r--. 1 oamsys oamsys     1647 Nov 13 18:56 /srv/outbox/TEST_ORDER_NO.xml.res"
+    assert re.search(rx, line) and not re.search(rx, line.replace(" 1647 ", " 0 "))
