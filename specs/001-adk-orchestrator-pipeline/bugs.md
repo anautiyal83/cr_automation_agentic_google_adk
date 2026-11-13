@@ -1765,3 +1765,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - On the copy the comparison report went from 4 mismatches to 1: the LLM still left `Packet Data Network Type` →
   `pdnType` out of the after-profile in some drafts. Deterministic option (not built): derive the node's after-state
   from the request actually uploaded (the order XML lists every attribute it sets).
+
+### OB-90 — Step 6 rejected an empty either-or value passed to a local report script (Medium, Fixed 2026-11-13)
+- Run 6570694d after OB-88: `python create_html_report.py … --ciq_test_imsi '${resolvedIMSI}' --ciq_test_msisdn
+  '${…Test MSISDN}'` — the report shows the CIQ values; MSISDN is empty for the rows that give an IMSI. The
+  empty-column check (meant for values sent to a node, DEP-19) failed step 6.
+- **Fix** (`check_ciq_coverage`): a CIQ value passed as a `--flag` argument of a command on the automation server is
+  the script's to handle (the request a script builds stays checked by `check_request_inputs`); node commands are
+  still checked. The run's workflow validates with 0 errors.

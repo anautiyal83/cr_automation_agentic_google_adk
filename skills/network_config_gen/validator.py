@@ -442,13 +442,23 @@ def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
     def empty(row: dict, col: str) -> bool:
         return str(row.get(col, "") if row.get(col) is not None else "").strip() == ""
 
+    nodes = parsed.get("nodes") or {}
+    local = {"LOCAL", "local"} | {str(n) for n, v in nodes.items() if isinstance(v, dict)
+                                  and "local" in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
     problems: dict[str, str] = {}
     for phase_name, step in _iter_steps(parsed.get("phases") or {}):
         send = str(step.get("send") or "")
         guard = str(step.get("when") or "")
+        on_local = str(step.get("node") or "") in local
         for col in {c.strip() for c in _CIQ_COLUMN.findall(send)}:
             rows = columns.get(col)
             if not rows or col in guard or col in problems:
+                continue
+            # a helper script's argument on the automation server (`--ciq_test_msisdn '${…Test MSISDN}'` of a
+            # report, run 6570694d): an empty optional value is the script's to handle — what reaches a node is
+            # checked here, the request a script builds by check_request_inputs (OB-90)
+            if on_local and re.search(r"--[\w-]+[ =]['\"]?\$\{configSequences\.\d+\.records\.\d+\.data\."
+                                      + re.escape(col) + r"\s*\}", send):
                 continue
             # a shell guard on the column (`if [ "${…Test IMSI}" != "" ]; then …; else …; fi`, run 6570694d) runs the
             # branch without it for the rows that leave it empty (OB-88)

@@ -1036,3 +1036,20 @@ def test_a_shell_guard_on_an_either_or_column_is_understood():
     assert check_row_variables(parsed, sheets, runtime_params=[]) == []
     errors = validate_workflow(yaml.safe_dump(parsed), [], sheets, None)
     assert not [e for e in errors if "which is empty in" in e or "resolvedImsi" in e], errors
+
+
+
+def test_an_empty_either_or_value_as_a_local_script_argument_is_the_scripts_to_handle():
+    """OB-90 (run 6570694d): the comparison report got `--ciq_test_msisdn '${…Test MSISDN}'`, empty for the rows that
+    give an IMSI — a report argument, not a value sent to a node. A node command with it is still reported."""
+    from skills.network_config_gen.validator import check_ciq_coverage
+    ciq = "${configSequences.0.records.0.data."
+    sheets = {"Main": {"columns": ["NodeGroup", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"NodeGroup": "EAST", "Test IMSI": "", "Test MSISDN": "9198"},
+        {"NodeGroup": "NORTH", "Test IMSI": "4045", "Test MSISDN": ""}]}}
+    report = {"nodes": {"LOCAL": {"type": "local"}, "RDS": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "LOCAL", "send": f"python create_html_report.py --ciq_test_msisdn '{ciq}Test MSISDN}}' --x y"}]}}}
+    assert check_ciq_coverage(report, sheets) == []
+    node = {"nodes": {"RDS": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "RDS", "send": f"ldapsearch -b msisdn={ciq}Test MSISDN}}"}]}}}
+    assert check_ciq_coverage(node, sheets)
