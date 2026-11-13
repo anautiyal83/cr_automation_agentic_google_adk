@@ -1794,3 +1794,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   the one line MockWire runs (`join_compound`), so its branch commands get answers.
 - Open: the next draft handled blank — as "unchanged" (the long answer mixes both cases), the simulator as "delete".
   A free-text answer is read differently per draft; the cell rules need one structured, confirmed form.
+
+### OB-93 — A Java inline flag inside a regex never matched in the simulator checks (High, Fixed 2026-11-13)
+- Run 6570694d, NORTH: the IFC lookup `if [[ '40453' … ]]; then org -c hssGlobalFilterCriteria | grep -i 40453; …`
+  checks `(?:(?i).+?)|SKIPPED_BY_CONDITION`. The recorded IFC list has no 40453; step 8's fallback (DEP-9: build a
+  line from the step's regexes with the grepped value) never fired — Python 3.11+ rejects an inline `(?i)` that is
+  not at the start (Java scopes it), so `java_regex_matches` said "no match" and the answer stayed empty.
+- **Fix** (`scenarios.java_to_python`): mid-pattern inline flags become flags of the whole pattern; the fallback now
+  answers NORTH's lookup with a line holding 40453.

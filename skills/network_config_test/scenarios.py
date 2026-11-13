@@ -198,11 +198,26 @@ def java_regex_matches(regex: str, text: str) -> bool:
     2026-11-04, run c89f65c2)."""
     if not text.strip("\r\n") and _has_caret(regex):
         return False
-    py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+    py, flags = java_to_python(regex)
     try:
-        return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE) is not None
+        return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE | flags) is not None
     except re.error:
         return False
+
+
+_INLINE_FLAGS = re.compile(r"\(\?([imsx]+)\)")
+
+
+def java_to_python(regex: str) -> tuple[str, int]:
+    """A Java regex for Python's ``re``: named groups ``(?<n>…)`` → ``(?P<n>…)``; an inline flag group later in the
+    pattern (``(?:(?i).+?)`` — Java scopes it, Python 3.11+ rejects it: run 6570694d's IFC check never matched and
+    step 8 kept an empty answer, OB-93) becomes a flag of the whole pattern (a superset of what Java matches)."""
+    py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+    flags = 0
+    for m in _INLINE_FLAGS.finditer(py):
+        for ch in m.group(1):
+            flags |= {"i": re.I, "m": re.M, "s": re.S, "x": re.X}[ch]
+    return _INLINE_FLAGS.sub("", py), flags
 
 
 # ---------------------------------------------------------------------------

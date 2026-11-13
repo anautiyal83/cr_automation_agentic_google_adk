@@ -641,3 +641,13 @@ def test_rollback_may_leave_the_evidence_files_the_workflow_writes(tmp_path):
     steps = [WorkflowStep(0, "rb", "rollback", "eir",
                           "org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt", "", "stop")]
     assert node_files_diff(before, after, written_files(steps)) == ["left behind: /etc/stray"]
+
+
+
+def test_a_java_inline_flag_inside_the_pattern_matches_as_in_java():
+    """OB-93 (run 6570694d): `(?:(?i).+?)|SKIPPED_BY_CONDITION` — Java scopes `(?i)`, Python 3.11+ rejects it; the check
+    never matched and step 8 kept an empty answer for NORTH's IFC lookup."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    assert java_regex_matches(r"(?:(?i).+?)|SKIPPED_BY_CONDITION", "x,x,x,x,40453,")
+    assert java_regex_matches(r"(?:(?i)abc)", "ABC") and not java_regex_matches(r"(?:(?i)abc)", "xyz")
+    assert java_regex_matches(r"^(?<n>\d+)$", "42")
