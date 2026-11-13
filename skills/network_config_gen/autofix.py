@@ -338,6 +338,7 @@ def fix_workflow(yaml_text: str) -> str:
     empty_output_success(parsed)
     list_after_silent(parsed)
     count_needs_loop(parsed)
+    block_numbers_end_their_line(parsed)
     loop_count_nonempty(parsed)
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
@@ -1589,6 +1590,24 @@ def count_needs_loop(parsed: dict) -> int:
         for reg in step.get("register") or []:
             if isinstance(reg, dict) and str(reg.get("count_var") or "").strip() and not reg.get("loop"):
                 reg["loop"] = True
+                changed += 1
+    return changed
+
+
+_BARE_NUMBER = re.compile(r"^\(\?<([A-Za-z][A-Za-z0-9]*)>\\d\+\)$")
+
+
+def block_numbers_end_their_line(parsed: dict) -> int:
+    r"""After a multi-line send the JAR sends its done-marker on a line of its own: the shell's prompt printed in
+    between is part of the output, and a bare ``(?<x>\d+)`` took the digits of the hostname (`rdsggn01:~ #` → every
+    record's IMSI read as 01, run 6570694d, OB-97). The number must end its line."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        if "\n" not in str(step.get("send") or "").strip():
+            continue
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str) and _BARE_NUMBER.match(reg["regex"].strip()):
+                reg["regex"] = reg["regex"].strip() + r"(?=\s*$)"
                 changed += 1
     return changed
 

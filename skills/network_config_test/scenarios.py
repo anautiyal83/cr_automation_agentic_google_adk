@@ -539,10 +539,10 @@ class ScenarioSuite:
             if inst:
                 configs[inst] = inject_fault(base[inst], sc.fault)
         # post-activity answers holding CIQ values: this case's own record (OB-87)
-        record = case_record(sc.target)
+        records = case_records(sc.target)
         for name, text in list(configs.items()):
             if "{ciq" in text:
-                configs[name] = fill_ciq(text, record, self._cell_rules())
+                configs[name] = fill_ciq(text, records, self._cell_rules())
         return configs
 
     # -- one case -------------------------------------------------------------
@@ -668,29 +668,38 @@ class ScenarioSuite:
         return events
 
 
-def case_record(target: tuple[str, str, str]) -> dict:
-    """The first CIQ record of a test case's node group (``target`` = json file, node, CR group)."""
+def case_records(target: tuple[str, str, str]) -> list[dict]:
+    """The CIQ records of a test case's node group, in order (``target`` = json file, node, CR group)."""
     from tools.ciq_json import node_groups
     json_file, node, cr_group = target
     try:
         doc = json.loads(Path(json_file).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return []
     for cr, group in node_groups(doc):
         if (not cr_group or cr == cr_group) and node in [str(n.get("node")) for n in group.get("nodes") or []]:
             seqs = group.get("configSequences") or [{}]
-            records = ((seqs[0] or {}).get("records") or [{}]) if seqs else [{}]
-            return dict((records[0] or {}).get("data") or {})
-    return {}
+            records = ((seqs[0] or {}).get("records") or []) if seqs else []
+            return [dict((r or {}).get("data") or {}) for r in records]
+    return []
 
 
-def fill_ciq(config_text: str, record: dict, rules: dict | None = None) -> str:
-    """An instance config with its CIQ lines filled for one record (``state_changes.resolve_ciq``, the UC's cell
-    rules)."""
+def case_record(target: tuple[str, str, str]) -> dict:
+    """The first CIQ record of a test case's node group."""
+    return (case_records(target) or [{}])[0]
+
+
+def fill_ciq(config_text: str, records: dict | list[dict], rules: dict | None = None) -> str:
+    """An instance config with its CIQ lines filled for a case's records (``state_changes``: a read chain of a record
+    loop gets one pass per record, other lines the first record's values; the UC's cell rules)."""
     from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
-    from skills.network_simulator_setup.state_changes import resolve_ciq
+    from skills.network_simulator_setup.state_changes import expand_records, resolve_ciq
+    records = [records] if isinstance(records, dict) else list(records or [])
     cfg = parse_yaml(config_text)
-    if not isinstance(cfg, dict) or not resolve_ciq(cfg, record, rules):
+    if not isinstance(cfg, dict):
+        return config_text
+    changed = expand_records(cfg, records, rules)
+    if not resolve_ciq(cfg, (records or [{}])[0], rules) and not changed:
         return config_text
     return dump_yaml(cfg)
 

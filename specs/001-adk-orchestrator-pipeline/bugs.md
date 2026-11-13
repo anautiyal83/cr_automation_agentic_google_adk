@@ -1812,3 +1812,48 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   script (what a comparison expects and what a request sends per cell) and applied by step 9's per-case simulator
   answers. Defaults: UNCHANGED keeps, blank keeps.
 - Steps 6h + 8 + 9 on a copy of run 6570694d (NIAM gateway): **2/2 pass** (EAST 38 steps, NORTH 44).
+
+### OB-95 — A cross-node read kept the attribute a blank CIQ cell deletes (High, Fixed 2026-11-13)
+- Run 6570694d (PGW + RDS), step 9 2/2 fail after OB-94: the report expects `pdnType` absent (blank cell → delete) but
+  RDS's reads after the PGW activity still printed it. Step 8's AI (a) left `pdnType` out of the filtered read's
+  after-profile and (b) called the full-profile read (`ldapsearch … objectclass=*`, one `pdnType` per PDN context)
+  unchanged, so neither followed the CIQ.
+- **Fix** (`state_changes.attribute_for` / `complete_columns`): every column the activity sends gets the attribute it
+  names (by name: initials + last word, or word prefixes in order; only a unique match) as a
+  `{ciq:<column>}{ciq-else:<before>}` line — every line of that attribute, in every cross-node read repeated around
+  the activity, also one the AI called unchanged. A column the read is addressed by (the IMSI) is left alone.
+
+### OB-96 — A node group with several CIQ records compared every record with the last one's reads (High, Fixed 2026-11-13)
+- Run 6570694d, NORTH (2 records): the first record loop resolved each IMSI and read its profile (`resolvedImsi`,
+  `preFullProfile` registered per pass), but the post reads ran once outside any loop and the report loop compared
+  every record's CIQ with the LAST record's values; `create_xml.py` ran per record and rewrote the same
+  `${ORDER_NO}.xml` (only the last record reached the order), the report likewise. Wrong on a real node too. In the
+  simulator the read chain switched to "after" once, filled with the first record; IFC → globalFilterIds was never
+  changed (no name links them).
+- The MOP is a batch: one `${ORDERNO}` per run ("Ensure that <$ORDERNO>.xml.res does not exist"), header + footer once,
+  `spml:batchResponse` — so the records are not each a pass of their own.
+- **Fix**, structure (step 6): a step reading a value an earlier record loop registered loops over the records too
+  (`loop_record_steps`); `keep_record_values` keeps each record's value in `nc_records/<name>_<sha1 of the record's
+  columns>.txt` on the automation server (`nc_keep_*`, quoted here-document) and the later loop reads it back
+  before its first use (`nc_load_*`); a script run per record writing one file for all (`--output_file
+  '${ORDER_NO}.xml'`, `helper_script_gen.context.shared_outputs`) gets `nc_fresh_*` (`rm -f`) before its loop and
+  the contract "each pass ADDS its record — one header / footer"; step 6h `check_accumulates` runs the script for
+  two records into one folder and rejects it when the first record's lines are gone (the AI ignored the contract
+  line once; the repaired create_xml.py passed on attempt 2). EIR's `${INFLATEDFILE}` (unzip in the backup
+  loop, `mv` in the activity) is carried the same way; MRF unchanged.
+- **Fix**, simulator: commands carry their record loop (`extract_workflow_commands` → `loop`); a read repeated around
+  another node's activity in record loops is a chain `changed:readN:records:<segments>` (`L1.L1` = one read in each
+  of two loops); step 9 (`fill_ciq` → `state_changes.expand_records`) expands it for the case's records — each
+  loop's reads once per record, the after-lines filled with that record's values. `column_attributes` maps a column
+  to the attribute the requirements compare it with (`IF (<$IFC> == globalFilterIds)`) for `complete_columns` and
+  the step 8 prompt.
+
+### OB-97 — A number registered from a multi-line block took the prompt's digits (High, Fixed 2026-11-13)
+- Run 6570694d: `if … fi` resolving the IMSI printed `404530000000132` — but the JAR sends its done-marker on a line
+  of its own after a multi-line send, so the prompt printed in between (`rdsggn01:~ #`) is part of the output and
+  `(?<resolvedImsi>\d+)` kept `01`: every record read `imsi=01` (hidden by the simulator's `imsi=\S+` key).
+- **Fix** (`autofix.block_numbers_end_their_line`): on a multi-line send a bare `(?<x>\d+)` becomes
+  `(?<x>\d+)(?=\s*$)` — the number that ends its line.
+- Verified on copies of run 6570694d: steps 6h + 8 + 9 **2/2 pass** (EAST 45 steps, NORTH 60), every record's own
+  IMSI read (404530000000132, 999990000015555, 208930000000001). The run with `check_accumulates` was stopped by
+  low memory during step 9 (6h + 8 passed); EIR's copy with the carried `${INFLATEDFILE}` not run yet.

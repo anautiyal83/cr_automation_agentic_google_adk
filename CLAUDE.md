@@ -214,6 +214,11 @@ bye
   structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
   backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
+- Several CIQ records (OB-96): a value one record loop registers and a later step reads makes that step loop too;
+  `structure.keep_record_values` keeps it per record (`nc_keep_*` → `nc_records/<name>_<sha1 of the record>.txt` on
+  the automation server, `nc_load_*` reads it back); a per-record script writing one file for all (`--output_file
+  '${ORDER_NO}.xml'`) gets `nc_fresh_*` before the loop and must ADD its record (step 6h `check_accumulates`).
+  Step 8 chains a read repeated in record loops as `changed:readN:records:<L1.L1>`; step 9 expands it per record
 - Every review (2-9): **Edit requirements** — at a later review the decision `edit` sends the run back to
   step 1 like `clarify` (cache cleared, no retry counted), which applies the pending edit after its analysis.
   Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers

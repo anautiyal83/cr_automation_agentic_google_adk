@@ -370,7 +370,8 @@ class NetworkSimulatorSetupSkill:
             from .autofix import extract_workflow_commands
             merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs,
                                                others=[c for o in nodes if o is not node for c in o.commands],
-                                               workflow_commands=extract_workflow_commands(inp.workflow_yaml))
+                                               workflow_commands=extract_workflow_commands(inp.workflow_yaml),
+                                               mapping=state_changes.column_attributes(inp.requirements))
             # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
             real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
             synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})

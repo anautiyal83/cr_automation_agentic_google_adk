@@ -312,6 +312,66 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
     return problems
 
 
+def _other_value(value: str) -> str:
+    """Another record's value of the same kind: digits shifted, text marked."""
+    shifted = re.sub(r"\d", lambda m: str((int(m.group()) + 1) % 10), value)
+    return shifted if shifted != value else f"{value}B"
+
+
+def check_accumulates(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
+                      inputs: dict[str, bytes] | None = None, timeout: int = 20) -> list[str]:
+    """A script run once per CIQ record that writes one file for all of them (``context.shared_outputs``) must keep
+    what the earlier passes wrote: run it for one record, then for another into the same folder — the first
+    record's lines must still be there (run 6570694d: create_xml.py rewrote `${ORDER_NO}.xml`, only the last
+    record reached the order, OB-96)."""
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    from .context import shared_outputs
+    line = next((c for c in command_lines if shared_outputs(c)), "")
+    if not line:
+        return []
+    named_by = set(_WF_PLACEHOLDER.findall(shared_outputs(line)[0]))  # the file's name is the same in every pass
+    other = {k: v if k in named_by else _other_value(v) for k, v in values.items()}
+
+    def run(folder: str, vals: dict[str, str]) -> str:
+        resolved = _WF_PLACEHOLDER.sub(lambda m: vals.get(m.group(1).strip(), "1"), line)
+        try:
+            argv = shlex.split(resolved, posix=True)
+        except ValueError:
+            return ""
+        if len(argv) < 2 or not re.match(r"python3?$", argv[0]):
+            return ""
+        argv[0], argv[1] = sys.executable, str(Path(folder, Path(argv[1]).name))
+        for name, content in (inputs or {}).items():
+            Path(folder, _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), name)).write_bytes(content)
+        try:
+            subprocess.run(argv, cwd=folder, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return ""
+        name = _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), shared_outputs(line)[0])
+        target = Path(folder, name.replace("\\", "/").rsplit("/", 1)[-1])
+        return target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
+
+    with tempfile.TemporaryDirectory(prefix="helper-acc-") as both, \
+            tempfile.TemporaryDirectory(prefix="helper-acc-") as alone:
+        for folder in (both, alone):
+            Path(folder, script_name).write_text(code, encoding="utf-8")
+        first = run(both, values)
+        together = run(both, other)
+        second = run(alone, other)
+    kept = set(together.splitlines())
+    lost = [l.strip() for l in first.splitlines()
+            if l.strip() and l not in set(second.splitlines()) and l not in kept]
+    if not first or not lost:
+        return []
+    return [f"the workflow runs `{line}` once per CIQ record and every pass writes {shared_outputs(line)[0]}: one "
+            f"file for all the records. After a pass with another record's values the earlier record's part is gone "
+            f"(e.g. {lost[0][:120]!r}) — when the file exists, read it and ADD this record's part (keep one header / "
+            "wrapper / footer around all the parts); never rewrite it with this record alone"]
+
+
 def _longest_literal(regex: str) -> str:
     """Longest run of literal text in a regex (escaped punctuation unescaped)."""
     runs, current, i = [], "", 0
@@ -510,7 +570,8 @@ class HelperScriptGenSkill:
                                 or check_output_contract(code, regexes, arg_values(cmd_lines))
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",
-                                             output_regexes=regexes, inputs=inputs))
+                                             output_regexes=regexes, inputs=inputs)
+                                or check_accumulates(script_name, code, cmd_lines, test_values, inputs))
                     if not problems:
                         break
                     logger.warning("%s attempt %d/%d violates the CLI contract: %s",

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_READS = 10       # per node, in the prompt
 MAX_LINES = 5000     # added lines per read
 STATE_PREFIX = "changed:"
+RECORDS_SUFFIX = ":records"  # a read chain that every CIQ record passes through in turn (OB-96)
 
 SYSTEM = """\
 You decide how the output of read-only commands on a simulated telecom node changes once the activity has run,
@@ -76,6 +77,85 @@ _SETUP = {"source", ".", "export", "cd", "set", "unset", "umask"}  # load the en
 CIQ_TOKEN = re.compile(r"\{ciq:([^{}]+)\}")
 CIQ_ELSE = "{{ciq-else:{}}}"
 _CIQ_ELSE = re.compile(r"\{ciq-else:(.*)\}$", re.S)
+_ATTR_LINE = re.compile(r"^\s*([A-Za-z][\w-]*)\s*:\s")
+
+
+def attribute_for(column: str, attributes: list[str]) -> str | None:
+    """The attribute a CIQ column sets, by name: `Packet Data Network Type` → `pdnType` (initials + last word),
+    `Mandatory Cap` → `scscfMandCap` (each word's first letters, in order; a same-named attribute first). None unless exactly one attribute fits."""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]+", column)]
+    if not words:
+        return None
+    acronym = "".join(w[0] for w in words[:-1]) + words[-1]
+    prefixes = [w[:3] for w in words]
+    exact = [a for a in attributes if a.lower() == re.sub(r"[^a-z]", "", column.lower())]
+    if exact:
+        return exact[0]
+
+    def fits(attr: str) -> bool:
+        a = attr.lower()
+        if len(words) > 1 and acronym in a:
+            return True
+        pos = 0
+        for pre in prefixes:
+            pos = a.find(pre, pos)
+            if pos < 0:
+                return False
+            pos += len(pre)
+        return True
+    found = [a for a in dict.fromkeys(attributes) if fits(a)]
+    return found[0] if len(found) == 1 else None
+
+
+_COMPARED = re.compile(r"<\$?([^<>]{1,40})>\s*==\s*([A-Za-z][\w-]*)")
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+
+def column_attributes(requirements: dict) -> dict[str, str]:
+    """{normalised CIQ column: attribute} from the requirements (documents, answers, MOP pseudo code) comparing the two
+    (`IF (<$IFC> == globalFilterIds)`, run 6570694d: no name links IFC to globalFilterIds, OB-96)."""
+    out: dict[str, str] = {}
+
+    def walk(value):
+        if isinstance(value, str):
+            for col, attr in _COMPARED.findall(value):
+                out.setdefault(_norm(col), attr)
+        elif isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+    walk(requirements or {})  # the MOP's pseudo code sits in generation_hints
+    return out
+
+
+def complete_columns(after: list[str], before: list[str], sent: list[str], read: str,
+                     mapping: dict[str, str] | None = None) -> list[str]:
+    """The LLM left a column the activity sends out of a cross-node read's after-profile (run 6570694d: no
+    `pdnType`, so a blank cell never deleted it): the attribute that column names gets its `{ciq:<column>}` line —
+    not a column the read itself is addressed by (the IMSI it looks up), not one already there (OB-95). The
+    attribute is the one the documents compare the column with (``column_attributes``), else the one it names."""
+    covered = {c for line in after for c in CIQ_TOKEN.findall(line)}
+    out = list(after)
+    attrs = [m.group(1) for line in before if (m := _ATTR_LINE.match(line))]
+    for col in sent:
+        if col in covered or f".data.{col}" in read or f"data.{col}}}" in read:
+            continue
+        named = (mapping or {}).get(_norm(col))
+        attr = named if named in attrs else attribute_for(col, attrs)
+        if not attr:
+            continue
+        for i, line in enumerate(out):  # every line of it (one per PDN context in a full profile)
+            m = _ATTR_LINE.match(line)
+            if m and m.group(1) == attr and "{ciq" not in line:
+                out[i] = f"{attr}: {{ciq:{col}}}" + CIQ_ELSE.format(line)
+    return out
+
+
 def resolve_line(line: str, record: dict, rules: dict | None = None) -> str | None:
     """A post-activity line for one CIQ record; None when it is to be left out. A cell ``UNCHANGED`` / blank follows
     the UC's confirmed cell rules (``shared/ciq_cells``: keep → the line as it was, delete → no line)."""
@@ -91,6 +171,54 @@ def resolve_line(line: str, record: dict, rules: dict | None = None) -> str | No
         if cell in kinds:
             return (before or None) if rules[cell] == "keep" else None
     return CIQ_TOKEN.sub(lambda t: str(values.get(t.group(1)) or "").strip(), body)
+
+
+def expand_records(config: dict, records: list[dict], rules: dict | None = None) -> bool:
+    """A read chain over CIQ record loops (``…:records:<segments>``, one entry per place the read is sent) becomes
+    the sequence the run sends it in — each loop's places once per record, a place outside loops once (the last
+    record's values) — the after-lines filled with that record's values (in place); True when something changed."""
+    changed = False
+    marker = re.compile(re.escape(RECORDS_SUFFIX) + r":((?:[LO]\d+\.?)+)$")
+
+    def walk(node):
+        nonlocal changed
+        if isinstance(node, dict):
+            chain = node.get("responses")
+            keys = {k for r in chain or [] if isinstance(r, dict) for k in (r.get("whenState") or {})
+                    if marker.search(str(k))} if isinstance(chain, list) else set()
+            if len(keys) == 1:
+                state = keys.pop()
+                places = {0: next((r.get("lines") or [] for r in chain if not r.get("whenState")), [])}
+                for r in chain:
+                    if (r.get("whenState") or {}).get(state) is not None:
+                        places[int(r["whenState"][state])] = r.get("lines") or []
+                recs, events, base = records or [{}], [], 0
+                for seg in marker.search(state).group(1).split("."):
+                    n = int(seg[1:])
+                    if seg[0] == "L":
+                        events += [(base + k, i) for i in range(len(recs)) for k in range(n)]
+                    else:
+                        events += [(base + k, len(recs) - 1) for k in range(n)]
+                    base += n
+
+                def lines(g):
+                    place, rec = events[g]
+                    filled = [resolve_line(str(x), recs[rec], rules) for x in places.get(place, [])]
+                    return [x for x in filled if x is not None]
+                out = [{"whenState": {state: str(g)}, "lines": lines(g)}
+                       | ({"setState": {state: str(g + 1)}} if g + 1 < len(events) else {})
+                       for g in range(1, len(events))]
+                out.append({"lines": lines(0), "setState": {state: "1"}})
+                node["responses"] = out
+                changed = True
+                return
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(config)
+    return changed
 
 
 def resolve_ciq(config: dict, record: dict, rules: dict | None = None) -> bool:
@@ -174,9 +302,21 @@ def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = N
                      and (o.get("transfer") or str(o.get("cmd") or "").strip())]
             if cross:
                 first = min(o["order"] for o in cross)
+                # reads in CIQ record loops run once per record (OB-96): `L<n>` = n reads in one record loop
+                # (each record passes them in turn), `O<n>` = n reads outside; the read before / after the change
+                # by its place
+                segments: list[list] = []
+                for k in occ:
+                    loop = seq[k].get("loop") or ""
+                    if segments and segments[-1][0] == loop:
+                        segments[-1][1] += 1
+                    else:
+                        segments.append([loop, 1])
                 out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": [],
                             "dump": bare != str(c["cmd"]).strip(), "cross": cross[:8],
-                            "n_pre": sum(1 for k in occ if (seq[k].get("order") or 0) < first)})
+                            "n_pre": sum(1 for k in occ if (seq[k].get("order") or 0) < first),
+                            "segments": ".".join(f"{'L' if lp else 'O'}{n}" for lp, n in segments)
+                            if any(lp for lp, _ in segments) else ""})
                 break
             setters = []
             for t in range(a + 1, b):
@@ -263,7 +403,8 @@ def expand(answer: dict, pre: list[str], docs: dict[str, str]) -> list[str] | No
 
 
 async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents: list[str] | None,
-                others: list[dict] | None = None, workflow_commands: list[dict] | None = None) -> dict:
+                others: list[dict] | None = None, workflow_commands: list[dict] | None = None,
+                mapping: dict[str, str] | None = None) -> dict:
     """``entries`` with each repeated read answering its changed output once the activity has run (``others``:
     the other nodes' commands, for a change applied there)."""
     import yaml
@@ -292,8 +433,11 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
                    for m in re.findall(r"\$\{(?:rec|configSequences\.\d+\.records\.\d+)\.data\.([^}]+)\}",
                                        str(c.get("cmd") or ""))})
     if sent and any(r.get("cross") for r in reads):
+        named = {c: (mapping or {}).get(_norm(c)) for c in sent}
         listing.append("CIQ COLUMNS THE ACTIVITY SENDS (give a replace for EACH one a read above prints — map the "
-                       "column to the attribute that shows it): " + ", ".join(sent))
+                       "column to the attribute that shows it): "
+                       + ", ".join(f"{c} (→ {named[c]}, as the documents compare them)" if named[c] else c
+                                   for c in sent))
     user = USER.format(uc_name=uc_name, node=node.name, reads="\n\n".join(listing),
                        documents="\n".join(f"{col} = {Path(d).name}:\n{preview(d)}" for col, d in docs.items())
                        or "(none uploaded)",
@@ -311,6 +455,12 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
     for n, r in enumerate(reads, 1):
         answer = answers.get(str(n), answers.get(n))
         after = expand(answer, r["lines"], docs)
+        if r.get("cross"):
+            # the columns the activity sends, also when the LLM called the read unchanged (run 6570694d: the full
+            # profile kept `pdnType` after a blank cell deleted it in the filtered read, OB-95)
+            completed = complete_columns(list(after if after is not None else r["lines"]), r["lines"], sent, r["bare"],
+                                         mapping)
+            after = completed if completed != r["lines"] else after
         if after is None:
             logger.info("Phase 2: %s — %r is unchanged by the activity (%s)", node.name, r["bare"][:60],
                         "as answered" if isinstance(answer, dict) and answer.get("unchanged") is True
@@ -321,10 +471,20 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
             # nodes' activity, after from then on (MockWire applies setState of the answer it picks)
             state, n_pre = f"{STATE_PREFIX}read{n}", max(1, int(r.get("n_pre") or 1))
             rest = {k: v for k, v in entries[r["key"]].items() if k != "lines"}
-            chain = [{"whenState": {state: str(n_pre)}, "lines": after}]
-            chain += [{"whenState": {state: str(k)}, "lines": r["lines"], "setState": {state: str(k + 1)}}
-                      for k in range(1, n_pre)]
-            chain.append({"lines": r["lines"], "setState": {state: "1"}})
+            if r.get("segments"):
+                # read in CIQ record loops: one entry per place it is read, in order (`…:records:<segments>`:
+                # step 9 repeats each loop's places per record, the after-lines filled with that record's values —
+                # ``expand_records``); unexpanded, the places come round again
+                state += f"{RECORDS_SUFFIX}:{r['segments']}"
+                places = sum(int(x[1:]) for x in r["segments"].split("."))
+                chain = [{"whenState": {state: str(k)}, "lines": r["lines"] if k < n_pre else after,
+                          "setState": {state: str((k + 1) % places)}} for k in range(1, places)]
+                chain.append({"lines": r["lines"], "setState": {state: str(1 % places)}})
+            else:
+                chain = [{"whenState": {state: str(n_pre)}, "lines": after}]
+                chain += [{"whenState": {state: str(k)}, "lines": r["lines"], "setState": {state: str(k + 1)}}
+                          for k in range(1, n_pre)]
+                chain.append({"lines": r["lines"], "setState": {state: "1"}})
             entries[r["key"]] = {**rest, "responses": chain}
             logger.info("Phase 2: %s — %r changes after the activity on %s (read %d time(s) before)", node.name,
                         r["bare"][:60], ", ".join(sorted({str(o.get('node')) for o in r["cross"]})), n_pre)

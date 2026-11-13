@@ -213,22 +213,26 @@ def flattened(parsed: dict) -> dict:
 def loop_record_steps(parsed: dict) -> int:
     """Wrap each run of steps that use record columns in a loop over all records.
 
-    A run starts at a step that uses a record column and goes on while the next step uses
-    one, reads a variable registered inside the run, uses a file moved inside the run (the
-    restored backup is extracted in the same pass), or was added for a step of the run."""
+    A run starts at a step that uses a record column — or a value an earlier run registered (one per record: the
+    IMSI a record resolved, its profile read before the activity, OB-96) — and goes on while the next step uses
+    one, reads a variable registered inside the run, uses a file moved inside the run (the restored backup is
+    extracted in the same pass), or was added for a step of the run. ``keep_record_values`` carries the values
+    from one run to the next."""
     wrapped = 0
+    per_record: set[str] = set()
     for name, body in _phase_bodies(parsed):
         steps, out, i = body["steps"], [], 0
         while i < len(steps):
             step = steps[i]
-            if not isinstance(step, dict) or is_record_loop(step) or not _uses_record(step):
+            if not isinstance(step, dict) or is_record_loop(step) or not (
+                    _uses_record(step) or _uses_vars(step, per_record - _registers(step))):
                 out.append(step)
                 i += 1
                 continue
             run, regs, files = [step], _registers(step), _moved_files(step)
             j = i + 1
             while j < len(steps) and isinstance(steps[j], dict) and not is_record_loop(steps[j]) and (
-                    _uses_record(steps[j]) or _uses_vars(steps[j], regs) or _is_auto(steps[j])
+                    _uses_record(steps[j]) or _uses_vars(steps[j], regs | per_record) or _is_auto(steps[j])
                     or any(f in s for f in files for s in _strings(steps[j]))):
                 run.append(steps[j])
                 regs |= _registers(steps[j])
@@ -250,12 +254,92 @@ def loop_record_steps(parsed: dict) -> int:
                 "reverse_order": False,
                 "steps": [_rewrite(s, pattern, f"{ITEM_VAR}.data.") for s in run],
             })
+            per_record |= regs
             wrapped += 1
             i = j
         body["steps"] = out
     if wrapped:
         logger.info("Structure: %d step runs loop over all CIQ records", wrapped)
     return wrapped
+
+
+KEEP_DIR = "nc_records"  # on the automation server: one file per record and value carried between record loops
+
+
+def keep_record_values(parsed: dict) -> int:
+    """A value one record loop registers (the IMSI a record resolved, its profile read before the activity) and a
+    later loop reads would be the LAST record's in every pass: the first loop keeps each record's value in a file of
+    its own on the automation server (named by the record's columns), the later loop reads it back before its first
+    use (OB-96). The change itself may sit between the loops (one order for all records)."""
+    loops = [step for _, body in _phase_bodies(parsed) for step in body["steps"] if is_record_loop(step)]
+    if len(loops) < 2:
+        return 0
+    cols = sorted({c for loop in loops for t in _strings(loop) for c in re.findall(rf"\$\{{{ITEM_VAR}\.data\.([^}}]+)\}}", t)})
+    if not cols:
+        return 0
+    joined = "|".join(f"${{{ITEM_VAR}.data.{c}}}" for c in cols)
+    key = f"$(printf '%s' '{joined}' | sha1sum | cut -c1-12)"
+    local = _local_node(parsed)
+    source: dict[str, dict] = {}  # value → the latest loop registering it
+    count = 0
+    for loop in loops:
+        steps, seen, needs = loop["steps"], set(), []
+        for k, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            for name in sorted(source):
+                if name not in seen and source[name] is not loop and _uses_vars(step, {name}):
+                    needs.append((k, name))
+                    seen.add(name)
+            seen |= _registers(step)
+        for k, name in reversed(needs):
+            if any(isinstance(s, dict) and s.get("id") == f"{AUTO_ID}load_{name}" for s in steps):
+                continue
+            path = f"{KEEP_DIR}/{name}_{key}.txt"
+            steps.insert(k, _step(f"{AUTO_ID}load_{name}", local, f"This record's {name} kept by the earlier pass",
+                                  send=f"cat {path} 2>/dev/null || true", register=[{"regex": rf"(?<{name}>[\s\S]+)"}]))
+            src = source[name]["steps"]
+            if not any(isinstance(s, dict) and s.get("id") == f"{AUTO_ID}keep_{name}" for s in src):
+                at = max(i for i, s in enumerate(src) if isinstance(s, dict) and name in _registers(s))
+                src.insert(at + 1, _step(
+                    f"{AUTO_ID}keep_{name}", local, f"Keep this record's {name} for the later pass",
+                    # a quoted here-document keeps quotes and `$` of the value; $(…) drops its last newline
+                    send=(f"mkdir -p {KEEP_DIR} && printf '%s' \"$(cat <<'NC_EOF'\n${{{name}}}\nNC_EOF\n)\" > {path}"
+                          " && echo NC_KEPT"),
+                    validation={"description": "The value is kept", "success": {"criteria": {"regex": "NC_KEPT"},
+                                                                               "message": "kept"},
+                                "failure": {"message": f"Could not keep {name}"}}))
+            count += 1
+        for step in steps:  # a value read back stays the first loop's
+            if isinstance(step, dict) and not str(step.get("id") or "").startswith(f"{AUTO_ID}load_"):
+                for name in _registers(step):
+                    source[name] = loop
+    if count:
+        logger.info("Structure: %d per-record value(s) carried to a later record loop", count)
+    return count
+
+
+def fresh_shared_outputs(parsed: dict) -> int:
+    """A script run once per record that writes one file for all records (``helper_script_gen.context
+    .shared_outputs``: each pass adds its record) starts from no file: an added step before the loop removes it
+    on the automation server (OB-96)."""
+    from skills.helper_script_gen.context import shared_outputs
+    local, count = _local_node(parsed), 0
+    for _, body in _phase_bodies(parsed):
+        out = []
+        for step in body["steps"]:
+            if is_record_loop(step):
+                files = list(dict.fromkeys(f for s in step["steps"] if isinstance(s, dict)
+                                           and str(s.get("node")).lower() in (local.lower(), "local")
+                                           and isinstance(s.get("send"), str)
+                                           for f in shared_outputs(s["send"])))
+                if files:
+                    count += 1
+                    out.append(_step(f"{AUTO_ID}fresh_{count}", local, "Start the file all records' passes add to",
+                                     send="rm -f " + " ".join(files)))
+            out.append(step)
+        body["steps"] = out
+    return count
 
 
 # --------------------------------------------------------------------------- checksums
@@ -1259,6 +1343,8 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += files_via_repo(parsed, requirements)
     changes += inputs_from_local_path(parsed, requirements)
     changes += loop_record_steps(parsed)
+    changes += keep_record_values(parsed)
+    changes += fresh_shared_outputs(parsed)
     changes += verify_transfers(parsed)
     changes += rollback_lookups(parsed)
     changes += repo_ip_probe(parsed, requirements)

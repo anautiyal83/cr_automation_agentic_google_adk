@@ -46,6 +46,18 @@ def file_args(command: str) -> list[tuple[str, str]]:
             and _FILE_ARG.search(v)]
 
 
+_OUT_FLAG = re.compile(r"^--?\w*out", re.I)
+
+
+def shared_outputs(command: str) -> list[str]:
+    """The files a script step run once per CIQ record (it reads record columns) writes under the same name in every
+    pass (``--output_file '${ORDER_NO}.xml'``): one file for all records — each pass adds its record (OB-96)."""
+    if not _CIQ_REF.search(command or ""):
+        return []
+    return [value for flag, value in file_args(command)
+            if _OUT_FLAG.match(flag) and not _CIQ_REF.search(value) and "${rec." not in value]
+
+
 def _writer(workflow: dict, value: str) -> tuple[str, str]:
     """(node, command) of the step whose ``cmd >file`` writes the file ``value`` names (by its name: the file
     reaches the automation server by copies and downloads)."""
@@ -112,11 +124,17 @@ def script_context(workflow: dict, script_name: str, requirements: dict, documen
         val = s.get("validation") if isinstance(s.get("validation"), dict) else {}
         ok = (val.get("success") or {}) if isinstance(val.get("success"), dict) else {}
         bad = (val.get("failure") or {}) if isinstance(val.get("failure"), dict) else {}
+        shared = shared_outputs(send)
         checks.append("\n".join(x for x in (
             f"- step: {s.get('command_description') or ''}",
             f"  the step checks: {val['description']}" if val.get("description") else "",
             f"  success means: {ok['message']}" if ok.get("message") else "",
-            f"  failure means: {bad['message']}" if bad.get("message") else "") if x))
+            f"  failure means: {bad['message']}" if bad.get("message") else "",
+            ("  the step runs once per CIQ record of the node group, and every pass writes "
+             + ", ".join(shared) + ": ONE file for all the records — the workflow removes it before the first "
+             "pass; each pass ADDS its record to it (when the file exists, read it and keep what earlier passes "
+             "wrote — one header / wrapper / footer around all the records' parts), never overwrites it")
+            if shared else "") if x))
         for flag, value in file_args(send):
             if (flag, value) in seen:
                 continue

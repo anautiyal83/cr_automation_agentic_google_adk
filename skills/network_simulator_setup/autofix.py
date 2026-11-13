@@ -309,8 +309,8 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
         return []
 
     commands = []
-    for phase_name, steps in _iter_phase_steps(parsed):
-        for step in steps:
+    for phase_name, steps in _iter_phase_steps(parsed, with_loop=True):
+        for step, loop in steps:
             commands.append({
                 "cmd": join_compound(step.get("send", step.get("cmd", step.get("command", "")))),
                 "node": step.get("node", ""),
@@ -322,6 +322,7 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
                 "expect_reply": step.get("expect_reply") or [],  # the password question it waits for
                 "order": len(commands),  # position in the workflow: a change on another node between two reads (OB-84)
                 "transfer": isinstance(step.get("sftp"), dict),
+                "loop": loop,  # the CIQ record loop it runs in (each record passes through it in turn, OB-96)
             })
     return commands
 
@@ -330,8 +331,9 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _iter_phase_steps(parsed: dict):
-    """Yield (phase_name, [step dicts]) for phases given as a map or a list."""
+def _iter_phase_steps(parsed: dict, with_loop: bool = False):
+    """Yield (phase_name, [step dicts]) for phases given as a map or a list; ``with_loop``: [(step, id of the CIQ
+    record loop it is in, or "")]."""
     phases = parsed.get("phases", [])
     if isinstance(phases, dict):
         items = list(phases.items())
@@ -343,18 +345,20 @@ def _iter_phase_steps(parsed: dict):
         if not isinstance(phase, dict):
             continue
         steps = phase.get("steps", phase.get("commands", []))
-        yield key, list(_leaf_steps(steps))
+        leaves = list(_leaf_steps(steps))
+        yield key, leaves if with_loop else [s for s, _ in leaves]
 
 
-def _leaf_steps(steps):
-    """Steps in order; a container (``type: loop`` over CIQ records) stands for its steps."""
+def _leaf_steps(steps, loop: str = ""):
+    """(step, record loop id) in order; a container (``type: loop`` over CIQ records) stands for its steps."""
     for s in steps or []:
         if not isinstance(s, dict):
             continue
         if isinstance(s.get("steps"), list):
-            yield from _leaf_steps(s["steps"])
+            records = "records" in str(s.get("for_each") or "")
+            yield from _leaf_steps(s["steps"], str(s.get("id") or "records") if records and not loop else loop)
         else:
-            yield s
+            yield s, loop
 
 
 _UNRELATED_COMMAND = "zz_netconfig_unrelated_probe_command --x"
