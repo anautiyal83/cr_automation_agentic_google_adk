@@ -982,3 +982,19 @@ def test_a_condition_on_what_the_destination_holds_before_the_load_is_reported()
     }}
     found = check_checked_before_load(parsed)
     assert len(found) == 1 and "only recorded" in found[0] and "ls -ltrh" in found[0]
+
+
+
+def test_a_grep_filter_check_that_can_never_pass_is_reported():
+    """OB-78 (run c89f1b67): `ls -ltrh <dest>/ | grep "$(basename <file> .tar)" || true` checked with
+    `No such file or directory|^total \d+$` — neither a line naming the file nor the empty output matches."""
+    from skills.network_config_gen.validator import check_grep_filter_checks
+    send = ('ls -ltrh ${rec.data.D}/ | grep "$(basename ${rec.data.F} .tar)" || true')
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"No such file or directory|^total \d+$"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"X5003"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r".*"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"^-r\S+"}}}},
+    ]}}}
+    found = check_grep_filter_checks(parsed)
+    assert len(found) == 1 and "can never pass" in found[0]

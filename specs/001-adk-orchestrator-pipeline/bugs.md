@@ -1652,3 +1652,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: `check_checked_before_load` also rejects a pre-check / backup listing of the destination's contents
   (`ls [-l…] <dest>/`, `find <dest>`) with a success condition; `ls -ld <dest>` (the folder itself) may still be
   required. Flags only MRF workflows among the earlier runs' 20.
+
+### OB-78 — A `grep … || true` check whose regex matches neither a named line nor the empty output (High, Fixed 2026-11-13)
+- Run c89f1b67 after the restart (step 6 by the AI): 3/3 sunny days passed; rollback-only failed at the rollback
+  post-check `ls -ltrh <dest>/ | grep "$(basename <file> .tar)" || true` with `No such file or directory|^total \d+$`.
+  It printed the restored original (`DOC_VERIFICATION_PROMPT_5003.dat`, there before the load — the right state) and
+  would fail on the empty output too (a `^` regex never matches empty output). It could never pass, on a real MRF too.
+- **Fix** (step 6 validator `check_grep_filter_checks`): a success regex over a `| grep <name> || true` filter must
+  accept a line naming the file or the empty output. Flags only this step among the earlier runs' workflows.

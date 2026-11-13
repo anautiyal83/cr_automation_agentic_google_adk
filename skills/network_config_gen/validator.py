@@ -95,6 +95,7 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_listing_counts(parsed))
     errors.extend(check_checked_before_load(parsed))
     errors.extend(check_wildcard_removals(parsed))
+    errors.extend(check_grep_filter_checks(parsed))
     errors.extend(check_restore_sources(parsed))
     errors.extend(check_helper_script_nodes(parsed, list((expected or {}).get("mop_commands") or [])
                                             + [str(c.get("command") or "") for c in command_samples or []
@@ -233,6 +234,50 @@ def _lists_contents(send: str, folder: str) -> bool:
         if arg == folder and not (m.group(1) == "ls" and "d" in m.group(2).replace("-", "")):
             return True
     return False
+
+
+_GREP_FILTER = re.compile(r"\|\s*e?grep\s+((?:-[a-zA-Z]+\s+)*)(\"[^\"]*\"|'[^']*'|\S+)\s*\|\|\s*true\b")
+
+
+def _grep_sample(pattern: str) -> str:
+    """A name the grep pattern finds: quotes off, `$(basename A .ext)` → A's file name without .ext, `${…}` → X."""
+    text = pattern.strip("'\"")
+
+    def basename(m: re.Match) -> str:
+        args = m.group(1).split()
+        name = args[0].rsplit("/", 1)[-1] if args else ""
+        return name[: -len(args[1])] if len(args) > 1 and name.endswith(args[1]) else name
+    text = re.sub(r"\$\(basename\s+([^()]*)\)", basename, text)
+    return re.sub(r"\$\{[^{}]+\}|\$\([^()]*\)", "X5003", text).replace("\\", "")
+
+
+def check_grep_filter_checks(parsed: dict) -> list[str]:
+    """`… | grep <name> || true` prints the lines naming <name>, or nothing: a success regex matching neither can
+    never pass (OB-78, run c89f1b67: the rollback's `ls -ltrh <dest>/ | grep "<file>" || true` wanted
+    `No such file or directory|^total \\d+$` — failed with the restored original listed, and on the empty output too,
+    where a `^` regex never matches)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        greps = [m for m in _GREP_FILTER.finditer(send) if not re.search(r"[vcqlL]", m.group(1))]
+        if not greps:
+            continue
+        criteria = ((step.get("validation") or {}).get("success") or {}).get("criteria") or {}
+        rx = criteria.get("regex")
+        if not isinstance(rx, str) or not rx or criteria.get("expr"):
+            continue
+        try:
+            py = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), re.MULTILINE)
+        except re.error:
+            continue
+        empty_ok = "^" not in rx and py.search("") is not None  # the JAR: a `^` regex never matches empty output
+        lines = [f"-rw-r--r--. 1 user group 69 Nov 13 16:29 {_grep_sample(m.group(2))}" for m in greps]
+        if empty_ok or any(py.search(line) for line in lines):
+            continue
+        errors.append(f"Phase '{phase}': `{send.strip()[:100]}` filters with `grep … || true`, so it prints the lines "
+                      f"naming the file (like `{lines[0]}`) or nothing — its success regex {rx!r} matches neither, the "
+                      "step can never pass. Check for the named line (present) or accept the empty output (absent).")
+    return errors
 
 
 _RM_WIDE = re.compile(r"\brm\s+((?:-\w+\s+)*)([^\s;|&()]+)")
