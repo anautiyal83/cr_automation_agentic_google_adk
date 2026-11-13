@@ -80,6 +80,7 @@ class NetworkSimulatorSetupAgent(BaseAgent):
     async def _run_async_impl(self, ctx):
         from shared.llm import get_llm_fn
         from agents.requirements_agent import requirements_store
+        from tools.input_documents import uploaded_documents
         from skills.network_simulator_setup import (
             NetworkSimulatorSetupSkill, SkillInput,
         )
@@ -125,6 +126,7 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             base_port=int(config.get("simulator_base_port") or 22200),
             ttl_minutes=int(config.get("simulator_ttl_minutes") or 60),
             startup_timeout=int(config.get("simulator_startup_timeout") or 30),
+            sample_inputs=uploaded_documents(state),  # what the activity loads, for the reads after it (OB-59)
         )
         output = await skill.setup(inp)
 

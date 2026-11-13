@@ -580,3 +580,38 @@ phases:
     assert reads and up < min(reads)
     assert sum(1 for s in steps if (s.get("sftp") or {}).get("operation") == "upload"
                and not str(s.get("id", "")).endswith("_retry_copy")) == 1                     # moved, not copied
+
+
+LOCAL_READ = f"""
+nodes:
+  local: {{type: local, plugin: local}}
+phases:
+  activity_configuration:
+    name: Load
+    steps:
+    - node: local
+      send: python3 check_tac.py --delta_file "${{{REC}DELTA_FILE}}" --name "${{{REC}NODE}}"
+      command_description: check the delta
+"""
+
+
+def test_local_step_reads_a_ciq_input_file_from_local_path():
+    """OB-57: a LOCAL step reading a CIQ file column by its bare name takes it from ${LOCAL_PATH} (production's
+    input folder), after a presence check; other CIQ values stay as they are; flatten undoes it."""
+    req = {"doc_extracted": {"ciq_sheets": {"S": {"sample_rows": [
+        {"DELTA_FILE": "SD_TAC_Addition_150926.xlsx", "NODE": "eir01.v2"}]}}}}
+    parsed = parse_yaml(LOCAL_READ)
+    structure.apply(parsed, req)
+    steps = _leaves(parsed, "activity_configuration")
+    run = next(s for s in steps if "check_tac.py" in s.get("send", ""))
+    assert run["send"] == ('python3 check_tac.py --delta_file "${LOCAL_PATH}/${rec.data.DELTA_FILE}" '
+                           '--name "${rec.data.NODE}"')
+    check = next(s for s in steps if str(s.get("id", "")).startswith("nc_in"))
+    assert check["send"] == 'ls -lrt ${LOCAL_PATH} | grep "${rec.data.DELTA_FILE}"'
+    assert parsed["globals"]["vars"]["LOCAL_PATH"]
+    flat = structure.flattened(parsed)
+    sends = [s.get("send") for s in structure._all_steps(flat["phases"]["activity_configuration"]["steps"])]
+    assert sends == [f'python3 check_tac.py --delta_file "${{{REC}DELTA_FILE}}" --name "${{{REC}NODE}}"']
+    again = parse_yaml(dump_yaml(parsed))
+    structure.apply(again, req)
+    assert dump_yaml(again) == dump_yaml(parsed)  # idempotent

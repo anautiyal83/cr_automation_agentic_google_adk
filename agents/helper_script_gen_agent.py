@@ -30,6 +30,7 @@ class HelperScriptGenAgent(BaseAgent):
         from shared.llm import get_llm_fn
         from agents.requirements_agent import requirements_store
         from skills.helper_script_gen import HelperScriptGenSkill, SkillInput
+        from tools.input_documents import uploaded_documents
 
         state = ctx.session.state
         run_id = state.get("run_id", "")
@@ -54,6 +55,7 @@ class HelperScriptGenAgent(BaseAgent):
             workflow_yaml=workflow_yaml,
             requirements=requirements,
             run_dir=run_dir,
+            sample_inputs=uploaded_documents(state),  # the formats of the files the scripts read (OB-58)
         ))
 
         # Write scripts to run directory

@@ -68,6 +68,7 @@ class SkillInput:
     base_port: int = BASE_PORT
     ttl_minutes: int = DEFAULT_TTL_MINUTES
     startup_timeout: int = STARTUP_TIMEOUT
+    sample_inputs: list[str] = field(default_factory=list)  # the run's uploaded documents (OB-59)
 
 
 @dataclass
@@ -217,6 +218,9 @@ class NetworkSimulatorSetupSkill:
             from .vfs_commands import redirect_contents
             merged = {**redirect_contents(node.commands, samples), **merged}
             merged = {**ls_paths_as_given(node.commands, merged), **merged}
+            # a read repeated after the activity shows what the activity changed (OB-59)
+            from . import state_changes
+            merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs)
             # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
             real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
             synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})

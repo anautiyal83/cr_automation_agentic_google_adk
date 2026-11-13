@@ -957,17 +957,55 @@ def _local_path_value() -> str:
     return local_path()
 
 
-def inputs_from_local_path(parsed: dict) -> int:
+# a file name by its extension (not a host name like eir01.example.com or a version like v2.1)
+_FILE_VALUE = re.compile(r"[\w.\-]+\.(?:xlsx|xlsm|xls|csv|tsv|txt|json|xml|ya?ml|tar|t?gz|tgz|bz2|zip|dat|log|cfg|"
+                         r"conf|ini|sql|py|sh|bin|pdf|docx?|properties|lic|pem|crt|key|jar|rpm)", re.I)
+# a CIQ reference as a whole shell word (not part of a path): `--delta_file "${…data.X}"`, `<${…data.X}`
+_LOCAL_READ = re.compile(r"(?<![\w./\-}])(\$\{(?:configSequences\.\d+\.records\.\d+|" + ITEM_VAR
+                         + r")\.data\.([^}]+)\})")
+
+
+def _file_columns(requirements: dict | None) -> set[str] | None:
+    """CIQ columns whose test values are file names (``SD_TAC_Addition_150926.xlsx``); None without CIQ samples."""
+    sheets = ((requirements or {}).get("doc_extracted") or {}).get("ciq_sheets") if isinstance(requirements, dict) \
+        else None
+    if not sheets:
+        return None
+    columns = set()
+    for sheet in sheets.values():
+        for row in (sheet or {}).get("sample_rows") or []:
+            for k, v in (row.items() if isinstance(row, dict) else []):
+                if _FILE_VALUE.fullmatch(str(v or "").strip()):
+                    columns.add(str(k).strip())
+    return columns
+
+
+def _is_file_column(column: str, files: set[str] | None) -> bool:
+    return column.strip() in files if files is not None else bool(re.search(r"file", column, re.I))
+
+
+def inputs_from_local_path(parsed: dict, requirements: dict | None = None) -> int:
     """The activity's input files come from ``${LOCAL_PATH}`` on the automation server, as production writes it
     (``/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}``, spec 013 C4): an upload whose local file is named by a
     CIQ column takes it from there, after a check that it is present (``ls -lrt ${LOCAL_PATH} | grep "<file>"``;
-    missing → the run stops). Files the workflow makes itself (a LOCAL script's output) stay where they are.
-    Checks: ``nc_in<k>_check``."""
+    missing → the run stops). So does a LOCAL step that reads a CIQ file column by its bare name
+    (``python3 check.py --delta_file "${…data.DELTA_TAC_FILE}"``, OB-57). Files the workflow makes itself (a
+    LOCAL script's output) stay where they are. Checks: ``nc_in<k>_check``."""
     value = _local_path_value()
     if not value:
         return 0
     local = _local_node(parsed)
+    files = _file_columns(requirements)
     count = 0
+
+    def check(name: str, when: str, node: str = "") -> dict:
+        return _step(f"{AUTO_ID}in{count}_check", node or local, f"Check the input file {name} is present on the automation "
+                     "server", when, send=f'ls -lrt ${{{LOCAL_PATH_VAR}}} | grep "{name}"', on_failure="stop",
+                     validation={"description": f"{name} is in ${{{LOCAL_PATH_VAR}}}",
+                                 "success": {"criteria": {"regex": r"\S"},
+                                             "message": f"{name} is present on the automation server."},
+                                 "failure": {"message": f"{name} is not in ${{{LOCAL_PATH_VAR}}} on the "
+                                                        "automation server."}})
 
     def walk(steps: list) -> list:
         nonlocal count
@@ -981,35 +1019,45 @@ def inputs_from_local_path(parsed: dict) -> int:
                     and not lpath.startswith(("/", "${" + LOCAL_PATH_VAR)) and _RECORD_REF.search(lpath.replace(
                         "${" + ITEM_VAR + ".data.", "${configSequences.0.records.0.data."))):
                 count += 1
-                name = lpath.rsplit("/", 1)[-1]
-                out.append(_step(f"{AUTO_ID}in{count}_check", local,
-                                 f"Check the input file {name} is present on the automation server",
-                                 str(step.get("when") or ""), send=f'ls -lrt ${{{LOCAL_PATH_VAR}}} | grep "{name}"',
-                                 on_failure="stop",
-                                 validation={"description": f"{name} is in ${{{LOCAL_PATH_VAR}}}",
-                                             "success": {"criteria": {"regex": r"\S"},
-                                                         "message": f"{name} is present on the automation server."},
-                                             "failure": {"message": f"{name} is not in ${{{LOCAL_PATH_VAR}}} on the "
-                                                                    "automation server."}}))
+                out.append(check(lpath.rsplit("/", 1)[-1], str(step.get("when") or "")))
                 sftp["local_path"] = _LOCAL_PREFIX + lpath
+            send = step.get("send") if isinstance(step, dict) else None
+            if (isinstance(send, str) and str(step.get("node")) in (local, "local", "LOCAL") and not _is_auto(step)
+                    and not isinstance(step.get("sftp"), dict)):
+                reads = [m for m in _LOCAL_READ.finditer(send) if _is_file_column(m.group(2), files)]
+                for ref in dict.fromkeys(m.group(1) for m in reads):
+                    count += 1
+                    out.append(check(ref, str(step.get("when") or ""), str(step["node"])))
+                if reads:
+                    step["send"] = _LOCAL_READ.sub(
+                        lambda m: _LOCAL_PREFIX + m.group(1) if _is_file_column(m.group(2), files) else m.group(1),
+                        send)
             out.append(step)
         return out
 
     for _, body in _phase_bodies(parsed):
         body["steps"] = walk(body["steps"])
-    if count:
-        parsed.setdefault("globals", {}).setdefault("vars", {})[LOCAL_PATH_VAR] = value
+    if count:  # first among the globals: the same order on every apply
+        globals_ = parsed.setdefault("globals", {})
+        globals_["vars"] = {LOCAL_PATH_VAR: value, **{k: v for k, v in (globals_.get("vars") or {}).items()
+                                                     if k != LOCAL_PATH_VAR}}
     return count
 
 
 def _local_path_undo(parsed: dict) -> int:
-    """``flatten`` for ``inputs_from_local_path``: the uploads read their files by the LLM's name again."""
+    """``flatten`` for ``inputs_from_local_path``: the uploads and LOCAL reads take their files by the LLM's name
+    again."""
     undone = 0
+    prefixed = re.compile(re.escape(_LOCAL_PREFIX) + r"(?=\$\{(?:configSequences\.\d+\.records\.\d+|"
+                          + ITEM_VAR + r")\.data\.)")
     for _, body in _phase_bodies(parsed):
         for s in _all_steps(body["steps"]):
             sftp = s.get("sftp")
             if isinstance(sftp, dict) and str(sftp.get("local_path") or "").startswith(_LOCAL_PREFIX):
                 sftp["local_path"] = str(sftp["local_path"])[len(_LOCAL_PREFIX):]
+                undone += 1
+            if isinstance(s.get("send"), str) and not _is_auto(s) and prefixed.search(s["send"]):
+                s["send"] = prefixed.sub("", s["send"])
                 undone += 1
     vars_ = (parsed.get("globals") or {}).get("vars")
     if undone and isinstance(vars_, dict):
@@ -1206,7 +1254,7 @@ def apply(parsed: dict, requirements: dict | None = None) -> int:
     changes += loaded_members_only(parsed)
     changes += backups_by_convention(parsed, requirements)
     changes += files_via_repo(parsed, requirements)
-    changes += inputs_from_local_path(parsed)
+    changes += inputs_from_local_path(parsed, requirements)
     changes += loop_record_steps(parsed)
     changes += verify_transfers(parsed)
     changes += rollback_lookups(parsed)

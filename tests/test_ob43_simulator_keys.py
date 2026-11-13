@@ -2,6 +2,8 @@
 lone quotes in the LLM's single-quoted YAML."""
 from __future__ import annotations
 
+import pytest
+
 import yaml
 
 from skills.network_config_gen.autofix import loop_over_lookup
@@ -99,9 +101,11 @@ def test_rollback_downloads_what_its_local_steps_read():
     assert len(parsed["phases"]["activity_configuration"]["steps"]) == 2  # the activity's own download suffices
 
 
-def test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample(tmp_path):
+@pytest.mark.parametrize("arg", ['"${rec.data.DELTA_TAC_FILE}"', '"${LOCAL_PATH}/${rec.data.DELTA_TAC_FILE}"'])
+def test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample(tmp_path, arg):
     """OB-50: `python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}"` — "Delta file not found":
-    step 9 staged only upload sources. The run's uploaded SD_TAC_Addition_230926.xlsx stands for the CIQ's file."""
+    step 9 staged only upload sources. The run's uploaded SD_TAC_Addition_230926.xlsx stands for the CIQ's file.
+    OB-57: step 6 writes it as production does, from ${LOCAL_PATH} (step 9 points that at its folder)."""
     import json as _json
     from skills.network_config_test.jar_executor import stage_upload_inputs
     ciq = tmp_path / "ciq.json"
@@ -112,7 +116,7 @@ def test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample(tmp_pa
     other = tmp_path / "abcd1234_notes.txt"
     other.write_text("x")
     wf = {"phases": {"activity": {"steps": [{"type": "loop", "item_var": "rec", "steps": [
-        {"node": "local", "send": 'python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}" --x y'}]}]}}}
+        {"node": "local", "send": f'python3 check_tac_counts.py --delta_file {arg} --x y'}]}]}}}
     cwd = tmp_path / "scripts"
     cwd.mkdir()
     staged = stage_upload_inputs(wf, str(ciq), "NG1", "CR1", str(cwd), samples=[str(other), str(sample)])

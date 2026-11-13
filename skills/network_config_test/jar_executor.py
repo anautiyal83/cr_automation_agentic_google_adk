@@ -672,20 +672,9 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
 
 
 def _sample_for(path: str, samples: list[str] | None) -> str:
-    """The uploaded document that stands for input file ``path`` in a test: the same extension, the name most
-    alike (``SD_TAC_Addition_230926.xlsx`` for the CIQ's ``SD_TAC_Addition_150926.xlsx``); '' when none."""
-    import difflib
-    want = Path(path)
-    best, score = "", 0.0
-    for s in samples or []:
-        p = Path(s)
-        name = re.sub(r"^[0-9a-f]{8}_", "", p.name)  # uploads are stored as <id>_<name>
-        if p.suffix.lower() != want.suffix.lower() or not p.is_file():
-            continue
-        ratio = difflib.SequenceMatcher(None, name.lower(), want.name.lower()).ratio()
-        if ratio > score:
-            best, score = str(p), ratio
-    return best if score >= 0.6 else ""
+    """The uploaded document that stands for input file ``path`` in a test (``tools.input_documents``)."""
+    from tools.input_documents import sample_for
+    return sample_for(path, samples)
 
 
 def extracted_member_mode(workflow: dict) -> int:

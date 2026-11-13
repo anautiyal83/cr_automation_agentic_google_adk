@@ -1451,3 +1451,45 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   (`flex-shrink: 0`), their labels stay on one line, the padding and icon gap are a little smaller, and a row that
   still does not fit scrolls sideways with a thin scrollbar. Checked in the preview at 1440 px and 1100 px (all
   buttons 26 px tall). Commit de71be2.
+
+### OB-57 — A LOCAL step read a CIQ input file by its bare name, not from ${LOCAL_PATH} (Medium, Fixed 2026-11-13)
+- Follow-up of OB-50. `python3 validate_tac_delta.py --delta_file "${rec.data.DELTA_TAC_FILE}"` read the workbook
+  from the working folder. In production the activity's input files are in `${LOCAL_PATH}`
+  (`/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}`); `structure.inputs_from_local_path` covered upload sources only.
+- **Fix**: a LOCAL step's CIQ reference that is a whole shell word and names a file column (its CIQ sample value
+  has a file extension; without samples, a column named `…FILE…`) becomes `"${LOCAL_PATH}/${rec.data.X}"`, after an
+  `nc_in<k>_check` presence check (`ls -lrt ${LOCAL_PATH} | grep …`, stop when missing). `flatten` undoes it, and
+  `LOCAL_PATH` stays first among the globals (idempotent apply). Step 9 still stages the file (LOCAL_PATH → its
+  folder). Tests `test_local_step_reads_a_ciq_input_file_from_local_path`, staging test parametrized.
+
+### OB-58 — Helper script inverted its step's check and compared whole dump records with TACs (High, Fixed 2026-11-13)
+- Run 6110bc53: `validate_tac_delta.py` failed when the delta TACs WERE in the post dump (the step: "All TAC counts
+  from DELTA_TAC_FILE must be present in the post dump files"), and compared each whole dump line
+  (`1,sb,eir,white,01695000000000,…`) with the TACs, so it could never fail. Step 9 passed it. The generic script
+  prompt got only the first 3000 characters of the workflow: neither the step's check nor the file formats.
+- **Fix** (`skills/helper_script_gen/context.py`):
+  - The prompt says what each step running the script checks (description, success / failure meaning).
+  - For each file it reads: the node command that writes it (`cmd >file`), with that command's recorded output;
+    or, for a CIQ file column, the uploaded document of that kind (sheets, header, rows; `tools/input_documents.py`,
+    shared with step 9's staging).
+  - The smoke run puts those files in its folder, so a script that cannot parse them fails there.
+  - `HelperScriptGen` gets `sample_inputs` (the run's uploaded documents).
+  - Tests `test_helper_script_learns_the_steps_check_and_the_formats_it_reads`,
+    `test_smoke_run_feeds_the_files_the_script_reads`.
+- Step 6 is cached: re-run step 6 with "Clear cache" ticked to regenerate the script.
+
+### OB-59 — Simulated post-activity dump equalled the pre dump (High, Fixed 2026-11-13)
+- Run 6110bc53: `org -c eirWhiteRng >…/predump_white_….txt` (backup) and the same command into `postdump_white_…`
+  (after `dscli update file …`) had one answer, so the post dump never held the loaded TACs.
+- **Fix** (`skills/network_simulator_setup/state_changes.py`):
+  - Step 8 finds the reads a node repeats around activity commands (rollback phases left out). Their setters are
+    the commands that run only between the two reads, with a key no other command uses.
+  - One LLM call per node says how each read changes: `unchanged`, or a line template over the rows of an input
+    document (`add_rows` sheet + `where`), or a few literal lines, plus the command that applies the change.
+  - The rows are expanded in code: the delta's 531 TACs never pass through the LLM.
+  - The read's key answers by `whenState` once the setter's `setState` ran. MockWire runs a redirect's command
+    through the same matcher, so the dump file gets it. Step 9 restarts MockWire per test case.
+  - Step 8 gets `sample_inputs`.
+  - Tests `test_read_after_the_activity_shows_what_it_loaded` (+2).
+- Known limit: a rollback command sharing the setter's key also marks the change (a rollback-only run would see
+  the loaded state).

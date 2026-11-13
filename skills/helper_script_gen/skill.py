@@ -117,6 +117,7 @@ def _test_values(requirements: dict) -> dict[str, str]:
                 for k, v in row.items():
                     if str(v or "").strip():
                         values.setdefault(f"configSequences.0.records.0.data.{k}", str(v))
+                        values.setdefault(f"rec.data.{k}", str(v))  # inside a record loop (spec 013)
     return values
 
 
@@ -141,15 +142,17 @@ _RESPONSE_ARG = re.compile(r"response|\.res\b", re.IGNORECASE)
 
 
 def smoke_run(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
-              timeout: int = 20, response_sample: str = "", output_regexes: list[str] | None = None
-              ) -> list[str]:
+              timeout: int = 20, response_sample: str = "", output_regexes: list[str] | None = None,
+              inputs: dict[str, bytes] | None = None) -> list[str]:
     """Run the script as the workflow does (placeholders → test values) in a temp folder.
 
     A traceback from a programming error is a problem (S9-06: NameError in create_xml.py);
     failures for missing inputs are not — except a response file the workflow passes the
     script: it gets the UC's sample response, and then the script must succeed and print what
     the step's regexes read (``output_regexes``). parse_response.py looked for a namespaced
-    ``spml:response`` the sample does not have and failed on every node (G-11).
+    ``spml:response`` the sample does not have and failed on every node (G-11). ``inputs`` (name as the
+    workflow writes it -> content): the files the script reads, in their real format (OB-58) - a crash
+    parsing them is a problem.
     """
     import subprocess
     import sys
@@ -168,6 +171,13 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 continue
             argv[0] = sys.executable
             argv[1] = str(Path(tmp, Path(argv[1]).name))
+            staged = {_WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), k): v
+                      for k, v in (inputs or {}).items()}
+            for i in range(2, len(argv)):
+                name = argv[i].replace("\\", "/").rsplit("/", 1)[-1]
+                if name in staged and argv[i - 1].startswith("-"):
+                    Path(tmp, name).write_bytes(staged[name])
+                    argv[i] = str(Path(tmp, name))
             fed = ""
             if response_sample:
                 for flag, value in zip(argv[2:], argv[3:]):
@@ -303,6 +313,7 @@ class SkillInput:
     workflow_yaml: str = ""
     requirements: dict = field(default_factory=dict)
     run_dir: str = ""
+    sample_inputs: list[str] = field(default_factory=list)  # the run's uploaded documents (OB-58)
 
 
 @dataclass
@@ -353,6 +364,15 @@ class HelperScriptGenSkill:
 
         output_regexes = self._script_output_regexes(inp.workflow_yaml)
         test_values = _test_values(inp.requirements)
+        from io import StringIO
+        from ruamel.yaml import YAML
+        from tools.command_samples import with_library
+        from .context import script_context, smoke_inputs
+        try:
+            workflow = YAML(typ="safe").load(StringIO(inp.workflow_yaml)) or {}
+        except Exception:
+            workflow = {}
+        samples = with_library(list(doc.get("command_samples") or []))
         for script_name, cmd_lines in needed.items():
             flags = contract_flags(cmd_lines)
             regexes = output_regexes.get(script_name, [])
@@ -362,6 +382,9 @@ class HelperScriptGenSkill:
             if regexes:
                 contract += prompts.OUTPUT_CONTRACT_SECTION.format(
                     regexes="\n".join(f"  /{r}/" for r in regexes))
+            # the step's check and the real format of what the script reads (OB-58)
+            contract = script_context(workflow, script_name, inp.requirements, inp.sample_inputs, samples) + contract
+            inputs = smoke_inputs(workflow, script_name, inp.requirements, inp.sample_inputs, samples)
             try:
                 code, problems = "", []
                 for attempt in range(1, CONTRACT_ATTEMPTS + 1):
@@ -377,7 +400,7 @@ class HelperScriptGenSkill:
                     problems = (check_script_contract(code, flags) or check_output_contract(code, regexes)
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",
-                                             output_regexes=regexes))
+                                             output_regexes=regexes, inputs=inputs))
                     if not problems:
                         break
                     logger.warning("%s attempt %d/%d violates the CLI contract: %s",
@@ -440,7 +463,7 @@ class HelperScriptGenSkill:
                 script_name=script_name,
                 cmd_line=cmd_line,
                 ciq_summary=ciq_summary,
-                workflow_context=workflow_yaml[:3000],
+                workflow_context=workflow_yaml[:1500],
             )
 
         raw = await self._llm_fn(system, user + extra)

@@ -284,6 +284,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
   `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
+- Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers
+  the changed output after the change command (`setState`/`whenState`); the LLM gives a line template over the
+  uploaded input document's rows, expanded in code. Helper scripts get their step's check + the formats they read (OB-58)
 - Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
 - Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): requirements document, validation rules,
   JSON output, execution YAML, MOP, QA-Validation, QA-Execution, execution summary + success/failure reports
