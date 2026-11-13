@@ -1645,3 +1645,10 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Status: MRF step 6 is AI-written on every regeneration (no proven baseline yet) and each draft differed; the last
   one was refused by step 6 (it kept `rm -rf <dest>/*` through three correction rounds). Open question for the user:
   should the pre-check require every existing announcement in the folder to be 777 (`BADPERM_COUNT == 0`)?
+
+### OB-77 — A pre-check conditioned on what the destination folder already holds (High, Fixed 2026-11-13)
+- Run c89f1b67, draft 5: `ls -ltrh <dest>/` in the pre-check required `BADPERM_COUNT == 0` over the existing
+  announcements. User decision: before the activity the folder's contents are only recorded.
+- **Fix**: `check_checked_before_load` also rejects a pre-check / backup listing of the destination's contents
+  (`ls [-l…] <dest>/`, `find <dest>`) with a success condition; `ls -ld <dest>` (the folder itself) may still be
+  required. Flags only MRF workflows among the earlier runs' 20.

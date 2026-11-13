@@ -963,3 +963,22 @@ def test_a_restore_of_an_archive_no_step_writes_is_reported():
     found = check_restore_sources(bad)
     assert len(found) == 1 and "/tmp/*/*/announcement_backup_*.tar.gz" in found[0]
     assert check_restore_sources(good) == []
+
+
+
+def test_a_condition_on_what_the_destination_holds_before_the_load_is_reported():
+    """User (2026-11-13): before the load the destination's contents are only recorded — the MRF pre-check
+    `ls -ltrh <dest>/` requiring `BADPERM_COUNT == 0` over the existing announcements blocked the load. The folder
+    itself (`ls -ld`) may be required; a listing without a condition is fine."""
+    from skills.network_config_gen.validator import check_checked_before_load
+    dest = "${rec.data.MRF_DESTINATION_PATH}"
+    cond = {"success": {"criteria": {"expr": "BADPERM_COUNT == 0"}}}
+    parsed = {"phases": {
+        "preNodeHealthCheck": {"steps": [
+            {"node": "M", "send": f"ls -ltrh {dest}/", "validation": cond},
+            {"node": "M", "send": f"ls -ld {dest}", "validation": {"success": {"criteria": {"regex": "^d"}}}},
+            {"node": "M", "send": f"ls -ltrh {dest}/ || true", "validation": {"success": {"message": "recorded"}}}]},
+        "activity_configuration": {"steps": [{"node": "M", "send": f"tar -xzvf /tmp/${{rec.data.F}} -C {dest}/"}]},
+    }}
+    found = check_checked_before_load(parsed)
+    assert len(found) == 1 and "only recorded" in found[0] and "ls -ltrh" in found[0]

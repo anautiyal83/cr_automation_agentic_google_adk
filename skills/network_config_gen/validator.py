@@ -204,17 +204,35 @@ def check_checked_before_load(parsed: dict) -> list[str]:
             continue
         for _, step in _iter_steps({key: body}):
             send = str(step.get("send") or "")
-            dest = next((d for d, names in loads if d in send and any(n in send for n in names)), "")
-            if not dest:
+            loaded = next((d for d, names in loads if d in send and any(n in send for n in names)), "")
+            listed = next((d for d, _ in loads if _lists_contents(send, d)), "")
+            if not (loaded or listed):
                 continue
             criteria = ((step.get("validation") or {}).get("success") or {}).get("criteria") or {}
             if not criteria.get("expr") and str(criteria.get("regex") or ".*") in (".*", ""):
                 continue  # records what is there, requires nothing
-            errors.append(f"Phase '{key}': `{send.strip()[:100]}` requires the file the activity loads into {dest} "
-                          "before the activity runs — nothing is loaded yet, so it fails and the backup and the load "
-                          "never run. Before the activity, list what is there without requiring it (no success "
-                          "condition on the loaded files); check them after the load.")
+            if loaded:
+                errors.append(f"Phase '{key}': `{send.strip()[:100]}` requires the file the activity loads into "
+                              f"{loaded} before the activity runs — nothing is loaded yet, so it fails and the backup "
+                              "and the load never run. Before the activity, list what is there without requiring it "
+                              "(no success condition on the loaded files); check them after the load.")
+            else:
+                # user, 2026-11-13: what the folder holds before the load is recorded, never a condition (MRF:
+                # `BADPERM_COUNT == 0` over the existing announcements blocked the load)
+                errors.append(f"Phase '{key}': `{send.strip()[:100]}` puts a condition on what {listed} holds before "
+                              "the activity — the files already there are not the activity's: before the load, the "
+                              "folder's contents are only recorded (no success condition, no PRECHECK_FAILED). Check "
+                              "the loaded files after the load.")
     return errors
+
+
+def _lists_contents(send: str, folder: str) -> bool:
+    """`ls [-l…] <folder>[/]` (not `ls -d`, the folder itself) or `find <folder>` — the files in the folder."""
+    for m in re.finditer(r"\b(ls|find)\s+((?:-\S+\s+)*)(\S+)", send):
+        arg = m.group(3).strip("'\"").rstrip("/")
+        if arg == folder and not (m.group(1) == "ls" and "d" in m.group(2).replace("-", "")):
+            return True
+    return False
 
 
 _RM_WIDE = re.compile(r"\brm\s+((?:-\w+\s+)*)([^\s;|&()]+)")
