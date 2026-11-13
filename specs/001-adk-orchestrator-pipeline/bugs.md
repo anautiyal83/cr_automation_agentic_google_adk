@@ -1683,3 +1683,37 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   (`guide.simulator_sections`: servers, start, how they work together, the workflow per server, try it, run it).
 - Found while checking it: `scripts/` also held dumps a step 9 run left there and a helper of an earlier step 6 the
   workflow no longer calls — the export now takes only the helpers the workflow calls and the inputs the CIQ names.
+
+### OB-81 — The helper-script output check saw `{output_file}` as `x` (High, Fixed 2026-11-13)
+- Run 61561981 (PGW_RDS_1058): `print(f"XML modification file generated successfully: {output_file}")` with
+  `--output_file '${ORDER_NO}.xml'` prints `….xml`, but the static check replaced every f-string field by `x` and
+  rejected `/.*\.xml/` — the AI rewrote a correct script three times; step 6 failed.
+- **Fix** (`helper_script_gen.skill.check_output_contract`): f-string fields are also tried with each value the
+  workflow passes the script (`arg_values`, placeholders → `X1`).
+
+### OB-82 — parse_response.py kept looking up `spml:response` (Medium, Fixed 2026-11-13)
+- Same run: told the sample's tags, the AI still searched `spml:response` / `{urn:…}response` for an unqualified
+  `<response>` (its comments argued it must be namespaced), three rounds.
+- **Fix**: the rejection runs the script's own namespaced lookups on the sample and gives the counts
+  (`root.findall('spml:response')` finds 0, `root.findall('response')` finds 1) — fixed on the next round on a copy.
+
+### OB-83 — MockWire had no `sleep` (Medium, Fixed 2026-11-13)
+- Same run: `echo Waiting 300 s; sleep 300; echo WAIT_DONE` → `sleep: command not found` (step 9 blamed step 8).
+- **Fix**: MockWire dbad6f8 — `sleep` builtin returns at once (exit 1 on a bad duration); step 8 already treated it as
+  a builtin.
+
+### OB-84 — A read on one node did not show a change applied through another node (High, Fixed 2026-11-13)
+- Same run on a copy: RDS reads the subscriber profile, the order is uploaded to PGW, RDS reads again — the post read
+  repeated the pre read (`Mandatory Cap: expected 10, post 1`), the comparison report failed. OB-59 only linked a
+  change command and its reads on the same node.
+- **Fix** (`state_changes`): commands keep their workflow position; a read repeated around other nodes' activity
+  (no change command on its own node) answers "before" for its reads before that activity and "after" from then on
+  (a chain of MockWire `setState` on its own answers); the LLM answer format gains `replace` (changed attribute
+  lines). Unit-tested; not yet run end to end (the copy run was interrupted).
+
+### OB-85 — Step 6 stayed failed after its helper scripts passed (High, Fixed 2026-11-13)
+- Same run: a re-run of step 6 re-runs only the agent that failed (helper_script_gen); it passed at 18:30, but the
+  `step_6_error.json` its previous attempt wrote stayed, and the milestone read step 6 as failed. Each failed attempt
+  also appended its message to the earlier ones.
+- **Fix** (`helper_script_gen_agent`): a passing attempt removes the helper part of `step_6_error.json` (the file
+  when nothing else failed, and step 6 is passed again); a failing attempt replaces the earlier helper message.

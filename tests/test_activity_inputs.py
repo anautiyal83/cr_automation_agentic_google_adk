@@ -231,3 +231,36 @@ def test_a_pod_exec_working_on_files_is_answered_by_its_script():
     out = split_redirect_sequences([{"cmd": dump.replace("org -c eirWhiteRng", "dsClassInfo | grep -i rng") + " || true"}])
     assert [o["cmd"] for o in out] == ["source /opt/sdf/.bash_profile",
                                        "dsClassInfo | grep -i rng > /opt/sdf/processing/predump_white_${DATE}.txt"]
+
+
+
+def test_a_read_changes_after_the_activity_on_another_node():
+    """OB-84 (run 61561981): RDS reads the subscriber profile, the order XML is uploaded to PGW, RDS reads it again —
+    no command on RDS changes it, so the post read repeated the pre read and the comparison report failed
+    (`Mandatory Cap: expected 10, post 1`). The read itself switches to the changed profile after its pre reads."""
+    from types import SimpleNamespace
+    read = 'ldapsearch -x -b "imsi=${rec.data.Test IMSI}" objectclass=*'
+    rds = SimpleNamespace(name="RDS", vfs_commands=set(), commands=[
+        {"cmd": read, "phase": "activity_configuration", "order": 3},
+        {"cmd": read, "phase": "activity_configuration", "order": 4},
+        {"cmd": read, "phase": "activity_configuration", "order": 12}])
+    pgw = [{"cmd": "", "phase": "activity_configuration", "order": 8, "transfer": True, "node": "PGW",
+            "description": "Upload the order XML"},
+           {"cmd": "ls -l /srv/outbox/X.xml.res", "phase": "activity_configuration", "order": 9, "node": "PGW"}]
+    entries = {read: {"lines": ["uid: 1", "scscfMandCap: 1", "pdnType: IPv6"]}}
+    prompts = []
+
+    async def llm(system, user):
+        prompts.append(user)
+        return ("'1':\n  changed_by: []\n  replace:\n  - {match: '^scscfMandCap:', with: 'scscfMandCap: 10'}\n"
+                "  - {match: '^pdnType:', with: 'pdnType: IPv4'}\n")
+    out = asyncio.run(state_changes.apply(llm, "UC", rds, entries, {}, [], others=pgw))
+    assert "between the two reads the activity runs on OTHER nodes" in prompts[0] and "PGW: Upload the order XML" in prompts[0]
+    chain = out[read]["responses"]
+    state = chain[0]["whenState"]
+    assert list(state.values()) == ["2"]  # read twice before the upload
+    assert chain[0]["lines"] == ["uid: 1", "scscfMandCap: 10", "pdnType: IPv4"]
+    assert chain[1]["setState"] == {list(state)[0]: "2"} and chain[-1]["setState"] == {list(state)[0]: "1"}
+    assert chain[-1]["lines"] == entries[read]["lines"]
+    # nothing on another node between the reads: no change
+    assert asyncio.run(state_changes.apply(llm, "UC", rds, entries, {}, [], others=[])) == entries

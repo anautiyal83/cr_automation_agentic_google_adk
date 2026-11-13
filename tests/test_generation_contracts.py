@@ -561,3 +561,47 @@ def test_output_contract_reads_f_string_fields_as_any_text():
                                         "TAC counts validated successfully for grey"]) == []
     assert check_output_contract(code, ["All TACs loaded"])
     assert check_output_contract('print(f"{x}")\n', ["All TACs loaded fine"])  # no fixed text: matches nothing
+
+
+
+def test_an_fstring_printing_an_argument_meets_a_regex_on_its_value():
+    """OB-81 (run 61561981): `print(f"XML modification file generated successfully: {output_file}")` with
+    `--output_file '${ORDER_NO}.xml'` prints `….xml` — the check (fields as `x`) rejected it three times."""
+    from skills.helper_script_gen.skill import arg_values, check_output_contract
+    code = 'print(f"XML modification file generated successfully: {output_file}")\n'
+    cmd = ["python create_xml.py --imsi '${resolvedImsi}' --apn '${rec.data.APN}' --output_file '${ORDER_NO}.xml'"]
+    assert arg_values(cmd) == ["X1", "X1.xml"]
+    assert check_output_contract(code, [r".*\.xml", r"(?<xmlFileName>.*\.xml)"]) != []
+    assert check_output_contract(code, [r".*\.xml", r"(?<xmlFileName>.*\.xml)"], arg_values(cmd)) == []
+    assert check_output_contract('print(f"done: {n}")\n', [r".*\.xml"], arg_values(cmd)) == []  # a field can hold it
+    assert check_output_contract('print("done")\n', [r".*\.xml"], arg_values(cmd)) != []
+
+
+
+def test_the_scripts_namespaced_lookups_are_run_on_the_sample():
+    """OB-82 (run 61561981): `findall('spml:response', ns)` / `'{urn:…}response'` find nothing in a response whose
+    `<response>` is unqualified; the rejection says so with counts from the sample."""
+    from skills.helper_script_gen.skill import _lookup_evidence
+    sample = ('<?xml version="1.0"?><spml:batchResponse result="success" xmlns:spml="urn:siemens:names:prov:gw:SPML:2:0">'
+              '<version>v10</version><response result="success"/></spml:batchResponse>')
+    code = ("responses = root.findall('spml:response', ns)\n"
+            "if not responses:\n    responses = root.findall('{urn:siemens:names:prov:gw:SPML:2:0}response')\n"
+            "v = root.find('version')\n")
+    hint = _lookup_evidence(code, sample)
+    assert "`root.findall('spml:response')` finds 0 elements in the sample, `root.findall('response')` finds 1" in hint
+    assert "'{urn:siemens:names:prov:gw:SPML:2:0}response'" in hint and "version" not in hint
+    assert _lookup_evidence("x = root.findall('response')\n", sample) == ""
+
+
+def test_a_passing_script_attempt_drops_the_earlier_attempts_failure(tmp_path):
+    """OB-85 (run 61561981): a re-run of the helper scripts alone passed, but step_6_error.json of the attempt before
+    kept step 6 failed; failed attempts piled their messages up. The workflow generator's failure stays."""
+    import json
+    from agents.helper_script_gen_agent import _without_helper_errors
+    f = tmp_path / "step_6_error.json"
+    f.write_text(json.dumps({"error": "Helper scripts: a; Helper scripts: b", "helper_script_errors": "b",
+                             "failed_agents": ["helper_script_gen", "helper_script_gen"]}), encoding="utf-8")
+    assert _without_helper_errors(f) == {"error": "", "failed_agents": []}
+    f.write_text(json.dumps({"error": "bad workflow; Helper scripts: a",
+                             "failed_agents": ["network_config_gen", "helper_script_gen"]}), encoding="utf-8")
+    assert _without_helper_errors(f) == {"error": "bad workflow", "failed_agents": ["network_config_gen"]}

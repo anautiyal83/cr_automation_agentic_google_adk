@@ -350,7 +350,8 @@ class NetworkSimulatorSetupSkill:
             merged = {**ls_paths_as_given(node.commands, merged), **merged}
             # a read repeated after the activity shows what the activity changed (OB-59)
             from . import state_changes
-            merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs)
+            merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs,
+                                               others=[c for o in nodes if o is not node for c in o.commands])
             # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
             real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
             synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})

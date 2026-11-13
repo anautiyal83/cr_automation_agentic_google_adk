@@ -293,6 +293,8 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
                 "register": step.get("register") or [],
                 "prompt_regex": step.get("prompt_regex", ""),
                 "expect_reply": step.get("expect_reply") or [],  # the password question it waits for
+                "order": len(commands),  # position in the workflow: a change on another node between two reads (OB-84)
+                "transfer": isinstance(step.get("sftp"), dict),
             })
     return commands
 

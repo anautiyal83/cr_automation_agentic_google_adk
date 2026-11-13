@@ -62,10 +62,26 @@ def check_script_contract(code: str, flags: list[str]) -> list[str]:
     return []
 
 
-def check_output_contract(code: str, regexes: list[str]) -> list[str]:
+def arg_values(cmd_lines: list[str]) -> list[str]:
+    """The values the workflow passes the script (``--output_file '${ORDER_NO}.xml'`` → ``X1.xml``): what an
+    f-string field printing an argument holds at run time."""
+    import shlex
+    out: list[str] = []
+    for line in cmd_lines:
+        try:
+            argv = shlex.split(line, posix=True)
+        except ValueError:
+            argv = line.split()
+        out += [re.sub(r"\$\{[^{}]+\}", "X1", v) for f, v in zip(argv, argv[1:])
+                if f.startswith("--") and not v.startswith("--")]
+    return list(dict.fromkeys(v for v in out if v))
+
+
+def check_output_contract(code: str, regexes: list[str], values: list[str] | None = None) -> list[str]:
     """Problems if no message the script can print matches the workflow's success regex.
 
-    Checked statically against the script's string literals (f-string fields → ``x``);
+    Checked statically against the script's string literals (f-string fields → ``x``, and → each value the
+    workflow passes the script: `generated successfully: {output_file}` prints `….xml`, OB-81);
     Java named groups are converted for Python. Unparseable regexes are skipped.
     """
     import ast
@@ -80,6 +96,8 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
             texts.append(node.value)
         elif isinstance(node, ast.JoinedStr):
             texts.append("".join(v.value if isinstance(v, ast.Constant) else "x" for v in node.values))
+            texts += ["".join(v.value if isinstance(v, ast.Constant) else value for v in node.values)
+                      for value in values or []]
             fixed_text = "".join(v.value for v in node.values if isinstance(v, ast.Constant))
             if len(fixed_text.strip()) >= 8:  # `f"{x}"` would match anything
                 shapes.append(re.compile("".join(re.escape(v.value) if isinstance(v, ast.Constant) else ".+"
@@ -135,6 +153,34 @@ def _xml_tags_hint(document: str) -> str:
     return (f". ElementTree sees the sample as: root tag {root.tag!r} with attributes "
             f"{sorted(root.attrib)[:6]}; child tags {children}; grandchild tags {grand} — use exactly "
             "these tags (an unqualified tag has no namespace: root.findall('response'), not 'spml:response')")
+
+
+_LOOKUP = re.compile(r"\.(?:findall|find|iterfind|findtext)\(\s*['\"]([^'\"]+)['\"]")
+
+
+def _lookup_evidence(code: str, document: str) -> str:
+    """What the script's own namespaced lookups find in the sample, and what the plain tag finds (OB-82, run
+    61561981: told the tags, the LLM still wrote `root.findall('spml:response', ns)` and then
+    `'{urn:…SPML:2:0}response'` for an unqualified `<response>`, three rounds — its comments said it must be
+    namespaced). Counts run on the sample are evidence it cannot argue with."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(document.strip().encode("utf-8"))
+    except ET.ParseError:
+        return ""
+    ns = dict(re.findall(r'xmlns:(\w+)="([^"]+)"', document))
+    lines = []
+    for path in dict.fromkeys(_LOOKUP.findall(code)):
+        if ":" not in path and "{" not in path:
+            continue
+        plain = re.sub(r"\{[^}]*\}|\b\w+:(?=\w)", "", path)
+        try:
+            found, alt = len(root.findall(path, ns)), len(root.findall(plain))
+        except (SyntaxError, KeyError, ValueError):
+            continue
+        if found == 0 and alt > 0:
+            lines.append(f"`root.findall({path!r})` finds 0 elements in the sample, `root.findall({plain!r})` finds {alt}")
+    return (" — run on the sample: " + "; ".join(lines) + ". Use the plain form.") if lines else ""
 
 
 # A script argument that names a response file the node produced (--response_file X.xml.res)
@@ -195,7 +241,7 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                     problems.append(f"`{resolved}` with the UC's sample response as {fed} (a successful "
                                     f"response) exited {proc.returncode}: {out.strip()[-300:]} — parse that "
                                     "document as it is (element names and namespaces exactly as in the sample)"
-                                    + _xml_tags_hint(response_sample))
+                                    + _xml_tags_hint(response_sample) + _lookup_evidence(code, response_sample))
                 for rx in output_regexes or []:
                     try:
                         if not re.search(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), out, re.M):
@@ -397,7 +443,8 @@ class HelperScriptGenSkill:
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
-                    problems = (check_script_contract(code, flags) or check_output_contract(code, regexes)
+                    problems = (check_script_contract(code, flags)
+                                or check_output_contract(code, regexes, arg_values(cmd_lines))
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",
                                              output_regexes=regexes, inputs=inputs))

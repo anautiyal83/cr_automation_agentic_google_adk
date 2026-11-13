@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+def _without_helper_errors(err_file: Path) -> dict:
+    """``step_6_error.json`` without what helper_script_gen wrote (network_config_gen's failure stays): each attempt
+    replaces the last one's message instead of piling them up."""
+    import json
+    try:
+        previous = json.loads(err_file.read_text(encoding="utf-8")) if err_file.exists() else {}
+    except ValueError:
+        previous = {}
+    previous.pop("helper_script_errors", None)
+    previous["failed_agents"] = [a for a in previous.get("failed_agents") or [] if a != "helper_script_gen"]
+    previous["error"] = "; ".join(part for part in str(previous.get("error") or "").split("; Helper scripts: ")[0:1]
+                                  if part and not part.startswith("Helper scripts: "))
+    return previous
+
+
 class HelperScriptGenAgent(BaseAgent):
     """Generates Python helper scripts for LOCAL workflow steps."""
     name: str = "helper_script_gen"
@@ -92,18 +107,25 @@ class HelperScriptGenAgent(BaseAgent):
             if run_dir:
                 import json
                 err_file = Path(run_dir) / "step_6_error.json"
-                previous = {}
-                if err_file.exists():
-                    try:
-                        previous = json.loads(err_file.read_text(encoding="utf-8"))
-                    except ValueError:
-                        previous = {}
+                previous = _without_helper_errors(err_file)
                 message = f"Helper scripts: {output.error}"
                 combined = "; ".join(e for e in (previous.get("error", ""), message) if e)
                 failed = list(previous.get("failed_agents") or []) + ["helper_script_gen"]
                 err_file.write_text(json.dumps({**previous, "error": combined, "failed_agents": failed,
                                                 "helper_script_errors": output.error}, indent=2),
                                     encoding="utf-8")
+        elif run_dir:
+            # the scripts pass now: an earlier attempt's failure no longer holds step 6 (OB-85, run 61561981 — a
+            # re-run of the scripts alone passed, the file of the attempt before kept step 6 failed)
+            import json
+            err_file = Path(run_dir) / "step_6_error.json"
+            if err_file.exists():
+                rest = _without_helper_errors(err_file)
+                if rest.get("failed_agents"):
+                    err_file.write_text(json.dumps(rest, indent=2), encoding="utf-8")
+                else:
+                    err_file.unlink()
+                    state["step_6_status"] = "passed"
 
         if output.error:
             flow.flow("HELPER_SCRIPT_GEN DONE — status=%s, error=%s", output.status, output.error[:200])

@@ -46,6 +46,11 @@ or, when no input document lists what changes:
 '<n>':
   changed_by: ['<command>']
   add_lines: ['<output line>', ...]       # at most 10
+or, when the activity modifies values the read prints (a profile / attributes, values from the CIQ):
+'<n>':
+  changed_by: ['<command>']               # [] when the change is applied on another node
+  replace:
+  - {{match: '<python regex of the line before>', with: '<the line after the activity>'}}   # one per changed line
 
 {reads}
 
@@ -76,10 +81,14 @@ def _bare(cmd: str) -> str:
     return cmd
 
 
-def repeated_reads(node, entries: dict, row: dict) -> list[dict]:
+def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = None) -> list[dict]:
     """Reads sent again after activity commands on ``node`` (rollback phases left out: neither run in a sunny
     day): {bare, key, lines, setters: [{cmd, key, description}]}. A setter runs only between the two reads and
-    has a key of its own (no command outside that span answers by it), so the state cannot change early."""
+    has a key of its own (no command outside that span answers by it), so the state cannot change early.
+
+    With no setter on ``node``, a read repeated around another node's activity (``others``, by workflow
+    position: RDS read → order uploaded to PGW → RDS read again, OB-84) gets ``cross`` (those commands) and
+    ``n_pre`` (how often it is read before them)."""
     from .skill import _SIM_BUILTINS, _find_entry, resolve_command
     from .topology import _enters_session
     seq = [c for c in node.commands if _kind(c.get("phase", "")) != "rollback" and str(c.get("cmd") or "").strip()]
@@ -119,6 +128,16 @@ def repeated_reads(node, entries: dict, row: dict) -> list[dict]:
             if setters:
                 out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": setters,
                             "dump": bare != str(c["cmd"]).strip()})
+                break
+            lo, hi = seq[a].get("order"), seq[b].get("order")
+            cross = [o for o in others or [] if lo is not None and hi is not None
+                     and _kind(o.get("phase", "")) == "activity" and lo < (o.get("order") or -1) < hi
+                     and (o.get("transfer") or str(o.get("cmd") or "").strip())]
+            if cross:
+                first = min(o["order"] for o in cross)
+                out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": [],
+                            "dump": bare != str(c["cmd"]).strip(), "cross": cross[:8],
+                            "n_pre": sum(1 for k in occ if (seq[k].get("order") or 0) < first)})
                 break
     out.sort(key=lambda r: not r["dump"])  # reads saved to a file (pre / post dumps) first
     return out[:MAX_READS]
@@ -172,16 +191,30 @@ def expand(answer: dict, pre: list[str], docs: dict[str, str]) -> list[str] | No
     literal = answer.get("add_lines")
     if isinstance(literal, list):
         added += [str(l) for l in literal[:10]]
+    for item in answer.get("replace") or [] if isinstance(answer.get("replace"), list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("with"), str):
+            continue
+        try:
+            rx = re.compile(str(item.get("match") or "^$(?!)"))
+        except re.error:
+            continue
+        hit = [i for i, l in enumerate(lines) if rx.search(l)]
+        for i in hit:
+            lines[i] = item["with"]
+        if not hit:  # an attribute the activity adds
+            added.append(item["with"])
     if not added and lines == pre:
         return None
     return lines + [l for l in added if l not in lines]
 
 
-async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents: list[str] | None) -> dict:
-    """``entries`` with each repeated read answering its changed output once the activity has run."""
+async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents: list[str] | None,
+                others: list[dict] | None = None) -> dict:
+    """``entries`` with each repeated read answering its changed output once the activity has run (``others``:
+    the other nodes' commands, for a change applied there)."""
     import yaml
     from .autofix import parse_llm_yaml
-    reads = repeated_reads(node, entries, row)
+    reads = repeated_reads(node, entries, row, others)
     if not reads:
         return entries
     docs = _documents(row, documents)
@@ -192,9 +225,12 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
     for n, r in enumerate(reads, 1):
         listing.append(f"READ {n}: {r['bare']}\n  before the activity it prints ({len(r['lines'])} lines; first 8):\n"
                        + "\n".join(f"    {l}" for l in r["lines"][:8])
-                       + "\n  activity commands on this node between the two reads (changed_by is one of these):\n"
-                       + "\n".join(f"    - {s['cmd']}" + (f"   ({s['description']})" if s["description"] else "")
-                                   for s in r["setters"]))
+                       + ("\n  activity commands on this node between the two reads (changed_by is one of these):\n"
+                          + "\n".join(f"    - {s['cmd']}" + (f"   ({s['description']})" if s["description"] else "")
+                                      for s in r["setters"]) if r["setters"] else
+                          "\n  between the two reads the activity runs on OTHER nodes (changed_by: []):\n"
+                          + "\n".join(f"    - {o.get('node')}: {o.get('description') or o.get('cmd') or 'file transfer'}"
+                                      for o in r.get("cross") or [])))
     user = USER.format(uc_name=uc_name, node=node.name, reads="\n\n".join(listing),
                        documents="\n".join(f"{col} = {Path(d).name}:\n{preview(d)}" for col, d in docs.items())
                        or "(none uploaded)",
@@ -216,6 +252,19 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
             logger.info("Phase 2: %s — %r is unchanged by the activity (%s)", node.name, r["bare"][:60],
                         "as answered" if isinstance(answer, dict) and answer.get("unchanged") is True
                         else f"unusable answer {str(answer)[:200]!r}")
+            continue
+        if r.get("cross"):
+            # no command here marks the change: the read itself counts — before for its n_pre reads before the other
+            # nodes' activity, after from then on (MockWire applies setState of the answer it picks)
+            state, n_pre = f"{STATE_PREFIX}read{n}", max(1, int(r.get("n_pre") or 1))
+            rest = {k: v for k, v in entries[r["key"]].items() if k != "lines"}
+            chain = [{"whenState": {state: str(n_pre)}, "lines": after}]
+            chain += [{"whenState": {state: str(k)}, "lines": r["lines"], "setState": {state: str(k + 1)}}
+                      for k in range(1, n_pre)]
+            chain.append({"lines": r["lines"], "setState": {state: "1"}})
+            entries[r["key"]] = {**rest, "responses": chain}
+            logger.info("Phase 2: %s — %r changes after the activity on %s (read %d time(s) before)", node.name,
+                        r["bare"][:60], ", ".join(sorted({str(o.get('node')) for o in r["cross"]})), n_pre)
             continue
         named = [s for s in r["setters"] if s["cmd"] in [str(c).strip() for c in (answer.get("changed_by") or [])]]
         # the named command, unless the rollback sends it too; then every activity-only command between the reads
