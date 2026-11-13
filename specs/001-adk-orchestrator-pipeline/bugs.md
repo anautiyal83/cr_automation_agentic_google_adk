@@ -1802,3 +1802,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   not at the start (Java scopes it), so `java_regex_matches` said "no match" and the answer stayed empty.
 - **Fix** (`scenarios.java_to_python`): mid-pattern inline flags become flags of the whole pattern; the fallback now
   answers NORTH's lookup with a line holding 40453.
+
+### OB-94 — One confirmed table of CIQ cell rules for scripts and simulator (Fixed 2026-11-13, user decision)
+- Run 6570694d: the free-text answer ("If 'UNCHANGED' or blank … omitted for 'UNCHANGED' … create empty tag in case of
+  blank to delete …") was read as "blank = unchanged" by one report-script draft and "blank = delete" by the simulator.
+- **Fix** (`shared/ciq_cells.py`): the table `{unchanged: keep, blank: delete}` is derived once from the answers and
+  notes (a sentence about one kind of cell decides it, a later one overrides — Edit requirements corrects it), stored
+  by step 1 as `ciq_cell_rules`, shown in the requirements document (CIQ Cell Rules), given verbatim to every helper
+  script (what a comparison expects and what a request sends per cell) and applied by step 9's per-case simulator
+  answers. Defaults: UNCHANGED keeps, blank keeps.
+- Steps 6h + 8 + 9 on a copy of run 6570694d (NIAM gateway): **2/2 pass** (EAST 38 steps, NORTH 44).

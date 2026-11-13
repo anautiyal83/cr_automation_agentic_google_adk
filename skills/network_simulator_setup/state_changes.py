@@ -53,7 +53,7 @@ or, when the activity modifies values the read prints (a profile / attributes, v
   - {{match: '<python regex of the line before>', with: '<the line after the activity>'}}   # one per changed line
   In `with`, a value the activity takes from the CIQ is written {{ciq:<CIQ column>}} (e.g. 'scscfMandCap:
   {{ciq:Mandatory Cap}}'), never the CIQ cell itself: each test case fills it from its own CIQ record, and a cell
-  'UNCHANGED' keeps the line as it was, a blank cell deletes the attribute. List a replace for EVERY attribute the activity can set from
+  'UNCHANGED' / blank cells are applied by the simulator (the UC's confirmed cell rules). List a replace for EVERY attribute the activity can set from
   the CIQ (each column the request carries, e.g. VNI → netwListId), also when the record shown below keeps it:
   other records change it.
 
@@ -76,24 +76,24 @@ _SETUP = {"source", ".", "export", "cd", "set", "unset", "umask"}  # load the en
 CIQ_TOKEN = re.compile(r"\{ciq:([^{}]+)\}")
 CIQ_ELSE = "{{ciq-else:{}}}"
 _CIQ_ELSE = re.compile(r"\{ciq-else:(.*)\}$", re.S)
-_KEEP = {"unchanged", "na", "n/a", "-"}
-
-
-def resolve_line(line: str, record: dict) -> str | None:
-    """A post-activity line for one CIQ record; None when it is to be left out."""
+def resolve_line(line: str, record: dict, rules: dict | None = None) -> str | None:
+    """A post-activity line for one CIQ record; None when it is to be left out. A cell ``UNCHANGED`` / blank follows
+    the UC's confirmed cell rules (``shared/ciq_cells``: keep → the line as it was, delete → no line)."""
+    from shared import ciq_cells
     if "{ciq" not in line:
         return line
+    rules = {**ciq_cells.DEFAULT, **(rules or {})}
     m = _CIQ_ELSE.search(line)
     body, before = (line[:m.start()], m.group(1)) if m else (line, None)
-    values = {col: str(record.get(col, record.get(col.strip(), ""))).strip() for col in CIQ_TOKEN.findall(body)}
-    if any(v.lower() in _KEEP for v in values.values()):
-        return before if before else None
-    if any(not v for v in values.values()):
-        return None  # a blank cell deletes the attribute (run 61561981's answer: "empty tag … to delete")
-    return CIQ_TOKEN.sub(lambda t: values.get(t.group(1), ""), body)
+    values = {col: record.get(col, record.get(col.strip())) for col in CIQ_TOKEN.findall(body)}
+    kinds = {ciq_cells.kind(v) for v in values.values()}
+    for cell in ("unchanged", "blank"):
+        if cell in kinds:
+            return (before or None) if rules[cell] == "keep" else None
+    return CIQ_TOKEN.sub(lambda t: str(values.get(t.group(1)) or "").strip(), body)
 
 
-def resolve_ciq(config: dict, record: dict) -> bool:
+def resolve_ciq(config: dict, record: dict, rules: dict | None = None) -> bool:
     """Fill every CIQ line of an instance config (in place) for one CIQ record; True when something changed."""
     changed = False
 
@@ -102,7 +102,7 @@ def resolve_ciq(config: dict, record: dict) -> bool:
         if isinstance(node, dict):
             for k, v in node.items():
                 if k == "lines" and isinstance(v, list) and any("{ciq" in str(x) for x in v):
-                    filled = [resolve_line(str(x), record) for x in v]
+                    filled = [resolve_line(str(x), record, rules) for x in v]
                     node[k] = [x for x in filled if x is not None]
                     changed = True
                 else:

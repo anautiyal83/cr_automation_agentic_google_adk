@@ -169,6 +169,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 bye
 " | sftp … user@host` (MockWire 4e17e37); repo IP by `who am i` when
   `repo_server.ip_v4`/`ip_v6` are set; rollback-only re-runs the lookups it needs (`nc_rbl*`)
+- CIQ cell rules (`shared/ciq_cells.py`, OB-94): what `UNCHANGED` / blank cells mean (`keep` | `delete`), derived from
+  the developer's answers / notes (a later specific sentence wins), stored as `ciq_cell_rules`, shown at the step 2
+  review; helper scripts (step 6) and the simulator's per-case answers (step 9) apply the same table
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)

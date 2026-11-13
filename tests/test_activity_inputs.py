@@ -294,8 +294,12 @@ def test_post_activity_ciq_values_are_filled_per_test_case(tmp_path):
             {"data": {"Mandatory Cap": "10", "PDN Type": "IPv4"}}]}]},
         {"nodeGroup": "NORTH", "nodes": [{"node": "NORTH"}], "configSequences": [{"records": [
             {"data": {"Mandatory Cap": "UNCHANGED", "PDN Type": ""}}]}]}]}]}), encoding="utf-8")
-    east = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "EAST", "CR1"))))
-    north = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "NORTH", "CR1"))))
+    rules = {"unchanged": "keep", "blank": "delete"}  # the UC's confirmed cell rules (shared/ciq_cells)
+    east = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "EAST", "CR1")), rules))
+    north = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "NORTH", "CR1")), rules))
+    # without a blank rule, a blank cell keeps the line
+    kept = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "NORTH", "CR1"))))
+    assert kept["regex:^ldapsearch"]["responses"][0]["lines"] == ["uid: 1", "scscfMandCap: 1", "pdnType: IPv6"]
     assert east["regex:^ldapsearch"]["responses"][0]["lines"] == ["uid: 1", "scscfMandCap: 10", "pdnType: IPv4"]
     # UNCHANGED keeps the line, a blank cell deletes the attribute (the UC's answer: "empty tag … to delete")
     assert north["regex:^ldapsearch"]["responses"][0]["lines"] == ["uid: 1", "scscfMandCap: 1"]

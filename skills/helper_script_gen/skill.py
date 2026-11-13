@@ -439,7 +439,10 @@ class HelperScriptGenSkill:
         xml_samples = doc.get("xml_files", doc.get("xml_samples", []))
         ciq_sheets = doc.get("ciq_sheets", {})
         answers = inp.requirements.get("developer_answers", {})
-        semantics = cell_semantics(inp.requirements)
+        # the confirmed CIQ cell rules (shared/ciq_cells.py, shown at the step 2 review) — the same the simulator uses
+        from shared import ciq_cells
+        cell_rules = ciq_cells.rules(inp.requirements)
+        semantics = ciq_cells.describe(cell_rules)
 
         # Separate request vs response XMLs
         request_xmls = []
@@ -479,9 +482,17 @@ class HelperScriptGenSkill:
                     regexes="\n".join(f"  /{r}/" for r in regexes))
             # the step's check and the real format of what the script reads (OB-58)
             contract = script_context(workflow, script_name, inp.requirements, inp.sample_inputs, samples) + contract
-            if semantics:  # what UNCHANGED / blank / empty CIQ cells mean, for every field (OB-92)
-                contract += ("\n\n=== WHAT SPECIAL CIQ CELLS MEAN (developer answers — apply to EVERY field the script "
-                             "reads from the CIQ) ===\n" + "\n".join(f"- {x}" for x in semantics))
+            # what UNCHANGED / blank CIQ cells mean, for every field (OB-92): the confirmed table
+            blank_expect = ("the attribute is ABSENT after the activity (its absence is a MATCH)"
+                            if cell_rules["blank"] == "delete" else "the value is unchanged")
+            blank_send = ("send it so the attribute is deleted (an empty tag / value)"
+                          if cell_rules["blank"] == "delete" else "leave the field out")
+            contract += ("\n\n=== CIQ CELL RULES (confirmed at the requirements review — apply to EVERY field the "
+                         "script reads from the CIQ) ===\n" + "\n".join(f"- {x}" for x in semantics)
+                         + "\nA script that compares before / after with the CIQ: a cell 'UNCHANGED' expects the value "
+                           f"unchanged; a blank cell (empty / None) expects that {blank_expect}; any other cell expects "
+                           "that value. A script that builds a request: 'UNCHANGED' → leave the field out; blank → "
+                           f"{blank_send}.")
             inputs = smoke_inputs(workflow, script_name, inp.requirements, inp.sample_inputs, samples)
             try:
                 code, problems = "", []

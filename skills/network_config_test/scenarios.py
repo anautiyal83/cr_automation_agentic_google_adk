@@ -542,7 +542,7 @@ class ScenarioSuite:
         record = case_record(sc.target)
         for name, text in list(configs.items()):
             if "{ciq" in text:
-                configs[name] = fill_ciq(text, record)
+                configs[name] = fill_ciq(text, record, self._cell_rules())
         return configs
 
     # -- one case -------------------------------------------------------------
@@ -633,6 +633,17 @@ class ScenarioSuite:
             mockwire_jar=self.mockwire_jar, java_home=self.java_home, host=self.host)
         self.control.register(sim)
 
+    def _cell_rules(self) -> dict:
+        """The UC's confirmed CIQ cell rules (``shared/ciq_cells``, from the run's requirements)."""
+        if not hasattr(self, "_cell_rules_cache"):
+            from shared import ciq_cells
+            try:
+                req = json.loads((Path(self.run_dir) / "requirements.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, AttributeError):
+                req = {}
+            self._cell_rules_cache = ciq_cells.rules(req)
+        return self._cell_rules_cache
+
     def _synthetic_keys(self) -> set[str]:
         """Step 8's keys of LLM-invented answers, over all instances (``simulator/synthetic_keys.json``)."""
         if not hasattr(self, "_synthetic_cache"):
@@ -673,12 +684,13 @@ def case_record(target: tuple[str, str, str]) -> dict:
     return {}
 
 
-def fill_ciq(config_text: str, record: dict) -> str:
-    """An instance config with its CIQ lines filled for one record (``state_changes.resolve_ciq``)."""
+def fill_ciq(config_text: str, record: dict, rules: dict | None = None) -> str:
+    """An instance config with its CIQ lines filled for one record (``state_changes.resolve_ciq``, the UC's cell
+    rules)."""
     from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
     from skills.network_simulator_setup.state_changes import resolve_ciq
     cfg = parse_yaml(config_text)
-    if not isinstance(cfg, dict) or not resolve_ciq(cfg, record):
+    if not isinstance(cfg, dict) or not resolve_ciq(cfg, record, rules):
         return config_text
     return dump_yaml(cfg)
 
