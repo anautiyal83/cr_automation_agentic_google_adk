@@ -26,6 +26,7 @@ from typing import Awaitable, Callable
 
 from . import prompts
 from .autofix import parse_llm_yaml, safe_regex_key, salvage_yaml_entries
+from .guide import write_guide
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -287,6 +288,11 @@ class NetworkSimulatorSetupSkill:
                     Path(overlay_path).write_text(build_overlay(
                         inp.workflow_yaml, nodes, {n.name: simulator.port_for(n.name) for n in nodes},
                         host=inp.host), encoding="utf-8")
+                    # how to start these instances by hand (the UC export ships it)
+                    try:
+                        write_guide(sim_dir, inp.uc_name, run_id=Path(inp.run_dir).name)
+                    except Exception as e:  # never fails the setup
+                        logger.warning("Simulator guide not written: %s", e)
                     logger.info("Simulator started: %s", ", ".join(
                         f"{i.name}:{i.port}" for i in simulator.instances))
                 except SimulatorStartError as e:

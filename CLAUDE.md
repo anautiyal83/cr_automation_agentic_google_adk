@@ -279,9 +279,14 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm diff …` on its VFS: step 8
   (`vfs_commands.py`) gives no response key to a command whose paths all lie where the workflow puts files (`/tmp`,
   uploads, copy / extract targets, backup sources, archives) and creates those folders per CIQ record (DEP-59);
-  staged `.tar` inputs are real archives (step 9)
+  staged `.tar` inputs are real archives (step 9). `kubectl|oc exec … -- bash -c '<script>'` with no key for the
+  line runs the script on the VFS (MockWire e72d022): step 8 answers such a script part by part when it writes or
+  only reads files (OB-66); an exact key holding `${…}` is written as the command's regex (OB-67)
 - Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
-  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
+  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts);
+  `SIMULATOR_GUIDE.md` + `start_/stop_simulator.ps1/.sh` (`guide.py`, written by step 8)
+- UC export (step 10 artifacts tab + Run Artifacts, completed runs; `tools/uc_export.py`): zip of validation rules,
+  JSON output, execution YAML, CIQ JSON, helper scripts and the simulator (JAR, configs, answers, guide, empty VFS)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
 - Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers

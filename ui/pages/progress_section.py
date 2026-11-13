@@ -485,6 +485,9 @@ class ProgressSection:
                 labels = {d.path: d.label for d in listed}
                 headers = {docs[0].path: (cat, len(docs)) for cat, docs in groups}
                 files = [d.path for d in listed] + [f for f in files if f not in labels]
+            if self._selected_step == 10 and self._run_state == "completed" and self._run_dir and self._uc_name:
+                from ui.pages.output_viewer_section import export_bar
+                export_bar(self._run_dir, self._uc_name)
             if not files:
                 _empty_state("description", "No artifacts yet",
                              "Files this step writes to the run folder appear here.")
@@ -1193,6 +1196,8 @@ class ProgressSection:
             self._set_run_state("completed")
             dur = event.payload.get("duration", 0)
             self.status_detail.text = f"All 10 steps completed in {dur:.0f}s"
+            if self._selected_step == 10:
+                self._refresh_tab()  # the export appears once the run completed
             self.banner.style(replace=(
                 "background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.3)"
             ))
