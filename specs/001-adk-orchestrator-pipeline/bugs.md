@@ -1784,3 +1784,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   attribute after the activity and reports MISMATCH, but the UC's answer says a blank cell deletes the attribute (the
   simulator now shows it deleted). The report fails on a real RDS too; the script must treat a blank expectation as
   "attribute absent".
+
+### OB-92 — Helper scripts did not apply the developer's CIQ cell meanings (Medium, partly fixed 2026-11-13)
+- Run 6570694d: `create_html_report.py` compared a blank CIQ cell as a value; the developer's answer ("… create empty
+  tag in case of blank to delete …") sat past the 3000 characters of answers the helper prompt carries.
+- **Fix** (`helper_script_gen.skill`): `cell_semantics` collects the answers / notes that give UNCHANGED / blank /
+  empty cells a meaning into the prompt for every field; `check_cell_handling` rejects a comparison script that
+  special-cases UNCHANGED but not a blank cell when the developer defined one. Step 8 reads a multi-line if-block as
+  the one line MockWire runs (`join_compound`), so its branch commands get answers.
+- Open: the next draft handled blank — as "unchanged" (the long answer mixes both cases), the simulator as "delete".
+  A free-text answer is read differently per draft; the cell rules need one structured, confirmed form.

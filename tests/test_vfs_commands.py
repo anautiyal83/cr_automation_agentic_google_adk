@@ -223,3 +223,16 @@ def test_redirected_dump_gets_the_recorded_output_of_the_command():
             {"cmd": "ls -l /opt/p"}]
     assert redirect_contents(cmds, samples) == {
         "org -c eirWhiteRng": {"lines": ["1,sb,eir,white,9900,9901,,", "1,sb,eir,white,9902,9903,,"]}}
+
+
+
+def test_a_multiline_if_block_is_read_as_mockwire_runs_it():
+    """OB-91 (run 6570694d): MockWire runs a `|-` if-block as one line; step 8 must see the same line, so the
+    `ldapsearch` in its branch gets an answer."""
+    from skills.network_simulator_setup.autofix import extract_workflow_commands, join_compound
+    block = 'if [[ "${rec.data.Test MSISDN}" != "" ]]; then\n  ldapsearch -b msisdn=x | awk \'{print $2}\'\nelse\n  echo "${rec.data.Test IMSI}"\nfi'
+    assert join_compound(block) == ('if [[ "${rec.data.Test MSISDN}" != "" ]]; then ldapsearch -b msisdn=x | '
+                                    'awk \'{print $2}\'; else echo "${rec.data.Test IMSI}"; fi')
+    assert join_compound("python3 -c \"\nimport os\n\"") == "python3 -c \"\nimport os\n\""
+    wf = "phases:\n  p:\n    steps:\n    - node: RDS\n      send: |-\n" + "".join(f"        {l}\n" for l in block.split("\n"))
+    assert extract_workflow_commands(wf)[0]["cmd"] == join_compound(block)

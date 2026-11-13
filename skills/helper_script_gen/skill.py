@@ -62,6 +62,54 @@ def check_script_contract(code: str, flags: list[str]) -> list[str]:
     return []
 
 
+_CELL_WORDS = re.compile(r"\b(?:unchanged|blank|empty|null|none|n/?a)\b", re.IGNORECASE)
+
+
+def cell_semantics(requirements: dict) -> list[str]:
+    """What the developer said special CIQ cells mean (``UNCHANGED`` keeps the value, a blank cell deletes the
+    attribute, …): the sentences of the answers and notes that name such a cell. The answers reach the prompt cut at
+    3000 characters; run 6570694d's report script compared a blank cell as a value and failed (OB-92)."""
+    texts: list[str] = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str):
+            texts.append(value)
+    walk((requirements or {}).get("developer_answers") or {})
+    walk((requirements or {}).get("developer_notes") or "")
+    out: list[str] = []
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+            sentence = sentence.strip()
+            if 12 <= len(sentence) <= 400 and _CELL_WORDS.search(sentence) and sentence not in out:
+                out.append(sentence)
+    return out[:8]
+
+
+_UNCHANGED_LITERAL = re.compile(r"""['"]UNCHANGED['"]""")
+_BLANK_BRANCH = re.compile(r"""==\s*(?:""|'')|is\s+None|in\s*[\(\[{]\s*(?:""|''|None)|\bnot\s+[A-Za-z_][\w.\[\]'"]*\s*:|"""
+                           r"""\.strip\(\)\s*==\s*(?:""|'')|len\([^)]*\)\s*==\s*0""")
+
+
+def check_cell_handling(code: str, semantics: list[str]) -> list[str]:
+    """A script that compares CIQ values and treats ``UNCHANGED`` specially must also handle a blank cell when the
+    developer gave blank cells a meaning — otherwise every field the CIQ leaves blank reads as a mismatch (OB-92)."""
+    blank = [s for s in semantics if re.search(r"\b(?:blank|empty)\b", s, re.IGNORECASE)]
+    if not blank or not _UNCHANGED_LITERAL.search(code) or not re.search(r"mismatch", code, re.IGNORECASE):
+        return []
+    if _BLANK_BRANCH.search(code):
+        return []
+    return ["the script compares CIQ values and handles 'UNCHANGED' but not a blank / empty CIQ cell, which the "
+            "developer gave a meaning: " + " ".join(f'"{s}"' for s in blank[:2]) + " — handle a blank expected value "
+            "for EVERY field as that says (e.g. a blank cell that deletes an attribute: the attribute must be absent "
+            "after the activity, and its absence is a MATCH)"]
+
+
 def arg_values(cmd_lines: list[str]) -> list[str]:
     """The values the workflow passes the script (``--output_file '${ORDER_NO}.xml'`` → ``X1.xml``): what an
     f-string field printing an argument holds at run time."""
@@ -391,6 +439,7 @@ class HelperScriptGenSkill:
         xml_samples = doc.get("xml_files", doc.get("xml_samples", []))
         ciq_sheets = doc.get("ciq_sheets", {})
         answers = inp.requirements.get("developer_answers", {})
+        semantics = cell_semantics(inp.requirements)
 
         # Separate request vs response XMLs
         request_xmls = []
@@ -430,6 +479,9 @@ class HelperScriptGenSkill:
                     regexes="\n".join(f"  /{r}/" for r in regexes))
             # the step's check and the real format of what the script reads (OB-58)
             contract = script_context(workflow, script_name, inp.requirements, inp.sample_inputs, samples) + contract
+            if semantics:  # what UNCHANGED / blank / empty CIQ cells mean, for every field (OB-92)
+                contract += ("\n\n=== WHAT SPECIAL CIQ CELLS MEAN (developer answers — apply to EVERY field the script "
+                             "reads from the CIQ) ===\n" + "\n".join(f"- {x}" for x in semantics))
             inputs = smoke_inputs(workflow, script_name, inp.requirements, inp.sample_inputs, samples)
             try:
                 code, problems = "", []
@@ -443,7 +495,7 @@ class HelperScriptGenSkill:
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
-                    problems = (check_script_contract(code, flags)
+                    problems = (check_script_contract(code, flags) or check_cell_handling(code, semantics)
                                 or check_output_contract(code, regexes, arg_values(cmd_lines))
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",

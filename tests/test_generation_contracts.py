@@ -605,3 +605,23 @@ def test_a_passing_script_attempt_drops_the_earlier_attempts_failure(tmp_path):
     f.write_text(json.dumps({"error": "bad workflow; Helper scripts: a",
                              "failed_agents": ["network_config_gen", "helper_script_gen"]}), encoding="utf-8")
     assert _without_helper_errors(f) == {"error": "bad workflow", "failed_agents": ["network_config_gen"]}
+
+
+
+def test_a_comparison_script_handles_the_cells_the_developer_defined():
+    """OB-92 (run 6570694d): the developer said a blank cell deletes the attribute; the report script compared it as a
+    value (blank vs absent → MISMATCH) and failed — the answer sat past the 3000 characters of answers in the prompt."""
+    from skills.helper_script_gen.skill import cell_semantics, check_cell_handling
+    req = {"developer_answers": {"q7": "Use the CIQ value. If a field is 'UNCHANGED' or blank, the corresponding XML "
+                                       "attribute should be omitted for 'UNCHANGED' indicating no change, and create "
+                                       "empty tag in case of blank to delete it.", "q1": "Use port 16611."}}
+    sem = cell_semantics(req)
+    assert len(sem) == 1 and "blank" in sem[0]
+    only_unchanged = ("def status(exp, post):\n    if exp == 'UNCHANGED':\n        return 'UNCHANGED'\n"
+                      "    return 'MATCH' if post == exp else 'MISMATCH'\n")
+    found = check_cell_handling(only_unchanged, sem)
+    assert found and "blank" in found[0]
+    handles = only_unchanged.replace("    return 'MATCH'", "    if exp in ('', None):\n        return 'MATCH' if post is None else 'MISMATCH'\n    return 'MATCH'")
+    assert check_cell_handling(handles, sem) == []
+    assert check_cell_handling(only_unchanged, ["Unchanged parameters should remain the same."]) == []  # no blank rule
+    assert check_cell_handling("print('ok')\n", sem) == []  # not a comparison

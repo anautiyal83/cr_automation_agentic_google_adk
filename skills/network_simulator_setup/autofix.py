@@ -275,6 +275,33 @@ def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
     return sorted(nodes)
 
 
+_BLOCK_OPENER = re.compile(r"^\s*(?:if|for|while|until|case)\b")
+_BLOCK_CONTINUES = ("then", "else", "do", "{", "in")
+
+
+def join_compound(cmd: str) -> str:
+    """A multi-line ``if / for / while / case`` block as the one line MockWire runs (88a1915: the shell reads on until
+    the block closes) — ``if c; then a; else b; fi`` — so the branches are seen and answered like those of a one-line
+    block (run 6570694d: the IMSI lookup inside a `|-` block got no key). Other text is returned as it is."""
+    if not isinstance(cmd, str) or "\n" not in cmd or not _BLOCK_OPENER.match(cmd):
+        return cmd
+    out: list[str] = []
+    for raw in cmd.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if out:
+            prev = out[-1]
+            glue = prev.split()[-1] in _BLOCK_CONTINUES or prev.endswith((";", "&&", "||", "|", "\\"))
+            if prev.endswith("\\"):
+                out[-1] = prev[:-1].rstrip()
+            out[-1] += " " if glue else "; "
+            out[-1] += line
+        else:
+            out.append(line)
+    return out[0] if out else cmd
+
+
 def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
     """Extract commands from a workflow YAML for simulator response mapping."""
     parsed = parse_yaml(workflow_yaml)
@@ -285,7 +312,7 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
     for phase_name, steps in _iter_phase_steps(parsed):
         for step in steps:
             commands.append({
-                "cmd": step.get("send", step.get("cmd", step.get("command", ""))),
+                "cmd": join_compound(step.get("send", step.get("cmd", step.get("command", "")))),
                 "node": step.get("node", ""),
                 "phase": phase_name,
                 "description": step.get("command_description", ""),
