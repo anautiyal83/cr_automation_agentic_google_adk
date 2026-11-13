@@ -450,10 +450,12 @@ def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
             rows = columns.get(col)
             if not rows or col in guard or col in problems:
                 continue
-            missing = [r for r in rows if empty(r, col)]
+            # a shell guard on the column (`if [ "${…Test IMSI}" != "" ]; then …; else …; fi`, run 6570694d) runs the
+            # branch without it for the rows that leave it empty (OB-88)
+            missing = [r for r in rows if empty(r, col) and col in _CIQ_COLUMN.findall(_runs_for_row(send, r))]
             # Empty everywhere = an optional value passed through (scripts skip it); only a
             # column some rows fill and others leave empty breaks those node groups
-            if not missing or len(missing) == len(rows):
+            if not missing or len([r for r in rows if empty(r, col)]) == len(rows):
                 continue
             sheet_cols = [c for c in columns if columns[c] is rows]
             words = set(re.findall(r"[a-z]+", col.lower()))
@@ -808,6 +810,23 @@ def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str
         for g in row_variable_gaps(parsed, ciq_sheets, runtime_params)]
 
 
+_SHELL_GUARD = re.compile(
+    r"""if\s+\[\[?\s*(-n|-z)?\s*["']?\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}["']?\s*"""
+    r"""(?:(!=|==|=)\s*(?:""|''))?\s*\]\]?\s*;\s*then\s+(.*?)(?:\s*;\s*else\s+(.*?))?\s*;\s*fi\b""", re.S)
+
+
+def _runs_for_row(send: str, row: dict) -> str:
+    """The command text that runs for one CIQ row: a simple shell guard on a CIQ column being empty or not
+    (``if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi``) keeps only
+    the branch the row takes (OB-88)."""
+    def branch(m: re.Match) -> str:
+        value = str(row.get(m.group(2).strip()) or "").strip()
+        flag, op = m.group(1), m.group(3)
+        filled = flag == "-n" or op == "!=" or (flag is None and op is None)
+        return (m.group(4) or "") if (bool(value) == filled) else (m.group(5) or "")
+    return _SHELL_GUARD.sub(branch, send)
+
+
 def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] | None = None) -> list[dict]:
     """The gaps behind :func:`check_row_variables`: ``variable``, the CIQ ``row`` (and its
     ``label``) that never gets it, the using step's ``send`` and the ``guard_columns``."""
@@ -855,7 +874,8 @@ def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] 
             for step, guard in zip(steps, guards):
                 if not runs(guard, row):
                     continue
-                for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(str(step.get("send") or ""))}:
+                for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(
+                        _runs_for_row(str(step.get("send") or ""), row))}:
                     if "." in name or name in defined_always or name in registered or name in problems:
                         continue
                     problems[name] = {"variable": name, "row": row, "label": label,

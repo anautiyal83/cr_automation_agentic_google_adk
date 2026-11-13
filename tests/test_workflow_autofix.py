@@ -1014,3 +1014,25 @@ def test_a_count_over_one_files_listing_does_not_want_total():
     assert "total" not in rx
     line = "-rw-r--r--. 1 oamsys oamsys     1647 Nov 13 18:56 /srv/outbox/TEST_ORDER_NO.xml.res"
     assert re.search(rx, line) and not re.search(rx, line.replace(" 1647 ", " 0 "))
+
+
+
+def test_a_shell_guard_on_an_either_or_column_is_understood():
+    """OB-88 (run 6570694d): `if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi`
+    with resolvedImsi looked up by MSISDN for the rows without an IMSI — both checks read the whole text and
+    rejected a correct workflow (EAST "uses an empty Test IMSI", NORTH "never gets resolvedImsi")."""
+    from skills.network_config_gen.validator import check_row_variables, validate_workflow
+    ciq = "${configSequences.0.records.0.data."
+    parsed = {"phases": {"activity_configuration": {"steps": [
+        {"node": "RDS", "send": f"ldapsearch -b msisdn={ciq}Test MSISDN}} | awk '{{print $2}}'",
+         "when": "configSequences.0.records.0.data.Test IMSI == '' && configSequences.0.records.0.data.Test MSISDN != ''",
+         "register": [{"regex": "(?<resolvedImsi>\\d+)"}]},
+        {"node": "RDS", "send": f'if [ "{ciq}Test IMSI}}" != "" ]; then echo "{ciq}Test IMSI}}"; else echo "${{resolvedImsi}}"; fi',
+         "register": [{"regex": "(?<finalImsi>\\d+)"}]},
+    ]}}}
+    sheets = {"Main": {"columns": ["NodeGroup", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"NodeGroup": "EAST", "Test IMSI": "", "Test MSISDN": "9198"},
+        {"NodeGroup": "NORTH", "Test IMSI": "4045", "Test MSISDN": ""}]}}
+    assert check_row_variables(parsed, sheets, runtime_params=[]) == []
+    errors = validate_workflow(yaml.safe_dump(parsed), [], sheets, None)
+    assert not [e for e in errors if "which is empty in" in e or "resolvedImsi" in e], errors

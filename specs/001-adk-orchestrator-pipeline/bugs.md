@@ -1731,3 +1731,12 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Open: the post-activity profile is one answer for every test case, but the CIQ values differ per record (EAST
   expects Mandatory Cap 10, NORTH others), and the LLM copied CIQ cells literally (`UNCHANGED`, which means keep the
   value). The comparison report of run 61561981 still fails on the copy.
+
+### OB-88 — Step 6 rejected a correct shell-guarded either-or column (High, Fixed 2026-11-13)
+- Run 6570694d (PGW_RDS_1058): `if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi`
+  with `resolvedImsi` looked up by MSISDN (`when: Test IMSI == '' && Test MSISDN != ''`) — a correct one-of-two
+  column workflow. Two checks read the whole text: EAST "uses an empty Test IMSI", NORTH "never gets resolvedImsi";
+  the self-correction rounds could not satisfy them and step 6 failed.
+- **Fix** (`validator._runs_for_row`): a simple shell guard on a CIQ column (`!= ""`, `== ""`, `-n`, `-z`) keeps only
+  the branch the row takes; the empty-column and registered-variable checks read that text. The run's workflow
+  validates with 0 errors.
