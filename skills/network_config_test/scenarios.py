@@ -452,8 +452,12 @@ class ScenarioSuite:
                                                "simulator_issues": ["no simulator instances"],
                                                "workflow_issues": [], "unmatched_commands": []})
         node_instance = {n: i["name"] for i in instances for n in (i.get("nodes") or [i["name"]])}
-        base = {i["name"]: (self.sim_dir / "config" / f"{i['name']}.yaml").read_text(encoding="utf-8")
-                for i in instances}
+        # behind a gateway: the node's own instance (its config, its events), not the gateway's
+        node_instance.update({n: pr["name"] for i in instances for pr in i.get("profiles") or []
+                              for n in pr.get("nodes") or [pr["name"]]})
+        base = {name: (self.sim_dir / "config" / f"{name}.yaml").read_text(encoding="utf-8")
+                for name in [i["name"] for i in instances] + [pr["name"] for i in instances
+                                                               for pr in i.get("profiles") or []]}
         for old in (self.out_root, self.report_dir):
             if old.exists():
                 shutil.rmtree(old, ignore_errors=True)
@@ -519,6 +523,11 @@ class ScenarioSuite:
             inst = node_instance.get(sc.fault.node)
             if inst:
                 configs[inst] = inject_fault(base[inst], sc.fault)
+        # post-activity answers holding CIQ values: this case's own record (OB-87)
+        record = case_record(sc.target)
+        for name, text in list(configs.items()):
+            if "{ciq" in text:
+                configs[name] = fill_ciq(text, record)
         return configs
 
     # -- one case -------------------------------------------------------------
@@ -604,8 +613,8 @@ class ScenarioSuite:
             shutil.copytree(vfs_from, self.sim_dir / "vfs", dirs_exist_ok=True)
         sim = await start_simulator(
             self.sim_dir,
-            [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []))
-             for i in instances],
+            [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []),
+                               profiles=list(i.get("profiles") or [])) for i in instances],
             mockwire_jar=self.mockwire_jar, java_home=self.java_home, host=self.host)
         self.control.register(sim)
 
@@ -631,6 +640,32 @@ class ScenarioSuite:
                 except ValueError:
                     continue
         return events
+
+
+def case_record(target: tuple[str, str, str]) -> dict:
+    """The first CIQ record of a test case's node group (``target`` = json file, node, CR group)."""
+    from tools.ciq_json import node_groups
+    json_file, node, cr_group = target
+    try:
+        doc = json.loads(Path(json_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    for cr, group in node_groups(doc):
+        if (not cr_group or cr == cr_group) and node in [str(n.get("node")) for n in group.get("nodes") or []]:
+            seqs = group.get("configSequences") or [{}]
+            records = ((seqs[0] or {}).get("records") or [{}]) if seqs else [{}]
+            return dict((records[0] or {}).get("data") or {})
+    return {}
+
+
+def fill_ciq(config_text: str, record: dict) -> str:
+    """An instance config with its CIQ lines filled for one record (``state_changes.resolve_ciq``)."""
+    from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
+    from skills.network_simulator_setup.state_changes import resolve_ciq
+    cfg = parse_yaml(config_text)
+    if not isinstance(cfg, dict) or not resolve_ciq(cfg, record):
+        return config_text
+    return dump_yaml(cfg)
 
 
 # ---------------------------------------------------------------------------

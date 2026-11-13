@@ -5,7 +5,7 @@ import zipfile
 import pytest
 
 from skills.network_simulator_setup.guide import GUIDE_NAME, write_guide
-from tools.uc_export import ExportError, build_export
+from tools.uc_export import ExportError, build_export, export_path
 
 UC = "PGW_RDS_1058_IFC_CAPABILITY_MODIFICATION"
 
@@ -158,3 +158,42 @@ def test_export_names_what_the_run_lacks(tmp_path):
     rd, jar = _run(tmp_path, with_deliverables=False)
     with pytest.raises(ExportError, match="validation-rules.yaml"):
         build_export(rd, UC, jar=jar)
+
+
+
+def test_a_gateway_run_guide_and_export(tmp_path):
+    """MW-13: the NIAM nodes share one gateway server and port, the neId picks the node — the gateway YAML step 8
+    writes, the guide's routing / ports, and the export's per-node folders."""
+    from types import SimpleNamespace
+
+    import yaml as _yaml
+
+    from skills.network_simulator_setup.gateway import gateway_config, gateway_name
+    rd, jar = _run(tmp_path)
+    sim = rd / "simulator"
+    rds = SimpleNamespace(instance="RDS", ne_ids=["R-1", "R-2"], user="oamsys", password="netconf-sim")
+    pgw = SimpleNamespace(instance="PGW", ne_ids=["Q-1"], user="oamsys", password="netconf-sim")
+    req = {"category_1_node_activity": {"access_gateway": {"enabled": True, "name": "NIAM"}}}
+    assert gateway_name(req) == "niam_gateway"
+    gw = _yaml.safe_load(gateway_config([rds, pgw], req, {}))
+    assert gw["niam"]["users"][0]["neIds"] == ["R-1", "R-2", "Q-1"]
+    assert gw["niam"]["profiles"][1] == {"name": "PGW", "config": "PGW.yaml", "responses": "../outputs/PGW/responses",
+                                        "vfsRoot": "../vfs/PGW", "eventsFile": "../logs/PGW.events.jsonl",
+                                        "neIds": ["Q-1"]}
+    (sim / "config" / "niam_gateway.yaml").write_text(gateway_config([rds, pgw], req, {}), encoding="utf-8")
+    (sim / "manifest.json").write_text(json.dumps({"instances": [
+        {"name": "niam_gateway", "port": 22200, "nodes": ["RDS", "PGW"],
+         "profiles": [{"name": "RDS", "nodes": ["RDS"]}, {"name": "PGW", "nodes": ["PGW"]}]}]}), encoding="utf-8")
+    write_guide(sim, UC, run_id=rd.name)
+    guide = (sim / GUIDE_NAME).read_text(encoding="utf-8")
+    assert "| niam_gateway | 22200 | (gateway) |" in guide and "| PGW | 22200 (via niam_gateway) | PGW |" in guide
+    assert "`R-1`, `R-2` → **RDS** (2 neIds)" in guide and "`Q-1` → **PGW** (1 neId)" in guide
+    assert "through gateway **niam_gateway**" in guide
+    assert "--config config/niam_gateway.yaml" in guide and "--config config/PGW.yaml" not in guide  # one process
+    assert "sar 1 10\n#   → Average:" in guide  # the node's own answers
+    sh = (sim / "start_simulator.sh").read_text(encoding="utf-8")
+    assert "start niam_gateway 22200" in sh and "start PGW" not in sh
+    names = set(zipfile.ZipFile(build_export(rd, UC, jar=jar)).namelist())
+    assert {f"{UC}/simulator/vfs/RDS/", f"{UC}/simulator/vfs/PGW/", f"{UC}/simulator/config/niam_gateway.yaml"} <= names
+    user_guide = zipfile.ZipFile(export_path(rd, UC)).read(f"{UC}/USER_GUIDE.md").decode("utf-8")
+    assert "Access gateway **niam_gateway** (port 22200)" in user_guide and "(port 22200 via niam_gateway" in user_guide

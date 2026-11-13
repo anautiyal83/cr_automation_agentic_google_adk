@@ -1740,3 +1740,28 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix** (`validator._runs_for_row`): a simple shell guard on a CIQ column (`!= ""`, `== ""`, `-n`, `-z`) keeps only
   the branch the row takes; the empty-column and registered-variable checks read that text. The run's workflow
   validates with 0 errors.
+
+### OB-89 — One simulated NIAM gateway for every NIAM node (MW-13, user request 2026-11-13)
+- Production logs in to every NIAM node at the same `${NIAM_IP}:${M2MPORT}` with the same user; only the neId picks
+  the node. The simulator ran one server per node type on its own port, so it never exercised that routing.
+- **Fix**:
+  - MockWire 15797e2: a config with `niam.profiles` is a gateway — the neId a session answers (keyboard-interactive,
+    as JSch does, or in the shell) picks a node profile with its own answers, prompts, users, VFS, triggers, state
+    and event log; shell, exec and SFTP (root + upload triggers) follow the session's node; an unknown neId is asked
+    again. Live-tested over SSH (both login paths, SFTP, unknown neId).
+  - Step 8 (`gateway.py`): one gateway YAML per gateway (`config/<name>_gateway.yaml`: login, prompts from the
+    vendor's access gateway settings with NIAM's defaults, `neId → node YAML` routing from the CIQ JSON); node YAMLs
+    unchanged; the nodes with NIAM ids run behind it, the others (repo server) on their own. Manifest instances carry
+    `profiles`; step 9 restarts keep them and map nodes to their own instance.
+  - Guide / export: the gateway, its routing (neIds → node), each node "via" the gateway's port, one start command.
+  - Steps 8 + 9 on copies of run 61561981: `niam_gateway:22200`, sanity 2/2 through it, step 9 cases ran through it.
+
+### OB-87 — Post-activity answers filled per test case from its CIQ record (Medium, partly open, 2026-11-13)
+- Run 61561981: one after-profile for every test case, but EAST and NORTH expect different values; the LLM wrote CIQ
+  cells (`UNCHANGED`) as values.
+- **Fix**: the LLM writes `{ciq:<column>}` in a changed line (with the line it replaces); step 9 fills it per case from
+  the case's CIQ record (`scenarios.case_record` / `fill_ciq`): `UNCHANGED` keeps the line, a blank cell deletes the
+  attribute (the UC's developer answer: "empty tag … to delete"). The LLM is given the CIQ columns the activity sends.
+- On the copy the comparison report went from 4 mismatches to 1: the LLM still left `Packet Data Network Type` →
+  `pdnType` out of the after-profile in some drafts. Deterministic option (not built): derive the node's after-state
+  from the request actually uploaded (the order XML lists every attribute it sets).

@@ -51,6 +51,8 @@ class SimulatorInstance:
     events_file: str = ""
     pid: int | None = None
     status: str = "pending"  # pending | running | stopped | failed
+    # a gateway (MW-13): the nodes behind it, [{name: <node instance>, nodes: [workflow nodes]}]
+    profiles: list[dict] = field(default_factory=list)
 
 
 class SimulatorProcess:

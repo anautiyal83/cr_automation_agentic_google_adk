@@ -178,10 +178,11 @@ class NetworkSimulatorSetupSkill:
         # --- Phase 2: Command responses per node ---
         # The UC's proven simulator (its step 9 passed on this very workflow and CIQ data) is reused as it is
         # (storage/uc_baseline.py, user 2026-11-13); otherwise the answers are built again
-        reuse = bool(inp.baseline_configs) and set(inp.baseline_configs) == {n.instance for n in nodes} \
+        reuse = bool(inp.baseline_configs) and {n.instance for n in nodes} <= set(inp.baseline_configs) \
             and not inp.feedback
-        if reuse:
-            instance_configs, synthetic_keys, errors = dict(inp.baseline_configs), dict(inp.baseline_synthetic), []
+        if reuse:  # the node configs (a gateway's YAML is built again from them)
+            instance_configs = {n.instance: inp.baseline_configs[n.instance] for n in nodes}
+            synthetic_keys, errors = dict(inp.baseline_synthetic), []
             logger.info("Phase 2: simulator configs reused from the baseline of run %s", inp.baseline_run[:8])
         else:
             instance_configs, synthetic_keys, errors = await self._responses(inp, nodes, samples)
@@ -231,9 +232,25 @@ class NetworkSimulatorSetupSkill:
 
             elif inp.auto_start:
                 try:
-                    node_ports = allocate_ports(len(nodes), inp.base_port)
-                    instances = [SimulatorInstance(name=n.instance, port=p, nodes=[n.name, *n.aliases])
-                                 for n, p in zip(nodes, node_ports)]
+                    # the nodes behind the vendor's access gateway share one gateway server and port, the neId
+                    # picks the node (MW-13); the others (the repository server) run on their own
+                    from .gateway import gateway_config, gateway_name, gateway_nodes
+                    behind = gateway_nodes(nodes)
+                    alone = [n for n in nodes if n not in behind]
+                    node_ports = allocate_ports(len(alone) + (1 if behind else 0), inp.base_port)
+                    instances = []
+                    if behind:
+                        gw = gateway_name(inp.requirements)
+                        from .autofix import parse_yaml
+                        write_instance_files(sim_dir, gw, gateway_config(
+                            behind, inp.requirements,
+                            {n.instance: parse_yaml(instance_configs[n.instance]) or {} for n in behind}))
+                        instances.append(SimulatorInstance(
+                            name=gw, port=node_ports.pop(0),
+                            nodes=[x for n in behind for x in (n.name, *n.aliases)],
+                            profiles=[{"name": n.instance, "nodes": [n.name, *n.aliases]} for n in behind]))
+                    instances += [SimulatorInstance(name=n.instance, port=p, nodes=[n.name, *n.aliases])
+                                  for n, p in zip(alone, node_ports)]
                     simulator = await start_simulator(
                         sim_dir, instances,
                         mockwire_jar=inp.mockwire_jar,
@@ -350,8 +367,10 @@ class NetworkSimulatorSetupSkill:
             merged = {**ls_paths_as_given(node.commands, merged), **merged}
             # a read repeated after the activity shows what the activity changed (OB-59)
             from . import state_changes
+            from .autofix import extract_workflow_commands
             merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs,
-                                               others=[c for o in nodes if o is not node for c in o.commands])
+                                               others=[c for o in nodes if o is not node for c in o.commands],
+                                               workflow_commands=extract_workflow_commands(inp.workflow_yaml))
             # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
             real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
             synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})

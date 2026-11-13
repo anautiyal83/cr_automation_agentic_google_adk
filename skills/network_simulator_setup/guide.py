@@ -35,7 +35,7 @@ def write_guide(sim_dir: str | Path, uc_name: str, run_id: str = "") -> list[Pat
     instances = _instances(sim_dir)
     if not instances:
         return []
-    configs = {i["name"]: _load(sim_dir / "config" / f"{i['name']}.yaml") for i in instances}
+    configs = _configs(sim_dir, instances)
     texts = {
         GUIDE_NAME: guide_markdown(sim_dir, uc_name, instances, configs, run_id),
         "start_simulator.ps1": _start_ps1(uc_name, instances),
@@ -62,6 +62,45 @@ def _instances(sim_dir: Path) -> list[dict]:
     return [i for i in manifest.get("instances") or [] if i.get("name") and i.get("port")]
 
 
+def _configs(sim_dir: Path, instances: list[dict]) -> dict[str, dict]:
+    """The config of every process and of every node behind a gateway (``config/<name>.yaml``)."""
+    names = [i["name"] for i in instances] + [pr["name"] for i in instances for pr in i.get("profiles") or []]
+    return {n: _load(sim_dir / "config" / f"{n}.yaml") for n in names}
+
+
+def _servers(instances: list[dict]) -> list[dict]:
+    """The simulated nodes: a gateway's nodes each reached on the gateway's port (``gateway`` names it, MW-13),
+    the other processes as they are."""
+    out = []
+    for i in instances:
+        if i.get("profiles"):
+            out += [{"name": pr["name"], "port": i["port"], "nodes": pr.get("nodes") or [pr["name"]],
+                     "gateway": i["name"]} for pr in i["profiles"]]
+        else:
+            out.append(i)
+    return out
+
+
+def _gateway_lines(instances: list[dict], configs: dict[str, dict]) -> list[str]:
+    """How a gateway routes: one login, the neId picks the node."""
+    out = []
+    for gw in (i for i in instances if i.get("profiles")):
+        cfg = configs.get(gw["name"]) or {}
+        user, password = _login(cfg)
+        niam = cfg.get("niam") or {}
+        prompts = niam.get("prompts") or {}
+        out.append(f"- **{gw['name']}** (port {gw['port']}) is the access gateway every node below is reached "
+                   f"through, as in production (one NIAM host for all of them): `ssh {user}@localhost -p {gw['port']}`, "
+                   f"password `{password}`, then `{str(prompts.get('neIdPrompt') or 'neId: ').strip()}` — the neId "
+                   "picks the node:")
+        for pr in niam.get("profiles") or []:
+            ids = [str(x) for x in pr.get("neIds") or []]
+            out.append(f"  - {', '.join(f'`{x}`' for x in ids[:3])}{' …' if len(ids) > 3 else ''} → **{pr.get('name')}**"
+                       f" ({len(ids)} neId{'s' if len(ids) != 1 else ''})")
+        out.append("  - Any other neId is refused (`NE (<id>) is not found in the inventory.`) and asked again.")
+    return out
+
+
 def _load(path: Path) -> dict:
     try:
         return YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
@@ -82,7 +121,7 @@ def simulator_sections(sim_dir: str | Path, uc_name: str, run_id: str = "") -> s
     instances = _instances(sim_dir)
     if not instances:
         return ""
-    configs = {i["name"]: _load(sim_dir / "config" / f"{i['name']}.yaml") for i in instances}
+    configs = _configs(sim_dir, instances)
     body = guide_markdown(sim_dir, uc_name, instances, configs, run_id, standalone=False)
     out, fenced = [], False
     for line in body.split("\n"):
@@ -99,8 +138,11 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
     session to try each server by hand (user, 2026-11-13: the guide must be specific to the UC)."""
     overlay = _load(sim_dir / f"{uc_name}.yaml")
     wf_nodes = overlay.get("nodes") if isinstance(overlay.get("nodes"), dict) else {}
-    served = {n: i for i in instances for n in (i.get("nodes") or [i["name"]])}
-    names = ", ".join(f"**{i['name']}** (port {i['port']})" for i in instances)
+    servers = _servers(instances)
+    served = {n: i for i in servers for n in (i.get("nodes") or [i["name"]])}
+    names = ", ".join(f"**{i['name']}** (port {i['port']}"
+                      + (f", nodes {', '.join(pr['name'] for pr in i['profiles'])}" if i.get("profiles") else "")
+                      + ")" for i in instances)
     lines = [
         f"# {uc_name} — network simulator" if standalone else "# Network simulator",
         "",
@@ -116,9 +158,16 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
         "|---|---|---|---|---|---|",
     ]
     for inst in instances:
+        if inst.get("profiles"):
+            cfg = configs.get(inst["name"]) or {}
+            user, password = _login(cfg)
+            lines.append(f"| {inst['name']} | {inst['port']} | (gateway) | — | {user or '—'} / {password or '—'} | "
+                         "Access gateway: one login, the neId picks the node |")
+    for inst in servers:
         cfg = configs.get(inst["name"]) or {}
         user, password = _login(cfg)
-        lines.append(f"| {inst['name']} | {inst['port']} | {', '.join(inst.get('nodes') or [inst['name']])} | "
+        port = f"{inst['port']} (via {inst['gateway']})" if inst.get("gateway") else inst["port"]
+        lines.append(f"| {inst['name']} | {port} | {', '.join(inst.get('nodes') or [inst['name']])} | "
                      f"{(cfg.get('config') or {}).get('hostname') or '—'} | {user or '—'} / {password or '—'} | "
                      f"{_role(inst, cfg, wf_nodes)} |")
     lines += [
@@ -139,8 +188,8 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
         "",
         "```",
     ]
-    lines += [f"# {i['name']} ({', '.join(i.get('nodes') or [i['name']])})\n{_java_line(i['name'], i['port'])}"
-              for i in instances]
+    lines += [f"# {i['name']} ({', '.join(pr['name'] for pr in i['profiles']) if i.get('profiles') else ', '.join(i.get('nodes') or [i['name']])})"
+              f"\n{_java_line(i['name'], i['port'])}" for i in instances]
     lines += [
         "```",
         "",
@@ -151,9 +200,10 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
         "## How the servers work together",
         "",
     ]
-    lines += _together(instances, configs, wf_nodes, served)
+    lines += _gateway_lines(instances, configs)
+    lines += _together(servers, configs, wf_nodes, served)
     lines += _walkthrough(overlay, configs, served)
-    lines += _by_hand(instances, configs, wf_nodes, overlay, served)
+    lines += _by_hand(servers, configs, wf_nodes, overlay, served)
     if standalone:
         lines += _files_section(uc_name)
     lines += _workflow_section(sim_dir, uc_name, instances)
@@ -195,7 +245,9 @@ def _together(instances: list[dict], configs: dict[str, dict], wf_nodes: dict, s
                            f"with SFTP on port {port} (workflow node `{node}`, user `{user}`, password `{password}`).")
                 continue
             ssh = _wf_login(wf_nodes, node)
-            text = f"- **{node}** → server **{name}**: the workflow logs in with `ssh {ssh.get('user') or user}@localhost -p {port}`, password `{password}`"
+            via = f" through gateway **{inst['gateway']}**" if inst.get("gateway") else ""
+            text = (f"- **{node}** → server **{name}**{via}: the workflow logs in with "
+                    f"`ssh {ssh.get('user') or user}@localhost -p {port}`, password `{password}`")
             if ssh.get("ne_id"):
                 text += f"; NIAM asks `neId:` and the workflow answers `{ssh['ne_id']}`"
             elevate = (cfg.get("ctrl+p+e") or {}).get("pushPrompt")

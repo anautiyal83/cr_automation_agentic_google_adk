@@ -51,6 +51,11 @@ or, when the activity modifies values the read prints (a profile / attributes, v
   changed_by: ['<command>']               # [] when the change is applied on another node
   replace:
   - {{match: '<python regex of the line before>', with: '<the line after the activity>'}}   # one per changed line
+  In `with`, a value the activity takes from the CIQ is written {{ciq:<CIQ column>}} (e.g. 'scscfMandCap:
+  {{ciq:Mandatory Cap}}'), never the CIQ cell itself: each test case fills it from its own CIQ record, and a cell
+  'UNCHANGED' keeps the line as it was, a blank cell deletes the attribute. List a replace for EVERY attribute the activity can set from
+  the CIQ (each column the request carries, e.g. VNI → netwListId), also when the record shown below keeps it:
+  other records change it.
 
 {reads}
 
@@ -63,6 +68,50 @@ or, when the activity modifies values the read prints (a profile / attributes, v
 
 
 _SETUP = {"source", ".", "export", "cd", "set", "unset", "umask"}  # load the environment: neither read nor change
+
+# A post-activity line holding CIQ values (OB-87, run 61561981: one after-profile for every test case, but EAST
+# expects Mandatory Cap 10 and NORTH other values; the LLM wrote CIQ cells — `UNCHANGED` — as values):
+# `scscfMandCap: {ciq:Mandatory Cap}{ciq-else:scscfMandCap: 1}` — step 9 fills it from the case's CIQ record
+# (`resolve_ciq`); a cell `UNCHANGED` keeps the line as it was, a blank cell deletes the attribute
+CIQ_TOKEN = re.compile(r"\{ciq:([^{}]+)\}")
+CIQ_ELSE = "{{ciq-else:{}}}"
+_CIQ_ELSE = re.compile(r"\{ciq-else:(.*)\}$", re.S)
+_KEEP = {"unchanged", "na", "n/a", "-"}
+
+
+def resolve_line(line: str, record: dict) -> str | None:
+    """A post-activity line for one CIQ record; None when it is to be left out."""
+    if "{ciq" not in line:
+        return line
+    m = _CIQ_ELSE.search(line)
+    body, before = (line[:m.start()], m.group(1)) if m else (line, None)
+    values = {col: str(record.get(col, record.get(col.strip(), ""))).strip() for col in CIQ_TOKEN.findall(body)}
+    if any(v.lower() in _KEEP for v in values.values()):
+        return before if before else None
+    if any(not v for v in values.values()):
+        return None  # a blank cell deletes the attribute (run 61561981's answer: "empty tag … to delete")
+    return CIQ_TOKEN.sub(lambda t: values.get(t.group(1), ""), body)
+
+
+def resolve_ciq(config: dict, record: dict) -> bool:
+    """Fill every CIQ line of an instance config (in place) for one CIQ record; True when something changed."""
+    changed = False
+
+    def walk(node):
+        nonlocal changed
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "lines" and isinstance(v, list) and any("{ciq" in str(x) for x in v):
+                    filled = [resolve_line(str(x), record) for x in v]
+                    node[k] = [x for x in filled if x is not None]
+                    changed = True
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(config)
+    return changed
 
 
 def _kind(phase: str) -> str:
@@ -204,17 +253,17 @@ def expand(answer: dict, pre: list[str], docs: dict[str, str]) -> list[str] | No
         except re.error:
             continue
         hit = [i for i, l in enumerate(lines) if rx.search(l)]
-        for i in hit:
-            lines[i] = item["with"]
+        for i in hit:  # a CIQ value: filled per test case, the line as it was when the cell keeps it (OB-87)
+            lines[i] = item["with"] + (CIQ_ELSE.format(lines[i]) if CIQ_TOKEN.search(item["with"]) else "")
         if not hit:  # an attribute the activity adds
-            added.append(item["with"])
+            added.append(item["with"] + (CIQ_ELSE.format("") if CIQ_TOKEN.search(item["with"]) else ""))
     if not added and lines == pre:
         return None
     return lines + [l for l in added if l not in lines]
 
 
 async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents: list[str] | None,
-                others: list[dict] | None = None) -> dict:
+                others: list[dict] | None = None, workflow_commands: list[dict] | None = None) -> dict:
     """``entries`` with each repeated read answering its changed output once the activity has run (``others``:
     the other nodes' commands, for a change applied there)."""
     import yaml
@@ -236,6 +285,15 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
                           "\n  between the two reads the activity runs on OTHER nodes (changed_by: []):\n"
                           + "\n".join(f"    - {o.get('node')}: {o.get('description') or o.get('cmd') or 'file transfer'}"
                                       for o in r.get("cross") or [])))
+    # the CIQ columns the activity sends (`${rec.data.X}` in its commands, on any node): each one a cross-node read
+    # prints needs its replace — the LLM left `Packet Data Network Type` → pdnType out on one draft (OB-87)
+    sent = sorted({m for c in [*node.commands, *(others or []), *(workflow_commands or [])]
+                   if _kind(c.get("phase", "")) == "activity"
+                   for m in re.findall(r"\$\{(?:rec|configSequences\.\d+\.records\.\d+)\.data\.([^}]+)\}",
+                                       str(c.get("cmd") or ""))})
+    if sent and any(r.get("cross") for r in reads):
+        listing.append("CIQ COLUMNS THE ACTIVITY SENDS (give a replace for EACH one a read above prints — map the "
+                       "column to the attribute that shows it): " + ", ".join(sent))
     user = USER.format(uc_name=uc_name, node=node.name, reads="\n\n".join(listing),
                        documents="\n".join(f"{col} = {Path(d).name}:\n{preview(d)}" for col, d in docs.items())
                        or "(none uploaded)",

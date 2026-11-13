@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import yaml
+
 import openpyxl
 import pytest
 
@@ -272,3 +274,29 @@ def test_a_read_changes_after_the_activity_on_another_node():
     # a repository server's transfers are no change
     repo = [{**o, "node": "repo_server"} for o in pgw]
     assert asyncio.run(state_changes.apply(llm, "UC", rds, entries, {}, [], others=repo)) == entries
+
+
+
+def test_post_activity_ciq_values_are_filled_per_test_case(tmp_path):
+    """OB-87 (run 61561981): one after-profile for every case, but EAST expects Mandatory Cap 10 and NORTH keeps it
+    (`UNCHANGED`); the LLM had written CIQ cells as values. The line holds the column; each case fills its record."""
+    import json
+    from skills.network_config_test.scenarios import case_record, fill_ciq
+    from skills.network_simulator_setup.state_changes import expand
+    after = expand({"replace": [{"match": "^scscfMandCap:", "with": "scscfMandCap: {ciq:Mandatory Cap}"},
+                                {"match": "^pdnType:", "with": "pdnType: {ciq:PDN Type}"}]},
+                   ["uid: 1", "scscfMandCap: 1", "pdnType: IPv6"], {})
+    cfg = yaml.safe_dump({"regex:^ldapsearch": {"responses": [{"whenState": {"s": "1"}, "lines": after},
+                                                             {"lines": ["uid: 1", "scscfMandCap: 1"]}]}})
+    ciq = tmp_path / "ciq.json"
+    ciq.write_text(json.dumps({"crGroups": [{"crGroup": "CR1", "nodeGroups": [
+        {"nodeGroup": "EAST", "nodes": [{"node": "EAST"}], "configSequences": [{"records": [
+            {"data": {"Mandatory Cap": "10", "PDN Type": "IPv4"}}]}]},
+        {"nodeGroup": "NORTH", "nodes": [{"node": "NORTH"}], "configSequences": [{"records": [
+            {"data": {"Mandatory Cap": "UNCHANGED", "PDN Type": ""}}]}]}]}]}), encoding="utf-8")
+    east = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "EAST", "CR1"))))
+    north = yaml.safe_load(fill_ciq(cfg, case_record((str(ciq), "NORTH", "CR1"))))
+    assert east["regex:^ldapsearch"]["responses"][0]["lines"] == ["uid: 1", "scscfMandCap: 10", "pdnType: IPv4"]
+    # UNCHANGED keeps the line, a blank cell deletes the attribute (the UC's answer: "empty tag … to delete")
+    assert north["regex:^ldapsearch"]["responses"][0]["lines"] == ["uid: 1", "scscfMandCap: 1"]
+    assert east["regex:^ldapsearch"]["responses"][1]["lines"] == ["uid: 1", "scscfMandCap: 1"]  # before: untouched

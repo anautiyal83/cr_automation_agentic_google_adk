@@ -277,6 +277,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - CIQ JSON (step 4): one `<UC>.json` with `crGroups[].nodeGroups[].nodes[]` (`json_output_builder`, from the CIQ layout);
   read it with `tools.ciq_json.node_groups` (also handles the older per-CR files with `nodeGroups` at the root)
 - How a UC simulator must behave for cli-automation: `AGENTS.md` of the MockWire repo (read before changing step 8)
+- NIAM nodes run behind ONE simulated gateway (MW-13, `gateway.py`): `config/<name>_gateway.yaml` (login, prompts,
+  `niam.profiles`: neId → node YAML) + the node YAMLs unchanged; one process / port, the neId picks the node; other
+  nodes (repo server) run on their own. Post-activity answers may hold `{ciq:<column>}` — step 9 fills them per case
 - Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
 - MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm diff …` on its VFS: step 8

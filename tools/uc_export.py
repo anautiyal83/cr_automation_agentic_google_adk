@@ -146,6 +146,10 @@ def _descriptions(run_dir: Path, uc_name: str):
     except (OSError, ValueError):
         manifest = {}
     ports = {str(i.get("name")): i for i in manifest.get("instances") or []}
+    gateways = {str(i.get("name")) for i in manifest.get("instances") or [] if i.get("profiles")}
+    for i in manifest.get("instances") or []:  # a node behind a gateway is reached on the gateway's port
+        for pr in i.get("profiles") or []:
+            ports[str(pr.get("name"))] = {"port": f"{i.get('port')} via {i.get('name')}", "nodes": pr.get("nodes")}
     callers = _script_callers(run_dir / f"{uc_name}.yaml")
     inputs = _ciq_files(run_dir)
     niam = set()
@@ -183,6 +187,11 @@ def _descriptions(run_dir: Path, uc_name: str):
             return "—"
         if arc == "simulator/mockwire.jar":
             return "MockWire, the network simulator (Java 8 or later)"
+        if arc.startswith("simulator/config/") and name[:-5] in gateways:
+            nodes = [pr.get("name") for i in manifest.get("instances") or [] if i.get("name") == name[:-5]
+                     for pr in i.get("profiles") or []]
+            return (f"Access gateway **{name[:-5]}** (port {ports[name[:-5]].get('port', '?')}): the one login of "
+                    f"the nodes behind it and which neId reaches which of them ({', '.join(nodes)})")
         if arc.startswith("simulator/config/"):
             return (f"{server(name[:-5])}: its prompts, logins{', NIAM ids' if name[:-5] in niam else ''} and the "
                     "answer to every workflow command it receives")
@@ -257,4 +266,6 @@ def _instances(sim: Path) -> list[str]:
         manifest = json.loads((sim / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return [str(i["name"]) for i in manifest.get("instances") or [] if i.get("name")]
+    # a gateway's nodes have configs, answers and file systems of their own (MW-13)
+    return [str(n) for i in manifest.get("instances") or [] if i.get("name")
+            for n in [i["name"], *[pr.get("name") for pr in i.get("profiles") or [] if pr.get("name")]]]
