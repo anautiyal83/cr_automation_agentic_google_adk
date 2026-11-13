@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -76,56 +77,65 @@ def _java_line(name: str, port: int, jar: str = "mockwire.jar", sep: str = "/") 
 
 def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: dict[str, dict],
                    run_id: str = "") -> str:
-    first = instances[0]
+    """The UC's simulator: its servers and ports, how they work together (NIAM login, su, nested shells, repo
+    server copies, file triggers), the workflow's commands on each server with what the simulator answers, and a
+    session to try each server by hand (user, 2026-11-13: the guide must be specific to the UC)."""
+    overlay = _load(sim_dir / f"{uc_name}.yaml")
+    wf_nodes = overlay.get("nodes") if isinstance(overlay.get("nodes"), dict) else {}
+    served = {n: i for i in instances for n in (i.get("nodes") or [i["name"]])}
+    names = ", ".join(f"**{i['name']}** (port {i['port']})" for i in instances)
     lines = [
         f"# {uc_name} — network simulator",
         "",
-        "MockWire simulates the nodes of this activity, one instance (SSH server) per node, and answers the "
-        "commands of the execution YAML the way step 8 (Simulator Setup) prepared them"
-        + (f" in run `{run_id}`" if run_id else "") + ". Step 9 (QA-Execution) ran the workflow against it.",
+        f"This UC's workflow talks to {len(instances)} server{'s' if len(instances) > 1 else ''}: {names}. "
+        "Each is one MockWire SSH server on localhost that answers like the real node did in the uploaded "
+        "transcripts, as step 8 (Simulator Setup) prepared it" + (f" in run `{run_id}`" if run_id else "")
+        + ". Step 9 (QA-Execution) ran the workflow against them.",
         "",
-        "## Requirements",
+        "## Servers",
         "",
-        "- Java 8 or later on the PATH (`java -version`).",
-        "- `mockwire.jar` in this folder (the UC export includes it), or pass its path to the start script.",
+        "| Server | Port | Simulates (workflow nodes) | Host name | Login | What it is |",
+        "|---|---|---|---|---|---|",
+    ]
+    for inst in instances:
+        cfg = configs.get(inst["name"]) or {}
+        user, password = _login(cfg)
+        lines.append(f"| {inst['name']} | {inst['port']} | {', '.join(inst.get('nodes') or [inst['name']])} | "
+                     f"{(cfg.get('config') or {}).get('hostname') or '—'} | {user or '—'} / {password or '—'} | "
+                     f"{_role(inst, cfg, wf_nodes)} |")
+    lines += [
+        "",
+        "Requirements: Java 8 or later on the PATH (`java -version`); `mockwire.jar` in this folder (the UC export "
+        "includes it) or its path given to the start script.",
         "",
         "## Start",
+        "",
+        "All servers at once, in the background (ready when each `logs/<server>.log` shows `listening on port`):",
         "",
         "| Where | Command |",
         "|---|---|",
         "| Windows (PowerShell) | `.\\start_simulator.ps1` &nbsp; options `-Jar <path>`, `-TtlMinutes <n>`, `-Clean` |",
-        "| Linux / WSL / macOS | `./start_simulator.sh` &nbsp; or `./start_simulator.sh <path to mockwire.jar>`; "
-        "`CLEAN=1`, `TTL_MINUTES=<n>` |",
+        "| Linux / WSL / macOS | `./start_simulator.sh [path/to/mockwire.jar]` &nbsp; `CLEAN=1`, `TTL_MINUTES=<n>` |",
         "",
-        "Every instance starts in the background. An instance is ready when `logs/<instance>.log` shows "
-        "`listening on port <port>`. It stops on its own after the TTL "
-        f"({DEFAULT_TTL_MINUTES} minutes by default).",
-        "",
-        "Clean (`-Clean` / `CLEAN=1`) empties the simulated file systems (`vfs/`) first. Every step 9 case "
-        "started from an empty one: without it, files a previous session uploaded or created are still there.",
-        "",
-        "One instance by hand, from this folder:",
+        "Or each server in its own terminal, from this folder:",
         "",
         "```",
-        _java_line(first["name"], first["port"]),
-        "```",
-        "",
-        "## Stop",
-        "",
-        "`.\\stop_simulator.ps1` (Windows) or `./stop_simulator.sh`. They stop the processes the start "
-        "script recorded in `logs/<instance>.pid`.",
-        "",
-        "## Nodes",
-        "",
-        "| Instance | Port | Workflow nodes | Login user | Password |",
-        "|---|---|---|---|---|",
     ]
-    for inst in instances:
-        user, password = _login(configs.get(inst["name"]) or {})
-        nodes = ", ".join(inst.get("nodes") or [inst["name"]])
-        lines.append(f"| {inst['name']} | {inst['port']} | {nodes} | {user or '—'} | {password or '—'} |")
-    for inst in instances:
-        lines += [""] + _node_section(inst, configs.get(inst["name"]) or {})
+    lines += [f"# {i['name']} ({', '.join(i.get('nodes') or [i['name']])})\n{_java_line(i['name'], i['port'])}"
+              for i in instances]
+    lines += [
+        "```",
+        "",
+        f"They stop on their own after the TTL ({DEFAULT_TTL_MINUTES} minutes), or with `.\\stop_simulator.ps1` / "
+        "`./stop_simulator.sh`. Clean (`-Clean` / `CLEAN=1`) empties the simulated file systems (`vfs/`) first — "
+        "every step 9 case started from empty ones; without it the files of an earlier session are still there.",
+        "",
+        "## How the servers work together",
+        "",
+    ]
+    lines += _together(instances, configs, wf_nodes, served)
+    lines += _walkthrough(overlay, configs, served)
+    lines += _by_hand(instances, configs, wf_nodes, overlay, served)
     lines += _files_section(uc_name)
     lines += _workflow_section(sim_dir, uc_name, instances)
     return "\n".join(lines) + "\n"
@@ -136,50 +146,248 @@ def _login(cfg: dict) -> tuple[str, str]:
     return str(users[0].get("username") or ""), str(users[0].get("password") or "")
 
 
-def _node_section(inst: dict, cfg: dict) -> list[str]:
-    name, port = inst["name"], inst["port"]
-    user, password = _login(cfg)
-    out = [f"### {name} — port {port}", "",
-           f"- Connect: `ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-           f"{user or '<user>'}@localhost` (Windows: `UserKnownHostsFile=NUL`), password `{password}`"]
-    niam = cfg.get("niam") or {}
-    if niam.get("enabled"):
-        ne_ids = [str(n) for u in niam.get("users") or [] for n in u.get("neIds") or []]
-        out.append("- NIAM: after the password it asks `neId:` — answer one of: "
-                   + ", ".join(f"`{n}`" for n in ne_ids))
-    prompt = str(((cfg.get("auth") or {}).get("users") or [{}])[0].get("prompt") or
-                 (cfg.get("config") or {}).get("prompt") or "")
-    if prompt:
-        out.append(f"- Login prompt: `{prompt}`")
-    elevate = cfg.get("ctrl+p+e") or {}
-    if elevate.get("pushPrompt"):
-        out.append(f"- Root: press **Ctrl+P**, then **Ctrl+E** (what `elevate_to_root` sends) → "
-                   f"`{elevate['pushPrompt']}`; `exit` goes back")
-    for u in ((cfg.get("auth") or {}).get("users") or [])[1:]:
-        out.append(f"- `su - {u.get('username')}`: password `{u.get('password')}` → `{u.get('prompt')}`")
-    nested, commands = [], []
-    for key, entry in cfg.items():
-        if key in _RESERVED_KEYS:
+def _is_repo(inst: dict) -> bool:
+    return any("repo" in str(n).lower() for n in [inst["name"], *(inst.get("nodes") or [])])
+
+
+def _role(inst: dict, cfg: dict, wf_nodes: dict) -> str:
+    if _is_repo(inst):
+        return "Repository server: input files and backups are copied to / from it"
+    if (cfg.get("niam") or {}).get("enabled"):
+        return "Network node, reached through NIAM (asks `neId:` after the password)"
+    return "Network node"
+
+
+def _wf_login(wf_nodes: dict, node: str) -> dict:
+    v = wf_nodes.get(node) if isinstance(wf_nodes.get(node), dict) else {}
+    return v.get("ssh") or v.get("sftp") or {}
+
+
+def _together(instances: list[dict], configs: dict[str, dict], wf_nodes: dict, served: dict) -> list[str]:
+    out = []
+    for inst in instances:
+        cfg = configs.get(inst["name"]) or {}
+        name, port = inst["name"], inst["port"]
+        user, password = _login(cfg)
+        for node in inst.get("nodes") or [name]:
+            v = wf_nodes.get(node) if isinstance(wf_nodes.get(node), dict) else {}
+            if str(v.get("type") or "").lower() == "sftp" or "sftp" in str(v.get("plugin") or ""):
+                out.append(f"- **{name}** ← the automation server (where the workflow runs) copies files to and from it "
+                           f"with SFTP on port {port} (workflow node `{node}`, user `{user}`, password `{password}`).")
+                continue
+            ssh = _wf_login(wf_nodes, node)
+            text = f"- **{node}** → server **{name}**: the workflow logs in with `ssh {ssh.get('user') or user}@localhost -p {port}`, password `{password}`"
+            if ssh.get("ne_id"):
+                text += f"; NIAM asks `neId:` and the workflow answers `{ssh['ne_id']}`"
+            elevate = (cfg.get("ctrl+p+e") or {}).get("pushPrompt")
+            if ssh.get("elevate_to_root") and elevate:
+                text += f"; then **Ctrl+P, Ctrl+E** gives the root prompt `{elevate}`"
+            out.append(text + ".")
+        for u in ((cfg.get("auth") or {}).get("users") or [])[1:]:
+            out.append(f"  - On {name}, `su - {u.get('username')}` (password `{u.get('password')}`) → `{u.get('prompt')}`.")
+        for key, entry in cfg.items():
+            if key in _RESERVED_KEYS or not isinstance(entry, dict):
+                continue
+            prompt = entry.get("pushPrompt") or next(
+                (a.get("pushPrompt") for q in entry.get("interactive") or [] if isinstance(q, dict)
+                 for a in (q.get("answers") or {}).values() if isinstance(a, dict) and a.get("pushPrompt")), None)
+            if prompt:
+                question = next((q.get("question") for q in entry.get("interactive") or [] if isinstance(q, dict)), "")
+                out.append(f"  - On {name}, `{_shown(key)}` opens a nested shell"
+                           + (f" (asks `{question.strip()}`)" if question else "") + f" → `{prompt}`; `exit` leaves it.")
+        for t in (cfg.get("vfs") or {}).get("triggers") or []:
+            if isinstance(t, dict) and t.get("onCreate"):
+                out.append(f"  - On {name}, a file written to `{_pattern_path(t['onCreate'])}` makes the node create "
+                           f"`{t.get('create')}` ({len(t.get('lines') or [])} lines: the recorded response) — "
+                           "the node's own processing of an uploaded file.")
+        for peer, spec in ((cfg.get("transfer") or {}).get("peers") or {}).items():
+            target = served.get(peer, {}).get("name", peer)
+            out.append(f"  - On {name}, `scp` / `sftp … @{peer}` reach server **{target}**'s files (`vfs/{target}/`, "
+                       f"password `{(spec or {}).get('password', '')}`): what the node copies there lands on {target}.")
+        dirs = (cfg.get("vfs") or {}).get("dirs") or []
+        if dirs:
+            out.append(f"  - {name}'s simulated folders: " + ", ".join(f"`{d}`" for d in dirs[:8])
+                       + (" …" if len(dirs) > 8 else "") + f" (in `vfs/{name}/`; `ls cat cp mv tar diff …` work on them).")
+    local = [n for n, v in wf_nodes.items() if isinstance(v, dict)
+             and "local" in (str(v.get("type") or "").lower(), str(v.get("plugin") or "").lower())]
+    if local:
+        out.append(f"- Steps on node `{local[0]}` run on the machine that runs the workflow (helper scripts in "
+                   "`scripts/`), not in the simulator.")
+    return out
+
+
+def _pattern_path(regex: str) -> str:
+    return re.sub(r"\(\?<(\w+)>[^)]*\)", r"<\1>", regex).replace("\\", "")
+
+
+def _shown(key: str, limit: int = MAX_SHOWN_CHARS) -> str:
+    text = key[len("regex:"):] if key.startswith("regex:") else key
+    if key.startswith("regex:"):  # `^ssh … dsadmin@\S+\s*$` → `ssh … dsadmin@<…>`
+        text = re.sub(r"^\^|\\s\*\$$|\$$", "", text)
+        text = re.sub(r"\(\?<\w+>[^)]*\)|\\S\+|\.\+\??|\[\^'\]\*", "<…>", text)
+        text = re.sub(r"\\s[*+]", " ", text)
+        text = re.sub(r"\\(.)", r"\1", text)
+    text = text.replace("\n", " ⏎ ")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _answer(cfg: dict, cmd: str) -> str:
+    """What the server answers to a workflow command, in a few words."""
+    from .skill import _SIM_BUILTINS, _find_entry, command_key_regex
+    from .vfs_commands import FILE_COMMANDS, pod_script
+    entries = {k: v for k, v in cfg.items() if k not in _RESERVED_KEYS}
+    # as at run time: a placeholder holds one value (`${rec.data.Test IMSI}` has a space, a `\S+` key never matched it)
+    key, entry = _find_entry(entries, cmd, re.sub(r"\$\{[^{}]+\}", "X1", cmd))
+    if key is None:
+        try:
+            body = re.compile(command_key_regex(cmd.strip()))
+            key = next((k for k in entries if not str(k).startswith("regex:") and body.fullmatch(str(k))), None)
+            entry = entries.get(key) if key is not None else None
+        except re.error:
+            pass
+    if isinstance(entry, dict):
+        if entry.get("pushPrompt"):
+            return f"opens a nested shell → `{entry['pushPrompt']}`"
+        if entry.get("interactive"):
+            q = next((x.get("question") for x in entry["interactive"] if isinstance(x, dict)), "")
+            return f"asks `{str(q).strip()}`, then opens a nested shell"
+        if entry.get("responses"):
+            states = [r for r in entry["responses"] if isinstance(r, dict)]
+            return (f"changes once the activity ran: {_first(states[-1].get('lines'))} before, "
+                    f"{_first(states[0].get('lines'))} after")
+        return _first(entry.get("lines"))
+    first = cmd.strip().split(" ", 1)[0] if cmd.strip() else ""
+    if first == "su":
+        user = next((u for u in (cfg.get("auth") or {}).get("users") or [] if cmd.strip().endswith(str(u.get("username")))), None)
+        return f"switches user → `{user.get('prompt')}`" if user else "switches user (`su`)"
+    if first in ("exit", "logout"):
+        return "leaves the user / nested shell it is in"
+    if pod_script(cmd):
+        return "the command inside the pod runs on the node's simulated files"
+    if first in _SIM_BUILTINS | FILE_COMMANDS | {"if", "for", "cd", "export", "source", ".", "printf", "date", "ls"} \
+            or re.match(r"^\w+=", first):
+        return "the node's built-in shell (its simulated files)"
+    return "**no answer** (`command not found`)"
+
+
+def _first(lines) -> str:
+    rows = [str(x) for x in (lines or []) if str(x).strip()]
+    if not rows:
+        return "(no output)"
+    head = rows[0].strip()
+    head = head if len(head) <= 70 else head[:70] + "…"
+    return f"`{head}`" + (f" (+{len(rows) - 1} lines)" if len(rows) > 1 else "")
+
+
+def _steps(steps, depth=0):
+    for st in steps or []:
+        if not isinstance(st, dict):
             continue
-        shown = key[len("regex:"):] if key.startswith("regex:") else key
-        shown = shown if len(shown) <= MAX_SHOWN_CHARS else shown[:MAX_SHOWN_CHARS] + "…"
-        if isinstance(entry, dict) and (entry.get("pushPrompt") or entry.get("interactive")):
-            nested.append(shown)
+        if st.get("steps"):
+            yield from _steps(st["steps"], depth + 1)
         else:
-            commands.append(("pattern " if key.startswith("regex:") else "") + f"`{shown}`")
-    if nested:
-        out.append("- Commands that open a nested shell (`exit` leaves it): " + ", ".join(f"`{n}`" for n in nested))
-    vfs = cfg.get("vfs") or {}
-    if vfs.get("dirs"):
-        out.append("- Folders on the node: " + ", ".join(f"`{d}`" for d in vfs["dirs"]))
-    if vfs.get("triggers"):
-        out.append(f"- {len(vfs['triggers'])} file trigger(s): a file uploaded there makes the node write its "
-                   "response file (e.g. an order's `.res`)")
-    if commands:
-        out.append(f"- Answers {len(commands)} command(s) of the workflow"
-                   + (f" (first {MAX_LISTED_COMMANDS})" if len(commands) > MAX_LISTED_COMMANDS else "") + ":")
-        out += [f"  - {c}" for c in commands[:MAX_LISTED_COMMANDS]]
-    out.append("- Shell builtins on its file system answer too: `ls cat cp mv rm mkdir chmod tar diff …`")
+            yield st, depth
+
+
+def _flow(rows: list, served: dict) -> str:
+    """The servers a phase moves between, in order (`RDS (5) → automation server (2) → PGW (7) → …`), with what
+    happens on PGW-like nodes when a file is uploaded."""
+    parts: list[list] = []
+    for st, _ in rows:
+        node = str(st.get("node") or "")
+        inst = served.get(node)
+        name = inst["name"] if inst else "automation server"
+        what = "SFTP" if isinstance(st.get("sftp"), dict) else ""
+        if parts and parts[-1][0] == name:
+            parts[-1][1] += 1
+            parts[-1][2] |= {what} - {""}
+        else:
+            parts.append([name, 1, {what} - {""}])
+    return " → ".join(f"**{n}** ({c} step{'s' if c > 1 else ''}{', file transfer' if w else ''})" for n, c, w in parts)
+
+
+def _walkthrough(overlay: dict, configs: dict[str, dict], served: dict) -> list[str]:
+    phases = overlay.get("phases") if isinstance(overlay.get("phases"), dict) else {}
+    if not phases:
+        return []
+    out = ["", "## What the workflow does on each server", "",
+           "In order, per phase: the server each step runs on, its command (as in the workflow; `${…}` are "
+           "filled from the CIQ and earlier steps) and what the simulator answers.", ""]
+    for key, body in phases.items():
+        if not isinstance(body, dict):
+            continue
+        rows = list(_steps(body.get("steps")))
+        if not rows:
+            continue
+        title = body.get("name") or key
+        from skills.network_config_gen.contract import ROLLBACK, phase_kind
+        note = (" — runs when an earlier step failed, or alone in a rollback-only run"
+                if phase_kind(str(key), body) == ROLLBACK else "")
+        out += [f"### {title}{note}", "", f"Flow: {_flow(rows, served)}", ""]
+        for n, (st, depth) in enumerate(rows[:60], 1):
+            node = str(st.get("node") or "")
+            inst = served.get(node)
+            each = " (each CIQ record)" if depth else ""
+            if isinstance(st.get("sftp"), dict):
+                sf = st["sftp"]
+                where = f"**{inst['name']}** ({inst['port']})" if inst else f"`{node}`"
+                out.append(f"{n}. {where}{each} — SFTP {sf.get('operation')} `{sf.get('local_path')}` ↔ "
+                           f"`{sf.get('remote_path')}`")
+                continue
+            send = str(st.get("send") or "").strip()
+            if not send:
+                continue
+            shown = send.replace("\n", " ⏎ ")
+            shown = shown if len(shown) <= 140 else shown[:140] + "…"
+            if inst is None:
+                out.append(f"{n}. `{node}` (the machine running the workflow){each} — `{shown}`")
+            else:
+                out.append(f"{n}. **{inst['name']}** ({inst['port']}){each} — `{shown}` → "
+                           f"{_answer(configs.get(inst['name']) or {}, send)}")
+        if len(rows) > 60:
+            out.append(f"… and {len(rows) - 60} more steps.")
+        out.append("")
+    return out
+
+
+def _by_hand(instances: list[dict], configs: dict[str, dict], wf_nodes: dict, overlay: dict,
+             served: dict) -> list[str]:
+    out = ["## Try it by hand", "",
+           "Windows: use `UserKnownHostsFile=NUL` instead of `/dev/null`.", ""]
+    phases = overlay.get("phases") if isinstance(overlay.get("phases"), dict) else {}
+    sends: dict[str, list[str]] = {}
+    for body in phases.values():
+        for st, _ in _steps((body or {}).get("steps") if isinstance(body, dict) else []):
+            inst = served.get(str(st.get("node") or ""))
+            if inst and isinstance(st.get("send"), str) and "${" not in st["send"] and "\n" not in st["send"]:
+                sends.setdefault(inst["name"], []).append(st["send"].strip())
+    for inst in instances:
+        cfg = configs.get(inst["name"]) or {}
+        if _is_repo(inst) and not sends.get(inst["name"]):
+            user, password = _login(cfg)
+            out += [f"### {inst['name']} (port {inst['port']})", "", "```",
+                    f"sftp -P {inst['port']} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {user}@localhost",
+                    f"# password: {password}", "ls", "```", ""]
+            continue
+        user, password = _login(cfg)
+        node = next(iter(inst.get("nodes") or [inst["name"]]))
+        ssh = _wf_login(wf_nodes, node)
+        session = [f"ssh -p {inst['port']} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                   f"{ssh.get('user') or user}@localhost", f"# password: {password}"]
+        if ssh.get("ne_id"):
+            session.append(f"# neId: {ssh['ne_id']}")
+        if ssh.get("elevate_to_root") and (cfg.get("ctrl+p+e") or {}).get("pushPrompt"):
+            session.append("# press Ctrl+P, then Ctrl+E (root)")
+        tried = 0
+        for cmd in dict.fromkeys(sends.get(inst["name"], [])):
+            answer = _answer(cfg, cmd)
+            if "no answer" in answer or "built-in" in answer:
+                continue
+            session += [cmd, f"#   → {answer.replace('`', '')}"]
+            tried += 1
+            if tried == 4:
+                break
+        out += [f"### {inst['name']} (port {inst['port']})", "", "```", *session, "```", ""]
     return out
 
 

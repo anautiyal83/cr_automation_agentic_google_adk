@@ -63,9 +63,8 @@ def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = Non
     if missing:
         raise ExportError("Missing from the run: " + ", ".join(missing))
     jar = Path(jar) if jar else mockwire_jar()
-    # a run set up before step 8 wrote the guide
-    if not all((sim / n).is_file() for n in (GUIDE_NAME, *SCRIPT_NAMES)):
-        write_guide(sim, uc_name, run_id=rd.name)
+    # always the current guide (a run set up before step 8 wrote it, or wrote the earlier generic one)
+    write_guide(sim, uc_name, run_id=rd.name)
 
     out = export_path(rd, uc_name)
     out.parent.mkdir(parents=True, exist_ok=True)

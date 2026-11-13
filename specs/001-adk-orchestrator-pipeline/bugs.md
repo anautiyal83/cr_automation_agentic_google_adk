@@ -1660,3 +1660,17 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   would fail on the empty output too (a `^` regex never matches empty output). It could never pass, on a real MRF too.
 - **Fix** (step 6 validator `check_grep_filter_checks`): a success regex over a `| grep <name> || true` filter must
   accept a line naming the file or the empty output. Flags only this step among the earlier runs' workflows.
+
+### OB-79 — The simulator guide was generic, not about the UC (Medium, Fixed 2026-11-13)
+- User: the guide must say which servers to start on which ports, the UC's own commands, the repo server steps, and
+  how e.g. PGW and RDS work together.
+- **Fix** (`guide.py`, built from the manifest, the instance configs and the overlay workflow):
+  - Servers table (port, workflow nodes, host name, login, role: network node via NIAM / repository server) and the
+    start command of every server.
+  - How they work together: each node's login as the workflow does it (user, NIAM neId, Ctrl+P Ctrl+E root), `su`
+    users, nested shells, file triggers (PGW inbox → outbox `.res`), transfer peers (node → repo server files),
+    the automation server's SFTP to the repo, LOCAL steps.
+  - The workflow per phase: a flow line (`RDS → automation server → PGW (file transfer) → …`) and every step with
+    its server, command and the simulator's answer (placeholders filled like at run time).
+  - Try it by hand: per server the login and up to 4 workflow commands with their answers.
+  - The UC export always writes the current guide.

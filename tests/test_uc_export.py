@@ -27,6 +27,33 @@ sar 1 10: {lines: ['Average:        all      0.15      0.00      0.11      0.00 
 """
 
 
+RDS_CONFIG = """config: {prompt: 'rdsggn01:~ # ', hostname: rdsggn01}
+auth:
+  enabled: true
+  users:
+  - {username: oamsys, password: netconf-sim, prompt: 'rdsggn01:~ # '}
+  - {username: sdfrun, password: netconf-sim, prompt: 'rdshyd201$ '}
+'regex:^ldapsearch -x -b "imsi=\\S+,dc=IMSI" objectclass=\\*$': {lines: ['# extended LDIF', 'imsi: 1']}
+"""
+
+OVERLAY = """nodes:
+  RDS: {type: remote, plugin: ssh, ssh: {host: localhost, port: '22200', user: oamsys, ne_id: BH-R-1-CLI}}
+  PGW: {type: remote, plugin: ssh, ssh: {host: localhost, port: '22201', user: oamsys,
+        ne_id: BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI, elevate_to_root: true}}
+  LOCAL: {type: local, plugin: local}
+phases:
+  activity_configuration:
+    name: Main activity
+    steps:
+    - {node: RDS, send: su - sdfrun}
+    - {node: RDS, send: 'ldapsearch -x -b "imsi=${rec.data.Test IMSI},dc=IMSI" objectclass=*'}
+    - {node: LOCAL, send: "python create_xml.py --imsi '${rec.data.Test IMSI}'"}
+    - {node: PGW, sftp: {operation: upload, local_path: '${ORDERNO}.xml', remote_path: '/srv/inbox/${ORDERNO}.xml'}}
+    - {node: PGW, send: sar 1 10}
+    - {node: PGW, send: unknown_tool --x}
+"""
+
+
 def _run(tmp_path, with_deliverables=True):
     rd = tmp_path / "3f5d8990-0000-0000-0000-000000000000"
     sim = rd / "simulator"
@@ -34,8 +61,10 @@ def _run(tmp_path, with_deliverables=True):
         (sim / sub).mkdir(parents=True)
     (sim / "config" / "PGW.yaml").write_text(PGW_CONFIG, encoding="utf-8")
     (sim / "manifest.json").write_text(json.dumps({"sim_dir": str(sim), "instances": [
-        {"name": "PGW", "port": 22201, "nodes": ["PGW"], "pid": 1, "status": "stopped"}]}), encoding="utf-8")
-    (sim / f"{UC}.yaml").write_text("nodes: {PGW: {ssh: {host: localhost, port: '22201'}}}\n", encoding="utf-8")
+        {"name": "RDS", "port": 22200, "nodes": ["RDS"], "pid": 1, "status": "stopped"},
+        {"name": "PGW", "port": 22201, "nodes": ["PGW"], "pid": 2, "status": "stopped"}]}), encoding="utf-8")
+    (sim / f"{UC}.yaml").write_text(OVERLAY, encoding="utf-8")
+    (sim / "config" / "RDS.yaml").write_text(RDS_CONFIG, encoding="utf-8")
     (sim / "vfs/PGW/tmp/left_by_step9.xml").write_text("x", encoding="utf-8")
     (sim / "logs/PGW.events.jsonl").write_text("{}\n", encoding="utf-8")
     (sim / "logs/llm_PGW_raw.txt").write_text("raw", encoding="utf-8")
@@ -58,14 +87,30 @@ def test_guide_says_how_to_start_log_in_and_run_the_workflow(tmp_path):
     assert {p.name for p in written} == {GUIDE_NAME, "start_simulator.ps1", "start_simulator.sh",
                                          "stop_simulator.ps1", "stop_simulator.sh"}
     guide = (rd / "simulator" / GUIDE_NAME).read_text(encoding="utf-8")
-    assert "| PGW | 22201 | PGW | oamsys | netconf-sim |" in guide
-    assert "ssh -p 22201" in guide and "BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI" in guide
-    assert "Ctrl+P" in guide and "pgw:\\w # " in guide and "`su - provgw`" in guide
-    assert "`sar 1 10`" in guide and "^oc exec -it \\S+ -- bash$" in guide  # a command / a nested shell
+    # the UC's servers: ports, what they simulate, how to start each
+    assert "| PGW | 22201 | PGW | pgwggn01 | oamsys / netconf-sim |" in guide
+    assert "| RDS | 22200 | RDS | rdsggn01 |" in guide
+    assert "--config config/RDS.yaml" in guide and "--config config/PGW.yaml" in guide
+    # how they work together: NIAM login, root, su, nested shell, the file trigger, LOCAL steps
+    assert "NIAM asks `neId:` and the workflow answers `BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI`" in guide
+    assert "Ctrl+P, Ctrl+E" in guide and "pgw:\\w # " in guide and "`su - sdfrun`" in guide
+    assert "`oc exec -it <…> -- bash` opens a nested shell" in guide
+    assert "`/srv/inbox/<X>.xml` makes the node create `/srv/outbox/${X}.xml.res`" in guide
+    assert "Steps on node `LOCAL` run on the machine that runs the workflow" in guide
+    # the workflow on each server, with what the simulator answers
+    assert ("Flow: **RDS** (2 steps) → **automation server** (1 step) → **PGW** (3 steps, file transfer)"
+            in guide)
+    assert "`su - sdfrun` → switches user → `rdshyd201$ `" in guide
+    assert "objectclass=*` → `# extended LDIF` (+1 lines)" in guide
+    assert "SFTP upload `${ORDERNO}.xml` ↔ `/srv/inbox/${ORDERNO}.xml`" in guide
+    assert "`unknown_tool --x` → **no answer**" in guide
+    # by hand: the login and a command with its answer
+    assert "ssh -p 22201" in guide and "# neId: BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI" in guide
+    assert "sar 1 10\n#   → Average:" in guide
     assert "--port 22201" in guide and "--node BH --cr CR1" in guide
     assert f"--json ../json_data/{UC}.json" in guide
     sh = (rd / "simulator" / "start_simulator.sh").read_bytes()
-    assert b"\r\n" not in sh and b"start PGW 22201" in sh
+    assert b"\r\n" not in sh and b"start PGW 22201" in sh and b"start RDS 22200" in sh
     assert '@{ Name = "PGW"; Port = 22201 }' in (rd / "simulator" / "start_simulator.ps1").read_text(encoding="utf-8")
 
 
@@ -84,7 +129,7 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
                  "simulator/mockwire.jar", "simulator/config/PGW.yaml", f"simulator/{UC}.yaml",
                  "simulator/SIMULATOR_GUIDE.md", "simulator/start_simulator.ps1", "simulator/start_simulator.sh",
                  "simulator/stop_simulator.ps1", "simulator/stop_simulator.sh",
-                 "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/logs/"):
+                 "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/vfs/RDS/", "simulator/logs/"):
         assert f"{UC}/{name}" in names, name
     # the run's logs, events, LLM output, manifest and what step 9 left on the nodes stay out
     assert not [n for n in names if n.endswith((".jsonl", "raw.txt", "manifest.json", "left_by_step9.xml"))]
