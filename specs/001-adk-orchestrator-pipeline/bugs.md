@@ -1443,3 +1443,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix**: `NodeSpec.unmodelled_files` (the pod-copied files). `is_vfs_command` keeps a key that reads one of them,
   at all four call sites. Steps 8 + 9 on a copy of the run: **2/2 test cases pass** (sunny day 69 steps,
   rollback only 25 steps, 0 failed). Test `test_answer_for_a_pod_copied_file_is_not_dropped`.
+
+### OB-56 — Review buttons swollen after the one-line row + Clear cache box (Low, Fixed 2026-11-12)
+- In a narrow review panel (about 450 px at a 1100 px window) the no-wrap action row squeezed its buttons: labels
+  broke onto two lines and the buttons grew from 26 px to 59 px tall.
+- **Fix** (`progress_section.py` row class `cr-review-actions`, CSS in `ui/app.py`): the buttons don't shrink
+  (`flex-shrink: 0`), their labels stay on one line, the padding and icon gap are a little smaller, and a row that
+  still does not fit scrolls sideways with a thin scrollbar. Checked in the preview at 1440 px and 1100 px (all
+  buttons 26 px tall). Commit de71be2.
