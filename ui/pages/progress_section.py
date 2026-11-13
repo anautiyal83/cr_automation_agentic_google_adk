@@ -239,7 +239,7 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
             # every review action on ONE line, vertically centred (scrolls sideways when the window is narrow)
-            with ui.row().classes("w-full gap-2 items-center no-wrap").style("overflow-x: auto"):
+            with ui.row().classes("w-full gap-2 items-center no-wrap cr-review-actions").style("overflow-x: auto"):
                 self.ms_continue_btn = action(ui.button("Approve & continue", icon="check",
                     on_click=lambda: self._milestone_respond("continue")) \
                     .props("unelevated color=primary size=sm no-caps"), "progress")
