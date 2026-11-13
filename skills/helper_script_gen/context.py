@@ -56,8 +56,9 @@ def _writer(workflow: dict, value: str) -> tuple[str, str]:
         send = s.get("send")
         if not isinstance(send, str) or str(s.get("node", "")).lower() == "local":
             continue
-        from skills.network_simulator_setup.vfs_commands import sequence_parts
-        for part in sequence_parts(send.strip()):  # `export …; source …; org -c X >file`: the part that writes it
+        from skills.network_simulator_setup.vfs_commands import script_parts
+        # `export …; source …; org -c X >file` (also inside `kubectl exec … -- bash -c '…'`): the part that writes it
+        for part in script_parts(send):
             for _, target in _REDIRECT.findall(part):
                 if pattern.match(target.rsplit("/", 1)[-1]):
                     return str(s.get("node")), part.strip()

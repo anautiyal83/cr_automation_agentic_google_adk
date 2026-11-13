@@ -1536,3 +1536,50 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - NIAM nodes and `repo_server_sftp` had it; `repo_server` (ssh) and other ssh nodes did not.
 - **Fix**: `production._ssh_host_keys`: every `ssh` / `sftp` node block without `known_hosts` gets
   `strict_host_key_checking: false`. Test `test_every_ssh_node_accepts_the_host_key`.
+
+### OB-65 — Inline `python3 -c` program on a network node (High, Fixed 2026-11-13)
+- Run b81305ff, re-run with "Clear cache": step 6 wrote the delta TAC check as `python3 -c "import pandas …
+  read_excel('${rec.data.DELTA_TAC_FILE}') … open('/opt/sdf/processing/postdump_white_…')"` on the bastion. The
+  CIQ workbook is on the automation server and the dumps are inside the pod; it also guessed `WHITE`/`BLACK`/`GREY`
+  TAC prefixes. Step 9 passed it only on an answer step 8's LLM invented.
+- **Fix** (step 6 validator, `check_helper_script_nodes`): an inline Python program on a non-local node is an error
+  → regenerate as a helper script on node local, with the files it reads copied there first.
+
+### OB-66 — Dumps written inside a pod in one line got no answer / a canned diff (High, Fixed 2026-11-13)
+- Same run: `kubectl exec -it P -n NS -- bash -c 'export USER=sdfrun; source …; org -c X > /opt/sdf/processing/
+  predump_x.txt'`. Step 8 keyed the line without its redirect (never matched: `kubectl: command not found`), and
+  keyed the in-pod `diff` / `ls` with canned answers.
+- **Fix**:
+  - MockWire e72d022: `kubectl|oc exec … -- bash|sh -c '<script>'` with no key for the whole line runs the script on
+    the instance's VFS (a subshell).
+  - MockWire 5fc8430: a regex key without an end anchor answers its own command only — `^source <profile>`
+    swallowed `; org -c X > dump`, so `org` never ran.
+  - Step 8 `split_redirect_sequences`: a pod exec whose script writes a file or only works on files is answered
+    part by part (`pod_script`, `script_parts`); the helper script context finds the dump writer inside it.
+
+### OB-67 — Step 8 answer keys holding an unresolved `${…}` (High, Fixed 2026-11-13)
+- Same run, step 8 re-generated: the LLM keyed `oc get pods -n ${EIRNAMESPACE} | grep -i eirapp | …` as written.
+  MockWire gets the resolved line, so the key never matched (`oc: command not found`); step 8 counted it as answered.
+- **Fix** (`topology.placeholder_key`, also in `config_key`): an exact key with a `${…}` placeholder is written as
+  that command's anchored regex.
+
+### OB-68 — `count_var` without `loop: true` is never set (High, Fixed 2026-11-13)
+- Same run: the dump listing registered `{regex: 'predump_white_.+?\.txt', count_var: WHITE_BACKUP_COUNT}` and
+  checked `WHITE_BACKUP_COUNT == 1`. The JAR sets `count_var` only for a looped register (ResultProcessor bytecode),
+  so the count read as `''` and the check failed on listed files — on a real node too.
+- **Fix** (step 6 autofix `count_needs_loop`): a register with `count_var` gets `loop: true`.
+
+### OB-69 — `diff` inside a pod failed the step on differences (High, Fixed 2026-11-13)
+- Same run: `kubectl exec … -- bash -c 'diff predump postdump'` exits 1 when the activity loaded TACs; the JAR fails
+  the step before its check (OB-63 covered only a bare `diff`).
+- **Fix**: `diff_differences_ok` looks inside the pod exec (`… -- bash -c 'diff a b' || true`).
+
+### OB-70 — A pod exec followed by `|| true` was not opened (Medium, Fixed 2026-11-13)
+- Same run: `grep_no_match_ok` appended `|| true` to `kubectl exec … -- bash -c '…; dsClassInfo | grep -i rng >
+  /p/f'`; step 8 then kept the whole line and `dsClassInfo | grep -i rng` went unanswered.
+- **Fix**: step 8 splits the line's top-level sequence first and opens each pod exec in it.
+- Steps 8 + 9 on a copy of b81305ff (its current step 6 YAML + autofix): **2/2 pass** (sunny day 42 steps, rollback
+  only 22). The inline Python step (OB-65) passed there on an invented answer: the user's run needs step 6
+  regenerated, which the new validator rule forces.
+- Known gap: a sunny day whose rollback runs after the activity still sees the loaded TACs in the post-rollback dump
+  (the rollback's own `dscli update` never resets the change, OB-63).

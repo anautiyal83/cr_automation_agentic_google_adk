@@ -207,3 +207,27 @@ def test_the_part_of_a_sequence_that_writes_the_file_gives_its_format():
          "validation": {"description": "check"}}]}}}
     text = script_context(wf, "v.py", {}, [], [{"command": "org -c eirWhiteRng", "output": DUMP}])
     assert "by `org -c eirWhiteRng >/opt/p/postdump_white.txt`" in text and DUMP in text
+
+
+
+def test_a_pod_exec_working_on_files_is_answered_by_its_script():
+    """OB-66 (run b81305ff): step 6 wrote the dumps inside the pod, `kubectl exec -it P -n NS -- bash -c '…; org -c X >
+    /p/f.txt'`. The key on the line without its redirect never matched (unanswered), and the in-pod diff got a
+    canned answer. The script's commands are what MockWire runs; a pod exec reading the node is left alone."""
+    from skills.network_simulator_setup.vfs_commands import pod_script, split_redirect_sequences
+    dump = ("kubectl exec -it ${EIRPOD} -n ${NS} -- bash -c 'export USER=sdfrun; source /opt/sdf/.bash_profile; "
+            "org -c eirWhiteRng > /opt/sdf/processing/predump_white_${DATE}.txt'")
+    diff = "kubectl exec -it ${EIRPOD} -n ${NS} -- bash -c 'diff /opt/p/predump_white.txt /opt/p/postdump_white.txt'"
+    ls = "oc exec P -- sh -c \"ls -lrth /opt/p/a.txt /opt/p/b.txt\""
+    read = "kubectl exec -it ${EIRPOD} -n ${NS} -- bash -c 'export USER=sdfrun; source /opt/sdf/.bash_profile; ss'"
+    assert pod_script(read) == "export USER=sdfrun; source /opt/sdf/.bash_profile; ss"
+    assert pod_script("kubectl get pods -n x") == ""
+    out = split_redirect_sequences([{"cmd": c, "phase": "backup", "validation": {"x": 1}} for c in (dump, diff, ls, read)])
+    assert [o["cmd"] for o in out] == [
+        "source /opt/sdf/.bash_profile", "org -c eirWhiteRng > /opt/sdf/processing/predump_white_${DATE}.txt",
+        "diff /opt/p/predump_white.txt /opt/p/postdump_white.txt", "ls -lrth /opt/p/a.txt /opt/p/b.txt", read]
+    assert out[1]["sequence_of"] == dump and out[1]["validation"] == {} and out[-1]["validation"] == {"x": 1}
+    # OB-70: `|| true` after the pod exec (grep / diff autofixes) — the script is still opened
+    out = split_redirect_sequences([{"cmd": dump.replace("org -c eirWhiteRng", "dsClassInfo | grep -i rng") + " || true"}])
+    assert [o["cmd"] for o in out] == ["source /opt/sdf/.bash_profile",
+                                       "dsClassInfo | grep -i rng > /opt/sdf/processing/predump_white_${DATE}.txt"]

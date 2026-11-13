@@ -217,12 +217,22 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         key = key_without_redirect(str(key))  # `cmd >/p/f` keyed on cmd: MockWire writes the file (OB-40)
         if spec.shells and _enters_session(key):
             continue  # entering a nested shell is ours (pushPrompt above); an LLM key answered it with plain lines
-        key = _anchored_start(key)
+        key = _anchored_start(placeholder_key(key))
         if key in RESERVED_KEYS or key in cfg or _is_builtin_key(key):
             continue
         cfg[key] = val
 
     return dump_yaml(cfg)
+
+
+def placeholder_key(key: str) -> str:
+    """An exact key that still holds a workflow placeholder (``oc get pods -n ${EIRNAMESPACE} | grep …``) as the regex
+    key of that command: MockWire receives the resolved line (``-n nk-ei1-eir``), so the exact key never matched —
+    step 8 counted it as answering the command, and step 9 got ``oc: command not found`` (run b81305ff, OB-67)."""
+    if key.startswith("regex:") or not re.search(r"\$\{[^{}]+\}", key):
+        return key
+    from .skill import command_key_regex
+    return "regex:^" + command_key_regex(key.strip()) + r"\s*$"
 
 
 def _anchored_start(key: str) -> str:

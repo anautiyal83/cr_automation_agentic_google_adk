@@ -114,6 +114,7 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
 
 
 _PY_CALL = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+(\S*?)([\w.-]+\.py)\b")
+_PY_INLINE = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+-c\s")
 
 
 def check_helper_script_nodes(parsed: dict, known_commands: list[str]) -> list[str]:
@@ -124,8 +125,20 @@ def check_helper_script_nodes(parsed: dict, known_commands: list[str]) -> list[s
     errors = []
     for phase, step in _walk_all_steps(parsed.get("phases") or {}):
         node = str(step.get("node") or "")
-        m = _PY_CALL.match(str(step.get("send") or ""))
-        if not m or not node or node.upper() == "LOCAL" or node.startswith("${"):
+        send = str(step.get("send") or "")
+        if not node or node.upper() == "LOCAL" or node.startswith("${"):
+            continue
+        if _PY_INLINE.match(send) and send.strip() not in known:
+            # OB-65 (run b81305ff): `python3 -c "import pandas … read_excel(DELTA_TAC_FILE) … open(dump)"` on the
+            # bastion — the CIQ file is on the automation server, the dumps inside the pod
+            errors.append(f"Phase '{phase}': an inline Python program (`python3 -c …`) runs on {node}, but the "
+                          "nodes have neither the pipeline's input files nor its Python libraries — make it a helper "
+                          "script the pipeline generates: `python3 <name>.py --<arg> …` on node local (bare name), "
+                          "after copying every node file it reads to the automation server (out of a pod with "
+                          "`oc cp`/`kubectl cp` to the node first, then an sftp download step)")
+            continue
+        m = _PY_CALL.match(send)
+        if not m:
             continue
         if m.group(2) in known:
             continue  # the node's own tool

@@ -744,6 +744,20 @@ def test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it():
     assert len(found) == 1 and "check_tac_counts.py" in found[0] and "node local" in found[0]
 
 
+def test_inline_python_program_on_a_node_is_reported():
+    """OB-65 (run b81305ff): the delta TAC check as `python3 -c "import pandas …"` on the bastion — it read the CIQ
+    workbook and the in-pod dumps from a host that has neither."""
+    from skills.network_config_gen.validator import check_helper_script_nodes
+    program = "python3 -c \"\nimport pandas as pd\ndf = pd.read_excel('${rec.data.DELTA_TAC_FILE}')\n\""
+    parsed = {"phases": {"a": {"steps": [
+        {"node": "niam_eir_server", "send": program},
+        {"node": "LOCAL", "send": program},
+        {"node": "niam_eir_server", "send": "python3 -c 'print(1)'"},
+    ]}}}
+    found = check_helper_script_nodes(parsed, ["python3 -c 'print(1)'"])
+    assert len(found) == 1 and "inline Python program" in found[0] and "node local" in found[0]
+
+
 def test_count_check_in_either_order_is_held_against_the_real_output():
     """OB-40: `ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT` counts every ESTABLISHED line (many per pod);
     recorded as `-n ns| grep`, written as `-n ${NS} | grep` — neither the order nor the spacing was recognised."""
@@ -830,3 +844,22 @@ def test_diff_differences_do_not_fail_the_step():
         {"node": "N", "send": "cd /x && diff a b || echo none", "command_description": "b"}]}}}))
     sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
     assert sends == ["diff predump_white_${DATE}.txt postdump_white_${DATE}.txt || true", "cd /x && diff a b || echo none"]
+    # OB-69: inside a pod
+    pod = "kubectl exec -it ${P} -n ${NS} -- bash -c 'diff /p/predump_white.txt /p/postdump_white.txt'"
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": pod, "command_description": "a"},
+        {"node": "N", "send": pod + " || echo none", "command_description": "b"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == [pod + " || true", pod + " || echo none"]
+
+
+
+def test_a_count_register_counts_only_in_a_loop():
+    """OB-68 (run b81305ff): `count_var` without `loop: true` is never set by the JAR; the dump check failed on files
+    that were listed."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "ls -lrth /p/predump_white.txt", "command_description": "a",
+         "register": [{"regex": r"predump_white_.+?\.txt", "count_var": "WHITE"}, {"regex": "(?<x>\\S+)"}],
+         "validation": {"success": {"criteria": {"expr": "WHITE == 1"}}}}]}}}))
+    regs = yaml.safe_load(wf)["phases"]["p"]["steps"][0]["register"]
+    assert regs[0]["loop"] is True and "loop" not in regs[1]

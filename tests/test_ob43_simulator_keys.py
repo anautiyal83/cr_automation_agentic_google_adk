@@ -166,3 +166,20 @@ def test_lone_quote_inside_single_quoted_item_is_repaired():
     assert parsed["oc cp a b"]["lines"][1] == "tar: Removing leading `/' from member names"
     assert parsed["ss"] == {"lines": ["ok"]}
     assert yaml.safe_load("a: ''''") == {"a": "'"}  # a doubled quote stays one quote
+
+
+
+def test_an_exact_key_with_a_placeholder_becomes_the_commands_regex():
+    """OB-67 (run b81305ff): the LLM keyed `oc get pods -n ${EIRNAMESPACE} | grep -i eirapp | …` as written; MockWire
+    gets `-n nk-ei1-eir` and the exact key never matched (`oc: command not found`)."""
+    import re
+    from skills.network_simulator_setup.skill import config_key
+    from skills.network_simulator_setup.topology import placeholder_key
+    raw = "oc get pods -n ${EIRNAMESPACE} | grep -i eirapp | awk '{print $1}' | head -n 1"
+    key = placeholder_key(raw)
+    assert key.startswith("regex:^") and config_key(raw) == key
+    body = key[len("regex:"):]
+    assert re.search(body, "oc get pods -n nk-ei1-eir | grep -i eirapp | awk '{print $1}' | head -n 1")
+    assert not re.search(body, "oc get pods -n nk-ei1-eir | grep -i envoy | awk '{print $1}' | head -n 1")
+    assert placeholder_key("date +%Y%m%d") == "date +%Y%m%d"
+    assert placeholder_key("regex:^ls \\S+") == "regex:^ls \\S+"

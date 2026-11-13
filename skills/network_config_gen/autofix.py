@@ -326,6 +326,7 @@ def fix_workflow(yaml_text: str) -> str:
     tar_create_success(parsed)
     empty_output_success(parsed)
     list_after_silent(parsed)
+    count_needs_loop(parsed)
     loop_count_nonempty(parsed)
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
@@ -1560,6 +1561,19 @@ def list_after_silent(parsed: dict) -> int:
     return changed
 
 
+def count_needs_loop(parsed: dict) -> int:
+    """The JAR sets a register's ``count_var`` only when the register has ``loop: true`` (ResultProcessor, read
+    2026-11-13): ``{regex: 'predump_white_.+?\\.txt', count_var: WHITE_BACKUP_COUNT}`` left the count unset, it read as
+    ``''`` and ``WHITE_BACKUP_COUNT == 1`` failed on files that were there (run b81305ff, OB-68)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and str(reg.get("count_var") or "").strip() and not reg.get("loop"):
+                reg["loop"] = True
+                changed += 1
+    return changed
+
+
 def loop_count_nonempty(parsed: dict) -> int:
     """A looped register counts every match: ``(?<line>.*)`` also matches the empty string after
     each line, so one line counted 2 and ``OK == TOTAL`` never held (probed 2026-11-04). A loop
@@ -1948,13 +1962,18 @@ def diff_differences_ok(parsed: dict) -> int:
     """``diff a b`` exits 1 when the files differ, and the JAR fails a non-zero step before its check: a pre / post
     dump comparison that expects the activity's changes failed on the real diff (run b81305ff, MockWire's diff
     builtin, OB-63). Differences are the answer the step reads: ``|| true`` (a missing file still prints
-    ``No such file``, which the step's check sees)."""
+    ``No such file``, which the step's check sees). The same for a diff run inside a pod
+    (``kubectl exec P -- bash -c 'diff a b'``: kubectl exits with the script's code, OB-69)."""
+    from skills.network_simulator_setup.vfs_commands import pod_script
     changed = 0
     for _, step in _walk_all_steps(parsed.get("phases") or {}):
         send = step.get("send")
-        if not isinstance(send, str) or _is_guarded(send) or "||" in send:
+        if not isinstance(send, str) or _is_guarded(send):
             continue
-        last = re.split(r"\s*(?:;|&&)\s*", send.strip())[-1]
+        body = pod_script(send) or send
+        if "||" in body or (body is not send and "||" in send.replace(body, "")):
+            continue
+        last = re.split(r"\s*(?:;|&&)\s*", body.strip())[-1]
         if re.match(r"^(?:diff|cmp)\s", last):
             step["send"] = send.rstrip() + " || true"
             changed += 1

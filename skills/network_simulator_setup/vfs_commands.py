@@ -415,18 +415,60 @@ def sequence_parts(cmd: str) -> list[str]:
     return parts if len(parts) > 1 else [cmd]
 
 
+_POD_EXEC = re.compile(r"""^(?:kubectl|oc)\s+exec\b.*?\s--\s+(?:/bin/)?(?:bash|sh)\s+-c\s+(['"])(.*)\1\s*$""", re.S)
+
+
+def pod_script(cmd: str) -> str:
+    """The script of ``kubectl|oc exec <pod> … -- bash|sh -c '<script>'`` ("" for any other command). MockWire
+    runs it on the node's own files when no key answers the whole line (the pod shares the node's VFS, as a nested
+    ``oc exec -it … -- bash`` session does)."""
+    m = _POD_EXEC.match(cmd.strip())
+    return m.group(2).strip() if m else ""
+
+
+def script_parts(cmd: str) -> list[str]:
+    """The commands of a line with each pod exec's script opened (``kubectl exec … -- bash -c 'a; b > f' || true`` →
+    ``a``, ``b > f``, ``true``)."""
+    out = []
+    for part in sequence_parts(cmd.strip()):
+        script = pod_script(part)
+        out += sequence_parts(script) if script else [part]
+    return out
+
+
+def _file_work(parts: list[str]) -> bool:
+    """The script writes a file, or every command in it is a file command (``ls -lrth /p/a /p/b``, ``diff a b``)."""
+    if any(redirect_targets(p) for p in parts):
+        return True
+    words = [p.split()[0] for p in parts if p.split()]
+    return bool(words) and all(w in FILE_COMMANDS or w in _NO_OUTPUT for w in words) \
+        and any(w in FILE_COMMANDS for w in words)
+
+
 def split_redirect_sequences(commands: list[dict]) -> list[dict]:
     """A sequence that writes a file (``export USER=sdfrun; source /opt/sdf/.bash_profile; org -c X >/p/f.txt``)
     as the commands MockWire runs one by one. It tries a key on the whole line first, and one that matched would
     write no file; a key on the line without the redirect never matched. So ``source`` and ``org -c X`` went
     unanswered (run b81305ff, OB-60). Each part keeps the step's phase; the step's check applies to the whole
     output, so the parts carry none. Setup parts that print nothing (``export``, ``cd``, ``true``) are left out:
-    MockWire runs them itself, and ``source`` is answered empty (``source_answers``)."""
+    MockWire runs them itself, and ``source`` is answered empty (``source_answers``).
+
+    The same for the script of a pod exec that works on files (``kubectl exec -it P -n NS -- bash -c 'export …;
+    source …; org -c X > /p/f.txt'``, ``… -- bash -c 'diff /p/a /p/b'``): a key on the whole line wrote no file and
+    replayed a canned diff (run b81305ff, OB-66); MockWire runs the script itself when no key matches the line.
+    Also when the pod exec is one part of the line (``kubectl exec … -- bash -c '…' || true``, OB-70)."""
     out = []
     for c in commands:
         cmd = str(c.get("cmd") or "").strip()
-        parts = sequence_parts(cmd) if ">" in cmd else [cmd]
-        if len(parts) < 2 or not any(redirect_targets(p) for p in parts):
+        parts, pod = [], False
+        for part in sequence_parts(cmd):
+            script = pod_script(part)
+            if script and _file_work(sequence_parts(script)):
+                parts += sequence_parts(script)
+                pod = True
+            else:
+                parts.append(part)
+        if not pod and (">" not in cmd or len(parts) < 2 or not any(redirect_targets(p) for p in parts)):
             out.append(c)
             continue
         for p in parts:

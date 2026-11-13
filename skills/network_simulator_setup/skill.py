@@ -617,9 +617,9 @@ SYNTHETIC_KEYS_FILE = "synthetic_keys.json"  # {instance: [config keys of LLM-in
 
 def config_key(key: str) -> str:
     """The key as ``build_instance_config`` writes it (redirect dropped, regex anchored) — MockWire's matchedKey."""
-    from .topology import _anchored_start
+    from .topology import _anchored_start, placeholder_key
     from .vfs_commands import key_without_redirect
-    return _anchored_start(key_without_redirect(str(key)))
+    return _anchored_start(placeholder_key(key_without_redirect(str(key))))
 
 
 _LS_PATHS = re.compile(r"^ls(?:\s+-[A-Za-z]+)*((?:\s+/[^\s;|&<>$`'\"]+)+)\s*$")
