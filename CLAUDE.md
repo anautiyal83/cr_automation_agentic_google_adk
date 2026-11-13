@@ -180,6 +180,9 @@ bye
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- Step 6 validator also rejects (OB-73..76): a pre-check requiring the file the activity loads, `$(…)` inside a
+  regex, a count over `ls -l` expecting a leading number, `rm` of a whole node folder (`<dir>/*`), a rollback
+  restoring an archive no step writes, an inline `python3 -c` on a node
 - JAR facts (probed 2026-11-04): on EMPTY output a regex with `^` never matches (`^$` fails, `.*` passes —
   autofix `empty_output_success`); `expr` fails on any parenthesis and binds `&&` tighter than `||` (autofix drops
   them); a looped register counts `.*` twice per line (autofix → `.+`); an unregistered variable reads as `''`;

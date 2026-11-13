@@ -132,6 +132,16 @@ def clean_yaml_response(text: str) -> str:
 _SQ_BACKSLASH_QUOTE = re.compile(r"(?m)^(\s*(?:- )?[\w.-]+:[ \t]*)'((?:[^'\n]|\\'|'')*\\'(?:[^'\n]|\\'|'')*)'[ \t]*$")
 
 
+# `key: 'text '\''quoted'\'' more'` — the shell's way to put a quote in a single-quoted string; YAML writes it ''
+# (OB-75, run c89f1b67: `regex: 'tar: Removing '\''/var/…/'\'' from archive member names'` left step 6 unparsable)
+_SQ_SHELL_QUOTE = re.compile(r"(?m)^(\s*(?:- )?[\w.-]+:[ \t]*)'(.*'\\''.*)'[ \t]*$")
+
+
+def _sq_shell_quote(m: re.Match) -> str:
+    inner = m.group(2).replace("'\\''", "''")
+    return m.group(0) if "'" in inner.replace("''", "") else m.group(1) + "'" + inner + "'"
+
+
 _PLAIN_KEY_LINE = re.compile(r"^(\s*(?:- )?)[\w.-]+\s*:\s+(?![\"'\[{|>&*!#])\S")
 
 
@@ -166,6 +176,7 @@ def sanitize_yaml(text: str) -> str:
     text = _REC_ROW.sub(_rec_row_column, text)
     text = _SUBSCRIPT_COLUMN.sub(_dot_column, text)
     text = _QUOTED_COLUMN.sub(_unquote_column, text)
+    text = _SQ_SHELL_QUOTE.sub(_sq_shell_quote, text)
     text = _SQ_BACKSLASH_QUOTE.sub(lambda m: m.group(1) + "'" + m.group(2).replace("\\'", "''") + "'", text)
     fixed_lines = []
     for line in _fold_plain_continuations(text.split("\n")):

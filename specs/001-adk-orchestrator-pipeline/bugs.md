@@ -1613,3 +1613,35 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   (the rollback contract decides). The 1ee47d78 baseline re-processes byte-identical (no AI in step 6, helper
   scripts and step 8 reused). Steps 6+6h+8+9 on a copy with the 6110bc53 baseline: step 6 reused with no AI.
 - UI: "Export UC package" also in the completion row of a completed run (the step 10 Artifacts tab was missed).
+
+### OB-73 — MRF: the activity's check ran before the activity; a shell `$(…)` inside a regex (High, Fixed 2026-11-13)
+- Run c89f1b67 (MRF_ANNOUNCEMENT_LOADING, step 6 by the AI, no baseline): the post-load listing `ls -ltrh <dest>/ |
+  grep "$(basename <INPUT_FILE>)"` also ran in the pre-check requiring the announcements: nothing is loaded yet, it
+  failed, PRECHECK_FAILED skipped backup and load (5 steps per case). Its count regex `^(-rwxrwxrwx)\s+.*$(basename
+  .+?)` can never match (`$` ends the line).
+- **Fix** (step 6 validator): `check_checked_before_load` — a pre-check / backup step reading where the activity
+  copies / extracts, naming the file it loads, with a success condition; `check_shell_in_regexes` — `$(` in a
+  validation / register regex. Earlier MRF runs that "passed" with such a pre-check did so on invented `ls` answers.
+
+### OB-74 — A count over `ls -l` wanting each line to start with a number (High, Fixed 2026-11-13)
+- Next regeneration: `^(?<TOTAL>\d+)\s+.*$` / `^(?<OKN>\d+)\s+-rwxrwxrwx.*$` over `ls -l $(tar -tf …)` — the lines
+  start with the mode; TOTAL stayed 0 on the version-17 (untar) targets.
+- **Fix**: `check_listing_counts` (anchored count regex starting with a number / space on a listing piped at most
+  to grep / head / sort; pipes inside `$(…)` ignored). No hit on the 20 workflows of earlier runs.
+
+### OB-75 — Shell `'\''` inside a single-quoted YAML value (Medium, Fixed 2026-11-13)
+- Next regeneration: `regex: 'tar: Removing '\''/var/…/'\'' from archive member names'` — step 6 unparsable, two
+  correction rounds did not fix it.
+- **Fix** (`sanitize_yaml`): inside a single-quoted value `'\''` → `''`; unquoted shell commands keep it.
+
+### OB-76 — MRF rollback: `|| rm -rf <dest>/*`, and a restore of an archive no step writes (High, Fixed 2026-11-13)
+- Next regeneration passed all 3 sunny days; rollback-only left the node without the files it had before: the
+  restore read `/tmp/announcement_backup_*.tar.gz` (the backup wrote `/tmp/${ORDER_NO}/<folder>/announcement_backup_
+  $DATE.tar.gz`), and its fallback `|| rm -rf <dest>/*` deletes every announcement (user rule: never touch unrelated
+  files).
+- **Fix**: `check_wildcard_removals` (`<dir>/*`, `rm -r <folder>` outside the staging area); `check_restore_sources`
+  (a rollback `tar -x` of an archive with a literal name no step writes). Neither hits the earlier runs' workflows
+  except their real `rm -rf <dest>/*`-free cases.
+- Status: MRF step 6 is AI-written on every regeneration (no proven baseline yet) and each draft differed; the last
+  one was refused by step 6 (it kept `rm -rf <dest>/*` through three correction rounds). Open question for the user:
+  should the pre-check require every existing announcement in the folder to be 777 (`BADPERM_COUNT == 0`)?

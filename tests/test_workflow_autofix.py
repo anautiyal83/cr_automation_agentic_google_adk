@@ -863,3 +863,103 @@ def test_a_count_register_counts_only_in_a_loop():
          "validation": {"success": {"criteria": {"expr": "WHITE == 1"}}}}]}}}))
     regs = yaml.safe_load(wf)["phases"]["p"]["steps"][0]["register"]
     assert regs[0]["loop"] is True and "loop" not in regs[1]
+
+
+
+def test_shell_syntax_in_a_regex_is_reported():
+    """OB-73 (run c89f1b67): `^(-rwxrwxrwx)\s+.*$(basename .+?)` never matches (`$` ends the line)."""
+    from skills.network_config_gen.validator import check_shell_in_regexes
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": "ls -ltrh /d/", "register": [
+            {"regex": r"^(-rwxrwxrwx)\s+.*$(basename .+?)", "loop": True, "count_var": "OK"}]},
+        {"node": "M", "send": "ls -ltrh /d/", "validation": {"success": {"criteria": {"regex": r"^-rwx\S+\s+.*\.wav$"}}}},
+    ]}}}
+    found = check_shell_in_regexes(parsed)
+    assert len(found) == 1 and "$(basename" in found[0]
+
+
+def test_the_activitys_check_before_the_activity_is_reported():
+    """OB-73 (run c89f1b67): the post-load listing also ran as a pre-check requiring the announcements: it failed,
+    PRECHECK_FAILED skipped the backup and the load. The same listing without a condition (backup) is fine."""
+    from skills.network_config_gen.validator import check_checked_before_load
+    ls = 'ls -ltrh ${rec.data.MRF_DESTINATION_PATH}/ | grep "$(basename ${rec.data.INPUT_FILE})" || true'
+    need = {"success": {"criteria": {"expr": "${TOTAL > 0 && OK == TOTAL}"}}}
+    parsed = {"phases": {
+        "preNodeHealthCheck": {"steps": [{"node": "M", "send": "service swms status",
+                                          "validation": {"success": {"criteria": {"regex": "running"}}}},
+                                         {"node": "M", "send": ls, "validation": need}]},
+        "backup": {"steps": [{"node": "M", "send": ls, "validation": {"success": {"message": "checked"}}}]},
+        "activity_configuration": {"steps": [{"node": "M", "send":
+            "if [[ '${MRF.VER}' == '13.'* ]]; then cp /tmp/${rec.data.INPUT_FILE} ${rec.data.MRF_DESTINATION_PATH}/; "
+            "else echo SKIPPED_BY_CONDITION; fi"}]},
+        "activity_postcheck": {"steps": [{"node": "M", "send": ls, "validation": need}]},
+        "postNodeHealthCheck": {"steps": [{"node": "M", "send": "service swms status",
+                                           "validation": {"success": {"criteria": {"regex": "running"}}}}]},
+    }}
+    found = check_checked_before_load(parsed)
+    assert len(found) == 1 and found[0].startswith("Phase 'preNodeHealthCheck'")
+    assert "${rec.data.MRF_DESTINATION_PATH}" in found[0]
+
+
+
+def test_a_listing_count_no_ls_line_can_match_is_reported():
+    """OB-74 (run c89f1b67): `^(?<TOTAL>\d+)\s+.*$` over `ls -l` output — the lines start with the mode."""
+    from skills.network_config_gen.validator import check_listing_counts
+    send = ("if [[ '${MRF.VER}' != '13.'* ]]; then chmod 777 $(tar -tf /tmp/x.tar) && ls -l $(tar -tf /tmp/x.tar); "
+            "else echo SKIPPED_BY_CONDITION; fi")
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": send, "register": [
+            {"regex": r"^(?<TOTAL>\d+)\s+.*$", "loop": True, "count_var": "TOTAL"},
+            {"regex": r"^-rwxrwxrwx", "loop": True, "count_var": "OKN"},
+            {"regex": "(?<ncSkipped>SKIPPED_BY_CONDITION)"}]},
+        {"node": "M", "send": "ls -l /d | wc -l", "register": [
+            {"regex": r"^(?<N>\d+)$", "loop": True, "count_var": "N"}]},
+    ]}}}
+    found = check_listing_counts(parsed)
+    assert len(found) == 1 and "TOTAL" in found[0] and "starts with the mode" in found[0]
+
+
+
+def test_shell_quote_escape_in_a_single_quoted_value_is_repaired():
+    '''OB-75 (run c89f1b67): `'\''` inside a single-quoted YAML value made step 6 unparsable; an unquoted shell
+    command keeps it (there it is the shell's own quoting).'''
+    from skills.network_config_gen.autofix import sanitize_yaml
+    text = ("- regex: 'tar: Removing '\\''/var/opt/clips/'\\'' from archive member names'\n"
+            "  send: echo 'it'\\''s here'\n")
+    out = sanitize_yaml(text)
+    parsed = yaml.safe_load(out)
+    assert parsed[0]["regex"] == "tar: Removing '/var/opt/clips/' from archive member names"
+    assert parsed[0]["send"] == "echo 'it'\\''s here'"
+
+
+
+def test_removing_a_whole_node_folder_is_reported():
+    """OB-76 (run c89f1b67): the rollback's fallback `|| rm -rf ${MRF_DESTINATION_PATH}/*` deletes every announcement;
+    removing the loaded file itself or a staging folder is fine."""
+    from skills.network_config_gen.validator import check_wildcard_removals
+    dest = "${rec.data.MRF_DESTINATION_PATH}"
+    parsed = {"phases": {"rollback_configuration": {"steps": [
+        {"node": "M", "send": f"tar -xzvf /tmp/b.tar.gz -C {dest} || rm -rf {dest}/*"},
+        {"node": "M", "send": f"rm -rf {dest}"},
+        {"node": "M", "send": f"rm -rf {dest}/${{rec.data.INPUT_FILE}}"},
+        {"node": "M", "send": "rm -rf /tmp/${ORDER_NO}/x/*"},
+        {"node": "M", "send": f"rm -f $(cat /tmp/${{ORDER_NO}}/items.list | sed 's#^#{dest}/#')"},
+    ]}}}
+    found = check_wildcard_removals(parsed)
+    assert len(found) == 2 and f"`{dest}/*`" in found[0] and f"`{dest}`" in found[1]
+
+
+def test_a_restore_of_an_archive_no_step_writes_is_reported():
+    """OB-76 (run c89f1b67): the backup wrote `/tmp/${ORDER_NO}/<folder>/announcement_backup_$DATE.tar.gz`, the
+    rollback extracted `/tmp/announcement_backup_*.tar.gz`."""
+    from skills.network_config_gen.validator import check_restore_sources
+    backup = {"node": "M", "send": "tar -czvf /tmp/${ORDER_NO}/${rec.data.D}/announcement_backup_$DATE.tar.gz -C /d x"}
+    upload = {"node": "M", "sftp": {"operation": "upload", "local_path": "${rec.data.F}", "remote_path": "/tmp/${rec.data.F}"}}
+    bad = {"phases": {"backup": {"steps": [upload, backup]}, "rollback_configuration": {"steps": [
+        {"node": "M", "send": "tar -xzvf /tmp/announcement_backup_*.tar.gz -C /d"}]}}}
+    good = {"phases": {"backup": {"steps": [upload, backup]}, "rollback_configuration": {"steps": [
+        {"node": "M", "send": "tar -xzvf /tmp/${ORDER_NO}/${rec.data.D}/announcement_backup_$DATE.tar.gz -C /d"},
+        {"node": "M", "send": "tar -xzvf /tmp/${backupName} -C /d"}]}}}
+    found = check_restore_sources(bad)
+    assert len(found) == 1 and "/tmp/*/*/announcement_backup_*.tar.gz" in found[0]
+    assert check_restore_sources(good) == []

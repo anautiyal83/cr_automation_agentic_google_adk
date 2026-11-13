@@ -91,6 +91,11 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
+    errors.extend(check_shell_in_regexes(parsed))
+    errors.extend(check_listing_counts(parsed))
+    errors.extend(check_checked_before_load(parsed))
+    errors.extend(check_wildcard_removals(parsed))
+    errors.extend(check_restore_sources(parsed))
     errors.extend(check_helper_script_nodes(parsed, list((expected or {}).get("mop_commands") or [])
                                             + [str(c.get("command") or "") for c in command_samples or []
                                                if isinstance(c, dict)]))
@@ -115,6 +120,185 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
 
 _PY_CALL = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+(\S*?)([\w.-]+\.py)\b")
 _PY_INLINE = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+-c\s")
+
+
+_SHELL_IN_REGEX = re.compile(r"\$\(")  # not backticks: GNU tar prints ``Removing leading `/'``
+
+
+def check_shell_in_regexes(parsed: dict) -> list[str]:
+    """A validation / register regex holding shell syntax (``^(-rwxrwxrwx)\\s+.*$(basename .+?)``, OB-73): a regex
+    sees only the command's output — ``$`` is the end of a line, so it never matches and a count stays 0."""
+    from .autofix import _criteria_blocks
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        regexes = [str(c.get("regex")) for c in _criteria_blocks(step) if isinstance(c.get("regex"), str)]
+        regexes += [str(r.get("regex")) for r in step.get("register") or []
+                    if isinstance(r, dict) and isinstance(r.get("regex"), str)]
+        for rx in dict.fromkeys(regexes):
+            if _SHELL_IN_REGEX.search(rx):
+                errors.append(f"Phase '{phase}': the regex {rx!r} of `{str(step.get('send') or '')[:80]}` contains "
+                              "shell syntax (`$(…)`) — a regex only sees the command's output text and `$` "
+                              "is the end of a line, so it never matches. Match what the output line shows (e.g. the "
+                              "file name as `ls` prints it).")
+    return errors
+
+
+_LS_LONG_CMD = re.compile(r"\bls\s+(?:-\S+\s+)*-[a-zA-Z]*l[a-zA-Z]*\b")
+_KEEPS_LINES = {"grep", "egrep", "fgrep", "head", "tail", "sort"}
+# `^` then group openers, then a number or a space first — where an `ls -l` line has its mode (`-rwxrwxrwx.`)
+_STARTS_WITH_NUMBER = re.compile(r"^\^(?:\((?:\?<[A-Za-z][A-Za-z0-9]*>|\?:)?)*(?:\\d|\[0-9|\[\[:digit:|\d|\\s| )")
+
+
+def check_listing_counts(parsed: dict) -> list[str]:
+    """A count over an `ls -l` listing whose regex wants the line to start with a number (OB-74, run c89f1b67:
+    `^(?<TOTAL>\\d+)\\s+.*$`, `^(?<OKN>\\d+)\\s+-rwxrwxrwx.*$`): a long listing line starts with the mode
+    (`-rwxrwxrwx. 1 user group 65 Nov 13 16:04 name`), so the count stays 0 and the check fails on every node. Only
+    when the listing reaches the output as it is (piped to grep / head / sort at most)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        m = _LS_LONG_CMD.search(send)
+        if not m:
+            continue
+        rest = re.split(r"\s*(?:&&|;|\|\||\bfi\b|\belse\b)", send[m.end():])[0]
+        rest = re.sub(r"\$\([^()]*\)", "", rest)  # the pipes of `$(tar -tf … | sed …)` are not the listing's
+        if any(seg.split()[0] not in _KEEPS_LINES for seg in rest.split("|")[1:] if seg.split()):
+            continue  # `ls -l … | wc -l` / `| awk …`: the output is no longer the listing
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and reg.get("loop") and reg.get("count_var") \
+                    and _STARTS_WITH_NUMBER.match(str(reg.get("regex") or "")):
+                errors.append(f"Phase '{phase}': `{send[:90]}` counts {reg['count_var']} with {reg['regex']!r}, which "
+                              "wants each line to start with a number — an `ls -l` line starts with the mode "
+                              "(`-rwxrwxrwx. 1 user group 65 Nov 13 16:04 name`), so the count stays 0. Count the "
+                              "lines that show the file (`^[-d]\\S{9}`) and those with the wanted mode (`^-rwxrwxrwx`).")
+    return errors
+
+
+_WRITE_DEST = re.compile(r"\b(?:cp|mv|install)\s+(?:-\S+\s+)*(\S+)\s+(\S+)|\btar\s+-?\w*x\w*f?\s+(\S+).*?\s-C\s+(\S+)")
+_PLACEHOLDER = re.compile(r"\$\{[^{}]+\}")
+
+
+def check_checked_before_load(parsed: dict) -> list[str]:
+    """A check before the activity that requires what the activity loads (OB-73, run c89f1b67): `ls -ltrh
+    <destination>/ | grep <INPUT_FILE>` requiring the announcements ran in the pre-check, found nothing (nothing is
+    loaded yet), set PRECHECK_FAILED and the backup and the load never ran. A pre-check / backup step that reads where
+    the activity copies or extracts to, names the file it loads, and has a success condition is reported."""
+    from .contract import ACTIVITY, BACKUP, PRE, phase_kind
+    phases = parsed.get("phases") or {}
+    if not isinstance(phases, dict):
+        return []
+    loads: list[tuple[str, set[str]]] = []  # (destination, placeholders of the file loaded there)
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) != ACTIVITY:
+            continue
+        for _, step in _iter_steps({key: body}):
+            for m in _WRITE_DEST.finditer(str(step.get("send") or "")):
+                src, dest = (m.group(1), m.group(2)) if m.group(2) else (m.group(3), m.group(4))
+                dest = dest.strip("'\";").rstrip("/")
+                names = set(_PLACEHOLDER.findall(src or ""))
+                if dest and names and not dest.startswith("/tmp"):
+                    loads.append((dest, names))
+    errors = []
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) not in (PRE, BACKUP):
+            continue
+        for _, step in _iter_steps({key: body}):
+            send = str(step.get("send") or "")
+            dest = next((d for d, names in loads if d in send and any(n in send for n in names)), "")
+            if not dest:
+                continue
+            criteria = ((step.get("validation") or {}).get("success") or {}).get("criteria") or {}
+            if not criteria.get("expr") and str(criteria.get("regex") or ".*") in (".*", ""):
+                continue  # records what is there, requires nothing
+            errors.append(f"Phase '{key}': `{send.strip()[:100]}` requires the file the activity loads into {dest} "
+                          "before the activity runs — nothing is loaded yet, so it fails and the backup and the load "
+                          "never run. Before the activity, list what is there without requiring it (no success "
+                          "condition on the loaded files); check them after the load.")
+    return errors
+
+
+_RM_WIDE = re.compile(r"\brm\s+((?:-\w+\s+)*)([^\s;|&()]+)")
+
+
+def _temp_path(path: str) -> bool:
+    return path.strip("'\"").startswith(("/tmp/", "/var/tmp/")) or "${ORDER_NO}" in path
+
+
+def check_wildcard_removals(parsed: dict) -> list[str]:
+    """`rm` of a whole node folder (`<dir>/*`, or `rm -r <dir>`) outside the staging area (OB-76, run c89f1b67: the
+    rollback's fallback `|| rm -rf ${MRF_DESTINATION_PATH}/*` deleted every announcement): the user's rule is never
+    to touch files the activity did not load — remove exactly the loaded files (structure.py's items list)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        for m in _RM_WIDE.finditer(send):
+            flags, target = m.group(1), m.group(2)
+            if _temp_path(target) or target.startswith("$("):
+                continue
+            bare = target.strip("'\"")
+            folder = bare.endswith("/") or bool(re.fullmatch(r"\$\{[^{}]+\}", bare))
+            if bare.endswith("/*") or ("r" in flags.replace("-", "") and folder):
+                errors.append(f"Phase '{phase}': `{send.strip()[:110]}` removes `{target}` — everything in that node "
+                              "folder, not only what the activity loaded (never touch files unrelated to the activity). "
+                              "Remove exactly the loaded files, e.g. from the list of what the activity put there.")
+    return errors
+
+
+_TAR_CREATE = re.compile(r"\btar\s+-?\w*c\w*f\s+(\S+)")
+_TAR_EXTRACT = re.compile(r"\btar\s+-?\w*x\w*f\s+(\S+)")
+_PRINTF_GET = re.compile(r"\b(?:get|put)\s+(\S+)\s+(\S+)")
+_COPY_DEST = re.compile(r"\b(?:cp|mv|scp)\s+(?:-\S+\s+)*\S+\s+(\S+)")
+
+
+def _path_pattern(path: str) -> str:
+    """A path with its placeholders and shell variables as wildcards (`/tmp/${ORDER_NO}/x_$DATE.tar.gz` →
+    `/tmp/*/x_*.tar.gz`)."""
+    path = path.strip("'\";")
+    path = re.sub(r"\$\{[^{}]+\}|\$\([^()]*\)|\$[A-Za-z_]\w*", "*", path)
+    return re.sub(r"/+", "/", path)
+
+
+def check_restore_sources(parsed: dict) -> list[str]:
+    """A rollback that extracts an archive no step writes (OB-76, run c89f1b67: the backup wrote
+    `/tmp/${ORDER_NO}/<folder>/announcement_backup_….tar.gz` and the repo copy, the rollback extracted
+    `/tmp/announcement_backup_*.tar.gz` — nothing to restore, the node kept the loaded files)."""
+    import fnmatch
+    from .contract import ROLLBACK, phase_kind
+    phases = parsed.get("phases") or {}
+    if not isinstance(phases, dict):
+        return []
+    written: set[str] = set()
+    for phase, step in _iter_steps(phases):
+        send = str(step.get("send") or "")
+        written |= {_path_pattern(m.group(1)) for m in _TAR_CREATE.finditer(send)}
+        written |= {_path_pattern(m.group(2)) for m in _PRINTF_GET.finditer(send)}
+        written |= {_path_pattern(m.group(1)) for m in _COPY_DEST.finditer(send)}
+        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
+        for key in ("remote_path", "local_path"):
+            if sftp.get(key):
+                written.add(_path_pattern(str(sftp[key])))
+    written.discard("")
+    errors = []
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) != ROLLBACK:
+            continue
+        for _, step in _iter_steps({key: body}):
+            send = str(step.get("send") or "")
+            for m in _TAR_EXTRACT.finditer(send):
+                archive = _path_pattern(m.group(1))
+                name = archive.rsplit("/", 1)[-1]
+                if not archive.startswith("/") or archive in written or not name.replace("*", "").strip("._-"):
+                    continue  # a registered name (`/tmp/${backupExists}`) cannot be told
+                literal = [w for w in written if w.rsplit("/", 1)[-1].replace("*", "").strip("._-")]
+                if any(fnmatch.fnmatch(w, archive) or fnmatch.fnmatch(archive, w) for w in literal):
+                    continue
+                backups = sorted(w for w in written if w.rsplit("/", 1)[-1].split("*")[0][:6]
+                                 and name.split("*")[0][:6] == w.rsplit("/", 1)[-1].split("*")[0][:6])
+                errors.append(f"Phase '{key}': `{send.strip()[:110]}` restores `{m.group(1)}`, which no step writes"
+                              + (f" — the backup is written as {', '.join(f'`{b}`' for b in backups[:3])}" if backups
+                                 else "") + ". Restore the archive the backup wrote (the same path, copied back to "
+                              "the node first when it is on the repo server).")
+    return errors
 
 
 def check_helper_script_nodes(parsed: dict, known_commands: list[str]) -> list[str]:
