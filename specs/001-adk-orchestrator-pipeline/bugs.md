@@ -1773,3 +1773,14 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - **Fix** (`check_ciq_coverage`): a CIQ value passed as a `--flag` argument of a command on the automation server is
   the script's to handle (the request a script builds stays checked by `check_request_inputs`); node commands are
   still checked. The run's workflow validates with 0 errors.
+
+### OB-91 — A multi-line `if … fi` block reached MockWire line by line (High, Fixed 2026-11-13)
+- Run 6570694d: the IMSI lookup was a `|-` block (`if [[ "<MSISDN>" != "" ]]; then` / `ldapsearch …` / `else` / … /
+  `fi`); MockWire routed each line alone — `if [[ … ]]`, `then`, `else`, `fi` unmatched, "Failed to resolve IMSI".
+- **Fix**: MockWire 88a1915 — the shell reads on while an `if/for/while/until/case` block is open and runs it as one
+  line (`if c; then a; else b; fi`); multi-line quoted text keeps its newlines. Steps 8 + 9 on a copy: both cases
+  resolve the IMSI, place the order through PGW and reach the comparison report.
+- Finding (step 6 helper script, not the simulator): `create_html_report.py` compares a blank CIQ cell with the
+  attribute after the activity and reports MISMATCH, but the UC's answer says a blank cell deletes the attribute (the
+  simulator now shows it deleted). The report fails on a real RDS too; the script must treat a blank expectation as
+  "attribute absent".
