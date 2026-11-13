@@ -36,11 +36,8 @@ def mockwire_jar(config: dict) -> str:
 
 def _ciq_json_files(run_dir: str) -> list[str]:
     """CIQ JSON data written by the ciq-processor in steps 5/7 (source of NIAM IDs)."""
-    json_dir = Path(run_dir) / "json_data" if run_dir else None
-    if not json_dir or not json_dir.exists():
-        return []
-    return [str(f) for f in sorted(json_dir.glob("*.json"))
-            if "VALIDATION_REPORT" not in f.name.upper()]
+    from storage.uc_baseline import run_ciq_json_files
+    return run_ciq_json_files(run_dir) if run_dir else []
 
 
 def _simulator_feedback(run_dir: str) -> str:
@@ -111,6 +108,12 @@ class NetworkSimulatorSetupAgent(BaseAgent):
         if wf_file and wf_file.exists():
             artifacts["workflow_yaml"] = wf_file.read_text(encoding="utf-8")
 
+        # the UC's proven simulator, when it was proven on this workflow and CIQ data (user, 2026-11-13)
+        from storage import uc_baseline
+        baseline = uc_baseline.load(uc_name)
+        if baseline and (not baseline.simulator_fp or baseline.simulator_fp != uc_baseline.simulator_fingerprint(
+                artifacts.get("workflow_yaml", ""), _ciq_json_files(run_dir))):
+            baseline = None
         inp = SkillInput(
             uc_name=uc_name,
             workflow_yaml=artifacts.get("workflow_yaml", ""),
@@ -127,8 +130,14 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             ttl_minutes=int(config.get("simulator_ttl_minutes") or 60),
             startup_timeout=int(config.get("simulator_startup_timeout") or 30),
             sample_inputs=uploaded_documents(state),  # what the activity loads, for the reads after it (OB-59)
+            baseline_configs=baseline.simulator_configs if baseline else {},
+            baseline_synthetic=baseline.synthetic_keys if baseline else {},
+            baseline_outputs=str(baseline.path / "simulator" / "outputs") if baseline and baseline.path else "",
+            baseline_run=baseline.run_id if baseline else "",
         )
         output = await skill.setup(inp)
+        from agents.network_config_gen_agent import _write_origin
+        _write_origin(run_dir, 8, output.origin)
 
         # Save artifacts
         if output.simulator_config_yaml:

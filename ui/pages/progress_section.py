@@ -234,6 +234,11 @@ class ProgressSection:
                 "border: 1px solid var(--cr-warning); border-left-width: 3px; border-radius: 8px; "
                 "background: color-mix(in srgb, var(--cr-warning) 7%, var(--cr-surface))")
             self.ms_notes_box.set_visibility(False)
+            # Where the step's output came from: the UC's proven baseline or the AI (step_<n>_origin.json)
+            with ui.row().classes("items-center gap-2 no-wrap") as self.ms_origin_row:
+                ui.icon("history_edu", size="18px").classes("cr-text-accent")
+                self.ms_origin_label = ui.label("").classes("text-body2")
+            self.ms_origin_row.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
@@ -1382,6 +1387,7 @@ class ProgressSection:
         self._refresh_edit_state()
         self._show_failure_reasons(step_num if has_failures else 0)
         self._show_answered_notes(0 if has_failures else step_num)
+        self._show_origin(step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
         self.ms_clear_cache_cb.set_visibility(step_num != 2)
@@ -1455,6 +1461,17 @@ class ProgressSection:
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
+
+    def _show_origin(self, step_num: int) -> None:
+        """Steps 6 / 8: whether the output is the UC's proven baseline or written by the AI."""
+        import json as _json
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            text = _json.loads((Path(run_dir) / f"step_{step_num}_origin.json").read_text(encoding="utf-8"))["origin"]
+        except (OSError, ValueError, KeyError, TypeError):
+            text = ""
+        self.ms_origin_label.text = text
+        self.ms_origin_row.set_visibility(bool(text))
 
     def _show_answered_notes(self, step_num: int) -> None:
         """Step <n> passed although problems remain that the developer already answered: listed so the

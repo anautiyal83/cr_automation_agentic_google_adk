@@ -51,6 +51,35 @@ class CacheSection:
             ''')
             self.table.on('clear_cache', self._clear_one)
 
+            with ui.element("div").classes("w-full mt-4"):
+                card_title("Proven baselines", "verified")
+            ui.label("A run whose QA-Execution (step 9) passed is its use case's baseline: the next runs start from "
+                     "its workflow, helper scripts and simulator instead of a fresh AI draft. \"Clear cache\" on a "
+                     "re-run keeps it; a newer passing run replaces it.").classes("text-caption cr-text-dim")
+            self.baselines = ui.table(
+                columns=[
+                    {"name": "uc", "label": "UC Name", "field": "uc_name", "align": "left", "sortable": True},
+                    {"name": "run", "label": "Proven in run", "field": "run", "align": "left"},
+                    {"name": "saved", "label": "Saved", "field": "saved", "align": "left", "sortable": True},
+                    {"name": "scripts", "label": "Helper scripts", "field": "scripts", "align": "center"},
+                    {"name": "simulator", "label": "Simulator", "field": "simulator_text", "align": "center"},
+                    {"name": "actions", "label": "", "field": "actions", "align": "center"},
+                ],
+                rows=[], row_key="uc_name",
+            ).classes("w-full").props(
+                'flat bordered dense separator=cell '
+                'no-data-label="No proven baselines yet" '
+                'hide-pagination :rows-per-page-options="[0]" :pagination="{rowsPerPage: 0}"'
+            )
+            self.baselines.add_slot('body-cell-actions', '''
+                <q-td :props="props">
+                    <q-btn flat dense icon="delete_outline" color="red-4" size="sm"
+                           @click="$parent.$emit('discard_baseline', props.row)"
+                           label="Discard" no-caps />
+                </q-td>
+            ''')
+            self.baselines.on('discard_baseline', self._discard_baseline)
+
     async def refresh(self):
         try:
             from storage.artifact_cache import ArtifactCache
@@ -61,6 +90,14 @@ class CacheSection:
                 uc["cached_detail"] = detail or "None"
             self.table.rows = ucs
             self.table.update()
+            from storage.uc_baseline import list_baselines
+            rows = list_baselines()
+            for b in rows:
+                b["run"] = str(b.get("run_id") or "")[:8]
+                b["saved"] = str(b.get("saved_at") or "")[:16].replace("T", " ")
+                b["simulator_text"] = "Yes" if b.get("simulator") else "No"
+            self.baselines.rows = rows
+            self.baselines.update()
         except RuntimeError:
             pass  # the page was closed
         except Exception as e:  # noqa: BLE001 — shown to the admin
@@ -85,6 +122,26 @@ class CacheSection:
         confirm(f"Clear the cache of {uc}?",
                 "Its next run generates every step again (LLM calls). This cannot be undone.",
                 clear, ok_label="Clear", ok_icon="delete_outline")
+
+    @requires_admin("baseline.discard")
+    async def _discard_baseline(self, e):
+        uc = (e.args or {}).get("uc_name", "") if isinstance(e.args, dict) else ""
+        if not uc:
+            return
+
+        async def discard():
+            try:
+                from storage.uc_baseline import discard as discard_baseline
+                discard_baseline(uc)
+                ui.notify(f"Baseline discarded for {uc}", type="positive")
+                await record("baseline.discard", target_type="use_case", target_id=uc, uc_name=uc)
+                await self.refresh()
+            except Exception as ex:  # noqa: BLE001
+                ui.notify(f"Failed: {ex}", type="negative")
+
+        confirm(f"Discard the proven baseline of {uc}?",
+                "Its next run writes the workflow, helper scripts and simulator answers from scratch (AI), as before "
+                "it ever passed. This cannot be undone.", discard, ok_label="Discard", ok_icon="delete_outline")
 
     @requires_admin("cache.clear_all")
     async def _clear_all(self):

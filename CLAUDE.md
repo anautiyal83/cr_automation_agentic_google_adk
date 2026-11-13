@@ -285,6 +285,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
   `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts);
   `SIMULATOR_GUIDE.md` + `start_/stop_simulator.ps1/.sh` (`guide.py`, written by step 8)
+- UC baseline (`storage/uc_baseline.py`, OB-71): a run whose step 9 passed saves workflow + helper scripts + simulator
+  configs to `data/knowledge/<uc>/baseline/`; step 6 starts from it (same requirements: no LLM), step 8 reuses the
+  configs for the same workflow + CIQ JSON. "Clear cache" keeps it (user); Artifact Cache page discards it
 - UC export (step 10 artifacts tab + Run Artifacts, completed runs; `tools/uc_export.py`): zip of validation rules,
   JSON output, execution YAML, CIQ JSON, helper scripts and the simulator (JAR, configs, answers, guide, empty VFS)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary

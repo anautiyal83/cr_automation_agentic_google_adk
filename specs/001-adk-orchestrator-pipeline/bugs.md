@@ -1583,3 +1583,18 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   regenerated, which the new validator rule forces.
 - Known gap: a sunny day whose rollback runs after the activity still sees the loaded TACs in the post-rollback dump
   (the rollback's own `dscli update` never resets the change, OB-63).
+
+### OB-71 — A UC that passed failed again after "Clear cache": every run rewrote step 6 from scratch (High, Fixed 2026-11-13)
+- Run 6110bc53 (EIR_1029) completed; b81305ff, re-run with "Clear cache", failed step 9. The LLM wrote a different
+  workflow (in-pod dumps, inline python, `count_var` without loop) and step 8 different answers (`${…}` keys):
+  "it passed once" meant that one YAML passed, not the UC (user: "how is this pipeline credible?").
+- **Fix** (user decisions 2026-11-13) — a per-UC **baseline** (`storage/uc_baseline.py`, `data/knowledge/<uc>/baseline/`):
+  - Saved when step 9 passes (`pipeline_agent._save_baseline`): workflow, helper scripts, simulator configs +
+    outputs + invented keys, with fingerprints of the step 6 requirements and of workflow + CIQ JSON.
+  - Step 6 without a cache hit: same requirements → the proven workflow after today's autofix + checks, no LLM;
+    a check added since fails → the correction rounds start from it; requirements changed → the generation prompt
+    carries it ("change only what the requirements need"). Re-processing is idempotent (b81305ff workflow: identical).
+  - Helper scripts are reused for the identical workflow; step 8 reuses the proven configs for the same workflow and
+    CIQ data (not on a step 9 → 8 retry). Steps 8 + 9 on a copy with a scratch baseline: configs reused, **2/2 pass**.
+  - "Clear cache" keeps it; the Artifact Cache page lists and discards baselines; a newer passing run replaces it.
+    The step 6 / 8 reviews say where the output came from (`step_<n>_origin.json`).

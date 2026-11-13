@@ -484,3 +484,17 @@ Phases: {phases}
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
 """
+
+
+# Appended to WORKFLOW_GEN_USER when the UC has a proven workflow but the requirements changed since (user,
+# 2026-11-13: a UC that passed must not be rewritten from scratch)
+WORKFLOW_FROM_BASELINE = """
+
+=== PROVEN WORKFLOW FOR THIS UC (passed QA-Execution in run {run_id}) ===
+This workflow ran end to end against the simulated nodes and passed every test case. The requirements above have
+changed since. Return THIS workflow, changed ONLY where the current requirements differ from what it does (new or
+removed commands, columns, phases, answers). Keep every other step — its command, node, regexes, registers,
+conditions and order — exactly as it is.
+
+{baseline_yaml}
+"""

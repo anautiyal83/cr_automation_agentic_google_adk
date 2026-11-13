@@ -110,6 +110,21 @@ def _settle_deferred_cache(cache, uc_name: str, pending: dict, display_steps: li
             flow.flow("CACHE NOT SAVED %s — step %d failed with them", ", ".join(proven), proof)
 
 
+def _save_baseline(agent_name: str, display_steps: list[int], state: dict, run_dir: str, uc_name: str) -> None:
+    """Step 9 passed: the run's workflow, helper scripts and simulator configs become the UC's baseline — the next
+    run starts from what was proven instead of a fresh LLM draft (user, 2026-11-13). "Clear cache" never drops it."""
+    if 9 not in display_steps or not run_dir or state.get("step_9_status") != "passed" \
+            or not _step_ok(state, run_dir, 9):
+        return
+    try:
+        from agents.network_config_gen_agent import step6_requirements
+        from storage import uc_baseline
+        if uc_baseline.save(run_dir, uc_name, step6_requirements(state)):
+            flow.flow("BASELINE SAVED %s — run %s passed step 9", uc_name, Path(run_dir).name)
+    except Exception as e:
+        logger.error("Baseline save failed for %s: %s", uc_name, e)
+
+
 def _step_agents(index: int) -> list[str]:
     """The agents of the display step(s) the agent at ``index`` reports into (step 6 = config + helper scripts)."""
     steps = set(_AGENT_DISPLAY_STEPS.get(_AGENT_NAMES[index], []))
@@ -408,6 +423,7 @@ class PipelineAgent(BaseAgent):
                                        ctx.session.state, run_dir)
             except Exception as e:
                 logger.error("Cache save failed for %s: %s", agent.name, e)
+            _save_baseline(agent.name, display_steps, ctx.session.state, run_dir, uc_name)
 
             # ----- PUBLISH step_completed -----
             for sn in display_steps:

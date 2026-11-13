@@ -49,14 +49,24 @@ class HelperScriptGenAgent(BaseAgent):
 
         flow.flow("HELPER_SCRIPT_GEN START — uc=%s", uc_name)
 
-        skill = HelperScriptGenSkill(llm_fn=get_llm_fn(config))
-        output = await skill.generate(SkillInput(
-            uc_name=uc_name,
-            workflow_yaml=workflow_yaml,
-            requirements=requirements,
-            run_dir=run_dir,
-            sample_inputs=uploaded_documents(state),  # the formats of the files the scripts read (OB-58)
-        ))
+        # the workflow is the UC's proven one: so are its scripts (storage/uc_baseline.py, user 2026-11-13)
+        from storage import uc_baseline
+        from skills.helper_script_gen import SkillOutput
+        baseline = uc_baseline.load(uc_name)
+        if baseline and baseline.scripts and uc_baseline.workflow_fingerprint(baseline.workflow_yaml) \
+                == uc_baseline.workflow_fingerprint(workflow_yaml):
+            output = SkillOutput(scripts=dict(baseline.scripts), status="passed")
+            flow.flow("HELPER_SCRIPT_GEN: %d scripts reused from the baseline of run %s", len(output.scripts),
+                      baseline.run_id[:8])
+        else:
+            skill = HelperScriptGenSkill(llm_fn=get_llm_fn(config))
+            output = await skill.generate(SkillInput(
+                uc_name=uc_name,
+                workflow_yaml=workflow_yaml,
+                requirements=requirements,
+                run_dir=run_dir,
+                sample_inputs=uploaded_documents(state),  # the formats of the files the scripts read (OB-58)
+            ))
 
         # Write scripts to run directory
         if run_dir and output.scripts:

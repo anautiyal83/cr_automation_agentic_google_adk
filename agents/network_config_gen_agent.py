@@ -16,6 +16,26 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+def step6_requirements(state) -> dict:
+    """The requirements step 6 generates from: the package, with the run's phases and backup route (spec 010) —
+    from the run, not the cached requirements. Its fingerprint tells whether the UC's baseline was proven on them."""
+    from agents.requirements_agent import requirements_store
+    requirements = requirements_store.get(state.get("run_id", ""), {})
+    return {**requirements, "run_options": (state.get("document_set") or {}).get("run_options") or {}}
+
+
+def _write_origin(run_dir: str, step: int, text: str) -> None:
+    """``step_<n>_origin.json``: where the step's output came from (proven baseline / AI), shown at its review."""
+    if not run_dir:
+        return
+    import json
+    f = Path(run_dir) / f"step_{step}_origin.json"
+    if text:
+        f.write_text(json.dumps({"origin": text}), encoding="utf-8")
+    elif f.exists():
+        f.unlink()
+
+
 class NetworkConfigGenAgent(BaseAgent):
     """Generates execution workflow YAML from requirements."""
     name: str = "network_config_gen"
@@ -25,20 +45,15 @@ class NetworkConfigGenAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx):
         from shared.llm import get_llm_fn
-        from agents.requirements_agent import requirements_store
         from skills.network_config_gen import (
             NetworkConfigGenSkill, SkillInput,
         )
 
         state = ctx.session.state
-        run_id = state.get("run_id", "")
         run_dir = state.get("run_dir", "")
         uc_name = state.get("uc_name", "")
         config = state.get("pipeline_config", {})
-        requirements = requirements_store.get(run_id, {})
-        # The run's phases and backup route (spec 010) — from the run, not the cached requirements
-        requirements = {**requirements,
-                        "run_options": (state.get("document_set") or {}).get("run_options") or {}}
+        requirements = step6_requirements(state)
 
         flow.flow("NETWORK_CONFIG_GEN START — uc=%s", uc_name)
 
@@ -61,13 +76,21 @@ class NetworkConfigGenAgent(BaseAgent):
             flow.flow("NETWORK_CONFIG_GEN: Regenerating (attempt %d)", retry_count + 1)
             output = await skill.regenerate(feedback)
         else:
+            # the UC's proven workflow (its step 9 passed): the start instead of a blank page (user, 2026-11-13)
+            from storage import uc_baseline
+            baseline = uc_baseline.load(uc_name)
             inp = SkillInput(
                 uc_name=uc_name,
                 requirements=requirements,
                 generation_hints=requirements.get("generation_hints", {}),
+                baseline_yaml=baseline.workflow_yaml if baseline else "",
+                baseline_run=baseline.run_id if baseline else "",
+                baseline_same_inputs=bool(baseline) and baseline.requirements_fp
+                == uc_baseline.requirements_fingerprint(requirements),
             )
             output = await skill.generate(inp)
             state["_network_config_gen_skill"] = skill
+            state["step_6_origin"] = output.origin
 
         # Save artifacts
         artifacts = state.get("artifacts", {})
@@ -99,6 +122,7 @@ class NetworkConfigGenAgent(BaseAgent):
             elif notes_file.exists():
                 notes_file.unlink()
         state["step_6_status"] = output.status
+        _write_origin(run_dir, 6, output.origin)
 
         if output.status == "failed":
             state["step_6_error"] = output.error or "; ".join(output.validation_errors)
