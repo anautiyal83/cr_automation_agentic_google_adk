@@ -343,30 +343,34 @@ def _format_size(size: int) -> str:
         return f"{size / (1024 * 1024):.1f} MB"
 
 
+async def export_run(run_dir: str | Path, uc_name: str, btn=None) -> None:
+    """Build the run's UC export zip (``tools/uc_export.py``) and download it; ``btn`` spins meanwhile."""
+    from nicegui import run
+    from tools.uc_export import ExportError, build_export
+    if btn is not None:
+        btn.props("loading")
+    try:
+        path = await run.io_bound(build_export, run_dir, uc_name)
+    except ExportError as e:
+        ui.notify(str(e), type="negative", multi_line=True)
+        return
+    except Exception as e:
+        logger.error("UC export of %s failed: %s", run_dir, e, exc_info=True)
+        ui.notify(f"Export failed: {e}", type="negative")
+        return
+    finally:
+        if btn is not None:
+            btn.props(remove="loading")
+    ui.download(str(path))
+    rid = Path(run_dir).name
+    await record("run.export", target_type="run", target_id=rid, run_id=rid, uc_name=uc_name,
+                 details={"file": path.name, "bytes": path.stat().st_size})
+
+
 def export_bar(run_dir: str | Path, uc_name: str) -> None:
     """Export of a successful run (step 10, Run Artifacts): one zip with the UC's validation rules, JSON
     output and execution YAML, and its MockWire simulator — JAR, configs, answers and the start guide
     step 8 wrote (``tools/uc_export.py``)."""
-    async def _export() -> None:
-        from nicegui import run
-        from tools.uc_export import ExportError, build_export
-        btn.props("loading")
-        try:
-            path = await run.io_bound(build_export, run_dir, uc_name)
-        except ExportError as e:
-            ui.notify(str(e), type="negative", multi_line=True)
-            return
-        except Exception as e:
-            logger.error("UC export of %s failed: %s", run_dir, e, exc_info=True)
-            ui.notify(f"Export failed: {e}", type="negative")
-            return
-        finally:
-            btn.props(remove="loading")
-        ui.download(str(path))
-        rid = Path(run_dir).name
-        await record("run.export", target_type="run", target_id=rid, run_id=rid, uc_name=uc_name,
-                     details={"file": path.name, "bytes": path.stat().st_size})
-
     with ui.element("div").classes("cr-doc-group"):
         with ui.row().classes("cr-file-row items-center no-wrap").style("padding: 10px 12px"):
             ui.icon("inventory_2", size="20px").classes("cr-text-accent")
@@ -374,4 +378,5 @@ def export_bar(run_dir: str | Path, uc_name: str) -> None:
                 ui.label(f"Export {uc_name}").classes("cr-file-label")
                 ui.label("Validation rules, JSON output, execution YAML, and the MockWire simulator: JAR, "
                          "configs, answers, start / stop scripts and guide").classes("text-caption cr-text-dim")
-            btn = ui.button("Export", icon="download", on_click=_export).props("unelevated color=primary size=sm no-caps")
+            btn = ui.button("Export", icon="download", on_click=lambda: export_run(run_dir, uc_name, btn)) \
+                .props("unelevated color=primary size=sm no-caps")

@@ -59,9 +59,17 @@ def _sha(*parts: str | bytes) -> str:
     return h.hexdigest()[:16]
 
 
+# What the user gave the UC: the documents as extracted (no AI), the developer's answers and notes, the XML templates
+# and the run's options. Not step 1's own reading of them (category_*, generation_hints, developer_questions): an AI
+# writes that again on every step 1 run, and run 1ee47d78 — same documents, answers and options as the proven
+# 6110bc53 — counted as "changed" and step 6 rewrote 567 of 1026 lines (OB-72)
+_USER_INPUT_KEYS = ("doc_extracted", "developer_answers", "developer_notes", "xml_templates", "run_options")
+
+
 def requirements_fingerprint(requirements: dict) -> str:
-    """What step 6 reads: the requirements package and the run's options (phases, backup route)."""
-    return _sha(json.dumps(requirements or {}, sort_keys=True, default=str))
+    """What the user gave step 6 (``_USER_INPUT_KEYS``): equal → the baseline was proven on these inputs."""
+    req = requirements or {}
+    return _sha(json.dumps({k: req.get(k) for k in _USER_INPUT_KEYS}, sort_keys=True, default=str))
 
 
 def workflow_fingerprint(workflow_yaml: str) -> str:

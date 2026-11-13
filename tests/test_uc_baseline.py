@@ -44,6 +44,10 @@ def test_save_load_and_discard(tmp_path):
     assert b.synthetic_keys == {"niam_eir_server": ["x"]}
     assert b.requirements_fp == uc_baseline.requirements_fingerprint(req)
     assert b.requirements_fp != uc_baseline.requirements_fingerprint({**req, "developer_notes": "changed"})
+    assert b.requirements_fp != uc_baseline.requirements_fingerprint({**req, "run_options": {"backup": False}})
+    # step 1's AI reading of the same documents is written again on every run (OB-72): not an input change
+    assert b.requirements_fp == uc_baseline.requirements_fingerprint(
+        {**req, "category_2_commands": {"x": "worded differently"}, "generation_hints": {"step_6": "other"}})
     assert b.simulator_fp == uc_baseline.simulator_fingerprint(WORKFLOW, uc_baseline.run_ciq_json_files(rd))
     assert b.simulator_fp != uc_baseline.simulator_fingerprint(WORKFLOW + "# x\n", uc_baseline.run_ciq_json_files(rd))
     assert [x["uc_name"] for x in uc_baseline.list_baselines(base)] == [UC]
@@ -112,3 +116,12 @@ def test_pipeline_saves_the_baseline_only_when_step_9_passed(tmp_path, monkeypat
     assert uc_baseline.load(UC) is None
     pipeline_agent._save_baseline("network_config_exec_qa", [9], state, str(rd), UC)
     assert uc_baseline.load(UC).run_id == rd.name
+
+
+def test_a_rollback_only_lookup_takes_its_phases_on_failure():
+    """OB-72: the copy inherited the pre-check's `on_failure: continue` the contract had written on an earlier
+    pass, so re-processing a proven workflow changed it (`stop` → `continue`) and the baseline never matched."""
+    from skills.network_config_gen.structure import _rbl_copy
+    copy_ = _rbl_copy({"node": "N", "send": "date +%Y%m%d", "on_failure": "continue",
+                       "register": [{"regex": "(?<DATE>\d{8})"}]}, 1)
+    assert "on_failure" not in copy_ and copy_["id"] == "nc_rbl1" and copy_["when"] == "ROLLBACK_ONLY == 'true'"

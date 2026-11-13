@@ -1598,3 +1598,18 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     CIQ data (not on a step 9 → 8 retry). Steps 8 + 9 on a copy with a scratch baseline: configs reused, **2/2 pass**.
   - "Clear cache" keeps it; the Artifact Cache page lists and discards baselines; a newer passing run replaces it.
     The step 6 / 8 reviews say where the output came from (`step_<n>_origin.json`).
+
+### OB-72 — The baseline counted step 1's AI wording as changed inputs; re-processing was not idempotent (High, Fixed 2026-11-13)
+- Run 1ee47d78 (same documents, answers, notes, options as 6110bc53): step 6 took the "requirements changed" path
+  because step 1 re-wrote its analysis (`category_*`, `generation_hints`); the AI, told to keep the proven workflow,
+  rewrote 567 of 1026 lines anyway (it passed step 9 2/2 and is now the baseline).
+- Re-processing a proven workflow changed `nc_rbl*` (rollback-only lookups) `on_failure: stop` → `continue`: the
+  copy inherited the pre-check value the contract had written on the earlier pass.
+- Finding: the 6110bc53 workflow requires new black / grey TACs in their diffs, but the delta workbook holds only
+  White TACs — it "passed" only on the canned diff of the time (OB-63). Runs that passed before the simulator was
+  faithful are not proof.
+- **Fix**: `requirements_fingerprint` covers what the user gave (`doc_extracted`, `developer_answers`,
+  `developer_notes`, `xml_templates`, `run_options`), not step 1's own reading; `_rbl_copy` drops `on_failure`
+  (the rollback contract decides). The 1ee47d78 baseline re-processes byte-identical (no AI in step 6, helper
+  scripts and step 8 reused). Steps 6+6h+8+9 on a copy with the 6110bc53 baseline: step 6 reused with no AI.
+- UI: "Export UC package" also in the completion row of a completed run (the step 10 Artifacts tab was missed).

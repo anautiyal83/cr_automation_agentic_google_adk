@@ -305,6 +305,11 @@ class ProgressSection:
             self.btn_outputs = ui.button("Browse outputs", icon="folder_open",
                                          on_click=self._go_outputs) \
                 .props("outline color=primary size=sm no-caps")
+            # the UC export of a completed run (also on step 10's Artifacts tab and in Run Artifacts)
+            self.btn_export = ui.button("Export UC package", icon="inventory_2", on_click=self._export) \
+                .props("unelevated color=primary size=sm no-caps")
+            self.btn_export.tooltip("Validation rules, JSON output, execution YAML and the simulator to run it")
+            self.btn_export.set_visibility(False)
             # A completed run stays here until the user is done with it (spec 008 U-D7)
             self.btn_finish = action(ui.button("Mark as finished", icon="task_alt", on_click=self._finish)
                                      .props("unelevated color=positive size=sm no-caps"), "progress")
@@ -1021,6 +1026,7 @@ class ProgressSection:
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
         self.btn_finish.set_visibility(status in ("completed", "failed") and not finished)
+        self.btn_export.set_visibility(ok)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -1209,6 +1215,7 @@ class ProgressSection:
             self.action_btns.set_visibility(False)
             self.completion_row.set_visibility(True)
             self.btn_finish.set_visibility(True)
+            self.btn_export.set_visibility(True)
             self.progress_bar.value = 1.0
             self.progress_bar.props("color=positive")
         elif event.event_type == "run_failed":
@@ -2161,12 +2168,18 @@ class ProgressSection:
             self.completion_row.set_visibility(True)
             self.active_run_id = None
 
+    async def _export(self):
+        if self._run_dir and self._uc_name:
+            from ui.pages.output_viewer_section import export_run
+            await export_run(self._run_dir, self._uc_name, self.btn_export)
+
     def _reset_to_default(self):
         """Reset progress section to default 'No active pipeline' state."""
         self.active_run_id = None
         self.action_btns.set_visibility(False)
         self.completion_row.set_visibility(False)
         self.btn_finish.set_visibility(False)
+        self.btn_export.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.progress_bar.set_visibility(False)
         self.status_icon.name = "hourglass_empty"

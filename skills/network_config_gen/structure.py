@@ -1209,6 +1209,9 @@ def _rbl_copy(step: dict, k: int) -> dict:
     from .contract import combine
     copy_ = copy.deepcopy(step)
     copy_["id"] = f"nc_rbl{k}"
+    # the rollback phase's rule decides (contract.py), not the source's: a second pass copied the pre-check's
+    # `continue` the contract had written by then, and re-processing a proven workflow changed it (OB-72)
+    copy_.pop("on_failure", None)
     own = str(copy_.get("when") or "").strip()
     copy_["when"] = combine("ROLLBACK_ONLY == 'true'", own) if own else "ROLLBACK_ONLY == 'true'"
     copy_["command_description"] = f"Rollback-only: {copy_.get('command_description') or copy_.get('send')}"
