@@ -56,10 +56,36 @@ def _writer(workflow: dict, value: str) -> tuple[str, str]:
         send = s.get("send")
         if not isinstance(send, str) or str(s.get("node", "")).lower() == "local":
             continue
-        for _, target in _REDIRECT.findall(send):
-            if pattern.match(target.rsplit("/", 1)[-1]):
-                return str(s.get("node")), send.strip()
+        from skills.network_simulator_setup.vfs_commands import sequence_parts
+        for part in sequence_parts(send.strip()):  # `export …; source …; org -c X >file`: the part that writes it
+            for _, target in _REDIRECT.findall(part):
+                if pattern.match(target.rsplit("/", 1)[-1]):
+                    return str(s.get("node")), part.strip()
     return "", ""
+
+
+_WHOLE_VAR = re.compile(r"^\$\{([A-Za-z][A-Za-z0-9]*)\}$")
+
+
+def _registers(workflow: dict) -> dict[str, tuple[str, str]]:
+    """{registered name: (command, regex)}."""
+    out: dict[str, tuple[str, str]] = {}
+    for s in _steps(workflow):
+        for reg in s.get("register") or []:
+            rx = str(reg.get("regex") or "") if isinstance(reg, dict) else ""
+            for name in re.findall(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", rx):
+                out.setdefault(name, (str(s.get("send") or "").strip(), rx))
+    return out
+
+
+def _value_args(command: str) -> list[tuple[str, str]]:
+    """(flag, value) of the script's arguments that are one registered value (``--postdump_white "${DIFF}"``)."""
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        argv = command.split()
+    return [(f, v) for f, v in zip(argv[2:], argv[3:]) if f.startswith("-") and _WHOLE_VAR.match(v)
+            and not _CIQ_REF.search(v)]
 
 
 def _ciq_value(column: str, requirements: dict) -> str:
@@ -114,8 +140,34 @@ def script_context(workflow: dict, script_name: str, requirements: dict, documen
                 shown = preview(doc) if doc else ""
                 if shown:
                     text += (f". The uploaded document of that kind ({Path(doc).name}; read every sheet that "
-                             "applies, by its header):\n" + shown)
+                             "applies, by its header, every cell as text — pandas dtype=str — so values like "
+                             "01695000 keep their leading zeros):\n" + shown)
                 files.append(text)
+        registers = _registers(workflow)
+        for flag, value in _value_args(send):
+            name = _WHOLE_VAR.match(value).group(1)
+            if (flag, value) in seen or name not in registers:
+                continue
+            seen.add((flag, value))
+            source, rx = registers[name]
+            multi = bool(re.search(r"\[\\s\\S\]|\[\\S\\s\]|^\(\?s", rx))
+            text = (f"{flag} {value}: NOT a file name — the TEXT the workflow registered as {name} from the "
+                    f"output of `{source}` (regex /{rx}/)"
+                    + ("; it is that command's whole output, many lines" if multi else "")
+                    + ". The script parses this text from the argument itself (in that command's output "
+                      "format); it never opens it as a file.")
+            # the files that command reads (`diff predump_white.txt postdump_white.txt`): their records' format
+            for token in dict.fromkeys(t for t in source.split() if re.search(r"\.[A-Za-z]\w{0,5}$", t)):
+                node, writer = _writer(workflow, token)
+                bare = re.split(r"(?<![\d&>])>", writer, maxsplit=1)[0].strip() if writer else ""
+                recorded = (redirect_contents([{"cmd": writer}], samples or []).get(bare) or {}).get(
+                    "lines") or [] if writer else []
+                if recorded:
+                    text += (f"\n    `{source.split()[0]}` reads {token}, the output of `{bare}` on {node}; "
+                             "its records look like (parse the field the check is about from each record):\n"
+                             + "\n".join(f"      {l}" for l in recorded[:6] if l.strip()))
+                    break
+            files.append(text)
     if not checks:
         return ""
     out = ("\n\n=== WHAT THE WORKFLOW STEP RUNNING THIS SCRIPT CHECKS ===\n" + "\n".join(checks)

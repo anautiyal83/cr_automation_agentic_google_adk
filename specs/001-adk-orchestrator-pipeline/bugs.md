@@ -1493,3 +1493,46 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   - Tests `test_read_after_the_activity_shows_what_it_loaded` (+2).
 - Known limit: a rollback command sharing the setter's key also marks the change (a rollback-only run would see
   the loaded state).
+
+### OB-60 — Step 9: `export …; source …; org -c X >file` unanswered (High, Fixed 2026-11-13)
+- Run b81305ff: step 6 wrote each dump as one sequence. MockWire tries a key on the whole line, then runs the parts
+  one by one. The whole-line key (without the redirect) never matched, so `source /opt/sdf/.bash_profile` and
+  `org -c X` were unmatched (exit 127). The dump content came from the LLM, not the recorded dump.
+- **Fix**: `vfs_commands.split_redirect_sequences` (topology): a top-level `;`/`&&`/`||` sequence that writes a
+  file becomes the parts MockWire runs (loops and `bash -c '…'` stay whole; `export`/`cd`/`true` are MockWire's).
+  `source <file>` answers empty (`source_answers`), and the dump part gets the recorded output (`redirect_contents`)
+  and OB-59's post-activity state. Setup commands are neither reads nor change commands in OB-59.
+  Tests `test_a_sequence_writing_a_file_is_answered_part_by_part`, `test_dump_parts_of_a_sequence_…`.
+
+### OB-61 — Workflow regexes with `\n`; a lone `&` between commands (High, Fixed 2026-11-13)
+- Run b81305ff: `predump_white_.+?\.txt\n.*predump_black…` never matched a listing with every file: terminal
+  output ends lines in `\r\n` (on a real node too). The rollback's `cd /opt/sdf/processing/ & ls -lrth` ran `cd`
+  in the background and listed the home folder.
+- **Fix** (step 6 autofix): `crlf_line_breaks` (`\n` → `\r?\n` in validation and register regexes, outside
+  character classes); `background_ampersand` (a lone top-level `&` between two commands → `&&`).
+
+### OB-62 — Helper script opened a registered text argument as a file; lost leading zeros (High, Fixed 2026-11-13)
+- Run b81305ff: `--postdump_white "${DIFFWHITE}"` carries the `diff` output (registered `[\s\S]+`); the script
+  opened it as a file name. A later attempt read the TACs with pandas as numbers (`01695000` → `1695000`).
+- **Fix** (`helper_script_gen/context.py`): an argument that is one registered value is described as text from
+  its command's output, with the record format of the files that command reads; uploaded documents are read
+  with every cell as text. The dump writer inside a sequence (OB-60) is found by its writing part.
+
+### OB-63 — Simulated `diff` was canned; the rollback marked the activity's change (High, Fixed 2026-11-13)
+- Run b81305ff: `diff predump_white postdump_white` answered with a recorded diff from the transcript (290 lines,
+  not the 531 TACs loaded). The rollback sends the same `dscli update file …` as the activity, so a rollback-only
+  run's post-rollback dump showed the loaded TACs.
+- **Fix**:
+  - MockWire 395aac4: `diff` / `cmp` builtins over the VFS (GNU normal format, exit 1 when they differ).
+  - Step 8: `diff`/`cmp` are file commands (no key).
+  - Step 6 autofix `diff_differences_ok`: a bare `diff` step gets `|| true`, because the JAR fails a non-zero
+    step and differences are what the step reads.
+  - OB-59: a command the rollback also sends never marks the change; the activity-only commands between the
+    reads do.
+- Steps 6h + 8 + 9 on a copy of b81305ff with the current step 6 autofix: **2/2 pass**. The sunny day's delta
+  check reads the real diff (531 TACs); rollback-only: 26 steps.
+
+### OB-64 — `strict_host_key_checking: false` on every ssh node (user, 2026-11-13)
+- NIAM nodes and `repo_server_sftp` had it; `repo_server` (ssh) and other ssh nodes did not.
+- **Fix**: `production._ssh_host_keys`: every `ssh` / `sftp` node block without `known_hosts` gets
+  `strict_host_key_checking: false`. Test `test_every_ssh_node_accepts_the_host_key`.

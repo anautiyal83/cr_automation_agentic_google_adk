@@ -248,6 +248,20 @@ def _niam_nodes(parsed: dict) -> int:
     return changed
 
 
+def _ssh_host_keys(parsed: dict) -> int:
+    """Every ssh / sftp node accepts the node's host key (``strict_host_key_checking: false``, as production and
+    the NIAM nodes): the automation server has no known_hosts entry for a node it reaches for the first time
+    (user 2026-11-13, OB-64)."""
+    changed = 0
+    for spec in (parsed.get("nodes") or {}).values():
+        for section in ("ssh", "sftp"):
+            block = spec.get(section) if isinstance(spec, dict) else None
+            if isinstance(block, dict) and "strict_host_key_checking" not in block and not block.get("known_hosts"):
+                block["strict_host_key_checking"] = False
+                changed += 1
+    return changed
+
+
 def _local(parsed: dict) -> int:
     """Automation-server steps on ``node: local`` — the framework provides it, production declares none;
     loops carry no node."""
@@ -286,6 +300,7 @@ def apply(parsed: dict, uc_name: str = "", node_types: dict[str, int] | None = N
     changed = failover.apply(parsed, node_types)  # after the contract: the probes keep on_failure: warning
     changed += _local(parsed)
     changed += _niam_nodes(parsed)
+    changed += _ssh_host_keys(parsed)
     changed += _file(parsed, uc_name)
     changed += _phases(parsed)
     changed += _steps(parsed)

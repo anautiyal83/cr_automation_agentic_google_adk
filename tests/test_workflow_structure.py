@@ -615,3 +615,11 @@ def test_local_step_reads_a_ciq_input_file_from_local_path():
     again = parse_yaml(dump_yaml(parsed))
     structure.apply(again, req)
     assert dump_yaml(again) == dump_yaml(parsed)  # idempotent
+
+
+def test_every_ssh_node_accepts_the_host_key():
+    """OB-64 (user 2026-11-13): `strict_host_key_checking: false` on ssh nodes as well (repo_server had none)."""
+    parsed = _applied(VIA_REPO)
+    for name in ("MRF", "repo_server"):
+        assert parsed["nodes"][name]["ssh"]["strict_host_key_checking"] is False, name
+    assert parsed["nodes"]["repo_server_sftp"]["sftp"]["strict_host_key_checking"] is False

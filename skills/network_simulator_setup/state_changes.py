@@ -57,6 +57,9 @@ or, when no input document lists what changes:
 """
 
 
+_SETUP = {"source", ".", "export", "cd", "set", "unset", "umask"}  # load the environment: neither read nor change
+
+
 def _kind(phase: str) -> str:
     p = str(phase or "").lower()
     if "rollback" in p:
@@ -82,15 +85,24 @@ def repeated_reads(node, entries: dict, row: dict) -> list[dict]:
     seq = [c for c in node.commands if _kind(c.get("phase", "")) != "rollback" and str(c.get("cmd") or "").strip()]
     keys = [_find_entry(entries, str(c["cmd"]).strip(), resolve_command(str(c["cmd"]).strip(), row))[0]
             for c in seq]
+    # a command the rollback sends too (the same `dscli update file …`, run b81305ff) would mark the change in a
+    # rollback-only run, where the activity never ran (OB-63)
+    rollback = [str(c["cmd"]).strip() for c in node.commands
+                if _kind(c.get("phase", "")) == "rollback" and str(c.get("cmd") or "").strip()]
+    rollback_keys = {_find_entry(entries, cmd, resolve_command(cmd, row))[0] for cmd in rollback}
     out, done = [], set()
     for i, c in enumerate(seq):
         bare = _bare(c["cmd"])
-        if bare in done or bare.split()[0] in _SIM_BUILTINS or bare in node.vfs_commands:
+        if bare in done or bare.split()[0] in _SIM_BUILTINS | _SETUP or bare in node.vfs_commands:
             continue
         done.add(bare)
         occ = [k for k, d in enumerate(seq) if _bare(d["cmd"]) == bare]
         key, entry = _find_entry(entries, bare, resolve_command(bare, row))
-        if len(occ) < 2 or not isinstance(entry, dict) or not isinstance(entry.get("lines"), list):
+        if key is None:  # the LLM keyed it with its redirect
+            full = str(c["cmd"]).strip()
+            key, entry = _find_entry(entries, full, resolve_command(full, row))
+        if (len(occ) < 2 or not isinstance(entry, dict) or not isinstance(entry.get("lines"), list)
+                or not any(str(x).strip() for x in entry["lines"])):
             continue
         for a, b in zip(occ, occ[1:]):
             setters = []
@@ -98,14 +110,17 @@ def repeated_reads(node, entries: dict, row: dict) -> list[dict]:
                 cmd = str(seq[t]["cmd"]).strip()
                 k = keys[t]
                 if (k is None or _kind(seq[t].get("phase", "")) != "activity" or cmd in node.vfs_commands
-                        or _enters_session(cmd) or cmd.split()[0] in _SIM_BUILTINS
+                        or _enters_session(cmd) or cmd.split()[0] in _SIM_BUILTINS | _SETUP
                         or any(keys[o] == k for o in range(len(seq)) if not a < o < b)
                         or any(s["key"] == k for s in setters)):
                     continue
-                setters.append({"cmd": cmd, "key": k, "description": seq[t].get("description", "")})
+                setters.append({"cmd": cmd, "key": k, "description": seq[t].get("description", ""),
+                                "rollback": k in rollback_keys})
             if setters:
-                out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": setters})
+                out.append({"bare": bare, "key": key, "lines": [str(x) for x in entry["lines"]], "setters": setters,
+                            "dump": bare != str(c["cmd"]).strip()})
                 break
+    out.sort(key=lambda r: not r["dump"])  # reads saved to a file (pre / post dumps) first
     return out[:MAX_READS]
 
 
@@ -170,6 +185,8 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
     if not reads:
         return entries
     docs = _documents(row, documents)
+    logger.info("Phase 2: %s — %d reads repeated after activity commands; input documents: %s", node.name,
+                len(reads), ", ".join(f"{c}={Path(d).name}" for c, d in docs.items()) or "none")
     from tools.input_documents import preview
     listing = []
     for n, r in enumerate(reads, 1):
@@ -188,16 +205,27 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
         logger.warning("Phase 2: %s — changed-state answers failed: %s", node.name, e)
         return entries
     if not isinstance(answers, dict):
+        logger.warning("Phase 2: %s — changed-state answer is no YAML map; %d repeated reads keep one answer",
+                       node.name, len(reads))
         return entries
     entries = dict(entries)
     for n, r in enumerate(reads, 1):
         answer = answers.get(str(n), answers.get(n))
         after = expand(answer, r["lines"], docs)
         if after is None:
+            logger.info("Phase 2: %s — %r is unchanged by the activity (%s)", node.name, r["bare"][:60],
+                        "as answered" if isinstance(answer, dict) and answer.get("unchanged") is True
+                        else f"unusable answer {str(answer)[:200]!r}")
             continue
-        chosen = [s for s in r["setters"] if s["cmd"] in [str(c).strip() for c in (answer.get("changed_by") or [])]]
+        named = [s for s in r["setters"] if s["cmd"] in [str(c).strip() for c in (answer.get("changed_by") or [])]]
+        # the named command, unless the rollback sends it too; then every activity-only command between the reads
+        chosen = [s for s in named if not s["rollback"]] or [s for s in r["setters"] if not s["rollback"]]
+        if not chosen:
+            logger.warning("Phase 2: %s — %r: every command between the reads is also sent by the rollback; "
+                           "it keeps one answer", node.name, r["bare"][:60])
+            continue
         state = f"{STATE_PREFIX}{n}"
-        for s in chosen or r["setters"]:  # none named: every command between the reads marks it
+        for s in chosen:
             entry = dict(entries[s["key"]])
             entry["setState"] = {**(entry.get("setState") or {}), state: "yes"}
             entries[s["key"]] = entry
@@ -205,5 +233,5 @@ async def apply(llm_fn, uc_name: str, node, entries: dict, row: dict, documents:
         entries[r["key"]] = {**rest, "responses": [{"whenState": {state: "yes"}, "lines": after},
                                                    {"lines": r["lines"]}]}
         logger.info("Phase 2: %s — %r prints %d more lines after %s", node.name, r["bare"],
-                    len(after) - len(r["lines"]), ", ".join(s["cmd"][:40] for s in (chosen or r["setters"])))
+                    len(after) - len(r["lines"]), ", ".join(s["cmd"][:40] for s in chosen))
     return entries

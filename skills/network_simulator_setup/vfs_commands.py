@@ -16,7 +16,8 @@ import shlex
 from .guards import _GUARD, _resolve, targets
 
 FILE_COMMANDS = {"ls", "cat", "test", "stat", "rm", "head", "tail", "wc", "cp", "mv", "chmod", "chown",
-                 "mkdir", "touch", "tar", "sha256sum", "md5sum"}
+                 "mkdir", "touch", "tar", "sha256sum", "md5sum",
+                 "diff", "cmp"}  # MockWire 395aac4: a pre / post dump diff shows what the activity changed (OB-63)
 # answered by MockWire without a path (pipeline filters, pure builtins)
 PURE = {"echo", "true", "false", ":", "basename", "dirname", "grep", "egrep", "awk", "sed", "sort", "uniq",
         "tr", "paste", "head", "tail", "wc"}
@@ -375,3 +376,72 @@ def resolved_dirs(prefixes: set[str], ciq_json_files: list[str]) -> list[str]:
             if d.startswith("/") and "${" not in d and "$(" not in d and d != "":
                 out.add(d)
     return sorted(out)
+
+
+_COMPOUND = re.compile(r"^\s*(?:for|while|until|if|case|select|function)\b|^\s*[({]")
+_NO_OUTPUT = {"true", ":", "export", "cd", "set", "unset", "umask", "source", "."}
+
+
+def sequence_parts(cmd: str) -> list[str]:
+    """The commands of a top-level ``a; b && c || d`` (outside quotes, backticks and ``$(…)``); [cmd] when it is
+    one command or a compound (``for … done``, ``if … fi``) MockWire runs as a whole."""
+    if _COMPOUND.match(cmd):
+        return [cmd]
+    parts, current, quote, depth, i = [], "", "", 0, 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote:
+            if ch == "\\" and quote != "'" and i + 1 < len(cmd):
+                current += cmd[i:i + 2]
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif cmd.startswith("$(", i):
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif not depth and (ch == ";" or cmd.startswith(("&&", "||"), i)):
+            parts.append(current.strip())
+            current = ""
+            i += 1 if ch == ";" else 2
+            continue
+        current += ch
+        i += 1
+    parts.append(current.strip())
+    parts = [p for p in parts if p]
+    return parts if len(parts) > 1 else [cmd]
+
+
+def split_redirect_sequences(commands: list[dict]) -> list[dict]:
+    """A sequence that writes a file (``export USER=sdfrun; source /opt/sdf/.bash_profile; org -c X >/p/f.txt``)
+    as the commands MockWire runs one by one. It tries a key on the whole line first, and one that matched would
+    write no file; a key on the line without the redirect never matched. So ``source`` and ``org -c X`` went
+    unanswered (run b81305ff, OB-60). Each part keeps the step's phase; the step's check applies to the whole
+    output, so the parts carry none. Setup parts that print nothing (``export``, ``cd``, ``true``) are left out:
+    MockWire runs them itself, and ``source`` is answered empty (``source_answers``)."""
+    out = []
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        parts = sequence_parts(cmd) if ">" in cmd else [cmd]
+        if len(parts) < 2 or not any(redirect_targets(p) for p in parts):
+            out.append(c)
+            continue
+        for p in parts:
+            first = p.split()[0] if p.split() else ""
+            if first in _NO_OUTPUT - {"source", "."} or re.match(r"^\w+=", p):
+                continue
+            out.append({**c, "cmd": p, "validation": {}, "register": [], "sequence_of": cmd})
+    return out
+
+
+def source_answers(commands: list[dict]) -> dict[str, dict]:
+    """``source <file>`` / ``. <file>`` load the environment and print nothing."""
+    out = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        if re.fullmatch(r"(?:source|\.)\s+[^\s;|&<>]+", cmd):
+            out[cmd] = {"lines": []}
+    return out

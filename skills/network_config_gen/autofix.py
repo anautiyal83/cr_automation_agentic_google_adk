@@ -332,6 +332,9 @@ def fix_workflow(yaml_text: str) -> str:
     untar_member_check(parsed)
     when_bare_operands(parsed)
     grep_no_match_ok(parsed)
+    diff_differences_ok(parsed)
+    crlf_line_breaks(parsed)
+    background_ampersand(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -1853,6 +1856,109 @@ def grep_no_match_ok(parsed: dict) -> int:
             changed += 1
     return changed
 
+
+def regex_line_breaks(regex: str) -> str:
+    r"""``\n`` in a regex → ``\r?\n``: the JAR captures terminal output, whose lines end in ``\r\n`` (MockWire and a
+    real node's pty alike), so ``predump_white_.+?\.txt\n.*predump_black…`` never matched a listing that had every
+    file (run b81305ff, OB-61). Left alone: an escaped backslash (``\\n``), one already after ``\r`` / ``\r?``,
+    and character classes (``[^\n]`` already takes ``\r``)."""
+    out, i, in_class = [], 0, False
+    while i < len(regex):
+        ch = regex[i]
+        if ch == "\\" and i + 1 < len(regex):
+            pair = regex[i:i + 2]
+            if pair == "\\n" and not in_class and not "".join(out).endswith(("\\r", "\\r?")):
+                out.append("\\r?\\n")
+            else:
+                out.append(pair)
+            i += 2
+            continue
+        if ch == "[" and not in_class:
+            in_class = True
+        elif ch == "]" and in_class:
+            in_class = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def crlf_line_breaks(parsed: dict) -> int:
+    """Every validation and register regex matches lines ending in ``\\r\\n`` (``regex_line_breaks``, OB-61)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        holders = list(_criteria_blocks(step)) + [r for r in step.get("register") or [] if isinstance(r, dict)]
+        for h in holders:
+            rx = h.get("regex")
+            if isinstance(rx, str) and "\\n" in rx:
+                fixed = regex_line_breaks(rx)
+                if fixed != rx:
+                    h["regex"] = fixed
+                    changed += 1
+    return changed
+
+
+def _top_level_ampersands(send: str) -> list[int]:
+    """Positions of a lone ``&`` between two commands, outside quotes, backticks and ``$(…)`` (not ``&&``,
+    ``2>&1``, ``&>``, ``>&``, nor a trailing ``&``)."""
+    found, quote, depth, i = [], "", 0, 0
+    while i < len(send):
+        ch = send[i]
+        if quote:
+            if ch == "\\" and quote != "'":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif send.startswith("$(", i):
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif ch == "&" and not depth:
+            if send.startswith("&&", i):
+                i += 2
+                continue
+            before, after = send[:i].rstrip(), send[i + 1:]
+            if not before.endswith((">", "<", "|")) and not after.startswith((">", "&")) and after.strip():
+                found.append(i)
+        i += 1
+    return found
+
+
+def background_ampersand(parsed: dict) -> int:
+    """``cd /opt/sdf/processing/ & ls -lrth`` runs ``cd`` in the background and ``ls`` where the shell was (run
+    b81305ff: "Post-rollback dump files not found", OB-61): a workflow step waits for its command, so a lone ``&``
+    between two commands is ``&&``."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str):
+            continue
+        spots = _top_level_ampersands(send)
+        for i in reversed(spots):
+            send = send[:i].rstrip() + " && " + send[i + 1:].lstrip()
+        if spots:
+            step["send"] = send
+            changed += 1
+    return changed
+
+
+def diff_differences_ok(parsed: dict) -> int:
+    """``diff a b`` exits 1 when the files differ, and the JAR fails a non-zero step before its check: a pre / post
+    dump comparison that expects the activity's changes failed on the real diff (run b81305ff, MockWire's diff
+    builtin, OB-63). Differences are the answer the step reads: ``|| true`` (a missing file still prints
+    ``No such file``, which the step's check sees)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or _is_guarded(send) or "||" in send:
+            continue
+        last = re.split(r"\s*(?:;|&&)\s*", send.strip())[-1]
+        if re.match(r"^(?:diff|cmp)\s", last):
+            step["send"] = send.rstrip() + " || true"
+            changed += 1
+    return changed
 
 def _is_guarded(send: str) -> bool:
     return send.lstrip().startswith("if ")

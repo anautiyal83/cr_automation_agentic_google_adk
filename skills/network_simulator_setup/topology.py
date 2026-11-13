@@ -123,7 +123,9 @@ def build_topology(
         if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")) or name in served:
             continue
         group = aliases.get(str(name), [])
-        node_cmds = [c for c in commands if c.get("node") == name or c.get("node") in group]
+        from .vfs_commands import split_redirect_sequences
+        # `export …; source …; org -c X >/p/f` as the parts MockWire runs (OB-60)
+        node_cmds = split_redirect_sequences([c for c in commands if c.get("node") == name or c.get("node") in group])
         from .file_flows import node_steps
         if not node_cmds and not node_steps(workflow, str(name)):  # sftp-only nodes are used too
             # Declared but used by no step (e.g. an invented gateway node): the JAR never

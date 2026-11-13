@@ -276,7 +276,7 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - How a UC simulator must behave for cli-automation: `AGENTS.md` of the MockWire repo (read before changing step 8)
 - Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
-- MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm …` on its VFS: step 8
+- MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm diff …` on its VFS: step 8
   (`vfs_commands.py`) gives no response key to a command whose paths all lie where the workflow puts files (`/tmp`,
   uploads, copy / extract targets, backup sources, archives) and creates those folders per CIQ record (DEP-59);
   staged `.tar` inputs are real archives (step 9)

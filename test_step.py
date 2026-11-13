@@ -325,7 +325,9 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         "uc_name": uc_name,
         "ciq_file_path": ciq_file_path,
         # the run's options (phases, backup via repo — spec 010), as the runner puts them in the state
-        "document_set": {"run_options": json.loads(rows[0]["run_options"] or "{}")},
+        "document_set": {"run_options": json.loads(rows[0]["run_options"] or "{}"),
+                         # the uploaded documents: inputs the activity loads (steps 6, 8, 9; OB-58/59)
+                         "additional_documents": rows[0]["additional_documents"] or "[]"},
         "pipeline_config": config,
         "artifacts": {
             "workflow_yaml": workflow_yaml,

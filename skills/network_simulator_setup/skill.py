@@ -215,8 +215,9 @@ class NetworkSimulatorSetupSkill:
             merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
             merged = drop_vfs_answers(node, merged, row)
             # `cmd >/p/f`: the file gets cmd's recorded output (first: it beats the empty answer, OB-49)
-            from .vfs_commands import redirect_contents
+            from .vfs_commands import redirect_contents, source_answers
             merged = {**redirect_contents(node.commands, samples), **merged}
+            merged = {**source_answers(node.commands), **merged}  # `source <profile>` prints nothing (OB-60)
             merged = {**ls_paths_as_given(node.commands, merged), **merged}
             # a read repeated after the activity shows what the activity changed (OB-59)
             from . import state_changes

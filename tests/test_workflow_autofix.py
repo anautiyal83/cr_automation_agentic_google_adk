@@ -791,3 +791,42 @@ def test_success_expr_false_on_healthy_output_is_reported():
     production = wf([{"regex": r"(?<BADSTATE>tcp6?\s+\d+\s+\d+\s+\S+\s+\S+:16611\s+(?!ESTABLISHED\b)\S+)"}],
                     "${BADSTATE == \"\"}")
     assert not any("is false on the real output" in p for p in check_against_samples(production, [sample]))
+
+
+
+def test_regex_line_breaks_take_crlf():
+    """OB-61 (run b81305ff): terminal output ends lines in \r\n; `\.txt\n.*predump_black` never matched the listing
+    that had every file."""
+    import re
+    from skills.network_config_gen.autofix import regex_line_breaks
+    rx = r"predump_white_.+?\.txt\n.*predump_black_.+?\.txt\n.*predump_grey_.+?\.txt"
+    fixed = regex_line_breaks(rx)
+    assert fixed == r"predump_white_.+?\.txt\r?\n.*predump_black_.+?\.txt\r?\n.*predump_grey_.+?\.txt"
+    listing = ("-rw-r--r--. 1 o o 6001 Nov 13 12:02 predump_white_20231108.txt\r\n"
+               "-rw-r--r--. 1 o o 0 Nov 13 12:02 predump_black_20231108.txt\r\n"
+               "-rw-r--r--. 1 o o 0 Nov 13 12:02 predump_grey_20231108.txt")
+    assert not re.search(rx, listing) and re.search(fixed, listing)
+    for same in (r"a\r\nb", r"a\r?\nb", r"[^\n]+", r"a\\nb"):
+        assert regex_line_breaks(same) == same
+
+
+def test_lone_ampersand_between_commands_is_and():
+    """OB-61: `cd /opt/sdf/processing/ & ls -lrth` ran ls where the shell was."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "cd /opt/sdf/processing/ & ls -lrth", "command_description": "a"},
+        {"node": "N", "send": "cmd >/tmp/x 2>&1 && echo 'a & b' && x &>/dev/null", "command_description": "b"},
+        {"node": "N", "send": "sleep 5 &", "command_description": "c"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == ["cd /opt/sdf/processing/ && ls -lrth", "cmd >/tmp/x 2>&1 && echo 'a & b' && x &>/dev/null",
+                     "sleep 5 &"]
+
+
+
+
+def test_diff_differences_do_not_fail_the_step():
+    """OB-63: real diff exits 1 when the dumps differ (MockWire's diff builtin), and the JAR fails the step."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "diff predump_white_${DATE}.txt postdump_white_${DATE}.txt", "command_description": "a"},
+        {"node": "N", "send": "cd /x && diff a b || echo none", "command_description": "b"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == ["diff predump_white_${DATE}.txt postdump_white_${DATE}.txt || true", "cd /x && diff a b || echo none"]
