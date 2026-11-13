@@ -75,8 +75,25 @@ def _java_line(name: str, port: int, jar: str = "mockwire.jar", sep: str = "/") 
             f"--ttl-minutes {DEFAULT_TTL_MINUTES}")
 
 
+def simulator_sections(sim_dir: str | Path, uc_name: str, run_id: str = "") -> str:
+    """The simulator part of the UC export's user guide (``tools/uc_export.py``): the guide below without its title
+    and file table, headings one level down. "" without a started simulator."""
+    sim_dir = Path(sim_dir)
+    instances = _instances(sim_dir)
+    if not instances:
+        return ""
+    configs = {i["name"]: _load(sim_dir / "config" / f"{i['name']}.yaml") for i in instances}
+    body = guide_markdown(sim_dir, uc_name, instances, configs, run_id, standalone=False)
+    out, fenced = [], False
+    for line in body.split("\n"):
+        if line.startswith("```"):
+            fenced = not fenced
+        out.append("#" + line if not fenced and re.match(r"#+ ", line) else line)
+    return "\n".join(out)
+
+
 def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: dict[str, dict],
-                   run_id: str = "") -> str:
+                   run_id: str = "", standalone: bool = True) -> str:
     """The UC's simulator: its servers and ports, how they work together (NIAM login, su, nested shells, repo
     server copies, file triggers), the workflow's commands on each server with what the simulator answers, and a
     session to try each server by hand (user, 2026-11-13: the guide must be specific to the UC)."""
@@ -85,9 +102,10 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
     served = {n: i for i in instances for n in (i.get("nodes") or [i["name"]])}
     names = ", ".join(f"**{i['name']}** (port {i['port']})" for i in instances)
     lines = [
-        f"# {uc_name} — network simulator",
+        f"# {uc_name} — network simulator" if standalone else "# Network simulator",
         "",
-        f"This UC's workflow talks to {len(instances)} server{'s' if len(instances) > 1 else ''}: {names}. "
+        ("" if standalone else "Everything in this part runs inside the `simulator/` folder (`cd simulator`). ")
+        + f"This UC's workflow talks to {len(instances)} server{'s' if len(instances) > 1 else ''}: {names}. "
         "Each is one MockWire SSH server on localhost that answers like the real node did in the uploaded "
         "transcripts, as step 8 (Simulator Setup) prepared it" + (f" in run `{run_id}`" if run_id else "")
         + ". Step 9 (QA-Execution) ran the workflow against them.",
@@ -136,7 +154,8 @@ def guide_markdown(sim_dir: Path, uc_name: str, instances: list[dict], configs: 
     lines += _together(instances, configs, wf_nodes, served)
     lines += _walkthrough(overlay, configs, served)
     lines += _by_hand(instances, configs, wf_nodes, overlay, served)
-    lines += _files_section(uc_name)
+    if standalone:
+        lines += _files_section(uc_name)
     lines += _workflow_section(sim_dir, uc_name, instances)
     return "\n".join(lines) + "\n"
 

@@ -1674,3 +1674,12 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
     its server, command and the simulator's answer (placeholders filled like at run time).
   - Try it by hand: per server the login and up to 4 workflow commands with their answers.
   - The UC export always writes the current guide.
+
+### OB-80 — One user guide in the export, every file described (Medium, Fixed 2026-11-13)
+- User: a single user guide with each file generated and its description, plus the simulator information.
+- **Fix** (`tools/uc_export.py`): `USER_GUIDE.md` at the package root replaces `README.md` + `simulator/SIMULATOR_GUIDE.md`
+  — the package, a table of every file with what it is (helper scripts by the workflow step that runs them, input
+  files by their CIQ column, each simulator config by its server / port / nodes), then the simulator part
+  (`guide.simulator_sections`: servers, start, how they work together, the workflow per server, try it, run it).
+- Found while checking it: `scripts/` also held dumps a step 9 run left there and a helper of an earlier step 6 the
+  workflow no longer calls — the export now takes only the helpers the workflow calls and the inputs the CIQ names.

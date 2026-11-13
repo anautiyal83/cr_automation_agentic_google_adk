@@ -47,7 +47,7 @@ phases:
     steps:
     - {node: RDS, send: su - sdfrun}
     - {node: RDS, send: 'ldapsearch -x -b "imsi=${rec.data.Test IMSI},dc=IMSI" objectclass=*'}
-    - {node: LOCAL, send: "python create_xml.py --imsi '${rec.data.Test IMSI}'"}
+    - {node: LOCAL, send: "python create_xml.py --imsi '${rec.data.Test IMSI}'", command_description: Build the order XML}
     - {node: PGW, sftp: {operation: upload, local_path: '${ORDERNO}.xml', remote_path: '/srv/inbox/${ORDERNO}.xml'}}
     - {node: PGW, send: sar 1 10}
     - {node: PGW, send: unknown_tool --x}
@@ -70,12 +70,17 @@ def _run(tmp_path, with_deliverables=True):
     (sim / "logs/llm_PGW_raw.txt").write_text("raw", encoding="utf-8")
     (rd / "json_data").mkdir()
     (rd / "json_data" / f"{UC}.json").write_text(json.dumps({"crGroups": [{"crGroup": "CR1", "nodeGroups": [
-        {"nodeGroup": "NG1", "nodes": [{"node": "BH"}]}]}]}), encoding="utf-8")
+        {"nodeGroup": "NG1", "nodes": [{"node": "BH"}], "configSequences": [{"records": [
+            {"data": {"INPUT_FILE": "SD_input.xlsx", "Test IMSI": "404530000000132"}}]}]}]}]}), encoding="utf-8")
     (rd / "scripts").mkdir()
     (rd / "scripts" / "create_xml.py").write_text("print('ok')\n", encoding="utf-8")
     if with_deliverables:
-        for name in (f"{UC}_validation-rules.yaml", f"{UC}_json-output.yaml", f"{UC}.yaml"):
+        for name in (f"{UC}_validation-rules.yaml", f"{UC}_json-output.yaml"):
             (rd / name).write_text("x: 1\n", encoding="utf-8")
+        (rd / f"{UC}.yaml").write_text(OVERLAY, encoding="utf-8")
+    (rd / "scripts" / "SD_input.xlsx").write_bytes(b"xlsx")
+    (rd / "scripts" / "postdump_white_20231108.txt").write_text("left by a step 9 run", encoding="utf-8")
+    (rd / "scripts" / "old_helper.py").write_text("print('an earlier step 6')\n", encoding="utf-8")
     jar = tmp_path / "mockwire.jar"
     jar.write_bytes(b"PK jar")
     return rd, jar
@@ -124,16 +129,29 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
     assert out == rd / "export" / f"{UC}_export.zip"
     z = zipfile.ZipFile(out)
     names = set(z.namelist())
-    for name in (f"{UC}_validation-rules.yaml", f"{UC}_json-output.yaml", f"{UC}.yaml", "README.md",
+    for name in (f"{UC}_validation-rules.yaml", f"{UC}_json-output.yaml", f"{UC}.yaml", "USER_GUIDE.md",
                  f"json_data/{UC}.json", "scripts/create_xml.py",
                  "simulator/mockwire.jar", "simulator/config/PGW.yaml", f"simulator/{UC}.yaml",
-                 "simulator/SIMULATOR_GUIDE.md", "simulator/start_simulator.ps1", "simulator/start_simulator.sh",
+                 "simulator/start_simulator.ps1", "simulator/start_simulator.sh",
                  "simulator/stop_simulator.ps1", "simulator/stop_simulator.sh",
                  "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/vfs/RDS/", "simulator/logs/"):
         assert f"{UC}/{name}" in names, name
     # the run's logs, events, LLM output, manifest and what step 9 left on the nodes stay out
     assert not [n for n in names if n.endswith((".jsonl", "raw.txt", "manifest.json", "left_by_step9.xml"))]
     assert z.getinfo(f"{UC}/simulator/start_simulator.sh").external_attr >> 16 & 0o111
+    # one user guide: every file with what it is, then the simulator part (headings one level down, code intact)
+    assert not [n for n in names if n.endswith(("README.md", "SIMULATOR_GUIDE.md"))]
+    # from scripts/: the helper the workflow calls and the input the CIQ names — not leftovers
+    assert not [n for n in names if n.endswith(("postdump_white_20231108.txt", "old_helper.py"))]
+    guide = z.read(f"{UC}/USER_GUIDE.md").decode("utf-8")
+    for arc in (f"{UC}_validation-rules.yaml", "json_data/", "simulator/mockwire.jar", "simulator/config/PGW.yaml",
+                "simulator/vfs/RDS/", "simulator/start_simulator.sh", "scripts/SD_input.xlsx"):
+        assert f"| `{arc}" in guide, arc
+    assert '`scripts/create_xml.py` | Helper script (step 6) the workflow runs on the automation server: "Build the order XML"' in guide
+    assert "server **PGW** (port 22201, simulates PGW)" in guide
+    assert "`scripts/SD_input.xlsx` | Input file the CIQ names in column `INPUT_FILE`" in guide
+    assert "\n## Network simulator\n" in guide and "\n### Servers\n" in guide and "\n### How the servers work together\n" in guide
+    assert "\n# password: netconf-sim\n" in guide  # a comment in a code block stays as it is
 
 
 def test_export_names_what_the_run_lacks(tmp_path):

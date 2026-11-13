@@ -292,7 +292,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
   configs to `data/knowledge/<uc>/baseline/`; step 6 starts from it (same requirements: no LLM), step 8 reuses the
   configs for the same workflow + CIQ JSON. "Clear cache" keeps it (user); Artifact Cache page discards it
 - UC export (step 10 artifacts tab + Run Artifacts, completed runs; `tools/uc_export.py`): zip of validation rules,
-  JSON output, execution YAML, CIQ JSON, helper scripts and the simulator (JAR, configs, answers, guide, empty VFS)
+  JSON output, execution YAML, CIQ JSON, the helper scripts the workflow calls + inputs the CIQ names, and the simulator
+  (JAR, configs, answers, start / stop scripts, empty VFS); one `USER_GUIDE.md`: every file described + the simulator
+  guide (servers, ports, how they work together, the workflow per server)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
 - Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers
