@@ -1871,3 +1871,6 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Verified on a copy of run 6570694d (steps 6h + 8 + 9): `create_xml.py` rejected on attempt 1, regenerated with 0
   problems; **2/2 pass** (EAST 45 steps, NORTH 60); NORTH's uploaded order is one well-formed `batchRequest` with
   both records' `<request>` (IMSI 404530000000132 and 999990000015555).
+- EIR regression (OB-96 structure, copy of run 1ee47d78, steps 8 + 9): **2/2 pass** (sunny day 63 steps, rollback
+  only 22); `${INFLATEDFILE}` carried from the backup loop to the activity loop (`nc_records/INFLATEDFILE_*.txt` =
+  `bulkProvisioning.json`).
