@@ -338,32 +338,41 @@ def check_accumulates(script_name: str, code: str, command_lines: list[str], val
     values = {**{n.strip(): "1" for n in _WF_PLACEHOLDER.findall(line)}, **values}
     other = {k: v if k in named_by else _other_value(v) for k, v in values.items()}
 
-    def run(folder: str, vals: dict[str, str]) -> str:
+    def run(folder: str, vals: dict[str, str]) -> tuple[str, str]:
+        """(the file's text, why the pass failed — empty when it exited 0)"""
         resolved = _WF_PLACEHOLDER.sub(lambda m: vals.get(m.group(1).strip(), "1"), line)
         try:
             argv = shlex.split(resolved, posix=True)
         except ValueError:
-            return ""
+            return "", ""
         if len(argv) < 2 or not re.match(r"python3?$", argv[0]):
-            return ""
+            return "", ""
         argv[0], argv[1] = sys.executable, str(Path(folder, Path(argv[1]).name))
         for name, content in (inputs or {}).items():
             Path(folder, _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), name)).write_bytes(content)
         try:
-            subprocess.run(argv, cwd=folder, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(argv, cwd=folder, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            return ""
+            return "", ""
+        failed = "" if proc.returncode == 0 else ((proc.stdout + proc.stderr).strip().splitlines() or ["exit"])[-1]
         name = _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), shared_outputs(line)[0])
         target = Path(folder, name.replace("\\", "/").rsplit("/", 1)[-1])
-        return target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
+        return (target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""), failed
 
     with tempfile.TemporaryDirectory(prefix="helper-acc-") as both, \
             tempfile.TemporaryDirectory(prefix="helper-acc-") as alone:
         for folder in (both, alone):
             Path(folder, script_name).write_text(code, encoding="utf-8")
-        first = run(both, values)
-        together = run(both, other)
-        second = run(alone, other)
+        first, _ = run(both, values)
+        together, refused = run(both, other)
+        second, alone_failed = run(alone, other)
+    if first and refused and not alone_failed:
+        # it kept the first part by refusing the second record (run 6570694d: "IMSI in existing file does not
+        # match current IMSI. Cannot append modifications for a different IMSI", OB-99)
+        return [f"the workflow runs `{line}` once per CIQ record and every pass writes {shared_outputs(line)[0]}: "
+                f"one file for all the records. The pass for another record (other IMSI / key) fails when the file "
+                f"holds the earlier record's part ({refused[:160]!r}) — records differ in every value; ADD this "
+                "record's part next to the earlier ones (one header / wrapper / footer around all the parts)"]
     kept = set(together.splitlines())
     lost = [l.strip() for l in first.splitlines()
             if l.strip() and l not in set(second.splitlines()) and l not in kept]

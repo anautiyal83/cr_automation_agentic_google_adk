@@ -502,3 +502,50 @@ def test_a_script_every_record_pass_runs_must_add_to_its_file():
     # a script whose file is the record's own is not asked to
     own = [cmd[0].replace("'${ORDER_NO}.xml'", "'${configSequences.0.records.0.data.Cap}.xml'")]
     assert check_accumulates("create_xml.py", _OVERWRITES, own, values) == []
+
+
+_REFUSES_OTHER_KEY = '''import argparse, os, sys
+p = argparse.ArgumentParser(); p.add_argument("--imsi"); p.add_argument("--cap"); p.add_argument("--output_file")
+a = p.parse_args()
+if os.path.exists(a.output_file) and ("imsi='%s'" % a.imsi) not in open(a.output_file).read():
+    print("Error: IMSI in existing file does not match current IMSI.")
+    sys.exit(1)
+open(a.output_file, "a").write("<req imsi='%s' cap='%s'/>\\n" % (a.imsi, a.cap))
+print("XML file generated successfully")
+'''
+
+
+def test_a_script_refusing_the_next_record_is_rejected():
+    """OB-99: create_xml.py exited 1 for a second IMSI — the first record's part stayed, so no line was "lost" and
+    the check passed; NORTH's second record failed at step 9."""
+    from skills.helper_script_gen.skill import check_accumulates
+    cmd = ["python create_xml.py --imsi '${resolvedImsi}' --cap '${configSequences.0.records.0.data.Cap}' "
+           "--output_file '${ORDER_NO}.xml'"]
+    values = {"configSequences.0.records.0.data.Cap": "10", "ORDER_NO": "T1"}
+    problems = check_accumulates("create_xml.py", _REFUSES_OTHER_KEY, cmd, values)
+    assert problems and "does not match current IMSI" in problems[0]
+    assert check_accumulates("create_xml.py", _ADDS, cmd, values) == []
+
+
+def test_a_column_resolved_into_a_variable_is_used_through_it():
+    """OB-100: resolvedImsi = Test IMSI, else looked up by Test MSISDN — create_xml.py still got the Test IMSI
+    column, empty for EAST (MSISDN only)."""
+    from skills.network_config_gen.autofix import use_resolved_column
+    col = "${configSequences.0.records.0.data.Test IMSI}"
+    wf = {"phases": {"activity": {"steps": [
+        {"node": "local", "send": f"echo {col}", "when": "configSequences.0.records.0.data.Test IMSI != ''",
+         "register": [{"regex": r"(?<resolvedImsi>\S+)"}]},
+        {"node": "rds", "send": "ldapsearch -b msisdn=${configSequences.0.records.0.data.Test MSISDN} | grep IMSI",
+         "when": "configSequences.0.records.0.data.Test IMSI == ''",
+         "register": [{"regex": r"IMSI:\s*(?<resolvedImsi>\d+)"}]},
+        {"node": "local", "send": f"python create_xml.py --imsi '{col}' --output_file 'x.xml'"},
+        {"node": "local", "send": f"echo only for rows with it {col}",
+         "when": "configSequences.0.records.0.data.Test IMSI != ''"},
+    ]}}}
+    assert use_resolved_column(wf) == 1
+    steps = wf["phases"]["activity"]["steps"]
+    assert steps[2]["send"] == "python create_xml.py --imsi '${resolvedImsi}' --output_file 'x.xml'"
+    assert col in steps[0]["send"] and col in steps[3]["send"]
+    # one registering step only: not a resolved value
+    single = {"phases": {"a": {"steps": [steps[0], {"node": "local", "send": f"echo {col}"}]}}}
+    assert use_resolved_column(single) == 0

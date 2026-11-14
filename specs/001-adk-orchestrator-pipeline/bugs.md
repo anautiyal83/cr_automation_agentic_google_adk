@@ -1874,3 +1874,23 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - EIR regression (OB-96 structure, copy of run 1ee47d78, steps 8 + 9): **2/2 pass** (sunny day 63 steps, rollback
   only 22); `${INFLATEDFILE}` carried from the backup loop to the activity loop (`nc_records/INFLATEDFILE_*.txt` =
   `bulkProvisioning.json`).
+
+### OB-99 — A helper script refusing the next record's key passed the record-accumulation check (High, Fixed 2026-11-14)
+- Run 6570694d (server restarted on the OB-96/98 code, step 6 by the LLM): NORTH's second `create_xml.py` pass
+  exited 1 — "IMSI in existing file does not match current IMSI. Cannot append modifications for a different IMSI".
+  `check_accumulates` only looked for lines lost from the file; the refused pass left the first record's part
+  intact, so nothing was lost and step 6h passed.
+- **Fix** (`helper_script_gen.skill.check_accumulates`): the other record's pass into the shared folder must exit 0
+  when the same pass alone does; otherwise the script is rejected with its own message.
+
+### OB-100 — A step used an either-or column directly after the workflow had resolved it (High, Fixed 2026-11-14)
+- Same run: `resolvedImsi` = `echo ${…Test IMSI}` (rows giving it) or the MSISDN lookup (rows without), but the LLM
+  passed `--imsi '${…Test IMSI}'` to create_xml.py: EAST (MSISDN only) ran it with `--imsi ''` → exit 1. The
+  validator's either-or checks were satisfied (both columns used; the builder gets the IMSI column).
+- **Fix** (`network_config_gen.autofix.use_resolved_column`, in `fix_workflow`): a variable registered by a step
+  echoing a CIQ column AND by another step is that column's value for every row — later steps using the column get
+  the variable; steps guarded on the column (`when`) keep it.
+- OB-99 + OB-100 verified: this run's `create_xml.py` is rejected by the check; `use_resolved_column` rewrites this
+  run's create_xml step to `--imsi '${resolvedImsi}'`. A copy of the run, steps 6 + 6h + 8 + 9: **2/2 pass** (EAST 42
+  steps — order IMSI 123456789012345 looked up by MSISDN; NORTH 57 — one order with 404530000000132 and
+  999990000015555). 479 tests pass.

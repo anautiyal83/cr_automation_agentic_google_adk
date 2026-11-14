@@ -339,6 +339,7 @@ def fix_workflow(yaml_text: str) -> str:
     list_after_silent(parsed)
     count_needs_loop(parsed)
     block_numbers_end_their_line(parsed)
+    use_resolved_column(parsed)
     loop_count_nonempty(parsed)
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
@@ -1609,6 +1610,41 @@ def block_numbers_end_their_line(parsed: dict) -> int:
             if isinstance(reg, dict) and isinstance(reg.get("regex"), str) and _BARE_NUMBER.match(reg["regex"].strip()):
                 reg["regex"] = reg["regex"].strip() + r"(?=\s*$)"
                 changed += 1
+    return changed
+
+
+_COLUMN_REF = r"\$\{(?:configSequences\.\d+\.records\.\d+|rec)\.data\.%s\s*\}"
+_ECHO_COLUMN = re.compile(r"""^\s*(?:echo|printf\s+(['"])%s\1)\s+(['"]?)\$\{(?:configSequences\.\d+\.records\.\d+|rec)"""
+                          r"""\.data\.([^}]+?)\s*\}\2\s*$""")
+
+
+def use_resolved_column(parsed: dict) -> int:
+    """A variable one step registers by echoing a CIQ column and another step by a lookup (``resolvedImsi``: Test
+    IMSI when the row gives it, else looked up by Test MSISDN) is that column's value for EVERY row. A later step
+    using the column itself gets it empty on rows without it: EAST's create_xml.py ran with ``--imsi ''`` (run
+    6570694d, OB-100). Later steps use the variable; a step guarded on the column (``when``) is left alone."""
+    steps = [s for _, s in _walk_all_steps(parsed.get("phases") or {})]
+    registered: dict[str, list[int]] = {}
+    for i, step in enumerate(steps):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict):
+                for name in re.findall(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", str(reg.get("regex") or "")):
+                    registered.setdefault(name, []).append(i)
+    changed = 0
+    for var, at in registered.items():
+        if len(at) < 2:
+            continue
+        columns = {m.group(3).strip() for i in at if (m := _ECHO_COLUMN.match(str(steps[i].get("send") or "")))}
+        if len(columns) != 1:
+            continue
+        column = columns.pop()
+        ref = re.compile(_COLUMN_REF % re.escape(column))
+        for step in steps[max(at) + 1:]:
+            send = step.get("send")
+            if not isinstance(send, str) or not ref.search(send) or column in str(step.get("when") or ""):
+                continue
+            step["send"] = ref.sub("${" + var + "}", send)
+            changed += 1
     return changed
 
 
