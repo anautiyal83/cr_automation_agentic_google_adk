@@ -549,3 +549,36 @@ def test_a_column_resolved_into_a_variable_is_used_through_it():
     # one registering step only: not a resolved value
     single = {"phases": {"a": {"steps": [steps[0], {"node": "local", "send": f"echo {col}"}]}}}
     assert use_resolved_column(single) == 0
+
+
+def test_a_filtered_read_is_the_read_mockwire_answers_by_its_first_stage():
+    """OB-101: `ldapsearch … objectclass=*` and the same read `| egrep '…'` were two reads with a chain each; MockWire
+    answered both by the first key (the second's regex leaves the pipe behind), so its chain ran ahead."""
+    from skills.network_simulator_setup.state_changes import answering_key
+    full = r"regex:^ldapsearch -b imsi=(?<imsi>\S+) objectclass=\*$"
+    loose = r"regex:^ldapsearch -b imsi=\S+ objectclass=\*"
+    entries = {full: {"lines": ["a: 1"]}, loose: {"lines": ["a: 1"]}, "org -c X": {"lines": ["x"]}}
+    assert answering_key(entries, "ldapsearch -b imsi=1 objectclass=*", {}) == full
+    assert answering_key(entries, "ldapsearch -b imsi=1 objectclass=* | egrep 'a|b'", {}) == full
+    assert answering_key(entries, "org -c X > /tmp/dump.txt", {}) == "org -c X"
+    assert answering_key(entries, "uptime", {}) is None
+
+
+def test_documented_field_pairs_map_columns_and_an_absent_attribute_is_added():
+    """OB-101: APN → pdnAccPointName only in step 1's ciq_field_mappings; `scscfMandCap` absent from the recorded
+    profile, so the activity's Mandatory Cap never showed after the change."""
+    from skills.network_simulator_setup.state_changes import column_attributes, complete_columns, resolve_line
+    req = {"profile": {"ciq_field_mappings": [{"ciq_column": "APN", "node_field": "pdnAccPointName"},
+                                              {"ciq_column": "Mandatory Cap", "node_field": "scscfMandCap"}]}}
+    mapping = column_attributes(req)
+    assert mapping == {"apn": "pdnAccPointName", "mandatorycap": "scscfMandCap"}
+    before = ["dn: uid=1", "pdnAccPointName: www", "pdnAccPointName: ims", "", "# search result"]
+    after = complete_columns(list(before), before, ["APN", "Mandatory Cap"], "ldapsearch -b imsi=${resolvedImsi}",
+                             mapping)
+    filled = [x for x in (resolve_line(l, {"APN": "moc", "Mandatory Cap": "10"}) for l in after) if x is not None]
+    assert filled == ["dn: uid=1", "pdnAccPointName: moc", "pdnAccPointName: moc", "scscfMandCap: 10", "",
+                      "# search result"]
+    # UNCHANGED keeps the subscriber as it was: no line where there was none
+    kept = [x for x in (resolve_line(l, {"APN": "UNCHANGED", "Mandatory Cap": "UNCHANGED"}) for l in after)
+            if x is not None]
+    assert kept == before

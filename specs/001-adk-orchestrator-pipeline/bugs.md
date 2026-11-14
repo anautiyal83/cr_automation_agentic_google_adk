@@ -1894,3 +1894,20 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   run's create_xml step to `--imsi '${resolvedImsi}'`. A copy of the run, steps 6 + 6h + 8 + 9: **2/2 pass** (EAST 42
   steps — order IMSI 123456789012345 looked up by MSISDN; NORTH 57 — one order with 404530000000132 and
   999990000015555). 479 tests pass.
+
+### OB-101 — Step 8 split one read into two chains and left out attributes the recorded subscriber lacked (High, Fixed 2026-11-14)
+- Run 6570694d (server on OB-100 code): every record's report failed (create_html_report.py exits 1 on a mismatch).
+  1. The workflow reads `ldapsearch … objectclass=*` and the same read `| egrep '…'`, twice per record loop. Step 8
+     grouped repeated reads by their text: two reads (`read4`, `read5`), each chained `L1.L1`. MockWire answers the
+     egrep line by its first stage (a regex match leaving `| …` behind is rejected, `findStrict`), so read4's key
+     answered all four reads per record and its chain ran one place ahead: the pre read after the full one was
+     already "changed", record 1's post read carried record 2's `pdnType: ipv4`.
+  2. Only lines the recorded profile already had were changed: the sample subscriber has no `scscfMandCap`,
+     `netwListId`, `refinmtcName`, so Mandatory Cap 10 / VNI 6 / refinmtcName DELTCVHO1 never showed after the
+     activity; APN → `pdnAccPointName` was not known (only in step 1's `ciq_field_mappings`, not in the MOP).
+- **Fix** (`network_simulator_setup.state_changes`): `answering_key` follows MockWire (whole line unless a regex
+  match leaves `| ; > &`, else the pipeline's first stage) and `repeated_reads` groups reads by it (one chain,
+  `L2.L2`); `column_attributes` also reads `{ciq_column, node_field}` pairs; `complete_columns` adds a documented
+  attribute the recorded output lacks after its last attribute line (`{ciq:<col>}`: UNCHANGED / blank leave none).
+- Verified on a copy of the run (its own workflow + strict report script), steps 8 + 9: **2/2 pass** (EAST 44 steps,
+  NORTH 60); each record's post read carries its own CIQ values, its pre read the recorded profile.

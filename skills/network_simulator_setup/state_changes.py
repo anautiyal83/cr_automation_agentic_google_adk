@@ -124,6 +124,11 @@ def column_attributes(requirements: dict) -> dict[str, str]:
             for col, attr in _COMPARED.findall(value):
                 out.setdefault(_norm(col), attr)
         elif isinstance(value, dict):
+            # step 1's `ciq_field_mappings` pairs (`{ciq_column: APN, node_field: pdnAccPointName}`: APN is compared
+            # nowhere in the MOP, OB-101)
+            col, attr = value.get("ciq_column"), value.get("node_field")
+            if isinstance(col, str) and isinstance(attr, str) and re.fullmatch(r"[A-Za-z][\w-]*", attr.strip()):
+                out.setdefault(_norm(col), attr.strip())
             for v in value.values():
                 walk(v)
         elif isinstance(value, list):
@@ -138,7 +143,9 @@ def complete_columns(after: list[str], before: list[str], sent: list[str], read:
     """The LLM left a column the activity sends out of a cross-node read's after-profile (run 6570694d: no
     `pdnType`, so a blank cell never deleted it): the attribute that column names gets its `{ciq:<column>}` line —
     not a column the read itself is addressed by (the IMSI it looks up), not one already there (OB-95). The
-    attribute is the one the documents compare the column with (``column_attributes``), else the one it names."""
+    attribute is the one the documents compare the column with (``column_attributes``), else the one it names.
+    A documented attribute the recorded subscriber does not have (no `scscfMandCap` in the sample profile) is added
+    after its last attribute line: the activity sets it (run 6570694d, OB-101)."""
     covered = {c for line in after for c in CIQ_TOKEN.findall(line)}
     out = list(after)
     attrs = [m.group(1) for line in before if (m := _ATTR_LINE.match(line))]
@@ -147,6 +154,10 @@ def complete_columns(after: list[str], before: list[str], sent: list[str], read:
             continue
         named = (mapping or {}).get(_norm(col))
         attr = named if named in attrs else attribute_for(col, attrs)
+        if not attr and named:
+            last = max((i for i, line in enumerate(out) if _ATTR_LINE.match(line)), default=len(out) - 1)
+            out.insert(last + 1, f"{named}: {{ciq:{col}}}")
+            continue
         if not attr:
             continue
         for i, line in enumerate(out):  # every line of it (one per PDN context in a full profile)
@@ -258,6 +269,48 @@ def _bare(cmd: str) -> str:
     return cmd
 
 
+def _stages(cmd: str) -> list[str]:
+    """The pipeline's stages: ``|`` outside quotes, not ``||``."""
+    out, cur, quote = [], "", ""
+    for i, ch in enumerate(cmd):
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "|" and "|" not in (cmd[i - 1:i], cmd[i + 1:i + 2]):
+            out.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    return out + [cur.strip()]
+
+
+def _unquoted(text: str) -> str:
+    return re.sub(r"'[^']*'|\"[^\"]*\"", "", text)
+
+
+def answering_key(entries: dict, cmd: str, row: dict) -> str | None:
+    """The key MockWire answers ``cmd`` by (``CommandRouter.findStrict``): the whole line — unless a regex key's
+    match leaves a pipe / redirect / ``;`` / ``&`` after it — else the pipeline's first stage. The full
+    ``ldapsearch … objectclass=*`` and the same read ``| egrep '…'`` are ONE read for MockWire: as two reads with a
+    chain each, the first key answered all four reads per record and ran ahead (run 6570694d, OB-101)."""
+    from .skill import _find_entry, _py_regex, resolve_command
+    text = _bare(cmd)
+    stages = _stages(text)
+    for cand in [text] + (stages[:1] if len(stages) > 1 else []):
+        resolved = resolve_command(cand, row)
+        key, _ = _find_entry(entries, cand, resolved)
+        if key is None:
+            continue
+        if str(key).startswith("regex:"):
+            rx = _py_regex(str(key)[6:])
+            m = rx.search(resolved) if rx is not None else None
+            if m is not None and re.search(r"[|;>&]", _unquoted(resolved[m.end():])):
+                continue
+        return key
+    return None
+
+
 def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = None) -> list[dict]:
     """Reads sent again after activity commands on ``node`` (rollback phases left out: neither run in a sunny
     day): {bare, key, lines, setters: [{cmd, key, description}]}. A setter runs only between the two reads and
@@ -276,14 +329,20 @@ def repeated_reads(node, entries: dict, row: dict, others: list[dict] | None = N
     rollback = [str(c["cmd"]).strip() for c in node.commands
                 if _kind(c.get("phase", "")) == "rollback" and str(c.get("cmd") or "").strip()]
     rollback_keys = {_find_entry(entries, cmd, resolve_command(cmd, row))[0] for cmd in rollback}
+    answered = [answering_key(entries, str(c["cmd"]).strip(), row) for c in seq]
+
+    def read_of(k: int) -> str:  # what MockWire answers it by (OB-101), else its text
+        return answered[k] or _bare(seq[k]["cmd"])
+
     out, done = [], set()
     for i, c in enumerate(seq):
         bare = _bare(c["cmd"])
-        if bare in done or bare.split()[0] in _SIM_BUILTINS | _SETUP or bare in node.vfs_commands:
+        if read_of(i) in done or bare.split()[0] in _SIM_BUILTINS | _SETUP or bare in node.vfs_commands:
             continue
-        done.add(bare)
-        occ = [k for k, d in enumerate(seq) if _bare(d["cmd"]) == bare]
-        key, entry = _find_entry(entries, bare, resolve_command(bare, row))
+        done.add(read_of(i))
+        occ = [k for k in range(len(seq)) if read_of(k) == read_of(i)]
+        key, entry = (answered[i], entries[answered[i]]) if answered[i] else \
+            _find_entry(entries, bare, resolve_command(bare, row))
         if key is None:  # the LLM keyed it with its redirect
             full = str(c["cmd"]).strip()
             key, entry = _find_entry(entries, full, resolve_command(full, row))
