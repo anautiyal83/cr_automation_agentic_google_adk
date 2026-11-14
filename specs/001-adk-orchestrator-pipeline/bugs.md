@@ -1857,3 +1857,17 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
 - Verified on copies of run 6570694d: steps 6h + 8 + 9 **2/2 pass** (EAST 45 steps, NORTH 60), every record's own
   IMSI read (404530000000132, 999990000015555, 208930000000001). The run with `check_accumulates` was stopped by
   low memory during step 9 (6h + 8 passed); EIR's copy with the carried `${INFLATEDFILE}` not run yet.
+
+### OB-98 — The record-accumulation check gave a registered value one default in both passes (High, Fixed 2026-11-14)
+- Re-run of the OB-96 copy (2026-11-14, steps 6h + 8 + 9, **2/2 pass**): NORTH's uploaded `TEST_ORDER_NO.xml` still
+  held only its last record (IMSI 999990000015555). `create_xml.py` kept the existing part only when its
+  `<identifier>` matched the new `--imsi`; `check_accumulates` filled `${resolvedImsi}` (registered by an earlier
+  step, no test value) with the same `"1"` in both passes, so the two "records" shared an IMSI and the check passed.
+- **Fix** (`helper_script_gen.skill.check_accumulates`): every placeholder of the line gets a value; one with no test
+  value starts at `"1"` and is shifted in the other record's pass like the rest (the file-naming ones stay).
+  The real `create_xml.py` of the run is now rejected.
+- Finding (not fixed): step 9 passed with one record missing from the order — the simulator answers each record's
+  post reads from the CIQ, not from what the uploaded order holds, so only step 6h guards a dropped record.
+- Verified on a copy of run 6570694d (steps 6h + 8 + 9): `create_xml.py` rejected on attempt 1, regenerated with 0
+  problems; **2/2 pass** (EAST 45 steps, NORTH 60); NORTH's uploaded order is one well-formed `batchRequest` with
+  both records' `<request>` (IMSI 404530000000132 and 999990000015555).

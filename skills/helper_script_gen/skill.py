@@ -333,6 +333,9 @@ def check_accumulates(script_name: str, code: str, command_lines: list[str], val
     if not line:
         return []
     named_by = set(_WF_PLACEHOLDER.findall(shared_outputs(line)[0]))  # the file's name is the same in every pass
+    # a value another step registered (`${resolvedImsi}`) has no test value but differs per record as well: with
+    # one default in both passes a script keeping only "its own" key's part passed (run 6570694d, OB-98)
+    values = {**{n.strip(): "1" for n in _WF_PLACEHOLDER.findall(line)}, **values}
     other = {k: v if k in named_by else _other_value(v) for k, v in values.items()}
 
     def run(folder: str, vals: dict[str, str]) -> str:

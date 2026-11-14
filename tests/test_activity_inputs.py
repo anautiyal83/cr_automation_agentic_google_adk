@@ -466,6 +466,30 @@ print("XML file generated successfully")
 '''
 
 
+_KEEPS_ITS_OWN_KEY = '''import argparse, os
+p = argparse.ArgumentParser(); p.add_argument("--imsi"); p.add_argument("--cap"); p.add_argument("--output_file")
+a = p.parse_args()
+parts = []
+if os.path.exists(a.output_file) and ("imsi='%s'" % a.imsi) in open(a.output_file).read():
+    parts = [l for l in open(a.output_file).read().splitlines() if l.startswith("<req")]
+parts.append("<req imsi='%s' cap='%s'/>" % (a.imsi, a.cap))
+open(a.output_file, "w").write("<batch>\\n" + "\\n".join(parts) + "\\n</batch>\\n")
+print("XML file generated successfully")
+'''
+
+
+def test_a_registered_value_differs_between_the_record_passes():
+    """OB-98: create_xml.py kept the earlier part only for the same IMSI; ${resolvedImsi} (registered, no test value)
+    got one default in both passes, so the check passed and NORTH's order held its last record only."""
+    from skills.helper_script_gen.skill import check_accumulates
+    cmd = ["python create_xml.py --imsi '${resolvedImsi}' --cap '${configSequences.0.records.0.data.Cap}' "
+           "--output_file '${ORDER_NO}.xml'"]
+    values = {"configSequences.0.records.0.data.Cap": "10", "ORDER_NO": "T1"}
+    problems = check_accumulates("create_xml.py", _KEEPS_ITS_OWN_KEY, cmd, values)
+    assert problems and "ADD this record's part" in problems[0]
+    assert check_accumulates("create_xml.py", _ADDS, cmd, values) == []
+
+
 def test_a_script_every_record_pass_runs_must_add_to_its_file():
     """OB-96: create_xml.py rewrote ${ORDER_NO}.xml in every record's pass — only the last record reached the order."""
     from skills.helper_script_gen.skill import check_accumulates
