@@ -31,10 +31,17 @@ MODELS_CONFIG_PATH = PROJECT_ROOT / "config" / "models.yaml"
 
 # Parameters the production framework passes to every execution (`--var NAME=value`);
 # the value is the dummy step 9 uses against the simulator
-DEFAULT_RUNTIME_PARAMS = {"ORDERNO": "TEST_ORDERNO"}
-# Server that keeps the backups a workflow takes (a node of every workflow with a backup phase)
-DEFAULT_REPO_SERVER = {"node": "REPO", "host": "repo-server", "port": "22", "user": "backup",
-                       "password_secret": "repo_password", "backup_dir": "/backup/netconfig"}
+# Runtime parameters the production framework passes to every execution (names as production workflows use
+# them, spec 013 PF020); step 9 passes these test values
+DEFAULT_RUNTIME_PARAMS = {
+    "ORDER_NO": "TEST_ORDER_NO", "CHILD_REQ_ID": "TEST_CHILD_REQ", "PARENT_REQ_ID": "TEST_PARENT_REQ",
+    "NODE_NAME": "TEST_NODE", "NIAM_IP": "127.0.0.1", "M2MPORT": "22", "M2MUSER": "oamsys",
+    "M2MPASSWORD": "netconf-sim", "REPO_IP": "127.0.0.1", "REPO_USER": "backup", "REPO_PASSWORD": "netconf-sim",
+}
+# Server that keeps the backups a workflow takes (node `repo_server` of every workflow that uses it, logging in
+# with the runtime parameters as production does)
+DEFAULT_REPO_SERVER = {"node": "repo_server", "host": "${REPO_IP}", "port": "22", "user": "${REPO_USER}",
+                       "password": "${REPO_PASSWORD}", "backup_dir": "/repo-server/config/CR_AUTOMATION"}
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +146,33 @@ def max_queued_per_user() -> int:
     cm = ConfigManager._live_instance
     config = getattr(cm, "_config", None) if cm else None
     return int(config.max_queued_per_user) if config else 3
+
+
+def local_path() -> str:
+    """Where the activity's input files are on the automation server (execution.local_path, production's
+    ``/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}``; spec 013 C4); '' to keep them in the run folder."""
+    default = "/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}"
+    try:
+        import yaml
+        raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        value = (raw.get("execution") or {}).get("local_path", default)
+        return "" if value is None else str(value).strip()
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def wsl_distro() -> str:
+    """The WSL distribution step 9 runs the cli-automation JAR in (execution.wsl_distro, spec 013 PF-D5); ''
+    when not on Windows or not configured."""
+    import os
+    if os.name != "nt":
+        return ""
+    try:
+        import yaml
+        raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        return str((raw.get("execution") or {}).get("wsl_distro") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def repo_server() -> dict[str, str]:

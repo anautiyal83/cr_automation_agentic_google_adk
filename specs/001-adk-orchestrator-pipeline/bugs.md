@@ -1095,3 +1095,819 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   answered problem. Step 6 passes when every remaining problem is one the developer answered: they go to
   `step_6_notes.json` and the review shows them in an amber "Check that the workflow follows your answers" box
   (`clarifications.plain` wording). Tests `tests/test_clarifications.py`.
+
+### OB-30 — "Continue with my edit" left the step failed in the run state (Medium, Fixed 2026-11-11, spec 012)
+- Found while building the spec 012 editor: the review's "Continue with my edit" removed `step_6_error.json` and
+  showed step 6 passed, but the session state kept `step_6_status = failed` — the step 9 cache settle would have
+  dropped the approved workflow as failed, and the report would list step 6 as failed.
+- **Fix**: on Continue at a review with edited files (`run_files.edited_files`), `pipeline_agent` marks every display
+  step of that review whose error file is gone as passed and publishes `step_completed`.
+- Preview finding (no code change): the editor's MOP preview needs the run state's `ciq_file_path` and
+  `pipeline_config` (the runner always sets both; a hand-seeded state without them renders no MOP).
+
+### OB-31 — Windows-only JAR behaviour taken for framework rules (Medium, Fixed 2026-11-11, spec 013)
+- Comparing EIR with production: production's LOCAL awk compare uses double quotes, which our step 6 rejected and
+  rewrote ("the framework breaks LOCAL commands at double quotes", DEP-36/44). Disassembly + probes: the JAR runs
+  `bash -c <cmd>` for commands ≤ 8000 chars on Windows (65536 on Linux) and Windows' command line drops the quotes;
+  `WindowsCommandAdapter` also turns `/word` into `C:/word`. On Linux (production) both are fine.
+- **Fix**: step 6 keeps double quotes (`single_quote_arguments` and the validator rule removed, prompt updated);
+  step 9 to run under WSL (spec 013 PF006). Test `test_local_double_quotes_are_kept`.
+
+### OB-32 — Multi-line send written double-quoted: `\n` became a newline (Medium, Fixed 2026-11-11, spec 013 P-8)
+- ruamel wrote a multi-line `send` as a double-quoted scalar; the JAR reads `\n` there as a real newline, so
+  `printf '%s\n'` / awk `printf "…\n"` broke. Production writes them as `>-` blocks.
+- **Fix**: `block_scalars` (multi-line strings → `|-`) in step 6's `dump_yaml` and the step 9 overlay. Test
+  `test_multiline_send_written_as_block`.
+
+### OB-33 — Step 8 key with awk braces unusable: "command not found" (High, Fixed 2026-11-11)
+- EIR step 9 (spec 013 Stage B run): `kubectl get pods -n nk-ei1-eir | grep eirapp | awk '{print $1}'` was answered
+  `-bash: kubectl: command not found`. The LLM's MockWire key `regex:… awk '{print \$1}'` holds a `{` that is no
+  quantifier: Python's `re` accepts it, Java rejects it ("Illegal repetition"), so MockWire could not use the key.
+- **Fix**: `safe_regex_key` escapes every `{` / `}` that is not a quantifier (`{n}`, `{n,}`, `{n,m}`). Test
+  `test_llm_regex_key_braces_are_valid_java`.
+
+### OB-34 — Step 8 answered a node's copy from the repo with a canned LLM response (High, Fixed 2026-11-12)
+- MRF via repo (spec 013 C3): `sftp ${REPO_USER}@${REPO_IP}:<repo file> /tmp/<file>` got the LLM's key
+  `regex:sftp \S+@\S+:…` ("Fetching /path/to/remote/file …") instead of MockWire's peer copy, so the node never got
+  the file ("No such file or directory", checksum mismatch). `is_peer_copy` only knew literal hosts after `@`.
+- **Fix**: any `user@<host>:` — also a regex token — is a peer copy; its LLM key is dropped. Finding on the way:
+  `test_step --refix-workflow` ignored the run's options (the repo route was never simulated); it reads them now.
+
+### OB-35 — Fresh EIR run (spec 013 Stage D): three rules that fought production's patterns (Medium, Fixed 2026-11-12)
+- **Validator vs "must be absent" captures**: production checks "no pod in a bad state" / "no non-zero error count"
+  by capturing the bad value and requiring it empty (`(?<N17ERROR>[1-9]\d*)` + `N17ERROR == ''`); the validator demanded
+  every register capture something from the healthy recorded output and rejected the step twice.
+  Fix: such captures (and `ERROR:.*|error:.*` captures) are exempt.
+- **Enter steps with an output regex**: the LLM checked `ssh dsadmin@…` with `regex: Authentication succeeded`; the
+  framework strips the prompt, so every DS server login failed (rollback-only). Fix: enter / exit steps are checked as
+  production does — `use_exit_code: true`, the new prompt, no output criteria (`sessions._enter_check`).
+- **Step 8 answered a per-pod loop with the pod names only**, so "all pods agree" failed. Fix: step 8 prompt rule —
+  a `for i in …; do echo $i; <cmd>; done` prints every item with its inner command's healthy output.
+- Finding: `test_step --agents 6` gave step 6 no run options (all phases, no repo route); it passes the document set now.
+
+### OB-36 — Step 6 crashed: "Workflow generation failed: 'send'" (High, Fixed 2026-11-12)
+- Run de9b2130 (EIR): a LOCAL step read two files that exist only on the node; `fix_missing_downloads` inserted the
+  first download in front of the step and then took the second hit's (old) index — the download step, which has
+  no `send` (KeyError). **Fix**: each hit keeps its step object and finds its current position before inserting.
+  Test `test_local_step_reading_two_node_files_gets_both_downloads`.
+- Also in this commit (spec 013 Stage D, fresh runs): an upload the LLM wrote in the backup phase after the backup
+  moves before the steps that read it (MRF); step 8 matches a recorded command whatever the spacing around shell
+  operators (`ns| grep` = `ns | grep`), so recorded per-pod outputs are used (EIR).
+
+### OB-37 — Step 6 rejected a "no pod reports an error" counter (Medium, Fixed 2026-11-12)
+- Run 66073576 (EIR): `N17 Error returned (?<N17ERROR>[1-9]\d*)` with `loop: true, count_var: N17_ERROR_NON_0_COUNT`
+  and `expr: … && N17_ERROR_NON_0_COUNT == 0` — a must-be-absent check written as a counter; OB-35 exempted only the
+  "value must be empty" form, so the validator failed step 6 on the healthy recorded output.
+- **Fix**: a counting register whose count the step requires `== 0` is exempt too. Test
+  `test_must_be_absent_captures_need_not_match_a_healthy_node`. Remaining finding of that run: DELTA_TAC_FILE never
+  used (requirements gap: what the delta file is for).
+
+### OB-38 — Step 7 failed on every retry: `expect_reply` in a form the JAR cannot load (High, Fixed 2026-11-12)
+- Run 66073576 (EIR): the LLM wrote the DSSERVER ssh password as `expect_reply: [{regex: 'password:', send: …}]`.
+  The JAR's `ExpectReplyDefinition` has only `expect`, `reply`, `timeout_sec`, `repeat`, so `generate` failed loading
+  the whole workflow ("Unable to find property 'regex'"), with no MOP. `sessions.nested_sessions` only fills a
+  missing `expect_reply`, so nothing corrected it.
+- It repeated because step 6 never learned why. (1) `regenerate` read only `exec_feedback` (step 9); `mop_feedback`
+  was written and never read. (2) A JAR crash has no MOP scenarios, so `mop_feedback` was `[]`, and the test case
+  cut the stderr at 300 characters, inside the outer `Cannot create property=phases/steps` chain. (3) Step 7 counted
+  as passed (`mop_failed` looked at scenarios only) while it sent the run back.
+- **Fix**: autofix `_fix_expect_reply` (loop bodies too) maps `regex/pattern/prompt/…` → `expect`, `send/response/…`
+  → `reply`, `timeout` → `timeout_sec`, a dict or bare string → the list form, and drops other keys.
+  `jar_executor.yaml_load_error` puts the innermost property, its line and the reason first. Step 7 passes its failed
+  test cases as `mop_feedback` (1500 characters), writes `detail` into `step_7_error.json` and counts a JAR crash as
+  failed; step 6 regenerates from `mop_feedback` first. With the autofix the run's YAML generates its MOP.
+  Tests `test_expect_reply_takes_the_jars_form`, `test_jar_load_error_names_the_innermost_property`.
+
+### OB-39 — Step 6 failed on a correct helper script; the workflow ran it on the node with an unset `$DATE` (High, Fixed 2026-11-12)
+- Run 4d628ae4 (EIR): the helper-script check failed step 6 twice. `check_tac_counts.py` prints
+  `f"TAC counts validated successfully for {args.tac_type}"`, but `check_output_contract` read every f-string field as
+  the literal `x`, so `…for x` never matched `/…for white/`, and the retries could not fix a script that was right.
+- Found in the same workflow and missed by every check:
+  - The script ran on `niam_eir_server` as `/usr/local/bin/check_tac_counts.py`, an invented path. Our helper
+    scripts exist only on the automation server, and the developer note says "framework will require a python
+    script". DEP-40 moved only bare-name calls to LOCAL.
+  - The registered `DATE` was used as the shell variable `$DATE`, which is empty on the node, so the dump files
+    were `predump_white_.txt`.
+- **Fix**:
+  - An f-string with at least 8 characters of fixed text matches with each field read as any text.
+  - Autofix `registered_shell_variables`: `$NAME` of a registered value becomes `${NAME}`, unless the command sets
+    NAME or loops over it.
+  - Validator `check_helper_script_nodes`: a `python …x.py` on a node that no MOP command (`_expected_coverage`
+    `mop_commands`) or recorded sample runs is reported, with the way to run it on local (copy out of the pod, sftp
+    download, bare name). The step 6 prompt states both rules.
+  - Tests `test_output_contract_reads_f_string_fields_as_any_text`,
+    `test_registered_value_is_braced_in_later_commands`,
+    `test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it`.
+
+### OB-40 — Step 9 failed on simulator answers and on checks step 6 should have rejected (High, Fixed 2026-11-12)
+- Run d3aa8ed5 (EIR), sunny day and rollback only both failed:
+  - **Pod shell key too broad (step 8).** The nested-session key `regex:kubectl exec -it \S+ -n \S+ -- bash` was
+    searched anywhere in a command, so the per-pod loops (`for i in …; do kubectl exec -it $i -n … -- bash -c '…';
+    done`) counted as entering a pod. Output was empty and three health checks failed.
+  - **Password prompt case (step 8).** MockWire asked `Password: `; the step's `expect: 'password:'` (as real ssh
+    prints) is matched case-sensitively by the JAR, so the rollback's DSSERVER login waited until its timeout.
+  - **Redirects never reached the file system (step 8).** Response keys kept the redirect (`org -c … >/opt/sdf/
+    processing/postrollbackdump_white_….txt`). MockWire matched the whole line, so no file was written, and
+    `cd /opt/sdf/processing/ && ls -lrth` got a canned listing.
+  - **Count check in another order (step 6).** `ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT` counts
+    every ESTABLISHED line (many per pod). `count_check` knew only `OK == TOTAL && TOTAL > 0` and names without
+    `_`, and recorded commands (`-n ns| grep`) did not match the workflow's (`-n ${NS} | grep`).
+  - **File names side by side (step 6).** `ls -lrth` checks wanted `a_.+?.txt\s+b_.+?.txt\s+c_.+?.txt`, but long
+    listings print one file per line with its details first.
+  - **Evidence counted as left behind (step 9).** The rollback-only check called the dump files the workflow
+    writes left-overs; production keeps them on the node and zips them.
+- **Fix**:
+  - Step 8: nested-session keys are anchored to the whole command. The password question is asked in a form the
+    step's `expect` matches (`user@host's password: `); `extract_workflow_commands` keeps `expect_reply`.
+  - Step 8: `key_without_redirect` keys `cmd >/p/f` on `cmd` alone, anchored. Redirect folders are workflow
+    folders, and `vfs_handled` follows `cd <dir>` so a plain `ls` there runs on the VFS.
+  - Step 6: `count_check` takes either order and `_` in names; `_command_matches` uses the shared
+    `tools.command_samples.literal_pattern` (free spacing around shell operators); new check for `ls -l` regexes
+    with names side by side.
+  - Step 9: `node_files_diff` ignores new files under the workflow's own redirect paths.
+- Re-run on a copy: the login works and the dump files land in the simulator. The two remaining failures are the
+  generated checks, which step 6 now rejects with the real output. Tests in test_vfs_commands,
+  test_workflow_autofix, test_scenarios and test_nested_sessions.
+
+### OB-41 — Regenerated EIR checks still failed on healthy output (High, Fixed 2026-11-12)
+- Run d3aa8ed5, after OB-40: step 6 rewrote both checks and step 9 failed again.
+  - **ESTABLISHED:** `ESTABLISHED_COUNT > 0 && NON_ESTABLISHED_COUNT == 0`, where NON_ESTABLISHED_COUNT counts every
+    line without "ESTABLISHED". Every pod also prints its name and `Defaulted container …`, so a healthy node
+    fails. Step 6 evaluated only `OK == TOTAL` counts and `var OP number` exprs on the recorded output.
+  - **TAC consistency:** `… bash -c '… | awk "{print \$NF}" | sort -u | wc -l'` per pod with
+    `distinctTacCount == 1`. Each pod has three different counts (white, black, grey), so the result is 3. The MOP
+    wants the counts identical ACROSS pods; production compares them on local (raw capture → awk line per pod →
+    `sort -u | wc -l` → TAC_MATCH).
+- **Fix**:
+  - Validator `_expr_false_on_real_output`: works out what every register gives on the recorded output (a loop
+    count = matches, a capture = first group or "") and evaluates the whole success expr (`&&`, `||`,
+    comparisons). It reports a step whose expr is false on a healthy node and points to production's bad-state
+    capture.
+  - Step 6 prompt: "same values on every item" is decided across items, with production's two-step form.
+  - Test `test_success_expr_false_on_healthy_output_is_reported`. The TAC step is not checkable against recorded
+    output (the AI changed the command), so only the prompt covers it.
+
+### OB-42 — Step 8 answered every lookup with `x`: the AI's responses failed to parse (High, Fixed 2026-11-12)
+- Run d3aa8ed5 (EIR), third step 9 failure: the namespace and pod lookups answered `x`, so every later command ran
+  with `-n x` and the pod loops printed nothing. The TAC check failed and the netstat / N17 checks passed on empty
+  output.
+- The AI wrote its keys single-quoted with backslash escapes (`'oc get ns | … | awk \'{print $1}\'':`). YAML has
+  no escapes in single quotes, so the whole answer failed to parse. The entry-by-entry salvage kept a few entries
+  and step 8 went on. `fill_unanswered` built the rest from the steps' capture regexes (`\S+` → `x`) or left them
+  empty, and step 8 still passed.
+- **Fix**:
+  - `parse_llm_yaml` and `salvage_yaml_entries` turn `\'` inside a single-quoted key / item into `''`. The run's
+    raw answer now parses: 27 entries with the AI's values.
+  - A salvage that keeps less than 80% of the entries asks the AI again; only the last attempt keeps a partial
+    answer.
+  - Test `test_single_quote_backslash_escapes_are_repaired`.
+
+### OB-43 — EIR step 9: registered pod lists in loops, AI keys for pod shells, lookup keys answering loops (High, Fixed 2026-11-12)
+- Runs d3aa8ed5 / 81e7d1a0 after OB-42:
+  - **Registered list in a loop (step 6).** `for i in \`echo "${EIRPODS}"\`` with EIRPODS = the lookup's whole
+    output: the JAR puts the pod lines into the command, the shell gets it broken over several lines (`-bash: for:
+    command not found`), and a rollback-only run has no value at all. Production loops over the lookup itself.
+  - **AI key for entering a pod shell (step 8).** An exact key `kubectl exec -it eirapp-… -- bash` with plain
+    lines; MockWire tries exact keys first, so our prompt-pushing session key never ran and the next `exit` ended
+    the session ("Failed to exit EIR POD", rollback timeout). Its unanchored regex form answered the TAC loop too.
+  - **Lookup key answering a loop (step 8).** `kubectl get pods -n \S+ | grep eirapp | awk …` (searched anywhere)
+    answered the loop that runs that lookup in its backticks.
+  - **Lone quote in the AI's YAML (step 8).** `- 'tar: Removing leading \`/' from member names'` failed to parse,
+    and 6 entries were lost.
+- **Fix**:
+  - Autofix `loop_over_lookup`: `` `echo "${VAR}"` `` / `$(echo ${VAR})` of a whole-output capture becomes the
+    lookup command.
+  - Step 8 drops AI keys for session-entry commands (`_enters_session`), anchors every regex key at the start
+    (`_anchored_start`), and doubles a lone quote inside a single-quoted key / item.
+  - Tests in `tests/test_ob43_simulator_keys.py`.
+
+### OB-44 — EIR step 9: the TAC loop had no simulator answer (High, Fixed 2026-11-12)
+- Run 81e7d1a0 after OB-43. Only the TAC comparison loop failed: MockWire had no key for it and ran it in pieces
+  (`do echo $i` … unmatched, classified as a simulator issue).
+- The AI's key for the loop escaped everything except the ternary's `?` (`\) ? "` reads as an optional space), so
+  it matched nothing. `rekey_unanswered` would have rebuilt it from the command, but the checks ran on the keys
+  before OB-43's start anchoring. There the lookup key `kubectl get pods -n \S+ | grep eirapp | awk …` still
+  "answered" the loop that contains it, so the loop never counted as unanswered.
+- **Fix**: AI keys are anchored as soon as they are read, so every check sees what MockWire matches.
+  `rekey_unanswered` and `is_peer_copy` read anchored keys. Test
+  `test_loop_key_broken_by_an_unescaped_question_mark_is_rebuilt`.
+
+### OB-45 — `$DATE` in sftp paths; tracker showed steps 7–8 pending while step 9 ran (High, Fixed 2026-11-12)
+- **Run 81e7d1a0, step 9.** The AI's download had `remote_path: /opt/sdf/processing/predump_white_$DATE.txt`.
+  OB-39's `registered_shell_variables` rewrote only `send`, so the download fetched the literal `$DATE` name.
+  The repo copy and checksum steps built from it failed, and `fix_missing_downloads` added a second download with
+  `${DATE}`. **Fix**: sftp `remote_path` / `local_path` get `${NAME}` for registered names too (no shell reads them).
+  After a refix of the run: no `$DATE`, 0 validator findings.
+- **Progress page.** After a server restart you chose Rerun at the step 9 review. The page guessed the rerun
+  from the in-memory step 9 classification, which the restart had emptied, so it reset steps 6–9. The pipeline went
+  back to step 8 only, so 6/7 never got a new status, and step 8 also stayed pending while step 9 ran (the saved
+  `step_results` were correct). **Fix**: the Rerun handler reads `retry_target` from the run's
+  `step_9_error.json` when the memory is empty. When a step starts, earlier steps still shown as pending take
+  their latest saved result.
+
+### OB-46 — `exit` back to the bastion timed out after a `cd` (High, Fixed 2026-11-12)
+- Run 81e7d1a0, step 9 sunny day: "Failed to exit EIR POD". The pod session worked (OB-43), but the exit step kept
+  the AI's `\[nm_user1@bastion\ \~\]\$\s*$`. An earlier `cd /opt/sdf/processing/` makes the bastion prompt
+  `[nm_user1@bastion processing]$` (MockWire's `\W`, as on a real host), so the exit waited until its timeout.
+  `nested_sessions` generalised `[user@host dir]` prompts on every step except exits.
+- **Fix**: an exit takes the outer session's prompt when its own is missing, says closed/logout, or is a
+  `[user@host dir]` prompt (an unmatched exit gets the generic prompt). Refix of the run: all 7 exits generic.
+  Test `test_exit_back_to_the_bastion_accepts_any_directory`.
+
+### OB-47 — EIR step 9: listing order, rollback-only files, rollback phase check (High, Fixed 2026-11-12)
+- Run 72ac26c1:
+  - **Listing order (simulator).** The sunny day's `cd /opt/sdf/processing/ && ls -lrth` expects
+    `predump_white…\n.*predump_black…\n.*predump_grey…`: oldest first, as written, which a real node prints.
+    MockWire ignored `-t` / `-r` and listed by name (black, grey, white).
+  - **Rollback-only files (step 6).** The rollback ran `diff predump_white_….txt postrollbackdump_white_….txt`
+    on local. The predump copy came from an activity-phase download, which a rollback-only run (only the
+    rollback phase) never has: "No such file". `remote_file_reads` counted downloads of every earlier phase.
+  - **Rollback phase check (step 9).** "Only the rollback phase ran" flagged a rollback download.
+    `align(cmds, rollback steps)` returns indices into the rollback steps, but they were read as indices of all
+    steps; an unaligned command also counted as outside.
+- **Fix**:
+  - MockWire 27733ff: `ls -t` sorts by modification time (newest first), `-r` reverses; `lib/mockwire.jar` rebuilt.
+  - `remote_file_reads`: a rollback phase starts with no downloaded files, so `fix_missing_downloads` adds the
+    download there.
+  - The phase check uses the report's own phase (`ROLLBACK_CONFIGURATION` ~ `rollback_configuration`), the
+    alignment only when there is none.
+  - Tests `test_rollback_downloads_what_its_local_steps_read`, MockWire `listByTimeAndReversed`.
+
+### OB-48 — Step 6 artifacts dropped from the cache on a simulator failure; lost across a restart (Medium, Fixed 2026-11-12)
+- Step 6's artifacts are cached only after step 9 passes (DEP-55). Any step 9 failure dropped them, even one
+  step 9 classified as the simulator's (`retry_target` 8): the workflow was not shown wrong, yet the next run
+  generated it again. The deferred artifacts were also held in memory only, so a step 9 pass after a server
+  restart cached nothing.
+- **Fix** (`pipeline_agent._settle_deferred_cache`): a failure blamed on the simulator keeps them waiting
+  ("CACHE KEPT"). A pass with nothing deferred caches them from the run folder (the artifacts, edits included).
+  Tests `tests/test_deferred_cache.py`.
+- **Rule (user, 2026-11-12): only the user's Rerun clears a cache, and only that of the step it re-runs.**
+  - Rerun at a review (and the action rerun): `_clear_step_cache`, the agents of the re-run display step only.
+    Step 6 = config + helper scripts, steps 3–4 = CIQ generation; later steps' caches are kept. Before, the
+    review rerun cleared every cached step after it, and the action rerun cleared nothing.
+  - Edit / clarify back to step 1: step 1's cache only (later steps' inputs fingerprints change with the edit).
+  - Automatic retry: clears nothing. The retried step's agents go in `state["_regenerate"]` and skip the cache
+    once (OB-11 kept).
+  - A step 9 failure blamed on the workflow: step 6's artifacts are not cached ("CACHE NOT SAVED"), nothing
+    cleared. Blamed on the simulator (retry_target 8): the Rerun re-runs step 8 only and step 6's artifacts
+    stay waiting.
+
+### OB-49 — EIR dump files empty in the simulator; helper script needs pandas under WSL (High, dump fixed 2026-11-12)
+- Run 72ac26c1, step 9 sunny day: `python3 validate_tac_diff.py --predump_file … --delta_tac_file …xlsx` failed.
+  - **Empty dumps.** The dump files were 0 bytes. The step 8 AI answered `org -c eirWhiteRng >…/predump_white_….txt`
+    with `lines: []` (the redirected command prints nothing; its recorded output is ''). Since OB-40 MockWire writes
+    the answer of `org -c eirWhiteRng` into the file, so the file stayed empty. **Fix**:
+    `vfs_commands.redirect_contents` gives `cmd` the recorded output of `cmd` or `cmd | grep …` (101 rows for
+    eirWhiteRng from the session log), placed ahead of the merged answers. Step 8 prompt: a redirected command is
+    keyed on `cmd` and gets the lines it prints (records), never `lines: []`.
+    Test `test_redirected_dump_gets_the_recorded_output_of_the_command`.
+  - **No pandas in WSL.** `ModuleNotFoundError: No module named 'pandas'`: step 9 runs local steps under WSL
+    (spec 013 PF-D5), whose python has no pandas; step 6's smoke run of the script ran on Windows and passed.
+    Decision (user 2026-11-12): install them in WSL (`sudo apt install -y python3-pandas python3-openpyxl`) —
+    helper scripts may use pandas / openpyxl, as on the production automation server.
+
+### OB-50 — Step 9: "Delta file not found: SD_TAC_Addition_150926.xlsx" (High, Fixed 2026-11-12)
+- Run d4a1b9f3: `python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}" …` on local. Step 9 staged
+  test copies only of files the workflow uploads to a node (`stage_upload_inputs`, S9-09). A CIQ input file that
+  a local step reads (here the delta TAC workbook) was never there. A placeholder would not do either: the script
+  opens it with pandas.
+- **Fix**:
+  - `stage_upload_inputs` also stages the CIQ file columns that local steps read (a value with an extension,
+    per record).
+  - For any staged input it copies the uploaded document of the same kind (`_sample_for`: same extension, most
+    similar name, ≥ 0.6) — the run's `SD_TAC_Addition_230926.xlsx` for the CIQ's `SD_TAC_Addition_150926.xlsx`.
+    Only without one is a placeholder written.
+  - The documents come from the document set's `additional_documents` (step 9 `SkillInput.sample_inputs` →
+    `plan["sample_inputs"]`). Test `test_input_file_a_local_step_reads_is_staged_from_the_uploaded_sample`.
+- Follow-up: in production a local step should read input files from `${LOCAL_PATH}` (as uploads do since C4);
+  `structure.inputs_from_local_path` covers upload sources only.
+- **Step 6 now caches at its review (user choice 2026-11-12).** Step 6 still regenerated on every run: its cache
+  was saved only after step 9 passed (DEP-55), which never happened, and every change to step 6's code
+  invalidated it (OB-11, many fixes today).
+  - `_CACHE_AFTER_STEP` is empty: step 6 caches when it passes, like steps 1–4.
+  - `has_cache` no longer compares the code version (still recorded); only other inputs or options miss.
+  - After a code fix, rerun the step to pick it up. Tests updated
+    (`test_cache_is_stale_after_input_change_not_code_change`, `test_step6_is_cached_at_its_review`).
+
+### OB-51 — Step 9: invented `ls` answer printed the bare name; such failures blamed on the workflow (High, Fixed 2026-11-12)
+- Run d4a1b9f3, sunny day: `ls -lrths /tmp/bulkProvisioning.json` on DSSERVER, check `/tmp/bulkProvisioning.json`.
+  The step 8 AI's generic `regex:^ls -lrths \S+` answered `… 10:00 bulkProvisioning.json`, but ls prints the
+  argument as given. The file arrives through a `for … oc cp …` loop MockWire cannot run, so the VFS cannot answer
+  either. Step 9 blamed the workflow (retry_target 6), so a Rerun would regenerate step 6, which was not at fault.
+- **Fix**:
+  - Step 8 `ls_paths_as_given`: an exact answer for `ls … /literal/path` showing each path as given (from the
+    answering line).
+  - Step 8 writes `simulator/synthetic_keys.json` (per instance, the config keys of AI-invented answers,
+    `config_key` = MockWire's matchedKey).
+  - Step 9 `failed_on_invented_answers`: a case that failed only on steps, every failing remote step answered by
+    such a key, is the simulator's (retry step 8). Those answers are built to pass the step's own check.
+    Recorded output, VFS answers and local steps stay the workflow's.
+  - Tests `test_ls_of_a_literal_path_prints_the_path_as_given`, `test_failure_on_an_invented_answer_is_the_simulators`,
+    `test_config_key_is_what_mockwire_reports`.
+
+### OB-52 — Re-run always cleared the step's cache: a "Clear cache" checkbox decides (user, 2026-11-12)
+- Run d4a1b9f3: the Rerun followed the run's saved step 9 verdict (retry_target 6, from before OB-51) and cleared
+  step 6's cache although the failure was the simulator's. User: "give a checkbox, if checked then clear cache
+  else reuse the cache".
+- **Change**:
+  - The review has a "Clear cache" checkbox next to "Re-run step", unticked at every review. Ticked sends
+    `rerun_clear`: `_clear_step_cache`, the re-run step's agents only. Unticked sends `rerun`: no clearing, the
+    step re-runs from its cache where there is one.
+  - The (unused) action rerun clears only with `clear_cache: true`.
+  - `test_pipeline_retries` follows the new decision names.
+
+### OB-53 — Step 9: a file copied into a pod "does not exist" in the simulator (High, Fixed 2026-11-12)
+- Run d4a1b9f3 after OB-51: `ls -lrths /tmp/bulkProvisioning.json` on DSSERVER was now answered by MockWire's VFS
+  (`/tmp` is a workflow folder): "No such file". The file gets there through
+  `for i in …; do oc cp bulkProvisioning.json "ns/$i:/tmp"; done`. MockWire runs neither the loop nor `oc cp`
+  (the loop has a key answer), so the VFS never has it, and the AI was not asked for an answer.
+- **Fix**: `vfs_commands.pod_copied_files` lists the destinations of `oc cp` / `kubectl cp` into a pod (the value
+  of `-c` / `-n` skipped). `vfs_handled` leaves a command reading one of them to a key answer, which the AI writes
+  (or the fill-in builds from the step's success text, OB-51 shows the path). If that answer is wrong, step 9 now
+  blames the simulator. Test `test_file_copied_into_a_pod_is_not_read_from_the_vfs`.
+
+### OB-54 — A reviewer's Re-run failed the run (retry limit); steps 6–8 greyed out (High, Fixed 2026-11-12)
+- Run d4a1b9f3: the Re-run at the step 9 review was the 4th re-run of step 6 that day: "MAX RETRIES — Step 9 still
+  failing after 3 retries of network_config_gen", and the run failed at once. The page had already set steps 6–9 to
+  pending for the re-run, and `run_failed` marked every pending step "skipped" (grey), although 6–8 had passed.
+- **Fix** (user decision: only automatic retries count):
+  - The review Re-run no longer goes through `_retries_exhausted`; only the automatic retry does (OB-4 kept for
+    loops).
+  - On `run_failed` / `run_cancelled` the page first restores every pending step's last saved result
+    (`_heal_earlier_steps`); only steps that never ran are skipped. `test_pipeline_retries` updated.
+
+### OB-55 — OB-53 incomplete: the AI's answer for the pod-copied file was still dropped (High, Fixed 2026-11-12)
+- Run 6110bc53: the same failure. `vfs_handled` now left `ls -lrths /tmp/bulkProvisioning.json` to a key, and the AI
+  answered it, but Phase 2 dropped that answer through `file_flows.is_vfs_command` ("1 file commands left to the
+  VFS builtins": a file command on the VFS folder /tmp), and MockWire's ls said "No such file".
+- **Fix**: `NodeSpec.unmodelled_files` (the pod-copied files). `is_vfs_command` keeps a key that reads one of them,
+  at all four call sites. Steps 8 + 9 on a copy of the run: **2/2 test cases pass** (sunny day 69 steps,
+  rollback only 25 steps, 0 failed). Test `test_answer_for_a_pod_copied_file_is_not_dropped`.
+
+### OB-56 — Review buttons swollen after the one-line row + Clear cache box (Low, Fixed 2026-11-12)
+- In a narrow review panel (about 450 px at a 1100 px window) the no-wrap action row squeezed its buttons: labels
+  broke onto two lines and the buttons grew from 26 px to 59 px tall.
+- **Fix** (`progress_section.py` row class `cr-review-actions`, CSS in `ui/app.py`): the buttons don't shrink
+  (`flex-shrink: 0`), their labels stay on one line, the padding and icon gap are a little smaller, and a row that
+  still does not fit scrolls sideways with a thin scrollbar. Checked in the preview at 1440 px and 1100 px (all
+  buttons 26 px tall). Commit de71be2.
+
+### OB-57 — A LOCAL step read a CIQ input file by its bare name, not from ${LOCAL_PATH} (Medium, Fixed 2026-11-13)
+- Follow-up of OB-50. `python3 validate_tac_delta.py --delta_file "${rec.data.DELTA_TAC_FILE}"` read the workbook
+  from the working folder. In production the activity's input files are in `${LOCAL_PATH}`
+  (`/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}`); `structure.inputs_from_local_path` covered upload sources only.
+- **Fix**: a LOCAL step's CIQ reference that is a whole shell word and names a file column (its CIQ sample value
+  has a file extension; without samples, a column named `…FILE…`) becomes `"${LOCAL_PATH}/${rec.data.X}"`, after an
+  `nc_in<k>_check` presence check (`ls -lrt ${LOCAL_PATH} | grep …`, stop when missing). `flatten` undoes it, and
+  `LOCAL_PATH` stays first among the globals (idempotent apply). Step 9 still stages the file (LOCAL_PATH → its
+  folder). Tests `test_local_step_reads_a_ciq_input_file_from_local_path`, staging test parametrized.
+
+### OB-58 — Helper script inverted its step's check and compared whole dump records with TACs (High, Fixed 2026-11-13)
+- Run 6110bc53: `validate_tac_delta.py` failed when the delta TACs WERE in the post dump (the step: "All TAC counts
+  from DELTA_TAC_FILE must be present in the post dump files"), and compared each whole dump line
+  (`1,sb,eir,white,01695000000000,…`) with the TACs, so it could never fail. Step 9 passed it. The generic script
+  prompt got only the first 3000 characters of the workflow: neither the step's check nor the file formats.
+- **Fix** (`skills/helper_script_gen/context.py`):
+  - The prompt says what each step running the script checks (description, success / failure meaning).
+  - For each file it reads: the node command that writes it (`cmd >file`), with that command's recorded output;
+    or, for a CIQ file column, the uploaded document of that kind (sheets, header, rows; `tools/input_documents.py`,
+    shared with step 9's staging).
+  - The smoke run puts those files in its folder, so a script that cannot parse them fails there.
+  - `HelperScriptGen` gets `sample_inputs` (the run's uploaded documents).
+  - Tests `test_helper_script_learns_the_steps_check_and_the_formats_it_reads`,
+    `test_smoke_run_feeds_the_files_the_script_reads`.
+- Step 6 is cached: re-run step 6 with "Clear cache" ticked to regenerate the script.
+
+### OB-59 — Simulated post-activity dump equalled the pre dump (High, Fixed 2026-11-13)
+- Run 6110bc53: `org -c eirWhiteRng >…/predump_white_….txt` (backup) and the same command into `postdump_white_…`
+  (after `dscli update file …`) had one answer, so the post dump never held the loaded TACs.
+- **Fix** (`skills/network_simulator_setup/state_changes.py`):
+  - Step 8 finds the reads a node repeats around activity commands (rollback phases left out). Their setters are
+    the commands that run only between the two reads, with a key no other command uses.
+  - One LLM call per node says how each read changes: `unchanged`, or a line template over the rows of an input
+    document (`add_rows` sheet + `where`), or a few literal lines, plus the command that applies the change.
+  - The rows are expanded in code: the delta's 531 TACs never pass through the LLM.
+  - The read's key answers by `whenState` once the setter's `setState` ran. MockWire runs a redirect's command
+    through the same matcher, so the dump file gets it. Step 9 restarts MockWire per test case.
+  - Step 8 gets `sample_inputs`.
+  - Tests `test_read_after_the_activity_shows_what_it_loaded` (+2).
+- Known limit: a rollback command sharing the setter's key also marks the change (a rollback-only run would see
+  the loaded state).
+
+### OB-60 — Step 9: `export …; source …; org -c X >file` unanswered (High, Fixed 2026-11-13)
+- Run b81305ff: step 6 wrote each dump as one sequence. MockWire tries a key on the whole line, then runs the parts
+  one by one. The whole-line key (without the redirect) never matched, so `source /opt/sdf/.bash_profile` and
+  `org -c X` were unmatched (exit 127). The dump content came from the LLM, not the recorded dump.
+- **Fix**: `vfs_commands.split_redirect_sequences` (topology): a top-level `;`/`&&`/`||` sequence that writes a
+  file becomes the parts MockWire runs (loops and `bash -c '…'` stay whole; `export`/`cd`/`true` are MockWire's).
+  `source <file>` answers empty (`source_answers`), and the dump part gets the recorded output (`redirect_contents`)
+  and OB-59's post-activity state. Setup commands are neither reads nor change commands in OB-59.
+  Tests `test_a_sequence_writing_a_file_is_answered_part_by_part`, `test_dump_parts_of_a_sequence_…`.
+
+### OB-61 — Workflow regexes with `\n`; a lone `&` between commands (High, Fixed 2026-11-13)
+- Run b81305ff: `predump_white_.+?\.txt\n.*predump_black…` never matched a listing with every file: terminal
+  output ends lines in `\r\n` (on a real node too). The rollback's `cd /opt/sdf/processing/ & ls -lrth` ran `cd`
+  in the background and listed the home folder.
+- **Fix** (step 6 autofix): `crlf_line_breaks` (`\n` → `\r?\n` in validation and register regexes, outside
+  character classes); `background_ampersand` (a lone top-level `&` between two commands → `&&`).
+
+### OB-62 — Helper script opened a registered text argument as a file; lost leading zeros (High, Fixed 2026-11-13)
+- Run b81305ff: `--postdump_white "${DIFFWHITE}"` carries the `diff` output (registered `[\s\S]+`); the script
+  opened it as a file name. A later attempt read the TACs with pandas as numbers (`01695000` → `1695000`).
+- **Fix** (`helper_script_gen/context.py`): an argument that is one registered value is described as text from
+  its command's output, with the record format of the files that command reads; uploaded documents are read
+  with every cell as text. The dump writer inside a sequence (OB-60) is found by its writing part.
+
+### OB-63 — Simulated `diff` was canned; the rollback marked the activity's change (High, Fixed 2026-11-13)
+- Run b81305ff: `diff predump_white postdump_white` answered with a recorded diff from the transcript (290 lines,
+  not the 531 TACs loaded). The rollback sends the same `dscli update file …` as the activity, so a rollback-only
+  run's post-rollback dump showed the loaded TACs.
+- **Fix**:
+  - MockWire 395aac4: `diff` / `cmp` builtins over the VFS (GNU normal format, exit 1 when they differ).
+  - Step 8: `diff`/`cmp` are file commands (no key).
+  - Step 6 autofix `diff_differences_ok`: a bare `diff` step gets `|| true`, because the JAR fails a non-zero
+    step and differences are what the step reads.
+  - OB-59: a command the rollback also sends never marks the change; the activity-only commands between the
+    reads do.
+- Steps 6h + 8 + 9 on a copy of b81305ff with the current step 6 autofix: **2/2 pass**. The sunny day's delta
+  check reads the real diff (531 TACs); rollback-only: 26 steps.
+
+### OB-64 — `strict_host_key_checking: false` on every ssh node (user, 2026-11-13)
+- NIAM nodes and `repo_server_sftp` had it; `repo_server` (ssh) and other ssh nodes did not.
+- **Fix**: `production._ssh_host_keys`: every `ssh` / `sftp` node block without `known_hosts` gets
+  `strict_host_key_checking: false`. Test `test_every_ssh_node_accepts_the_host_key`.
+
+### OB-65 — Inline `python3 -c` program on a network node (High, Fixed 2026-11-13)
+- Run b81305ff, re-run with "Clear cache": step 6 wrote the delta TAC check as `python3 -c "import pandas …
+  read_excel('${rec.data.DELTA_TAC_FILE}') … open('/opt/sdf/processing/postdump_white_…')"` on the bastion. The
+  CIQ workbook is on the automation server and the dumps are inside the pod; it also guessed `WHITE`/`BLACK`/`GREY`
+  TAC prefixes. Step 9 passed it only on an answer step 8's LLM invented.
+- **Fix** (step 6 validator, `check_helper_script_nodes`): an inline Python program on a non-local node is an error
+  → regenerate as a helper script on node local, with the files it reads copied there first.
+
+### OB-66 — Dumps written inside a pod in one line got no answer / a canned diff (High, Fixed 2026-11-13)
+- Same run: `kubectl exec -it P -n NS -- bash -c 'export USER=sdfrun; source …; org -c X > /opt/sdf/processing/
+  predump_x.txt'`. Step 8 keyed the line without its redirect (never matched: `kubectl: command not found`), and
+  keyed the in-pod `diff` / `ls` with canned answers.
+- **Fix**:
+  - MockWire e72d022: `kubectl|oc exec … -- bash|sh -c '<script>'` with no key for the whole line runs the script on
+    the instance's VFS (a subshell).
+  - MockWire 5fc8430: a regex key without an end anchor answers its own command only — `^source <profile>`
+    swallowed `; org -c X > dump`, so `org` never ran.
+  - Step 8 `split_redirect_sequences`: a pod exec whose script writes a file or only works on files is answered
+    part by part (`pod_script`, `script_parts`); the helper script context finds the dump writer inside it.
+
+### OB-67 — Step 8 answer keys holding an unresolved `${…}` (High, Fixed 2026-11-13)
+- Same run, step 8 re-generated: the LLM keyed `oc get pods -n ${EIRNAMESPACE} | grep -i eirapp | …` as written.
+  MockWire gets the resolved line, so the key never matched (`oc: command not found`); step 8 counted it as answered.
+- **Fix** (`topology.placeholder_key`, also in `config_key`): an exact key with a `${…}` placeholder is written as
+  that command's anchored regex.
+
+### OB-68 — `count_var` without `loop: true` is never set (High, Fixed 2026-11-13)
+- Same run: the dump listing registered `{regex: 'predump_white_.+?\.txt', count_var: WHITE_BACKUP_COUNT}` and
+  checked `WHITE_BACKUP_COUNT == 1`. The JAR sets `count_var` only for a looped register (ResultProcessor bytecode),
+  so the count read as `''` and the check failed on listed files — on a real node too.
+- **Fix** (step 6 autofix `count_needs_loop`): a register with `count_var` gets `loop: true`.
+
+### OB-69 — `diff` inside a pod failed the step on differences (High, Fixed 2026-11-13)
+- Same run: `kubectl exec … -- bash -c 'diff predump postdump'` exits 1 when the activity loaded TACs; the JAR fails
+  the step before its check (OB-63 covered only a bare `diff`).
+- **Fix**: `diff_differences_ok` looks inside the pod exec (`… -- bash -c 'diff a b' || true`).
+
+### OB-70 — A pod exec followed by `|| true` was not opened (Medium, Fixed 2026-11-13)
+- Same run: `grep_no_match_ok` appended `|| true` to `kubectl exec … -- bash -c '…; dsClassInfo | grep -i rng >
+  /p/f'`; step 8 then kept the whole line and `dsClassInfo | grep -i rng` went unanswered.
+- **Fix**: step 8 splits the line's top-level sequence first and opens each pod exec in it.
+- Steps 8 + 9 on a copy of b81305ff (its current step 6 YAML + autofix): **2/2 pass** (sunny day 42 steps, rollback
+  only 22). The inline Python step (OB-65) passed there on an invented answer: the user's run needs step 6
+  regenerated, which the new validator rule forces.
+- Known gap: a sunny day whose rollback runs after the activity still sees the loaded TACs in the post-rollback dump
+  (the rollback's own `dscli update` never resets the change, OB-63).
+
+### OB-71 — A UC that passed failed again after "Clear cache": every run rewrote step 6 from scratch (High, Fixed 2026-11-13)
+- Run 6110bc53 (EIR_1029) completed; b81305ff, re-run with "Clear cache", failed step 9. The LLM wrote a different
+  workflow (in-pod dumps, inline python, `count_var` without loop) and step 8 different answers (`${…}` keys):
+  "it passed once" meant that one YAML passed, not the UC (user: "how is this pipeline credible?").
+- **Fix** (user decisions 2026-11-13) — a per-UC **baseline** (`storage/uc_baseline.py`, `data/knowledge/<uc>/baseline/`):
+  - Saved when step 9 passes (`pipeline_agent._save_baseline`): workflow, helper scripts, simulator configs +
+    outputs + invented keys, with fingerprints of the step 6 requirements and of workflow + CIQ JSON.
+  - Step 6 without a cache hit: same requirements → the proven workflow after today's autofix + checks, no LLM;
+    a check added since fails → the correction rounds start from it; requirements changed → the generation prompt
+    carries it ("change only what the requirements need"). Re-processing is idempotent (b81305ff workflow: identical).
+  - Helper scripts are reused for the identical workflow; step 8 reuses the proven configs for the same workflow and
+    CIQ data (not on a step 9 → 8 retry). Steps 8 + 9 on a copy with a scratch baseline: configs reused, **2/2 pass**.
+  - "Clear cache" keeps it; the Artifact Cache page lists and discards baselines; a newer passing run replaces it.
+    The step 6 / 8 reviews say where the output came from (`step_<n>_origin.json`).
+
+### OB-72 — The baseline counted step 1's AI wording as changed inputs; re-processing was not idempotent (High, Fixed 2026-11-13)
+- Run 1ee47d78 (same documents, answers, notes, options as 6110bc53): step 6 took the "requirements changed" path
+  because step 1 re-wrote its analysis (`category_*`, `generation_hints`); the AI, told to keep the proven workflow,
+  rewrote 567 of 1026 lines anyway (it passed step 9 2/2 and is now the baseline).
+- Re-processing a proven workflow changed `nc_rbl*` (rollback-only lookups) `on_failure: stop` → `continue`: the
+  copy inherited the pre-check value the contract had written on the earlier pass.
+- Finding: the 6110bc53 workflow requires new black / grey TACs in their diffs, but the delta workbook holds only
+  White TACs — it "passed" only on the canned diff of the time (OB-63). Runs that passed before the simulator was
+  faithful are not proof.
+- **Fix**: `requirements_fingerprint` covers what the user gave (`doc_extracted`, `developer_answers`,
+  `developer_notes`, `xml_templates`, `run_options`), not step 1's own reading; `_rbl_copy` drops `on_failure`
+  (the rollback contract decides). The 1ee47d78 baseline re-processes byte-identical (no AI in step 6, helper
+  scripts and step 8 reused). Steps 6+6h+8+9 on a copy with the 6110bc53 baseline: step 6 reused with no AI.
+- UI: "Export UC package" also in the completion row of a completed run (the step 10 Artifacts tab was missed).
+
+### OB-73 — MRF: the activity's check ran before the activity; a shell `$(…)` inside a regex (High, Fixed 2026-11-13)
+- Run c89f1b67 (MRF_ANNOUNCEMENT_LOADING, step 6 by the AI, no baseline): the post-load listing `ls -ltrh <dest>/ |
+  grep "$(basename <INPUT_FILE>)"` also ran in the pre-check requiring the announcements: nothing is loaded yet, it
+  failed, PRECHECK_FAILED skipped backup and load (5 steps per case). Its count regex `^(-rwxrwxrwx)\s+.*$(basename
+  .+?)` can never match (`$` ends the line).
+- **Fix** (step 6 validator): `check_checked_before_load` — a pre-check / backup step reading where the activity
+  copies / extracts, naming the file it loads, with a success condition; `check_shell_in_regexes` — `$(` in a
+  validation / register regex. Earlier MRF runs that "passed" with such a pre-check did so on invented `ls` answers.
+
+### OB-74 — A count over `ls -l` wanting each line to start with a number (High, Fixed 2026-11-13)
+- Next regeneration: `^(?<TOTAL>\d+)\s+.*$` / `^(?<OKN>\d+)\s+-rwxrwxrwx.*$` over `ls -l $(tar -tf …)` — the lines
+  start with the mode; TOTAL stayed 0 on the version-17 (untar) targets.
+- **Fix**: `check_listing_counts` (anchored count regex starting with a number / space on a listing piped at most
+  to grep / head / sort; pipes inside `$(…)` ignored). No hit on the 20 workflows of earlier runs.
+
+### OB-75 — Shell `'\''` inside a single-quoted YAML value (Medium, Fixed 2026-11-13)
+- Next regeneration: `regex: 'tar: Removing '\''/var/…/'\'' from archive member names'` — step 6 unparsable, two
+  correction rounds did not fix it.
+- **Fix** (`sanitize_yaml`): inside a single-quoted value `'\''` → `''`; unquoted shell commands keep it.
+
+### OB-76 — MRF rollback: `|| rm -rf <dest>/*`, and a restore of an archive no step writes (High, Fixed 2026-11-13)
+- Next regeneration passed all 3 sunny days; rollback-only left the node without the files it had before: the
+  restore read `/tmp/announcement_backup_*.tar.gz` (the backup wrote `/tmp/${ORDER_NO}/<folder>/announcement_backup_
+  $DATE.tar.gz`), and its fallback `|| rm -rf <dest>/*` deletes every announcement (user rule: never touch unrelated
+  files).
+- **Fix**: `check_wildcard_removals` (`<dir>/*`, `rm -r <folder>` outside the staging area); `check_restore_sources`
+  (a rollback `tar -x` of an archive with a literal name no step writes). Neither hits the earlier runs' workflows
+  except their real `rm -rf <dest>/*`-free cases.
+- Status: MRF step 6 is AI-written on every regeneration (no proven baseline yet) and each draft differed; the last
+  one was refused by step 6 (it kept `rm -rf <dest>/*` through three correction rounds). Open question for the user:
+  should the pre-check require every existing announcement in the folder to be 777 (`BADPERM_COUNT == 0`)?
+
+### OB-77 — A pre-check conditioned on what the destination folder already holds (High, Fixed 2026-11-13)
+- Run c89f1b67, draft 5: `ls -ltrh <dest>/` in the pre-check required `BADPERM_COUNT == 0` over the existing
+  announcements. User decision: before the activity the folder's contents are only recorded.
+- **Fix**: `check_checked_before_load` also rejects a pre-check / backup listing of the destination's contents
+  (`ls [-l…] <dest>/`, `find <dest>`) with a success condition; `ls -ld <dest>` (the folder itself) may still be
+  required. Flags only MRF workflows among the earlier runs' 20.
+
+### OB-78 — A `grep … || true` check whose regex matches neither a named line nor the empty output (High, Fixed 2026-11-13)
+- Run c89f1b67 after the restart (step 6 by the AI): 3/3 sunny days passed; rollback-only failed at the rollback
+  post-check `ls -ltrh <dest>/ | grep "$(basename <file> .tar)" || true` with `No such file or directory|^total \d+$`.
+  It printed the restored original (`DOC_VERIFICATION_PROMPT_5003.dat`, there before the load — the right state) and
+  would fail on the empty output too (a `^` regex never matches empty output). It could never pass, on a real MRF too.
+- **Fix** (step 6 validator `check_grep_filter_checks`): a success regex over a `| grep <name> || true` filter must
+  accept a line naming the file or the empty output. Flags only this step among the earlier runs' workflows.
+
+### OB-79 — The simulator guide was generic, not about the UC (Medium, Fixed 2026-11-13)
+- User: the guide must say which servers to start on which ports, the UC's own commands, the repo server steps, and
+  how e.g. PGW and RDS work together.
+- **Fix** (`guide.py`, built from the manifest, the instance configs and the overlay workflow):
+  - Servers table (port, workflow nodes, host name, login, role: network node via NIAM / repository server) and the
+    start command of every server.
+  - How they work together: each node's login as the workflow does it (user, NIAM neId, Ctrl+P Ctrl+E root), `su`
+    users, nested shells, file triggers (PGW inbox → outbox `.res`), transfer peers (node → repo server files),
+    the automation server's SFTP to the repo, LOCAL steps.
+  - The workflow per phase: a flow line (`RDS → automation server → PGW (file transfer) → …`) and every step with
+    its server, command and the simulator's answer (placeholders filled like at run time).
+  - Try it by hand: per server the login and up to 4 workflow commands with their answers.
+  - The UC export always writes the current guide.
+
+### OB-80 — One user guide in the export, every file described (Medium, Fixed 2026-11-13)
+- User: a single user guide with each file generated and its description, plus the simulator information.
+- **Fix** (`tools/uc_export.py`): `USER_GUIDE.md` at the package root replaces `README.md` + `simulator/SIMULATOR_GUIDE.md`
+  — the package, a table of every file with what it is (helper scripts by the workflow step that runs them, input
+  files by their CIQ column, each simulator config by its server / port / nodes), then the simulator part
+  (`guide.simulator_sections`: servers, start, how they work together, the workflow per server, try it, run it).
+- Found while checking it: `scripts/` also held dumps a step 9 run left there and a helper of an earlier step 6 the
+  workflow no longer calls — the export now takes only the helpers the workflow calls and the inputs the CIQ names.
+
+### OB-81 — The helper-script output check saw `{output_file}` as `x` (High, Fixed 2026-11-13)
+- Run 61561981 (PGW_RDS_1058): `print(f"XML modification file generated successfully: {output_file}")` with
+  `--output_file '${ORDER_NO}.xml'` prints `….xml`, but the static check replaced every f-string field by `x` and
+  rejected `/.*\.xml/` — the AI rewrote a correct script three times; step 6 failed.
+- **Fix** (`helper_script_gen.skill.check_output_contract`): f-string fields are also tried with each value the
+  workflow passes the script (`arg_values`, placeholders → `X1`).
+
+### OB-82 — parse_response.py kept looking up `spml:response` (Medium, Fixed 2026-11-13)
+- Same run: told the sample's tags, the AI still searched `spml:response` / `{urn:…}response` for an unqualified
+  `<response>` (its comments argued it must be namespaced), three rounds.
+- **Fix**: the rejection runs the script's own namespaced lookups on the sample and gives the counts
+  (`root.findall('spml:response')` finds 0, `root.findall('response')` finds 1) — fixed on the next round on a copy.
+
+### OB-83 — MockWire had no `sleep` (Medium, Fixed 2026-11-13)
+- Same run: `echo Waiting 300 s; sleep 300; echo WAIT_DONE` → `sleep: command not found` (step 9 blamed step 8).
+- **Fix**: MockWire dbad6f8 — `sleep` builtin returns at once (exit 1 on a bad duration); step 8 already treated it as
+  a builtin.
+
+### OB-84 — A read on one node did not show a change applied through another node (High, Fixed 2026-11-13)
+- Same run on a copy: RDS reads the subscriber profile, the order is uploaded to PGW, RDS reads again — the post read
+  repeated the pre read (`Mandatory Cap: expected 10, post 1`), the comparison report failed. OB-59 only linked a
+  change command and its reads on the same node.
+- **Fix** (`state_changes`): commands keep their workflow position; a read repeated around other nodes' activity
+  (no change command on its own node) answers "before" for its reads before that activity and "after" from then on
+  (a chain of MockWire `setState` on its own answers); the LLM answer format gains `replace` (changed attribute
+  lines). Unit-tested; not yet run end to end (the copy run was interrupted).
+
+### OB-85 — Step 6 stayed failed after its helper scripts passed (High, Fixed 2026-11-13)
+- Same run: a re-run of step 6 re-runs only the agent that failed (helper_script_gen); it passed at 18:30, but the
+  `step_6_error.json` its previous attempt wrote stayed, and the milestone read step 6 as failed. Each failed attempt
+  also appended its message to the earlier ones.
+- **Fix** (`helper_script_gen_agent`): a passing attempt removes the helper part of `step_6_error.json` (the file
+  when nothing else failed, and step 6 is passed again); a failing attempt replaces the earlier helper message.
+
+### OB-86 — A count register wanting `total` on one file's listing (High, Fixed 2026-11-13)
+- Run 61561981: `ls -l <outbox>/${ORDER_NO}.xml.res` counted with `total\s+\d+\s+.*\s+.+?.xml.res`; `ls -l` of one
+  file never prints `total`, so `responseFileCount > 0` failed with the response file there (on a real PGW too).
+  DEP-39's autofix rewrote such a success regex only.
+- **Fix**: `fix_single_file_listings` also rewrites a count register's regex to the file's long-listing line.
+
+### OB-84 (follow-up) — Another node's activity takes priority over a lookup on the read's node
+- Same run: an RDS `if [[ IFC … ]]` lookup between the reads was taken as the change command and never ran for the
+  record, so the post read stayed unchanged. Now another (non-repository) node's activity between two reads makes
+  them a before / after pair whatever runs on the read's own node; a repository server's transfers change nothing.
+- Open: the post-activity profile is one answer for every test case, but the CIQ values differ per record (EAST
+  expects Mandatory Cap 10, NORTH others), and the LLM copied CIQ cells literally (`UNCHANGED`, which means keep the
+  value). The comparison report of run 61561981 still fails on the copy.
+
+### OB-88 — Step 6 rejected a correct shell-guarded either-or column (High, Fixed 2026-11-13)
+- Run 6570694d (PGW_RDS_1058): `if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi`
+  with `resolvedImsi` looked up by MSISDN (`when: Test IMSI == '' && Test MSISDN != ''`) — a correct one-of-two
+  column workflow. Two checks read the whole text: EAST "uses an empty Test IMSI", NORTH "never gets resolvedImsi";
+  the self-correction rounds could not satisfy them and step 6 failed.
+- **Fix** (`validator._runs_for_row`): a simple shell guard on a CIQ column (`!= ""`, `== ""`, `-n`, `-z`) keeps only
+  the branch the row takes; the empty-column and registered-variable checks read that text. The run's workflow
+  validates with 0 errors.
+
+### OB-89 — One simulated NIAM gateway for every NIAM node (MW-13, user request 2026-11-13)
+- Production logs in to every NIAM node at the same `${NIAM_IP}:${M2MPORT}` with the same user; only the neId picks
+  the node. The simulator ran one server per node type on its own port, so it never exercised that routing.
+- **Fix**:
+  - MockWire 15797e2: a config with `niam.profiles` is a gateway — the neId a session answers (keyboard-interactive,
+    as JSch does, or in the shell) picks a node profile with its own answers, prompts, users, VFS, triggers, state
+    and event log; shell, exec and SFTP (root + upload triggers) follow the session's node; an unknown neId is asked
+    again. Live-tested over SSH (both login paths, SFTP, unknown neId).
+  - Step 8 (`gateway.py`): one gateway YAML per gateway (`config/<name>_gateway.yaml`: login, prompts from the
+    vendor's access gateway settings with NIAM's defaults, `neId → node YAML` routing from the CIQ JSON); node YAMLs
+    unchanged; the nodes with NIAM ids run behind it, the others (repo server) on their own. Manifest instances carry
+    `profiles`; step 9 restarts keep them and map nodes to their own instance.
+  - Guide / export: the gateway, its routing (neIds → node), each node "via" the gateway's port, one start command.
+  - Steps 8 + 9 on copies of run 61561981: `niam_gateway:22200`, sanity 2/2 through it, step 9 cases ran through it.
+
+### OB-87 — Post-activity answers filled per test case from its CIQ record (Medium, partly open, 2026-11-13)
+- Run 61561981: one after-profile for every test case, but EAST and NORTH expect different values; the LLM wrote CIQ
+  cells (`UNCHANGED`) as values.
+- **Fix**: the LLM writes `{ciq:<column>}` in a changed line (with the line it replaces); step 9 fills it per case from
+  the case's CIQ record (`scenarios.case_record` / `fill_ciq`): `UNCHANGED` keeps the line, a blank cell deletes the
+  attribute (the UC's developer answer: "empty tag … to delete"). The LLM is given the CIQ columns the activity sends.
+- On the copy the comparison report went from 4 mismatches to 1: the LLM still left `Packet Data Network Type` →
+  `pdnType` out of the after-profile in some drafts. Deterministic option (not built): derive the node's after-state
+  from the request actually uploaded (the order XML lists every attribute it sets).
+
+### OB-90 — Step 6 rejected an empty either-or value passed to a local report script (Medium, Fixed 2026-11-13)
+- Run 6570694d after OB-88: `python create_html_report.py … --ciq_test_imsi '${resolvedIMSI}' --ciq_test_msisdn
+  '${…Test MSISDN}'` — the report shows the CIQ values; MSISDN is empty for the rows that give an IMSI. The
+  empty-column check (meant for values sent to a node, DEP-19) failed step 6.
+- **Fix** (`check_ciq_coverage`): a CIQ value passed as a `--flag` argument of a command on the automation server is
+  the script's to handle (the request a script builds stays checked by `check_request_inputs`); node commands are
+  still checked. The run's workflow validates with 0 errors.
+
+### OB-91 — A multi-line `if … fi` block reached MockWire line by line (High, Fixed 2026-11-13)
+- Run 6570694d: the IMSI lookup was a `|-` block (`if [[ "<MSISDN>" != "" ]]; then` / `ldapsearch …` / `else` / … /
+  `fi`); MockWire routed each line alone — `if [[ … ]]`, `then`, `else`, `fi` unmatched, "Failed to resolve IMSI".
+- **Fix**: MockWire 88a1915 — the shell reads on while an `if/for/while/until/case` block is open and runs it as one
+  line (`if c; then a; else b; fi`); multi-line quoted text keeps its newlines. Steps 8 + 9 on a copy: both cases
+  resolve the IMSI, place the order through PGW and reach the comparison report.
+- Finding (step 6 helper script, not the simulator): `create_html_report.py` compares a blank CIQ cell with the
+  attribute after the activity and reports MISMATCH, but the UC's answer says a blank cell deletes the attribute (the
+  simulator now shows it deleted). The report fails on a real RDS too; the script must treat a blank expectation as
+  "attribute absent".
+
+### OB-92 — Helper scripts did not apply the developer's CIQ cell meanings (Medium, partly fixed 2026-11-13)
+- Run 6570694d: `create_html_report.py` compared a blank CIQ cell as a value; the developer's answer ("… create empty
+  tag in case of blank to delete …") sat past the 3000 characters of answers the helper prompt carries.
+- **Fix** (`helper_script_gen.skill`): `cell_semantics` collects the answers / notes that give UNCHANGED / blank /
+  empty cells a meaning into the prompt for every field; `check_cell_handling` rejects a comparison script that
+  special-cases UNCHANGED but not a blank cell when the developer defined one. Step 8 reads a multi-line if-block as
+  the one line MockWire runs (`join_compound`), so its branch commands get answers.
+- Open: the next draft handled blank — as "unchanged" (the long answer mixes both cases), the simulator as "delete".
+  A free-text answer is read differently per draft; the cell rules need one structured, confirmed form.
+
+### OB-93 — A Java inline flag inside a regex never matched in the simulator checks (High, Fixed 2026-11-13)
+- Run 6570694d, NORTH: the IFC lookup `if [[ '40453' … ]]; then org -c hssGlobalFilterCriteria | grep -i 40453; …`
+  checks `(?:(?i).+?)|SKIPPED_BY_CONDITION`. The recorded IFC list has no 40453; step 8's fallback (DEP-9: build a
+  line from the step's regexes with the grepped value) never fired — Python 3.11+ rejects an inline `(?i)` that is
+  not at the start (Java scopes it), so `java_regex_matches` said "no match" and the answer stayed empty.
+- **Fix** (`scenarios.java_to_python`): mid-pattern inline flags become flags of the whole pattern; the fallback now
+  answers NORTH's lookup with a line holding 40453.
+
+### OB-94 — One confirmed table of CIQ cell rules for scripts and simulator (Fixed 2026-11-13, user decision)
+- Run 6570694d: the free-text answer ("If 'UNCHANGED' or blank … omitted for 'UNCHANGED' … create empty tag in case of
+  blank to delete …") was read as "blank = unchanged" by one report-script draft and "blank = delete" by the simulator.
+- **Fix** (`shared/ciq_cells.py`): the table `{unchanged: keep, blank: delete}` is derived once from the answers and
+  notes (a sentence about one kind of cell decides it, a later one overrides — Edit requirements corrects it), stored
+  by step 1 as `ciq_cell_rules`, shown in the requirements document (CIQ Cell Rules), given verbatim to every helper
+  script (what a comparison expects and what a request sends per cell) and applied by step 9's per-case simulator
+  answers. Defaults: UNCHANGED keeps, blank keeps.
+- Steps 6h + 8 + 9 on a copy of run 6570694d (NIAM gateway): **2/2 pass** (EAST 38 steps, NORTH 44).
+
+### OB-95 — A cross-node read kept the attribute a blank CIQ cell deletes (High, Fixed 2026-11-13)
+- Run 6570694d (PGW + RDS), step 9 2/2 fail after OB-94: the report expects `pdnType` absent (blank cell → delete) but
+  RDS's reads after the PGW activity still printed it. Step 8's AI (a) left `pdnType` out of the filtered read's
+  after-profile and (b) called the full-profile read (`ldapsearch … objectclass=*`, one `pdnType` per PDN context)
+  unchanged, so neither followed the CIQ.
+- **Fix** (`state_changes.attribute_for` / `complete_columns`): every column the activity sends gets the attribute it
+  names (by name: initials + last word, or word prefixes in order; only a unique match) as a
+  `{ciq:<column>}{ciq-else:<before>}` line — every line of that attribute, in every cross-node read repeated around
+  the activity, also one the AI called unchanged. A column the read is addressed by (the IMSI) is left alone.
+
+### OB-96 — A node group with several CIQ records compared every record with the last one's reads (High, Fixed 2026-11-13)
+- Run 6570694d, NORTH (2 records): the first record loop resolved each IMSI and read its profile (`resolvedImsi`,
+  `preFullProfile` registered per pass), but the post reads ran once outside any loop and the report loop compared
+  every record's CIQ with the LAST record's values; `create_xml.py` ran per record and rewrote the same
+  `${ORDER_NO}.xml` (only the last record reached the order), the report likewise. Wrong on a real node too. In the
+  simulator the read chain switched to "after" once, filled with the first record; IFC → globalFilterIds was never
+  changed (no name links them).
+- The MOP is a batch: one `${ORDERNO}` per run ("Ensure that <$ORDERNO>.xml.res does not exist"), header + footer once,
+  `spml:batchResponse` — so the records are not each a pass of their own.
+- **Fix**, structure (step 6): a step reading a value an earlier record loop registered loops over the records too
+  (`loop_record_steps`); `keep_record_values` keeps each record's value in `nc_records/<name>_<sha1 of the record's
+  columns>.txt` on the automation server (`nc_keep_*`, quoted here-document) and the later loop reads it back
+  before its first use (`nc_load_*`); a script run per record writing one file for all (`--output_file
+  '${ORDER_NO}.xml'`, `helper_script_gen.context.shared_outputs`) gets `nc_fresh_*` (`rm -f`) before its loop and
+  the contract "each pass ADDS its record — one header / footer"; step 6h `check_accumulates` runs the script for
+  two records into one folder and rejects it when the first record's lines are gone (the AI ignored the contract
+  line once; the repaired create_xml.py passed on attempt 2). EIR's `${INFLATEDFILE}` (unzip in the backup
+  loop, `mv` in the activity) is carried the same way; MRF unchanged.
+- **Fix**, simulator: commands carry their record loop (`extract_workflow_commands` → `loop`); a read repeated around
+  another node's activity in record loops is a chain `changed:readN:records:<segments>` (`L1.L1` = one read in each
+  of two loops); step 9 (`fill_ciq` → `state_changes.expand_records`) expands it for the case's records — each
+  loop's reads once per record, the after-lines filled with that record's values. `column_attributes` maps a column
+  to the attribute the requirements compare it with (`IF (<$IFC> == globalFilterIds)`) for `complete_columns` and
+  the step 8 prompt.
+
+### OB-97 — A number registered from a multi-line block took the prompt's digits (High, Fixed 2026-11-13)
+- Run 6570694d: `if … fi` resolving the IMSI printed `404530000000132` — but the JAR sends its done-marker on a line
+  of its own after a multi-line send, so the prompt printed in between (`rdsggn01:~ #`) is part of the output and
+  `(?<resolvedImsi>\d+)` kept `01`: every record read `imsi=01` (hidden by the simulator's `imsi=\S+` key).
+- **Fix** (`autofix.block_numbers_end_their_line`): on a multi-line send a bare `(?<x>\d+)` becomes
+  `(?<x>\d+)(?=\s*$)` — the number that ends its line.
+- Verified on copies of run 6570694d: steps 6h + 8 + 9 **2/2 pass** (EAST 45 steps, NORTH 60), every record's own
+  IMSI read (404530000000132, 999990000015555, 208930000000001). The run with `check_accumulates` was stopped by
+  low memory during step 9 (6h + 8 passed); EIR's copy with the carried `${INFLATEDFILE}` not run yet.
+
+### OB-98 — The record-accumulation check gave a registered value one default in both passes (High, Fixed 2026-11-14)
+- Re-run of the OB-96 copy (2026-11-14, steps 6h + 8 + 9, **2/2 pass**): NORTH's uploaded `TEST_ORDER_NO.xml` still
+  held only its last record (IMSI 999990000015555). `create_xml.py` kept the existing part only when its
+  `<identifier>` matched the new `--imsi`; `check_accumulates` filled `${resolvedImsi}` (registered by an earlier
+  step, no test value) with the same `"1"` in both passes, so the two "records" shared an IMSI and the check passed.
+- **Fix** (`helper_script_gen.skill.check_accumulates`): every placeholder of the line gets a value; one with no test
+  value starts at `"1"` and is shifted in the other record's pass like the rest (the file-naming ones stay).
+  The real `create_xml.py` of the run is now rejected.
+- Finding (not fixed): step 9 passed with one record missing from the order — the simulator answers each record's
+  post reads from the CIQ, not from what the uploaded order holds, so only step 6h guards a dropped record.
+- Verified on a copy of run 6570694d (steps 6h + 8 + 9): `create_xml.py` rejected on attempt 1, regenerated with 0
+  problems; **2/2 pass** (EAST 45 steps, NORTH 60); NORTH's uploaded order is one well-formed `batchRequest` with
+  both records' `<request>` (IMSI 404530000000132 and 999990000015555).
+- EIR regression (OB-96 structure, copy of run 1ee47d78, steps 8 + 9): **2/2 pass** (sunny day 63 steps, rollback
+  only 22); `${INFLATEDFILE}` carried from the backup loop to the activity loop (`nc_records/INFLATEDFILE_*.txt` =
+  `bulkProvisioning.json`).
+
+### OB-99 — A helper script refusing the next record's key passed the record-accumulation check (High, Fixed 2026-11-14)
+- Run 6570694d (server restarted on the OB-96/98 code, step 6 by the LLM): NORTH's second `create_xml.py` pass
+  exited 1 — "IMSI in existing file does not match current IMSI. Cannot append modifications for a different IMSI".
+  `check_accumulates` only looked for lines lost from the file; the refused pass left the first record's part
+  intact, so nothing was lost and step 6h passed.
+- **Fix** (`helper_script_gen.skill.check_accumulates`): the other record's pass into the shared folder must exit 0
+  when the same pass alone does; otherwise the script is rejected with its own message.
+
+### OB-100 — A step used an either-or column directly after the workflow had resolved it (High, Fixed 2026-11-14)
+- Same run: `resolvedImsi` = `echo ${…Test IMSI}` (rows giving it) or the MSISDN lookup (rows without), but the LLM
+  passed `--imsi '${…Test IMSI}'` to create_xml.py: EAST (MSISDN only) ran it with `--imsi ''` → exit 1. The
+  validator's either-or checks were satisfied (both columns used; the builder gets the IMSI column).
+- **Fix** (`network_config_gen.autofix.use_resolved_column`, in `fix_workflow`): a variable registered by a step
+  echoing a CIQ column AND by another step is that column's value for every row — later steps using the column get
+  the variable; steps guarded on the column (`when`) keep it.
+- OB-99 + OB-100 verified: this run's `create_xml.py` is rejected by the check; `use_resolved_column` rewrites this
+  run's create_xml step to `--imsi '${resolvedImsi}'`. A copy of the run, steps 6 + 6h + 8 + 9: **2/2 pass** (EAST 42
+  steps — order IMSI 123456789012345 looked up by MSISDN; NORTH 57 — one order with 404530000000132 and
+  999990000015555). 479 tests pass.
+
+### OB-101 — Step 8 split one read into two chains and left out attributes the recorded subscriber lacked (High, Fixed 2026-11-14)
+- Run 6570694d (server on OB-100 code): every record's report failed (create_html_report.py exits 1 on a mismatch).
+  1. The workflow reads `ldapsearch … objectclass=*` and the same read `| egrep '…'`, twice per record loop. Step 8
+     grouped repeated reads by their text: two reads (`read4`, `read5`), each chained `L1.L1`. MockWire answers the
+     egrep line by its first stage (a regex match leaving `| …` behind is rejected, `findStrict`), so read4's key
+     answered all four reads per record and its chain ran one place ahead: the pre read after the full one was
+     already "changed", record 1's post read carried record 2's `pdnType: ipv4`.
+  2. Only lines the recorded profile already had were changed: the sample subscriber has no `scscfMandCap`,
+     `netwListId`, `refinmtcName`, so Mandatory Cap 10 / VNI 6 / refinmtcName DELTCVHO1 never showed after the
+     activity; APN → `pdnAccPointName` was not known (only in step 1's `ciq_field_mappings`, not in the MOP).
+- **Fix** (`network_simulator_setup.state_changes`): `answering_key` follows MockWire (whole line unless a regex
+  match leaves `| ; > &`, else the pipeline's first stage) and `repeated_reads` groups reads by it (one chain,
+  `L2.L2`); `column_attributes` also reads `{ciq_column, node_field}` pairs; `complete_columns` adds a documented
+  attribute the recorded output lacks after its last attribute line (`{ciq:<col>}`: UNCHANGED / blank leave none).
+- Verified on a copy of the run (its own workflow + strict report script), steps 8 + 9: **2/2 pass** (EAST 44 steps,
+  NORTH 60); each record's post read carries its own CIQ values, its pre read the recorded profile.

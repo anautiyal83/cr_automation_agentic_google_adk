@@ -199,18 +199,18 @@ nodes:
 phases:
   a:
     steps:
-    - {node: APP, send: "ls /out/${ORDERNO}.res", validation: {success: {criteria: {regex: 'No such file'}}}}
+    - {node: APP, send: "ls /out/${ORDER_NO}.res", validation: {success: {criteria: {regex: 'No such file'}}}}
     - {node: APP, send: systemctl is-active app, validation: {success: {criteria: {regex: '^active$'}}}}
-    - {node: APP, send: "cat /out/${ORDERNO}.log", validation: {success: {criteria: {regex: 'started'}}}}
-    - {node: APP, send: "cat /out/${ORDERNO}.log", validation: {success: {criteria: {regex: 'finished'}}}}
+    - {node: APP, send: "cat /out/${ORDER_NO}.log", validation: {success: {criteria: {regex: 'started'}}}}
+    - {node: APP, send: "cat /out/${ORDER_NO}.log", validation: {success: {criteria: {regex: 'finished'}}}}
 """
     node = build_topology(wf)[0]
-    entries = {"regex:^ls /out/.+?\\.res$": {"lines": ["-rw-r--r-- 1 u u 12 TEST_ORDERNO.res"]},
+    entries = {"regex:^ls /out/.+?\\.res$": {"lines": ["-rw-r--r-- 1 u u 12 TEST_ORDER_NO.res"]},
                "systemctl is-active app": {"lines": ["active"]},
                "regex:^cat /out/.+?\\.log$": {"lines": ["started"]}}
     bad = synthetic_mismatches(node, entries, recorded=set(), row={})
-    assert [b["cmd"] for b in bad] == ["ls /out/${ORDERNO}.res"]      # active OK; cat is stateful → skipped
-    assert synthetic_mismatches(node, entries, recorded={"ls /out/${ORDERNO}.res"}, row={}) == []
+    assert [b["cmd"] for b in bad] == ["ls /out/${ORDER_NO}.res"]      # active OK; cat is stateful → skipped
+    assert synthetic_mismatches(node, entries, recorded={"ls /out/${ORDER_NO}.res"}, row={}) == []
 
 
 FILE_FLOW = r"""
@@ -220,15 +220,15 @@ nodes:
 phases:
   a:
     steps:
-    - {node: LOCAL, send: "python mk.py --out '${ORDERNO}.xml'"}
+    - {node: LOCAL, send: "python mk.py --out '${ORDER_NO}.xml'"}
     - node: APP
-      send: ls -l /srv/out/${ORDERNO}.xml.res
+      send: ls -l /srv/out/${ORDER_NO}.xml.res
       validation: {success: {criteria: {regex: 'No such file'}}}
-    - {node: APP, send: "put ${ORDERNO}.xml /srv/in/${ORDERNO}.xml"}
+    - {node: APP, send: "put ${ORDER_NO}.xml /srv/in/${ORDER_NO}.xml"}
     - node: APP
-      send: ls -l /srv/out/${ORDERNO}.xml.res
+      send: ls -l /srv/out/${ORDER_NO}.xml.res
       validation: {success: {criteria: {regex: '\S+\.xml\.res'}}}
-    - {node: LOCAL, send: "python parse.py --file '/srv/out/${ORDERNO}.xml.res'"}
+    - {node: LOCAL, send: "python parse.py --file '/srv/out/${ORDER_NO}.xml.res'"}
 """
 
 
@@ -236,15 +236,15 @@ def test_file_transfers_and_absence_checks_are_fixed_for_the_jar():
     from skills.network_config_gen.autofix import fix_workflow
     from skills.network_config_gen.validator import check_file_flows
     steps = yaml.safe_load(fix_workflow(FILE_FLOW))["phases"]["a"]["steps"]
-    assert steps[1]["send"] == "ls -l /srv/out/${ORDERNO}.xml.res 2>&1 || true"     # exits 0
-    assert steps[2]["sftp"] == {"operation": "upload", "local_path": "${ORDERNO}.xml",
-                                "remote_path": "/srv/in/${ORDERNO}.xml"} and "send" not in steps[2]
-    assert steps[3]["send"] == "ls -l /srv/out/${ORDERNO}.xml.res"                 # presence: unchanged
+    assert steps[1]["send"] == "ls -l /srv/out/${ORDER_NO}.xml.res 2>&1 || true"     # exits 0
+    assert steps[2]["sftp"] == {"operation": "upload", "local_path": "${ORDER_NO}.xml",
+                                "remote_path": "/srv/in/${ORDER_NO}.xml"} and "send" not in steps[2]
+    assert steps[3]["send"] == "ls -l /srv/out/${ORDER_NO}.xml.res"                 # presence: unchanged
     # LOCAL reads a node path: the download is inserted and the command uses the local copy (DEP-29)
     assert steps[4]["node"] == "APP" and steps[4]["sftp"] == {
-        "operation": "download", "remote_path": "/srv/out/${ORDERNO}.xml.res", "local_path": "${ORDERNO}.xml.res",
+        "operation": "download", "remote_path": "/srv/out/${ORDER_NO}.xml.res", "local_path": "${ORDER_NO}.xml.res",
         "overwrite": True}
-    assert steps[5]["send"] == "python parse.py --file '${ORDERNO}.xml.res'"
+    assert steps[5]["send"] == "python parse.py --file '${ORDER_NO}.xml.res'"
     assert not check_file_flows({"phases": {"a": {"steps": steps}}})
     del steps[4]
     assert len(check_file_flows({"phases": {"a": {"steps": steps}}})) == 1
@@ -257,7 +257,7 @@ def test_simulator_file_system_follows_the_workflows_file_flow():
     wf = fix_workflow(FILE_FLOW)
     vfs = derive_vfs(yaml.safe_load(wf), "APP", ["<Response result=\"success\"/>"])
     assert vfs["dirs"] == ["/srv/in", "/srv/out"]
-    assert vfs["triggers"] == [{"onCreate": r"/srv/in/(?<ORDERNO>[^/]+?)\.xml",
+    assert vfs["triggers"] == [{"onCreate": r"/srv/in/(?<ORDERNO>[^/]+?)\.xml",   # Java: letters/digits only
                                 "create": "/srv/out/${ORDERNO}.xml.res",
                                 "lines": ["<Response result=\"success\"/>"]}]
     assert is_vfs_command(r"regex:^ls\ \-l\ /srv/out/.+?\.xml\.res$", vfs)
@@ -450,10 +450,10 @@ def test_whitespace_joins_widen_only_where_real_output_has_lines_between():
 def test_helper_scripts_are_smoke_run_with_the_workflow_invocation():
     from skills.helper_script_gen.skill import smoke_run
     broken = "import argparse\np = argparse.ArgumentParser()\np.add_argument('--id')\na = p.parse_args()\nprint(ids)\n"
-    problems = smoke_run("mk.py", broken, ["python mk.py --id '${ORDERNO}'"], {"ORDERNO": "T1"})
+    problems = smoke_run("mk.py", broken, ["python mk.py --id '${ORDER_NO}'"], {"ORDER_NO": "T1"})
     assert len(problems) == 1 and "NameError" in problems[0] and "--id 'T1'" in problems[0]
     ok = broken.replace("print(ids)", "print('created', a.id)")
-    assert smoke_run("mk.py", ok, ["python mk.py --id '${ORDERNO}'"], {"ORDERNO": "T1"}) == []
+    assert smoke_run("mk.py", ok, ["python mk.py --id '${ORDER_NO}'"], {"ORDER_NO": "T1"}) == []
     needs_input = "open('/no/such/input.res').read()\n"                         # environment, not code
     assert smoke_run("rd.py", needs_input, ["python rd.py"], {}) == []
 
@@ -626,3 +626,28 @@ def test_or_conditions_on_registered_values_are_not_false_positives():
     steps[2]["when"] = f"{col}Test IMSI != '' || {col}Zone == 'NORTH'"
     problems = check_row_variables({"phases": {"a": {"steps": steps}}}, CIQ, runtime_params=[])
     assert problems and "EAST" in problems[0]
+
+
+def test_rollback_may_leave_the_evidence_files_the_workflow_writes(tmp_path):
+    """OB-40: production keeps `org -c … >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt` on the node."""
+    from skills.network_config_test.scenarios import WorkflowStep, node_files_diff, written_files
+    before, after = tmp_path / "b", tmp_path / "a"
+    for root in (before, after):
+        (root / "eir" / "etc").mkdir(parents=True)
+        (root / "eir" / "etc" / "conf").write_text("x")
+    (after / "eir" / "opt" / "sdf" / "processing").mkdir(parents=True)
+    (after / "eir" / "opt" / "sdf" / "processing" / "postrollbackdump_white_20240115.txt").write_text("d")
+    (after / "eir" / "etc" / "stray").write_text("y")
+    steps = [WorkflowStep(0, "rb", "rollback", "eir",
+                          "org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt", "", "stop")]
+    assert node_files_diff(before, after, written_files(steps)) == ["left behind: /etc/stray"]
+
+
+
+def test_a_java_inline_flag_inside_the_pattern_matches_as_in_java():
+    """OB-93 (run 6570694d): `(?:(?i).+?)|SKIPPED_BY_CONDITION` — Java scopes `(?i)`, Python 3.11+ rejects it; the check
+    never matched and step 8 kept an empty answer for NORTH's IFC lookup."""
+    from skills.network_config_test.scenarios import java_regex_matches
+    assert java_regex_matches(r"(?:(?i).+?)|SKIPPED_BY_CONDITION", "x,x,x,x,40453,")
+    assert java_regex_matches(r"(?:(?i)abc)", "ABC") and not java_regex_matches(r"(?:(?i)abc)", "xyz")
+    assert java_regex_matches(r"^(?<n>\d+)$", "42")

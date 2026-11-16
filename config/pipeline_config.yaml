@@ -34,19 +34,39 @@ execution:
   # Step 6 may use them as ${NAME} without registering them; step 9 passes these
   # dummy values when executing against the simulator.
   runtime_params:
-    ORDERNO: "TEST_ORDERNO"
+    ORDER_NO: "TEST_ORDER_NO"
+    CHILD_REQ_ID: "TEST_CHILD_REQ"
+    PARENT_REQ_ID: "TEST_PARENT_REQ"
+    NODE_NAME: "TEST_NODE"
+    NIAM_IP: "127.0.0.1"
+    M2MPORT: "22"
+    M2MUSER: "oamsys"
+    M2MPASSWORD: "netconf-sim"
+    REPO_IP: "127.0.0.1"
+    REPO_USER: "backup"
+    REPO_PASSWORD: "netconf-sim"
+  # Step 9 on Windows: run the cli-automation JAR inside this WSL distribution, so LOCAL steps behave as on
+  # the production (Linux) server (spec 013 PF-D5). Needs Java + python in it and mirrored networking
+  # (.wslconfig networkingMode=mirrored) to reach the simulator on localhost. Empty: run on Windows.
+  wsl_distro: "Ubuntu-24.04"
+  # Where the activity's input files are on the automation server (production: per child request and node);
+  # workflows check them there and upload them from there. Empty: the run folder (spec 013 C4)
+  local_path: "/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}"
   # Run queue (spec 007): one pipeline runs at a time, the others wait; jobs one user may have waiting
   max_queued_per_user: 3
-  # Backups are taken on this server (step 6 adds it as node REPO to every workflow with a
-  # backup phase: node archive -> LOCAL -> REPO, each hop checked with sha256sum).
-  # The password is the workflow secret ${SECRET.<password_secret>}.
+  # Backups are taken on this server (node `repo_server` of every workflow that uses it; it logs in with the
+  # runtime parameters REPO_IP / REPO_USER / REPO_PASSWORD as production workflows do, spec 013)
   repo_server:
-    node: "REPO"
-    host: "repo-server"
+    node: "repo_server"
+    host: "${REPO_IP}"
     port: "22"
-    user: "backup"
-    password_secret: "repo_password"
-    backup_dir: "/backup/netconfig"
+    user: "${REPO_USER}"
+    password: "${REPO_PASSWORD}"
+    backup_dir: "/repo-server/config/CR_AUTOMATION"
+    # The repo server's IPv4 and IPv6 address: with both set, a workflow picks REPO_IP by the IP version the node
+    # is reached with (production's `who am i` probe); empty: REPO_IP is a runtime parameter
+    ip_v4: ""
+    ip_v6: ""
 
 storage:
   database_path: "./data/pipeline.db"

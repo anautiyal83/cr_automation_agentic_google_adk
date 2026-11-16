@@ -62,10 +62,74 @@ def check_script_contract(code: str, flags: list[str]) -> list[str]:
     return []
 
 
-def check_output_contract(code: str, regexes: list[str]) -> list[str]:
+_CELL_WORDS = re.compile(r"\b(?:unchanged|blank|empty|null|none|n/?a)\b", re.IGNORECASE)
+
+
+def cell_semantics(requirements: dict) -> list[str]:
+    """What the developer said special CIQ cells mean (``UNCHANGED`` keeps the value, a blank cell deletes the
+    attribute, …): the sentences of the answers and notes that name such a cell. The answers reach the prompt cut at
+    3000 characters; run 6570694d's report script compared a blank cell as a value and failed (OB-92)."""
+    texts: list[str] = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str):
+            texts.append(value)
+    walk((requirements or {}).get("developer_answers") or {})
+    walk((requirements or {}).get("developer_notes") or "")
+    out: list[str] = []
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+            sentence = sentence.strip()
+            if 12 <= len(sentence) <= 400 and _CELL_WORDS.search(sentence) and sentence not in out:
+                out.append(sentence)
+    return out[:8]
+
+
+_UNCHANGED_LITERAL = re.compile(r"""['"]UNCHANGED['"]""")
+_BLANK_BRANCH = re.compile(r"""==\s*(?:""|'')|is\s+None|in\s*[\(\[{]\s*(?:""|''|None)|\bnot\s+[A-Za-z_][\w.\[\]'"]*\s*:|"""
+                           r"""\.strip\(\)\s*==\s*(?:""|'')|len\([^)]*\)\s*==\s*0""")
+
+
+def check_cell_handling(code: str, semantics: list[str]) -> list[str]:
+    """A script that compares CIQ values and treats ``UNCHANGED`` specially must also handle a blank cell when the
+    developer gave blank cells a meaning — otherwise every field the CIQ leaves blank reads as a mismatch (OB-92)."""
+    blank = [s for s in semantics if re.search(r"\b(?:blank|empty)\b", s, re.IGNORECASE)]
+    if not blank or not _UNCHANGED_LITERAL.search(code) or not re.search(r"mismatch", code, re.IGNORECASE):
+        return []
+    if _BLANK_BRANCH.search(code):
+        return []
+    return ["the script compares CIQ values and handles 'UNCHANGED' but not a blank / empty CIQ cell, which the "
+            "developer gave a meaning: " + " ".join(f'"{s}"' for s in blank[:2]) + " — handle a blank expected value "
+            "for EVERY field as that says (e.g. a blank cell that deletes an attribute: the attribute must be absent "
+            "after the activity, and its absence is a MATCH)"]
+
+
+def arg_values(cmd_lines: list[str]) -> list[str]:
+    """The values the workflow passes the script (``--output_file '${ORDER_NO}.xml'`` → ``X1.xml``): what an
+    f-string field printing an argument holds at run time."""
+    import shlex
+    out: list[str] = []
+    for line in cmd_lines:
+        try:
+            argv = shlex.split(line, posix=True)
+        except ValueError:
+            argv = line.split()
+        out += [re.sub(r"\$\{[^{}]+\}", "X1", v) for f, v in zip(argv, argv[1:])
+                if f.startswith("--") and not v.startswith("--")]
+    return list(dict.fromkeys(v for v in out if v))
+
+
+def check_output_contract(code: str, regexes: list[str], values: list[str] | None = None) -> list[str]:
     """Problems if no message the script can print matches the workflow's success regex.
 
-    Checked statically against the script's string literals (f-string fields → ``x``);
+    Checked statically against the script's string literals (f-string fields → ``x``, and → each value the
+    workflow passes the script: `generated successfully: {output_file}` prints `….xml`, OB-81);
     Java named groups are converted for Python. Unparseable regexes are skipped.
     """
     import ast
@@ -74,11 +138,18 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
     except SyntaxError:
         return []  # reported by check_script_contract
     texts: list[str] = []
+    shapes: list[re.Pattern] = []  # f-strings with each field as any text: `for {args.kind}` prints `for white` (OB-39)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             texts.append(node.value)
         elif isinstance(node, ast.JoinedStr):
             texts.append("".join(v.value if isinstance(v, ast.Constant) else "x" for v in node.values))
+            texts += ["".join(v.value if isinstance(v, ast.Constant) else value for v in node.values)
+                      for value in values or []]
+            fixed_text = "".join(v.value for v in node.values if isinstance(v, ast.Constant))
+            if len(fixed_text.strip()) >= 8:  # `f"{x}"` would match anything
+                shapes.append(re.compile("".join(re.escape(v.value) if isinstance(v, ast.Constant) else ".+"
+                                                 for v in node.values)))
     problems = []
     for rx in regexes:
         try:
@@ -88,7 +159,7 @@ def check_output_contract(code: str, regexes: list[str]) -> list[str]:
         fixed = _longest_literal(rx)
         # f-string fields are unknown at check time: the regex's fixed text in a message is enough
         if not any(compiled.search(t) for t in texts) and not (
-                len(fixed) >= 8 and any(fixed in t for t in texts)):
+                len(fixed) >= 8 and (any(fixed in t for t in texts) or any(s.search(fixed) for s in shapes))):
             problems.append(f"no message the script prints matches the workflow's success regex /{rx}/ "
                             "— print exactly such a message on success")
     return problems
@@ -112,6 +183,7 @@ def _test_values(requirements: dict) -> dict[str, str]:
                 for k, v in row.items():
                     if str(v or "").strip():
                         values.setdefault(f"configSequences.0.records.0.data.{k}", str(v))
+                        values.setdefault(f"rec.data.{k}", str(v))  # inside a record loop (spec 013)
     return values
 
 
@@ -131,20 +203,50 @@ def _xml_tags_hint(document: str) -> str:
             "these tags (an unqualified tag has no namespace: root.findall('response'), not 'spml:response')")
 
 
+_LOOKUP = re.compile(r"\.(?:findall|find|iterfind|findtext)\(\s*['\"]([^'\"]+)['\"]")
+
+
+def _lookup_evidence(code: str, document: str) -> str:
+    """What the script's own namespaced lookups find in the sample, and what the plain tag finds (OB-82, run
+    61561981: told the tags, the LLM still wrote `root.findall('spml:response', ns)` and then
+    `'{urn:…SPML:2:0}response'` for an unqualified `<response>`, three rounds — its comments said it must be
+    namespaced). Counts run on the sample are evidence it cannot argue with."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(document.strip().encode("utf-8"))
+    except ET.ParseError:
+        return ""
+    ns = dict(re.findall(r'xmlns:(\w+)="([^"]+)"', document))
+    lines = []
+    for path in dict.fromkeys(_LOOKUP.findall(code)):
+        if ":" not in path and "{" not in path:
+            continue
+        plain = re.sub(r"\{[^}]*\}|\b\w+:(?=\w)", "", path)
+        try:
+            found, alt = len(root.findall(path, ns)), len(root.findall(plain))
+        except (SyntaxError, KeyError, ValueError):
+            continue
+        if found == 0 and alt > 0:
+            lines.append(f"`root.findall({path!r})` finds 0 elements in the sample, `root.findall({plain!r})` finds {alt}")
+    return (" — run on the sample: " + "; ".join(lines) + ". Use the plain form.") if lines else ""
+
+
 # A script argument that names a response file the node produced (--response_file X.xml.res)
 _RESPONSE_ARG = re.compile(r"response|\.res\b", re.IGNORECASE)
 
 
 def smoke_run(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
-              timeout: int = 20, response_sample: str = "", output_regexes: list[str] | None = None
-              ) -> list[str]:
+              timeout: int = 20, response_sample: str = "", output_regexes: list[str] | None = None,
+              inputs: dict[str, bytes] | None = None) -> list[str]:
     """Run the script as the workflow does (placeholders → test values) in a temp folder.
 
     A traceback from a programming error is a problem (S9-06: NameError in create_xml.py);
     failures for missing inputs are not — except a response file the workflow passes the
     script: it gets the UC's sample response, and then the script must succeed and print what
     the step's regexes read (``output_regexes``). parse_response.py looked for a namespaced
-    ``spml:response`` the sample does not have and failed on every node (G-11).
+    ``spml:response`` the sample does not have and failed on every node (G-11). ``inputs`` (name as the
+    workflow writes it -> content): the files the script reads, in their real format (OB-58) - a crash
+    parsing them is a problem.
     """
     import subprocess
     import sys
@@ -163,6 +265,13 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                 continue
             argv[0] = sys.executable
             argv[1] = str(Path(tmp, Path(argv[1]).name))
+            staged = {_WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), k): v
+                      for k, v in (inputs or {}).items()}
+            for i in range(2, len(argv)):
+                name = argv[i].replace("\\", "/").rsplit("/", 1)[-1]
+                if name in staged and argv[i - 1].startswith("-"):
+                    Path(tmp, name).write_bytes(staged[name])
+                    argv[i] = str(Path(tmp, name))
             fed = ""
             if response_sample:
                 for flag, value in zip(argv[2:], argv[3:]):
@@ -180,7 +289,7 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                     problems.append(f"`{resolved}` with the UC's sample response as {fed} (a successful "
                                     f"response) exited {proc.returncode}: {out.strip()[-300:]} — parse that "
                                     "document as it is (element names and namespaces exactly as in the sample)"
-                                    + _xml_tags_hint(response_sample))
+                                    + _xml_tags_hint(response_sample) + _lookup_evidence(code, response_sample))
                 for rx in output_regexes or []:
                     try:
                         if not re.search(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), out, re.M):
@@ -201,6 +310,78 @@ def smoke_run(script_name: str, code: str, command_lines: list[str], values: dic
                                 "accept exactly the flags of that command line (make others optional, but never default "
                                 "request data to values copied from the samples)")
     return problems
+
+
+def _other_value(value: str) -> str:
+    """Another record's value of the same kind: digits shifted, text marked."""
+    shifted = re.sub(r"\d", lambda m: str((int(m.group()) + 1) % 10), value)
+    return shifted if shifted != value else f"{value}B"
+
+
+def check_accumulates(script_name: str, code: str, command_lines: list[str], values: dict[str, str],
+                      inputs: dict[str, bytes] | None = None, timeout: int = 20) -> list[str]:
+    """A script run once per CIQ record that writes one file for all of them (``context.shared_outputs``) must keep
+    what the earlier passes wrote: run it for one record, then for another into the same folder — the first
+    record's lines must still be there (run 6570694d: create_xml.py rewrote `${ORDER_NO}.xml`, only the last
+    record reached the order, OB-96)."""
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    from .context import shared_outputs
+    line = next((c for c in command_lines if shared_outputs(c)), "")
+    if not line:
+        return []
+    named_by = set(_WF_PLACEHOLDER.findall(shared_outputs(line)[0]))  # the file's name is the same in every pass
+    # a value another step registered (`${resolvedImsi}`) has no test value but differs per record as well: with
+    # one default in both passes a script keeping only "its own" key's part passed (run 6570694d, OB-98)
+    values = {**{n.strip(): "1" for n in _WF_PLACEHOLDER.findall(line)}, **values}
+    other = {k: v if k in named_by else _other_value(v) for k, v in values.items()}
+
+    def run(folder: str, vals: dict[str, str]) -> tuple[str, str]:
+        """(the file's text, why the pass failed — empty when it exited 0)"""
+        resolved = _WF_PLACEHOLDER.sub(lambda m: vals.get(m.group(1).strip(), "1"), line)
+        try:
+            argv = shlex.split(resolved, posix=True)
+        except ValueError:
+            return "", ""
+        if len(argv) < 2 or not re.match(r"python3?$", argv[0]):
+            return "", ""
+        argv[0], argv[1] = sys.executable, str(Path(folder, Path(argv[1]).name))
+        for name, content in (inputs or {}).items():
+            Path(folder, _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), name)).write_bytes(content)
+        try:
+            proc = subprocess.run(argv, cwd=folder, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return "", ""
+        failed = "" if proc.returncode == 0 else ((proc.stdout + proc.stderr).strip().splitlines() or ["exit"])[-1]
+        name = _WF_PLACEHOLDER.sub(lambda m: values.get(m.group(1).strip(), "1"), shared_outputs(line)[0])
+        target = Path(folder, name.replace("\\", "/").rsplit("/", 1)[-1])
+        return (target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""), failed
+
+    with tempfile.TemporaryDirectory(prefix="helper-acc-") as both, \
+            tempfile.TemporaryDirectory(prefix="helper-acc-") as alone:
+        for folder in (both, alone):
+            Path(folder, script_name).write_text(code, encoding="utf-8")
+        first, _ = run(both, values)
+        together, refused = run(both, other)
+        second, alone_failed = run(alone, other)
+    if first and refused and not alone_failed:
+        # it kept the first part by refusing the second record (run 6570694d: "IMSI in existing file does not
+        # match current IMSI. Cannot append modifications for a different IMSI", OB-99)
+        return [f"the workflow runs `{line}` once per CIQ record and every pass writes {shared_outputs(line)[0]}: "
+                f"one file for all the records. The pass for another record (other IMSI / key) fails when the file "
+                f"holds the earlier record's part ({refused[:160]!r}) — records differ in every value; ADD this "
+                "record's part next to the earlier ones (one header / wrapper / footer around all the parts)"]
+    kept = set(together.splitlines())
+    lost = [l.strip() for l in first.splitlines()
+            if l.strip() and l not in set(second.splitlines()) and l not in kept]
+    if not first or not lost:
+        return []
+    return [f"the workflow runs `{line}` once per CIQ record and every pass writes {shared_outputs(line)[0]}: one "
+            f"file for all the records. After a pass with another record's values the earlier record's part is gone "
+            f"(e.g. {lost[0][:120]!r}) — when the file exists, read it and ADD this record's part (keep one header / "
+            "wrapper / footer around all the parts); never rewrite it with this record alone"]
 
 
 def _longest_literal(regex: str) -> str:
@@ -298,6 +479,7 @@ class SkillInput:
     workflow_yaml: str = ""
     requirements: dict = field(default_factory=dict)
     run_dir: str = ""
+    sample_inputs: list[str] = field(default_factory=list)  # the run's uploaded documents (OB-58)
 
 
 @dataclass
@@ -329,6 +511,10 @@ class HelperScriptGenSkill:
         xml_samples = doc.get("xml_files", doc.get("xml_samples", []))
         ciq_sheets = doc.get("ciq_sheets", {})
         answers = inp.requirements.get("developer_answers", {})
+        # the confirmed CIQ cell rules (shared/ciq_cells.py, shown at the step 2 review) — the same the simulator uses
+        from shared import ciq_cells
+        cell_rules = ciq_cells.rules(inp.requirements)
+        semantics = ciq_cells.describe(cell_rules)
 
         # Separate request vs response XMLs
         request_xmls = []
@@ -348,6 +534,15 @@ class HelperScriptGenSkill:
 
         output_regexes = self._script_output_regexes(inp.workflow_yaml)
         test_values = _test_values(inp.requirements)
+        from io import StringIO
+        from ruamel.yaml import YAML
+        from tools.command_samples import with_library
+        from .context import script_context, smoke_inputs
+        try:
+            workflow = YAML(typ="safe").load(StringIO(inp.workflow_yaml)) or {}
+        except Exception:
+            workflow = {}
+        samples = with_library(list(doc.get("command_samples") or []))
         for script_name, cmd_lines in needed.items():
             flags = contract_flags(cmd_lines)
             regexes = output_regexes.get(script_name, [])
@@ -357,6 +552,20 @@ class HelperScriptGenSkill:
             if regexes:
                 contract += prompts.OUTPUT_CONTRACT_SECTION.format(
                     regexes="\n".join(f"  /{r}/" for r in regexes))
+            # the step's check and the real format of what the script reads (OB-58)
+            contract = script_context(workflow, script_name, inp.requirements, inp.sample_inputs, samples) + contract
+            # what UNCHANGED / blank CIQ cells mean, for every field (OB-92): the confirmed table
+            blank_expect = ("the attribute is ABSENT after the activity (its absence is a MATCH)"
+                            if cell_rules["blank"] == "delete" else "the value is unchanged")
+            blank_send = ("send it so the attribute is deleted (an empty tag / value)"
+                          if cell_rules["blank"] == "delete" else "leave the field out")
+            contract += ("\n\n=== CIQ CELL RULES (confirmed at the requirements review — apply to EVERY field the "
+                         "script reads from the CIQ) ===\n" + "\n".join(f"- {x}" for x in semantics)
+                         + "\nA script that compares before / after with the CIQ: a cell 'UNCHANGED' expects the value "
+                           f"unchanged; a blank cell (empty / None) expects that {blank_expect}; any other cell expects "
+                           "that value. A script that builds a request: 'UNCHANGED' → leave the field out; blank → "
+                           f"{blank_send}.")
+            inputs = smoke_inputs(workflow, script_name, inp.requirements, inp.sample_inputs, samples)
             try:
                 code, problems = "", []
                 for attempt in range(1, CONTRACT_ATTEMPTS + 1):
@@ -369,10 +578,12 @@ class HelperScriptGenSkill:
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
-                    problems = (check_script_contract(code, flags) or check_output_contract(code, regexes)
+                    problems = (check_script_contract(code, flags) or check_cell_handling(code, semantics)
+                                or check_output_contract(code, regexes, arg_values(cmd_lines))
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",
-                                             output_regexes=regexes))
+                                             output_regexes=regexes, inputs=inputs)
+                                or check_accumulates(script_name, code, cmd_lines, test_values, inputs))
                     if not problems:
                         break
                     logger.warning("%s attempt %d/%d violates the CLI contract: %s",
@@ -435,7 +646,7 @@ class HelperScriptGenSkill:
                 script_name=script_name,
                 cmd_line=cmd_line,
                 ciq_summary=ciq_summary,
-                workflow_context=workflow_yaml[:3000],
+                workflow_context=workflow_yaml[:1500],
             )
 
         raw = await self._llm_fn(system, user + extra)

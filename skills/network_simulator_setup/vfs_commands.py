@@ -16,7 +16,8 @@ import shlex
 from .guards import _GUARD, _resolve, targets
 
 FILE_COMMANDS = {"ls", "cat", "test", "stat", "rm", "head", "tail", "wc", "cp", "mv", "chmod", "chown",
-                 "mkdir", "touch", "tar", "sha256sum", "md5sum"}
+                 "mkdir", "touch", "tar", "sha256sum", "md5sum",
+                 "diff", "cmp"}  # MockWire 395aac4: a pre / post dump diff shows what the activity changed (OB-63)
 # answered by MockWire without a path (pipeline filters, pure builtins)
 PURE = {"echo", "true", "false", ":", "basename", "dirname", "grep", "egrep", "awk", "sed", "sort", "uniq",
         "tr", "paste", "head", "tail", "wc"}
@@ -126,6 +127,71 @@ def _is_path(word: str) -> bool:
     return word.startswith("/") or word.startswith("${")
 
 
+# `cmd > /p/f`, `cmd >>/p/f` (not `2>`, `&>`, `>&2`): MockWire writes cmd's output there
+_REDIRECT = re.compile(r"""(?<![\d&>])>>?\s*(?!&)(['"]?[^\s;|&'"]+['"]?)""")
+
+
+def redirect_targets(simple: str) -> list[str]:
+    """The files a command's ``>`` / ``>>`` writes (``/dev/null`` left out)."""
+    return [t.strip("'\"") for t in _REDIRECT.findall(simple) if _is_path(t.strip("'\"")) and
+            t.strip("'\"") != "/dev/null"]
+
+
+def redirect_contents(commands: list[dict], samples: list[dict]) -> dict[str, dict]:
+    """{``cmd``: {lines}} for a workflow command ``cmd >/p/f`` — what MockWire writes into the file — from the recorded
+    output of ``cmd`` itself or of ``cmd | grep …``. The redirected command prints nothing (recorded ''), so the
+    LLM answered ``lines: []`` and every dump file was empty (OB-49: ``org -c eirWhiteRng >…/predump_white_….txt``;
+    the session log has ``org -c eirWhiteRng | grep -i3 …`` with the rows)."""
+    out: dict[str, dict] = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        if not redirect_targets(cmd) or "${" in cmd.split(">", 1)[0] or ";" in cmd or "&&" in cmd:
+            continue
+        bare = cmd.split(">", 1)[0].strip()
+        if not bare or bare in out:
+            continue
+        best: list[str] = []
+        for s in samples or []:
+            if not isinstance(s, dict) or not str(s.get("output") or "").strip():
+                continue
+            first = re.split(r"\s*\|\s*", str(s.get("command") or "").strip(), maxsplit=1)[0]
+            if re.sub(r"\s+", " ", first) == re.sub(r"\s+", " ", bare):
+                lines = str(s["output"]).replace("\r\n", "\n").split("\n")
+                if len(lines) > len(best):
+                    best = lines
+        if best:
+            out[bare] = {"lines": best}
+    return out
+
+
+_KEY_SPACE = r"(?:\s|\\s[*+]?)*"  # a space in an exact key, `\s*` / `\s+` in a regex key
+_KEY_REDIRECT = re.compile(_KEY_SPACE + r"""(?<![\d&>])>>?""" + _KEY_SPACE
+                           + r"""['"]?(?:/|\$\{)\S*?['"]?(?=(?:\\s\*)?\$?$)""")
+
+
+def key_without_redirect(key: str) -> str:
+    """A response key for ``cmd >/p/f`` keyed on ``cmd`` alone, matching only the whole command: MockWire tries
+    the keys on the whole line first and runs the redirect (writing the file into its VFS) only when none
+    matches, so the key with the redirect answered the line and no file was written (OB-40: the rollback's
+    ``org -c … >/opt/sdf/processing/postrollbackdump_white_….txt``, then ``ls`` found nothing).
+    Other keys come back unchanged."""
+    is_regex = key.startswith("regex:")
+    body = key[len("regex:"):] if is_regex else key
+    stripped = _KEY_REDIRECT.sub("", body)
+    if stripped == body or not stripped.strip():
+        return key
+    if not is_regex:
+        return stripped.rstrip()
+    core = stripped
+    if core.startswith("^"):
+        core = core[1:]
+    if core.endswith(r"\s*$"):
+        core = core[:-len(r"\s*$")]
+    elif core.endswith("$") and not core.endswith(r"\$"):
+        core = core[:-1]
+    return "regex:^" + core.rstrip() + r"\s*$"
+
+
 def _under(path: str, prefixes: set[str]) -> bool:
     p = _norm(path)
     return any(p == d or p.startswith(d.rstrip("/") + "/") for d in prefixes)
@@ -206,6 +272,8 @@ def workflow_prefixes(commands: list[dict], steps: list[dict], vfs: dict | None)
                 prefixes.add(_norm(parsed[0].rsplit("/", 1)[0]) if "/" in parsed[0] else "/tmp")
             if words[0] == "mkdir":
                 prefixes |= {_norm(a) for a in words[1:] if _is_path(a)}
+            # `org -c eirWhiteRng >/opt/sdf/processing/predump_white_${DATE}.txt`: the folder it writes to
+            prefixes |= {_norm(_dir_of(t)) for t in redirect_targets(simple)}
     # copy / move / extract targets count once what they copy is known (to a fixpoint)
     changed = True
     while changed:
@@ -227,29 +295,70 @@ def workflow_prefixes(commands: list[dict], steps: list[dict], vfs: dict | None)
     return prefixes
 
 
-def vfs_handled(cmd: str, prefixes: set[str]) -> bool:
+def pod_copied_files(commands: list[dict]) -> set[str]:
+    """Files the workflow copies into a pod (``oc cp X ns/$i:/tmp``, ``kubectl cp``): MockWire runs neither ``oc cp``
+    nor the ``for … do … done`` around it, so they never reach its VFS — a read of one is answered by a key, not the
+    VFS (OB-53: ``ls -lrths /tmp/bulkProvisioning.json`` on DSSERVER — "No such file")."""
+    out: set[str] = set()
+    for c in commands:
+        for simple in _simple_commands(str(c.get("cmd") or "")):
+            words = _words(simple)
+            if len(words) < 4 or words[0] not in ("oc", "kubectl") or words[1] != "cp":
+                continue
+            args, skip = [], False
+            for w in words[2:]:
+                if skip:
+                    skip = False
+                elif w in ("-c", "-n", "--container", "--namespace"):
+                    skip = True  # its value is not a path
+                elif not w.startswith("-"):
+                    args.append(w)
+            if len(args) < 2 or ":" not in args[-1]:
+                continue
+            src, dest = args[-2], args[-1].split(":", 1)[1]
+            if not dest.startswith("/"):
+                continue
+            last = dest.rstrip("/").rsplit("/", 1)[-1]
+            out.add(_norm(dest) if "." in last and not dest.endswith("/")
+                    else _norm(dest.rstrip("/") + "/" + src.rsplit("/", 1)[-1]))
+    return out
+
+
+def vfs_handled(cmd: str, prefixes: set[str], unmodelled: set[str] | frozenset = frozenset()) -> bool:
     """MockWire answers the whole command from its VFS: every part is a pure builtin / filter or
-    a file command whose paths lie under ``prefixes`` — and at least one is a file command."""
+    a file command whose paths lie under ``prefixes`` — and at least one is a file command. A command reading a file
+    in ``unmodelled`` (:func:`pod_copied_files`) is not: that file is never in the VFS."""
     simple = _simple_commands(cmd)
     files = 0
+    cwd = ""  # `cd /opt/sdf/processing/ && ls -lrth`: MockWire lists the VFS folder it moved to (OB-40)
     for s in simple:
         words = _words(s)
         if not words:
             continue
         name = words[0]
+        if name == "cd":
+            target = next((w for w in words[1:] if not w.startswith("-")), "")
+            if not _is_path(target) or not _under(target, prefixes):
+                return False
+            cwd = target
+            continue
         if name in FILE_COMMANDS:
             reads, dests = _paths(s)
             # tar -x … -C /: a known archive restores its own (absolute) members
             paths = reads + [d for d in dests if not (name == "tar" and _norm(d) == "/")]
             if name == "ls" and not paths and SUBST not in s:
-                return False                        # the working directory: not modelled
+                if not cwd:
+                    return False                    # the session's working directory: not modelled
+                paths = [cwd]
             if not all(_under(p, prefixes) for p in paths):
                 return False
+            if any(_norm(p) in unmodelled for p in paths):
+                return False                        # copied into a pod: never in the VFS (OB-53)
             files += 1
         elif name not in PURE:
             return False
         else:  # `echo x >> /tmp/…/items.list`: a redirect into the VFS is a file command
-            targets = [words[i + 1] for i, w in enumerate(words[:-1]) if w in (">", ">>")]
+            targets = redirect_targets(s)
             if targets:
                 if not all(_under(t, prefixes) for t in targets):
                     return False
@@ -267,3 +376,114 @@ def resolved_dirs(prefixes: set[str], ciq_json_files: list[str]) -> list[str]:
             if d.startswith("/") and "${" not in d and "$(" not in d and d != "":
                 out.add(d)
     return sorted(out)
+
+
+_COMPOUND = re.compile(r"^\s*(?:for|while|until|if|case|select|function)\b|^\s*[({]")
+_NO_OUTPUT = {"true", ":", "export", "cd", "set", "unset", "umask", "source", "."}
+
+
+def sequence_parts(cmd: str) -> list[str]:
+    """The commands of a top-level ``a; b && c || d`` (outside quotes, backticks and ``$(…)``); [cmd] when it is
+    one command or a compound (``for … done``, ``if … fi``) MockWire runs as a whole."""
+    if _COMPOUND.match(cmd):
+        return [cmd]
+    parts, current, quote, depth, i = [], "", "", 0, 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote:
+            if ch == "\\" and quote != "'" and i + 1 < len(cmd):
+                current += cmd[i:i + 2]
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif cmd.startswith("$(", i):
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif not depth and (ch == ";" or cmd.startswith(("&&", "||"), i)):
+            parts.append(current.strip())
+            current = ""
+            i += 1 if ch == ";" else 2
+            continue
+        current += ch
+        i += 1
+    parts.append(current.strip())
+    parts = [p for p in parts if p]
+    return parts if len(parts) > 1 else [cmd]
+
+
+_POD_EXEC = re.compile(r"""^(?:kubectl|oc)\s+exec\b.*?\s--\s+(?:/bin/)?(?:bash|sh)\s+-c\s+(['"])(.*)\1\s*$""", re.S)
+
+
+def pod_script(cmd: str) -> str:
+    """The script of ``kubectl|oc exec <pod> … -- bash|sh -c '<script>'`` ("" for any other command). MockWire
+    runs it on the node's own files when no key answers the whole line (the pod shares the node's VFS, as a nested
+    ``oc exec -it … -- bash`` session does)."""
+    m = _POD_EXEC.match(cmd.strip())
+    return m.group(2).strip() if m else ""
+
+
+def script_parts(cmd: str) -> list[str]:
+    """The commands of a line with each pod exec's script opened (``kubectl exec … -- bash -c 'a; b > f' || true`` →
+    ``a``, ``b > f``, ``true``)."""
+    out = []
+    for part in sequence_parts(cmd.strip()):
+        script = pod_script(part)
+        out += sequence_parts(script) if script else [part]
+    return out
+
+
+def _file_work(parts: list[str]) -> bool:
+    """The script writes a file, or every command in it is a file command (``ls -lrth /p/a /p/b``, ``diff a b``)."""
+    if any(redirect_targets(p) for p in parts):
+        return True
+    words = [p.split()[0] for p in parts if p.split()]
+    return bool(words) and all(w in FILE_COMMANDS or w in _NO_OUTPUT for w in words) \
+        and any(w in FILE_COMMANDS for w in words)
+
+
+def split_redirect_sequences(commands: list[dict]) -> list[dict]:
+    """A sequence that writes a file (``export USER=sdfrun; source /opt/sdf/.bash_profile; org -c X >/p/f.txt``)
+    as the commands MockWire runs one by one. It tries a key on the whole line first, and one that matched would
+    write no file; a key on the line without the redirect never matched. So ``source`` and ``org -c X`` went
+    unanswered (run b81305ff, OB-60). Each part keeps the step's phase; the step's check applies to the whole
+    output, so the parts carry none. Setup parts that print nothing (``export``, ``cd``, ``true``) are left out:
+    MockWire runs them itself, and ``source`` is answered empty (``source_answers``).
+
+    The same for the script of a pod exec that works on files (``kubectl exec -it P -n NS -- bash -c 'export …;
+    source …; org -c X > /p/f.txt'``, ``… -- bash -c 'diff /p/a /p/b'``): a key on the whole line wrote no file and
+    replayed a canned diff (run b81305ff, OB-66); MockWire runs the script itself when no key matches the line.
+    Also when the pod exec is one part of the line (``kubectl exec … -- bash -c '…' || true``, OB-70)."""
+    out = []
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        parts, pod = [], False
+        for part in sequence_parts(cmd):
+            script = pod_script(part)
+            if script and _file_work(sequence_parts(script)):
+                parts += sequence_parts(script)
+                pod = True
+            else:
+                parts.append(part)
+        if not pod and (">" not in cmd or len(parts) < 2 or not any(redirect_targets(p) for p in parts)):
+            out.append(c)
+            continue
+        for p in parts:
+            first = p.split()[0] if p.split() else ""
+            if first in _NO_OUTPUT - {"source", "."} or re.match(r"^\w+=", p):
+                continue
+            out.append({**c, "cmd": p, "validation": {}, "register": [], "sequence_of": cmd})
+    return out
+
+
+def source_answers(commands: list[dict]) -> dict[str, dict]:
+    """``source <file>`` / ``. <file>`` load the environment and print nothing."""
+    out = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        if re.fullmatch(r"(?:source|\.)\s+[^\s;|&<>]+", cmd):
+            out[cmd] = {"lines": []}
+    return out

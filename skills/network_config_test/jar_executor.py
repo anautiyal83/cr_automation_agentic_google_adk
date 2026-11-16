@@ -8,6 +8,7 @@ Two JARs:
 from __future__ import annotations
 
 import asyncio
+import re
 import json
 import logging
 import os
@@ -19,6 +20,23 @@ from core.config import runtime_params
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300
+
+_LOAD_PROPERTY = re.compile(r"Cannot create property=(\w+)[^\n]*\n\s*in 'reader', line (\d+)")
+_LOAD_REASON = re.compile(r"(Unable to find property '[^']+' on class: [\w.$]+|No single argument constructor[^\n]*"
+                          r"|Cannot deserialize[^\n]*|can not be cast to[^\n]*|For input string: [^\n]*)")
+
+
+def yaml_load_error(stderr: str) -> str:
+    """The cli-automation JAR's “cannot load the workflow” error in one line — the innermost property, its line and
+    the reason — instead of the outer ``Cannot create property=phases`` chain (OB-38). Empty when it is another error."""
+    props = _LOAD_PROPERTY.findall(stderr or "")
+    if not props:
+        return ""
+    prop, line = props[-1]
+    reasons = _LOAD_REASON.findall(stderr)
+    reason = reasons[-1].replace("cliautomation.model.", "") if reasons else "its value has the wrong form"
+    return (f"The workflow YAML cannot be loaded by the cli-automation JAR: `{prop}` at line {line} — "
+            f"{reason}. Use only the JAR's fields (schemas/cli-automation-workflow-schema_v1.2.yaml).")
 
 
 async def run_mop_test(
@@ -268,13 +286,79 @@ async def execute_target(
         cmd += ["--node-type", plan["node_type"]]
     if plan.get("activity"):
         cmd += ["--activity", plan["activity"]]
+    computed = _computed_registers(workflow_path)  # e.g. REPO_IP picked by IP version (spec 013): not passed
     for key, value in (runtime_params() if runtime_vars is None else runtime_vars).items():
-        cmd += ["--var", f"{key}={value}"]
+        if key not in computed:
+            cmd += ["--var", f"{key}={value}"]
 
-    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})",
-                            cwd=plan.get("local_cwd"))
+    cwd = plan.get("local_cwd")
+    from core.config import wsl_distro
+    distro = wsl_distro()
+    _point_local_path(workflow_path, cwd, distro)
+    if distro:  # LOCAL steps as on the production (Linux) server (spec 013 PF-D5)
+        cmd, cwd = in_wsl(cmd, distro, cwd), None
+    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})", cwd=cwd)
     result.update(node=node, cr_group=cr_group)
     return result
+
+
+def _point_local_path(workflow_path: str, cwd: str | None, distro: str) -> None:
+    """The workflow's ``LOCAL_PATH`` (production's input folder) in the simulator copy: the folder step 9 stages
+    the inputs in (LOCAL steps run there too)."""
+    import yaml
+    if not cwd:
+        return
+    path = Path(workflow_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "LOCAL_PATH:" not in text:
+        return
+    target = wsl_path(str(Path(cwd).resolve())) if distro else str(Path(cwd).resolve()).replace("\\", "/")
+    from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
+    doc = parse_yaml(text)
+    vars_ = ((doc or {}).get("globals") or {}).get("vars") if isinstance(doc, dict) else None
+    if isinstance(vars_, dict) and "LOCAL_PATH" in vars_ and vars_["LOCAL_PATH"] != target:
+        vars_["LOCAL_PATH"] = target
+        path.write_text(dump_yaml(doc), encoding="utf-8")
+
+
+def _computed_registers(workflow_path: str) -> set[str]:
+    """Variables the workflow computes itself (``register: - name: X``): a ``--var`` would hide its own value."""
+    import yaml
+    try:
+        doc = yaml.safe_load(Path(workflow_path).read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return set()
+    names: set[str] = set()
+    stack = [s for b in (doc.get("phases") or {}).values() if isinstance(b, dict) for s in b.get("steps") or []]
+    while stack:
+        step = stack.pop()
+        if isinstance(step, dict):
+            stack.extend(step.get("steps") or [])
+            names |= {str(r["name"]) for r in step.get("register") or [] if isinstance(r, dict) and r.get("name")}
+    return names
+
+
+_WIN_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def wsl_path(path: str) -> str:
+    r"""``D:\x\y`` → ``/mnt/d/x/y``; anything else unchanged."""
+    m = _WIN_PATH.match(str(path))
+    return f"/mnt/{m.group(1).lower()}/{m.group(2).replace(chr(92), '/')}" if m else str(path)
+
+
+def in_wsl(cmd: list[str], distro: str, cwd: str | None) -> list[str]:
+    """The JAR command run inside a WSL distribution: Linux ``java``, Windows paths as ``/mnt/<drive>/…``,
+    the LOCAL steps' working directory as ``--cd``. On Windows the JAR's LOCAL runner loses double quotes and
+    rewrites ``/word`` paths (spec 013 P-6); under Linux it runs them as production does."""
+    args = ["java"] + [wsl_path(a) for a in cmd[1:]]
+    head = ["wsl.exe", "-d", distro]
+    if cwd:
+        head += ["--cd", wsl_path(str(Path(cwd).resolve()))]
+    return head + ["--exec"] + args
 
 
 def write_yaml_to_file(content: str, run_dir: str, filename: str) -> str:
@@ -517,11 +601,14 @@ def _mkdir(path: Path) -> Path:
     return path
 
 
-def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str) -> list[str]:
-    """Placeholder files for sftp uploads of the activity's INPUTS: a relative local_path no
-    LOCAL step produces (MRF uploads each CIQ ``INPUT_FILE``; nothing in a test run provides it,
-    so the upload failed with FileNotFoundException, S9-09). One per CIQ record of the target
-    (record loops upload every record's file, DEP-9). Returns the files created."""
+def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str, cwd: str,
+                        samples: list[str] | None = None) -> list[str]:
+    """Test copies of the activity's INPUT files: sftp upload sources no LOCAL step produces (MRF uploads each CIQ
+    ``INPUT_FILE``; nothing in a test run provides it, S9-09) and the CIQ file columns a LOCAL step reads
+    (``python3 check_tac_counts.py --delta_file "${rec.data.DELTA_TAC_FILE}"`` — "Delta file not found", OB-50).
+    One per CIQ record of the target (record loops handle every record's file, DEP-9). A file uploaded with the
+    run's documents of the same kind (``samples``: the delta TAC workbook) is copied in, else a placeholder.
+    Returns the files created."""
     import re
     from tools.ciq_json import node_groups
     try:
@@ -548,7 +635,8 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
                 local_text.append(s["send"])
             sftp = s.get("sftp")
             if isinstance(sftp, dict) and sftp.get("operation") == "upload" and sftp.get("local_path"):
-                uploads.append(str(sftp["local_path"]))
+                # ${LOCAL_PATH}/<file>: step 9 points LOCAL_PATH at the staging folder (spec 013 C4)
+                uploads.append(re.sub(r"^\$\{LOCAL_PATH\}/", "", str(sftp["local_path"])))
             walk(s.get("steps"))
     for body in (workflow.get("phases") or {}).values():
         walk(body.get("steps") if isinstance(body, dict) else body)
@@ -560,20 +648,33 @@ def stage_upload_inputs(workflow: dict, json_file: str, node: str, cr_group: str
     for record in records or [{}]:
         def resolve(text, record=record):
             return ref.sub(lambda m: str(record.get(m.group(1).strip(), "") or ""), text)
-        for raw in uploads:
-            path = resolve(raw)
-            if not path or "${" in path or Path(path).is_absolute():
+        # CIQ file columns the LOCAL steps read (a value with an extension): inputs like the uploads
+        reads = [str(record.get(m.group(1).strip(), "") or "") for t in local_text for m in ref.finditer(t)]
+        reads = [v for v in reads if re.fullmatch(r"[\w.\-]+\.[A-Za-z0-9]{1,6}", v)]
+        for raw, is_read in [(u, False) for u in dict.fromkeys(uploads)] + [(r, True) for r in dict.fromkeys(reads)]:
+            path = resolve(raw)  # once each: a retry loop repeats the upload step (spec 013)
+            if not path or "${" in path or Path(path).is_absolute() or str(Path(cwd) / path) in created:
                 continue
-            produced = any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
+            produced = not is_read and any(Path(path).name in resolve(t) or Path(raw).name in t for t in local_text)
             target = Path(cwd) / path
             # a file staged by an earlier step 9 is made again (it must fit today's workflow — run
             # 46e5fee1 reused a 0644 archive); a real input is never touched
             if produced or (target.exists() and not _staged_by_step9(target)):
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            _write_test_input(target, path, member_mode)
+            sample = _sample_for(path, samples)
+            if sample:
+                shutil.copyfile(sample, target)
+            else:
+                _write_test_input(target, path, member_mode)
             created.append(str(target))
     return created
+
+
+def _sample_for(path: str, samples: list[str] | None) -> str:
+    """The uploaded document that stands for input file ``path`` in a test (``tools.input_documents``)."""
+    from tools.input_documents import sample_for
+    return sample_for(path, samples)
 
 
 def extracted_member_mode(workflow: dict) -> int:

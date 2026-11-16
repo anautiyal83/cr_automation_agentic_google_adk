@@ -74,6 +74,14 @@ CRITICAL RULES:
 - Column names in ${configSequences.0.records.0.data.<Column>} are written bare, never
   quoted or subscripted (data['Col'] / data.'Col' resolve to empty) — in `when` expressions too:
   when: "configSequences.0.records.0.data.Test Column != ''"   (a quoted name is always false)
+- Nodes (as production writes them): ONE node per CIQ node type — `niam_<type>_server`, ssh.host and ssh.ne_id
+  '${<TYPE>.niamID-1}' (the CIQ section lists them; the framework handles the NIAM login). Hosts reached from that
+  login are NOT nodes: a pod (`oc exec -it <pod> -n <ns> -- bash`), another server
+  (`ssh -o<Option>=<v> <user>@<ip>` with expect_reply for its password), another shell — send the command that
+  opens it on the NIAM node with a step-level prompt_regex of the new prompt, run the commands that belong there
+  on the SAME node, then `exit` (step-level prompt_regex of the outer prompt) before going on outside it.
+  One-shot forms stay single steps: `kubectl exec <pod> -- bash -c '<cmd>'`, `ssh <host> <cmd>`.
+  Linux prompts `[user@host dir]$` / `#`: prompt_regex '(?m)\\[[^\\]\\r\\n]+\\][#$][^\\r\\n]*$' (never a pod or host name)
 - For NIAM gateway access: set ssh.ne_id on the node (framework handles NIAM login)
 - For root escalation: set ssh.elevate_to_root: true (framework handles Ctrl+P+E)
 - Do NOT generate explicit NIAM login or Ctrl+P+E commands — framework handles these
@@ -97,11 +105,9 @@ CRITICAL RULES:
     ${SECRET.key} (declared in globals.secrets)   ${ENV.NAME} (OS environment)
 - A CIQ column that can be empty for some rows: guard the step with
   when: "configSequences.0.records.0.data.<Column> != ''"   (bare path, no ${})
-- LOCAL commands quote arguments with SINGLE quotes (--a '${x}'): the framework splits
-  double-quoted arguments at spaces. Pass CIQ columns one by one, never the whole
-  record ${configSequences.0.records.0.data} (it arrives as '[object Object]').
-  Never pass a dict/JSON value and never use double quotes in a LOCAL command: one flag per
-  field (--ciq_vni '${configSequences.0.records.0.data.VNI}').
+- LOCAL commands pass CIQ columns one by one, never the whole record
+  ${configSequences.0.records.0.data} (it arrives as '[object Object]'). Never pass a
+  dict/JSON value: one flag per field (--ciq_vni "${configSequences.0.records.0.data.VNI}").
   Join conditions with && and || (never `and` / `or`: the step is then always skipped):
   when: "configSequences.0.records.0.data.<ColA> == '' && configSequences.0.records.0.data.<ColB> != ''"
   Conditions only COMPARE values (==, !=, <, >): no method calls (.endsWith(), .matches()) and no
@@ -148,11 +154,32 @@ CRITICAL RULES:
   `predump_.txt`) — write `DATE=$(date +%Y%m%d); … predump_$DATE.txt`. For the same reason no bash
   arrays (`${counts[$pod]}` arrives empty): compare per-pod values in one pipeline instead, e.g.
   `for p in …; do …; done | sort -u | wc -l`, and register that count.
+- "The same values on every pod / item" (TAC counts identical across pods) is decided ACROSS the items, never
+  inside one: `sort -u | wc -l` within a pod's `bash -c '…'` counts that pod's own different values (white,
+  black, grey → 3). Production's form: step 1 registers the loop's raw output (`(?<RAW>[\\s\\S]+)`, expr
+  `RAW != ""`); step 2 on node local turns it into ONE line per item and requires one distinct line:
+    send: "printf '%s\\n' '${RAW}' | awk '/eirBlackRng/ {b=$NF} /eirGreyRng/ {g=$NF} /eirWhiteRng/ {printf \"%s|%s|%s\\n\", $NF, b, g}' | sort -u | wc -l | awk '{print ($1 == 1) ? \"VALUES_MATCH\" : \"VALUES_MISMATCH\"}'"
+    register: [{regex: '(?<RESULT>VALUES_MATCH|VALUES_MISMATCH)'}]   validation expr: RESULT == "VALUES_MATCH"
 - sftp steps print nothing: give them no output regex (the transfer status decides).
+- A command for EVERY pod / host / item of a list is ONE step with a shell loop (as production writes it):
+    send: "for i in `kubectl get pods -n ${NS} | grep app | awk '{print $1}'`; do echo $i; kubectl exec $i -n ${NS} -- bash -c '<cmd>'; echo; done"
+  Never `for_each` on a plain step (only a `type: loop` step has it — elsewhere it is ignored and the command
+  runs once), and never read the variable of a `loop: true` register: such a register only COUNTS (count_var);
+  its variable is empty.
+- Check "no item is in a bad state" as production does: register the first bad line and require it empty —
+    register: [{regex: '(?<BADSTATE>tcp6?\\s+\\d+\\s+\\d+\\s+\\S+\\s+\\S+:16611\\s+(?!ESTABLISHED\\b)\\S+)'}]
+    validation: {success: {criteria: {expr: "BADSTATE == ''"}}}
+  "Every item reports 0": register a non-zero value, `(?<ERRCOUNT>[1-9]\\d*)`, and require it empty.
+  A command that can report an error gets `{regex: '(?<CMDERROR>ERROR:.*|error:.*)'}` beside its own register.
+- A wait for the network to settle: `echo 'Waiting 300 s'; sleep 300; echo 'WAIT_DONE'` with timeout_sec above
+  the delay (330); a check after it that may still fail gets retries + retry_delay_sec.
 - The pipeline adds these itself — do NOT write them:
     - a loop over all CIQ records: write each per-record step ONCE with
       ${configSequences.0.records.0.data.<Column>}; it is run for every record of the node group
-    - sha256sum checks of every sftp transfer (both ends compared)
+    - sha256sum checks of every sftp transfer (both ends compared), with the retries and the guard
+    - where input files come from (${LOCAL_PATH} on the automation server) and the check that they are there
+    - the NIAM login (and the failover between NIAM entries), the repo server's address
+    - the lookups a rollback-only run needs again (write the rollback as if the earlier phases ran)
     - moving the backup to the repo server: in the backup phase just create ONE archive on the
       node, `tar -czvf /tmp/<name>.tar.gz <dir>/` (fixed name, no $(date …)); a rollback that
       restores it extracts that same archive (tar -xzvf /tmp/<name>.tar.gz -C /)
@@ -222,7 +249,7 @@ Use these runtime variable patterns in the workflow YAML:
 === EXAMPLE WORKFLOW STRUCTURE ===
 
 nodes:
-  rds_node:
+  niam_rds_server:
     type: remote
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
@@ -238,7 +265,7 @@ nodes:
       host_key_algorithms: '+ssh-rsa'
       connect_timeout_sec: '30'
 
-  pgw_node:
+  niam_pgw_server:
     type: remote
     plugin: ssh
     prompt_regex: '(?m)\\$\\s*$'
@@ -263,7 +290,7 @@ phases:
     name: 'Pre-activity health checks'
     on_failure: continue
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: 'su - sdfrun'
         command_description: 'Switch to sdfrun user on RDS'
         prompt_regex: 'sdfrun@rdsggn01:~>'   # completes when the sdfrun prompt appears
@@ -273,7 +300,7 @@ phases:
             message: 'Switched to sdfrun user'
           failure:
             message: 'Failed to switch to sdfrun'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'sar 1 10'
         command_description: 'sar on RDS [Pre-health check: CPU idle percentage]'
         on_failure: continue
@@ -287,7 +314,7 @@ phases:
             message: 'CPU idle is healthy on RDS'
           failure:
             message: 'CPU idle is below 90% on RDS'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'ss'
         command_description: 'ss on RDS [Pre-health check: Remote node status]'
         on_failure: continue
@@ -299,7 +326,7 @@ phases:
             message: 'Remote nodes healthy'
           failure:
             message: 'Some remote nodes not UP'
-      - node: rds_node
+      - node: niam_rds_server
         send: 'ndsLoadStats'
         command_description: 'ndsLoadStats on RDS [Pre-health check: NDS load statistics]'
         on_failure: continue
@@ -315,7 +342,7 @@ phases:
   activity_configuration:
     name: 'Main subscriber modification activity'
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: "ldapsearch -x -h localhost -p 16611 -b \\"imsi=${{configSequences.0.records.0.data.Test IMSI}},dc=IMSI,dc=C-NTDB\\" objectclass=*"
         command_description: 'Query subscriber profile before modification'
         when: "configSequences.0.records.0.data.Test IMSI != ''"
@@ -334,7 +361,7 @@ phases:
     name: 'Post-activity health checks'
     on_failure: continue
     steps:
-      - node: rds_node
+      - node: niam_rds_server
         send: 'sar 1 10'
         command_description: 'sar on RDS [Post-health check: CPU idle percentage]'
         on_failure: continue
@@ -348,7 +375,8 @@ phases:
             message: 'CPU idle is below 90% on RDS (post-activity)'
 
 === INSTRUCTIONS ===
-1. Define nodes for each network element. Use ne_id for NIAM access, elevate_to_root for Ctrl+P+E.
+1. Define one node per CIQ node type (niam_<type>_server, ne_id ${{<TYPE>.niamID-1}}); hosts reached from it are
+   nested sessions on that node (enter step, commands, exit). elevate_to_root for Ctrl+P+E.
 2. Phase names MUST be exactly: preNodeHealthCheck, activity_configuration, postNodeHealthCheck
 3. For each phase, list steps using "send" and "command_description".
 4. Validation uses success/failure branches with criteria inside.
@@ -376,6 +404,12 @@ phases:
 - For XML modification UCs: create_xml.py generates ONE XML per subscriber record using CIQ data.
   Multiple XMLs are created automatically when there are multiple records.
 - Use node: LOCAL for local commands (Python scripts, file operations).
+- A script the pipeline creates runs ONLY on node LOCAL, called by its bare name (`python3 check_x.py --a …`) —
+  never on a network node and never under an invented path (/usr/local/bin/…: no node has it). Every node file
+  it reads is copied to the automation server first: a file inside a pod `oc cp`/`kubectl cp` to the node, then an
+  sftp download step; the script reads the local copy. Only a script the MOP itself runs on a node stays there.
+- A value a step registers is `${{NAME}}` in later commands (`predump_${{DATE}}.txt`); `$NAME` is a shell variable
+  that is empty unless the same command sets it.
 
 === MOP HEADER VARIABLES ===
 The framework provides these at runtime — reference them, do not define them:
@@ -449,4 +483,18 @@ Phases: {phases}
 4. Output the COMPLETE corrected YAML — not a diff, the full file.
 
 Output ONLY valid YAML. No markdown, no code fences, no explanations.
+"""
+
+
+# Appended to WORKFLOW_GEN_USER when the UC has a proven workflow but the requirements changed since (user,
+# 2026-11-13: a UC that passed must not be rewritten from scratch)
+WORKFLOW_FROM_BASELINE = """
+
+=== PROVEN WORKFLOW FOR THIS UC (passed QA-Execution in run {run_id}) ===
+This workflow ran end to end against the simulated nodes and passed every test case. The requirements above have
+changed since. Return THIS workflow, changed ONLY where the current requirements differ from what it does (new or
+removed commands, columns, phases, answers). Keep every other step — its command, node, regexes, registers,
+conditions and order — exactly as it is.
+
+{baseline_yaml}
 """

@@ -194,6 +194,9 @@ class ProgressSection:
             self._q_dialog.on("hide", lambda: None)  # ensure dialog is interactive
             # Pre-built "Edit requirements" dialog (step 2 review), filled on demand: one created in
             # the click handler did not take any typing
+            # Spec 012: generated files edited at a review (built once, like the dialogs above)
+            from ui.pages.file_editor import FileEditor
+            self.file_editor = FileEditor()
             self._edit_dialog = ui.dialog()
             with self._edit_dialog:
                 self._edit_card = ui.card().classes("w-full p-0").style(
@@ -231,11 +234,17 @@ class ProgressSection:
                 "border: 1px solid var(--cr-warning); border-left-width: 3px; border-radius: 8px; "
                 "background: color-mix(in srgb, var(--cr-warning) 7%, var(--cr-surface))")
             self.ms_notes_box.set_visibility(False)
+            # Where the step's output came from: the UC's proven baseline or the AI (step_<n>_origin.json)
+            with ui.row().classes("items-center gap-2 no-wrap") as self.ms_origin_row:
+                ui.icon("history_edu", size="18px").classes("cr-text-accent")
+                self.ms_origin_label = ui.label("").classes("text-body2")
+            self.ms_origin_row.set_visibility(False)
             # Extra artifact files (view/download) — populated dynamically
             self.ms_extra_files_row = ui.column().classes("w-full gap-0 cr-card-inner p-0")
             self.ms_extra_files_row.set_visibility(False)
             # Action buttons
-            with ui.row().classes("w-full gap-2"):
+            # every review action on ONE line, vertically centred (scrolls sideways when the window is narrow)
+            with ui.row().classes("w-full gap-2 items-center no-wrap cr-review-actions").style("overflow-x: auto"):
                 self.ms_continue_btn = action(ui.button("Approve & continue", icon="check",
                     on_click=lambda: self._milestone_respond("continue")) \
                     .props("unelevated color=primary size=sm no-caps"), "progress")
@@ -244,9 +253,15 @@ class ProgressSection:
                     .props("unelevated color=warning size=sm no-caps"), "progress")
                 self.ms_skip_btn.set_visibility(False)
                 self.ms_rerun_btn = action(ui.button("Re-run step", icon="replay",
-                    on_click=lambda: self._milestone_respond("rerun")) \
+                    on_click=lambda: self._milestone_respond(
+                        "rerun_clear" if self.ms_clear_cache_cb.value else "rerun")) \
                     .props("outline color=primary size=sm no-caps")
-                    .tooltip("Regenerates the step; after 3 re-runs of the same step the run fails"), "progress")
+                    .tooltip("Runs the step again; after 3 re-runs of the same step the run fails"), "progress")
+                # ticked: the re-run step regenerates (its cache is cleared); unticked: it re-runs from its cache
+                self.ms_clear_cache_cb = action(ui.checkbox("Clear cache", value=False)
+                    .props("dense size=xs").classes("text-caption cr-text-dim").style("white-space: nowrap")
+                    .tooltip("Ticked: the step re-runs from scratch (its cache is cleared). "
+                             "Unticked: it re-uses its cached result where there is one"), "progress")
                 # Step 2 review: correct answers or say what was captured wrongly
                 self.ms_edit_btn = action(ui.button("Edit requirements", icon="edit_note",
                     on_click=self._open_requirements_editor) \
@@ -254,10 +269,20 @@ class ProgressSection:
                     .tooltip("Correct an answer or describe what is wrong; the requirements are compiled again"),
                     "progress")
                 self.ms_edit_btn.set_visibility(False)
+                # Spec 012: edit the review's generated files; continue with the edit once it validates
+                self.ms_files_btn = action(ui.button("Edit files", icon="code",
+                    on_click=lambda: self._open_editor()) \
+                    .props("outline color=primary size=sm no-caps")
+                    .tooltip("Edit the generated files of this review (table or YAML)"), "progress")
+                self.ms_files_btn.set_visibility(False)
+                self.ms_continue_edit_btn = action(ui.button("Continue with my edit", icon="play_arrow",
+                    on_click=self._continue_with_edit) \
+                    .props("unelevated color=positive size=sm no-caps")
+                    .tooltip("Your edited files validate: the later steps run with them"), "progress")
+                self.ms_continue_edit_btn.set_visibility(False)
                 self.ms_cancel_btn = action(ui.button("Cancel pipeline", icon="stop",
                     on_click=lambda: self._milestone_respond("cancel")) \
                     .props("outline color=negative size=sm no-caps"), "progress")
-            with ui.row().classes("w-full gap-2"):
                 self.ms_clarify_btn = action(ui.button("Clarify in requirements", icon="quiz",
                     on_click=lambda: self._milestone_respond("clarify")) \
                     .props("unelevated color=primary size=sm no-caps") \
@@ -280,6 +305,11 @@ class ProgressSection:
             self.btn_outputs = ui.button("Browse outputs", icon="folder_open",
                                          on_click=self._go_outputs) \
                 .props("outline color=primary size=sm no-caps")
+            # the UC export of a completed run (also on step 10's Artifacts tab and in Run Artifacts)
+            self.btn_export = ui.button("Export UC package", icon="inventory_2", on_click=self._export) \
+                .props("unelevated color=primary size=sm no-caps")
+            self.btn_export.tooltip("Validation rules, JSON output, execution YAML and the simulator to run it")
+            self.btn_export.set_visibility(False)
             # A completed run stays here until the user is done with it (spec 008 U-D7)
             self.btn_finish = action(ui.button("Mark as finished", icon="task_alt", on_click=self._finish)
                                      .props("unelevated color=positive size=sm no-caps"), "progress")
@@ -465,6 +495,9 @@ class ProgressSection:
                 labels = {d.path: d.label for d in listed}
                 headers = {docs[0].path: (cat, len(docs)) for cat, docs in groups}
                 files = [d.path for d in listed] + [f for f in files if f not in labels]
+            if self._selected_step == 10 and self._run_state == "completed" and self._run_dir and self._uc_name:
+                from ui.pages.output_viewer_section import export_bar
+                export_bar(self._run_dir, self._uc_name)
             if not files:
                 _empty_state("description", "No artifacts yet",
                              "Files this step writes to the run folder appear here.")
@@ -497,6 +530,89 @@ class ProgressSection:
                 .props("flat dense color=primary size=sm no-caps")
             ui.button("Download", icon="download", on_click=lambda _, p=f: download(p)) \
                 .props("flat dense color=primary size=sm no-caps")
+            review = self._review_of(self._rel(f))
+            if review:
+                ui.button("Open", icon="code", on_click=lambda _, r=self._rel(f), st=review: self._open_editor(
+                    rel=r, review_step=st)).props("flat dense color=primary size=sm no-caps") \
+                    .tooltip("Open in the editor (editable at this file's review)")
+
+    # ------------------------------------------------------------------
+    # Spec 012: editing generated files at a review
+    # ------------------------------------------------------------------
+
+    def _run_folder(self) -> str:
+        return self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+
+    def _rel(self, path) -> str:
+        try:
+            return Path(path).resolve().relative_to(Path(self._run_folder()).resolve()).as_posix()
+        except (ValueError, OSError):
+            return Path(path).name
+
+    def _editable_rels(self, step_num: int) -> list[str]:
+        from shared import run_files
+        if not self._run_folder() or not self._uc_name:
+            return []
+        return [f.rel for f in run_files.editable_files(self._run_folder(), self._uc_name, step_num)]
+
+    def _review_of(self, rel: str) -> int:
+        """The review whose files include ``rel`` (0: none)."""
+        for step in (4, 6):
+            if rel in self._editable_rels(step):
+                return step
+        return 0
+
+    def _can_edit(self, review_step: int) -> bool:
+        """Editable only while this run waits at that review, for its owner (admin: any) with Update."""
+        from ui.access import current
+        access = current()
+        info = self.runner._active_runs.get(str(self.active_run_id), {}) if self.runner and self.active_run_id else {}
+        user = self._scope.user
+        return bool(access and access.can_update("progress") and user and user.owns_run(info.get("started_by"))
+                    and info.get("status") == "paused_milestone"
+                    and getattr(self, "_current_milestone_step", 0) == review_step)
+
+    async def _open_editor(self, rel: str = "", line: int = 0, mode: str = "", review_step: int = 0) -> None:
+        from ui.pages.file_editor import load_requirements
+        step = review_step or getattr(self, "_current_milestone_step", 0) or self._review_of(rel)
+        if not step or not self._editable_rels(step):
+            ui.notify("No files to edit here", type="warning")
+            return
+        state = {}
+        if self.runner and self.active_run_id:
+            try:
+                state = await self.runner.get_state(str(self.active_run_id))
+            except Exception:  # noqa: BLE001
+                state = {}
+        user = self._scope.user
+        self.file_editor.open(run_id=str(self.active_run_id), run_dir=self._run_folder(), uc_name=self._uc_name,
+                              review_step=step, editable=self._can_edit(step),
+                              requirements=load_requirements(self._run_folder(), state),
+                              user_email=user.email if user else "", state=state, on_saved=self._refresh_edit_state,
+                              rel=rel, line=line, mode=mode)
+
+    def _refresh_edit_state(self) -> None:
+        """After a save: offer Continue with my edit when every edited file of this review validates (Y-D5),
+        and the re-run banner when a re-run replaced an edit (Y-D7)."""
+        from shared import run_files
+        step = getattr(self, "_current_milestone_step", 0)
+        rels = self._editable_rels(step) if step in (4, 6) else []
+        edited = [r for r in rels if r in run_files.edited_files(self._run_folder())]
+        valid = bool(edited) and all((run_files.versions(self._run_folder(), r)[-1].get("problems") or 0) == 0
+                                     for r in edited)
+        self.ms_continue_edit_btn.set_visibility(valid and self._can_edit(step))
+
+    @requires("progress", "milestone.decision")
+    @_own_run("milestone.decision")
+    async def _continue_with_edit(self) -> None:
+        """The edited files validate: the failed step's error goes, the run continues with the edit."""
+        step = getattr(self, "_current_milestone_step", 0)
+        for n in {4: (3, 4), 6: (6,)}.get(step, ()):
+            err = Path(self._run_folder()) / f"step_{n}_error.json"
+            if err.exists():
+                err.unlink()
+            self._update_step_visual(n, "passed")
+        await self._milestone_respond("continue")
 
     def _render_tests(self):
         import json as _json
@@ -910,6 +1026,7 @@ class ProgressSection:
         done = sum(1 for st in statuses.values() if st in ("passed", "completed"))
         ok = status == "completed"
         self.btn_finish.set_visibility(status in ("completed", "failed") and not finished)
+        self.btn_export.set_visibility(ok)
         self.status_icon.name = "check_circle" if ok else "error" if status == "failed" else "history"
         self.status_icon.classes(replace="cr-text-success" if ok else "cr-text-error" if status == "failed"
                                  else "cr-text-dim")
@@ -954,6 +1071,7 @@ class ProgressSection:
         if event.event_type == "step_started":
             self._set_run_state("running")
             self._update_step_visual(event.step_number, "in_progress")
+            await self._heal_earlier_steps(event.step_number)
             self.status_icon.name = "sync"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
             self.status_label.text = "Pipeline Running"
@@ -1089,12 +1207,15 @@ class ProgressSection:
             self._set_run_state("completed")
             dur = event.payload.get("duration", 0)
             self.status_detail.text = f"All 10 steps completed in {dur:.0f}s"
+            if self._selected_step == 10:
+                self._refresh_tab()  # the export appears once the run completed
             self.banner.style(replace=(
                 "background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.3)"
             ))
             self.action_btns.set_visibility(False)
             self.completion_row.set_visibility(True)
             self.btn_finish.set_visibility(True)
+            self.btn_export.set_visibility(True)
             self.progress_bar.value = 1.0
             self.progress_bar.props("color=positive")
         elif event.event_type == "run_failed":
@@ -1111,13 +1232,15 @@ class ProgressSection:
             self.completion_row.set_visibility(True)
             self.progress_bar.props("color=negative")
             self.progress_bar.props(remove="stripe animate")
-            # Mark all remaining pending steps as skipped
+            # steps a Re-run click reset that never ran again keep their last result (OB-54: steps 6-8 went grey);
+            # only steps that never ran are skipped
+            await self._heal_earlier_steps(TOTAL_STEPS + 1)
             self._mark_remaining_skipped()
         elif event.event_type == "run_cancelled":
             self._reset_to_default()
             self.progress_bar.props("color=warning")
             self.progress_bar.props(remove="stripe animate")
-            # Mark all remaining pending steps as skipped
+            await self._heal_earlier_steps(TOTAL_STEPS + 1)
             self._mark_remaining_skipped()
 
     def _update_step_visual(self, step_num: int, status: str):
@@ -1160,6 +1283,50 @@ class ProgressSection:
             self._select_step(step_num)
         elif step_num == getattr(self, "_selected_step", 0) and hasattr(self, "sel_title"):
             self._refresh_selected_header()
+
+    async def _heal_earlier_steps(self, current: int) -> None:
+        """Steps before the one starting that still show pending get their latest saved result: after a server
+        restart the Rerun of step 9 reset steps 6-9 (the in-memory classification was gone) and only step 8 ran
+        again — 7 and 8 stayed pending while 9 ran (OB-45). ``step_results`` holds every step's result."""
+        if not self.runner or not self.runner._db or not self.active_run_id:
+            return
+        stale = [sn for sn, w in self.step_widgets.items()
+                 if sn < current and w.get("raw_status", "pending") == "pending"]
+        if not stale:
+            return
+        try:
+            rows = await self.runner._db.execute(
+                "SELECT step_number, status FROM step_results WHERE run_id = ? ORDER BY rowid",
+                (str(self.active_run_id),))
+        except Exception:
+            return
+        latest = {r["step_number"]: str(r.get("status") or "").replace("StepStatus.", "").lower() for r in rows}
+        for sn in stale:
+            if latest.get(sn):
+                self._update_step_visual(sn, latest[sn])
+
+    def _rerun_from_step(self, default: int) -> int:
+        """The step a step-9 Rerun goes back to, from the run's own ``step_9_error.json`` (retry_target): the
+        in-memory reviewer feedback is empty after a restart and the page guessed step 6 (OB-45)."""
+        import json as _json
+        run_id_str = str(self.active_run_id) if self.active_run_id else ""
+        try:
+            from shared.state import reviewer_feedback as _fb
+            fb = _fb.get(f"{run_id_str}:9", "")
+            if fb:
+                data = _json.loads(fb) if isinstance(fb, str) else fb
+                if data.get("classification") == "simulator":
+                    return 8
+                if data.get("retry_target"):
+                    return int(data["retry_target"])
+        except Exception:
+            pass
+        run_dir = self._run_dir or (str(Path("data/runs") / run_id_str) if run_id_str else "")
+        try:
+            data = _json.loads((Path(run_dir) / "step_9_error.json").read_text(encoding="utf-8"))
+            return int(data.get("retry_target") or default)
+        except Exception:
+            return default
 
     def _mark_remaining_skipped(self):
         """Mark all steps still pending as skipped."""
@@ -1222,10 +1389,16 @@ class ProgressSection:
         self.ms_continue_btn.text = "Continue"
         self.ms_continue_btn._props["icon"] = "play_arrow"
         self.ms_continue_btn.props("color=positive")
+        self._review_editable = self._editable_rels(step_num)
+        self.ms_files_btn.set_visibility(bool(self._review_editable))
+        self._refresh_edit_state()
         self._show_failure_reasons(step_num if has_failures else 0)
         self._show_answered_notes(0 if has_failures else step_num)
+        self._show_origin(step_num)
         # Step 2 (requirements document): edited, not re-run — the requirements step never re-ran
         self.ms_rerun_btn.set_visibility(step_num != 2)
+        self.ms_clear_cache_cb.set_visibility(step_num != 2)
+        self.ms_clear_cache_cb.value = False  # each review starts with "re-use the cache"
         # every review: the requirements can be corrected (later steps: the run goes back to step 1)
         self.ms_edit_btn.set_visibility(step_num >= 2)
         self._show_clarifications()
@@ -1252,6 +1425,7 @@ class ProgressSection:
         self.ms_view_btn.set_visibility(bool(artifact_file))
 
         # One row per file of the review: label, file name, View (its tab in the viewer), Download
+        self._review_editable = self._editable_rels(step_num)
         self.ms_extra_files_row.clear()
         listed = list(self._current_review_files)
         listed += [f for f in extra_artifact_files or [] if f and Path(f).exists() and f not in listed]
@@ -1281,9 +1455,30 @@ class ProgressSection:
                                   on_click=lambda u=serve_url, f=fpath: (record_document("document.download", f),
                                                                        ui.download(u))) \
                             .props("flat color=positive size=sm no-caps")
+                        rel = self._rel(fpath)
+                        if rel in self._review_editable:
+                            from shared import run_files
+                            replaced = run_files.replaced_user_version(self._run_folder(), rel)
+                            if replaced:  # Y-D7: a re-run never silently replaces an edit
+                                ui.button(f"Re-run replaced your v{replaced} — Compare", icon="difference",
+                                          on_click=lambda _, r=rel: self._open_editor(rel=r, mode="diff")) \
+                                    .props("flat color=warning size=sm no-caps")
+                            action(ui.button("Edit", icon="edit", on_click=lambda _, r=rel: self._open_editor(rel=r))
+                                   .props("flat color=primary size=sm no-caps"), "progress")
             self.ms_extra_files_row.set_visibility(True)
         else:
             self.ms_extra_files_row.set_visibility(False)
+
+    def _show_origin(self, step_num: int) -> None:
+        """Steps 6 / 8: whether the output is the UC's proven baseline or written by the AI."""
+        import json as _json
+        run_dir = self._run_dir or (str(Path("data/runs") / str(self.active_run_id)) if self.active_run_id else "")
+        try:
+            text = _json.loads((Path(run_dir) / f"step_{step_num}_origin.json").read_text(encoding="utf-8"))["origin"]
+        except (OSError, ValueError, KeyError, TypeError):
+            text = ""
+        self.ms_origin_label.text = text
+        self.ms_origin_row.set_visibility(bool(text))
 
     def _show_answered_notes(self, step_num: int) -> None:
         """Step <n> passed although problems remain that the developer already answered: listed so the
@@ -1334,6 +1529,9 @@ class ProgressSection:
                 if len(lines) > 6:
                     ui.label(f"… and {len(lines) - 6} more").classes("text-caption cr-text-dim")
             ui.label("What you can do: " + what_to_do).classes("text-caption font-medium mt-1")
+            if self._editable_rels(step_num):
+                action(ui.button("Fix in editor", icon="code", on_click=lambda: self._open_editor())
+                       .props("unelevated dense no-caps size=sm color=primary"), "progress")
             with ui.expansion("Technical details").classes("w-full text-caption cr-text-dim"):
                 for reason in reasons:
                     ui.label(reason).classes("text-caption font-mono") \
@@ -1351,9 +1549,12 @@ class ProgressSection:
         self.ms_artifact_label.text = f"{milestone_name} — {len(questions)} questions need your input"
         self.ms_view_btn.set_visibility(False)
         self.ms_rerun_btn.set_visibility(False)
+        self.ms_clear_cache_cb.set_visibility(False)
         self.ms_skip_btn.set_visibility(False)
         self.ms_extra_files_row.set_visibility(False)
         self.ms_failure_box.set_visibility(False)
+        self.ms_files_btn.set_visibility(False)
+        self.ms_continue_edit_btn.set_visibility(False)
 
         # Show Answer Questions + Skip buttons
         self.ms_continue_btn.text = "Skip & Use Defaults"
@@ -1917,7 +2118,7 @@ class ProgressSection:
             for s in range(1, TOTAL_STEPS + 1):
                 self._update_step_visual(s, "pending")
             self.action_btns.set_visibility(True)
-        elif decision == "rerun":
+        elif decision in ("rerun", "rerun_clear"):
             self.status_icon.name = "replay"
             self.status_icon.classes(replace="cr-text-accent cr-spin")
             ms_step = step_num
@@ -1932,19 +2133,8 @@ class ProgressSection:
                 for s in (6, 7):
                     self._update_step_visual(s, "pending")
             elif ms_step == 9:
-                # Dynamic based on reviewer classification
-                rerun_from = 6  # default
-                try:
-                    import json as _json
-                    from shared.state import reviewer_feedback as _fb
-                    run_id_str = str(self.active_run_id) if self.active_run_id else ""
-                    fb = _fb.get(f"{run_id_str}:9", "")
-                    if fb:
-                        fb_data = _json.loads(fb) if isinstance(fb, str) else fb
-                        if fb_data.get("classification") == "simulator":
-                            rerun_from = 8
-                except Exception:
-                    pass
+                # where the run goes back to: the reviewer's classification, else the run's step 9 result
+                rerun_from = self._rerun_from_step(6)
                 if rerun_from == 8:
                     self.status_label.text = "Re-running Steps 8-9"
                     self.status_detail.text = "Re-generating simulator config, then re-testing execution..."
@@ -1978,12 +2168,18 @@ class ProgressSection:
             self.completion_row.set_visibility(True)
             self.active_run_id = None
 
+    async def _export(self):
+        if self._run_dir and self._uc_name:
+            from ui.pages.output_viewer_section import export_run
+            await export_run(self._run_dir, self._uc_name, self.btn_export)
+
     def _reset_to_default(self):
         """Reset progress section to default 'No active pipeline' state."""
         self.active_run_id = None
         self.action_btns.set_visibility(False)
         self.completion_row.set_visibility(False)
         self.btn_finish.set_visibility(False)
+        self.btn_export.set_visibility(False)
         self.milestone_row.set_visibility(False)
         self.progress_bar.set_visibility(False)
         self.status_icon.name = "hourglass_empty"

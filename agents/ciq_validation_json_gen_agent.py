@@ -78,6 +78,8 @@ class CiqValidationJsonGenAgent(BaseAgent):
                 p = Path(run_dir) / f"{uc_name}_validation-rules.yaml"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(output.validation_rules_yaml, encoding="utf-8")
+                from shared import run_files
+                run_files.record_generated(run_dir, p.name)  # a re-run never silently replaces an edit
 
         if output.json_output_yaml:
             artifacts["json_template_yaml"] = output.json_output_yaml
@@ -85,6 +87,8 @@ class CiqValidationJsonGenAgent(BaseAgent):
             if run_dir:
                 p = Path(run_dir) / f"{uc_name}_json-output.yaml"
                 p.write_text(output.json_output_yaml, encoding="utf-8")
+                from shared import run_files
+                run_files.record_generated(run_dir, p.name)
 
         state["artifacts"] = artifacts
 

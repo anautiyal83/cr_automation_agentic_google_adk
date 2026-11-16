@@ -1,14 +1,17 @@
 """Run Artifacts viewer — browse and view all pipeline artifacts (input + output)."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from uuid import UUID
 
 from nicegui import ui
 
-from ui.access import download, record_document, scope
+from ui.access import download, record, record_document, scope
 
 from storage.artifact_store import ArtifactStore
+
+logger = logging.getLogger(__name__)
 
 SYNTAX_MAP = {
     ".yaml": "yaml", ".yml": "yaml", ".xml": "xml", ".json": "json",
@@ -195,7 +198,10 @@ class OutputViewerSection:
             groups.setdefault(group, []).append(f)
 
         with self.file_list:
-            final = _final_documents(run_root, self._uc_name(run_id))
+            uc = self._uc_name(run_id)
+            if uc and self._run_status(run_id) == "completed":
+                export_bar(run_root, uc)
+            final = _final_documents(run_root, uc)
             if final:
                 with ui.expansion("Final Documents", icon="verified", value=True)                         .classes("w-full").props("dense header-class='text-body2 font-semibold'"):
                     for category, docs in final:
@@ -212,6 +218,10 @@ class OutputViewerSection:
 
     def _uc_name(self, run_id: str) -> str:
         return next((str(r.get("uc_name") or "") for r in self._all_runs if str(r.get("id")) == str(run_id)), "")
+
+    def _run_status(self, run_id: str) -> str:
+        status = next((str(r.get("status") or "") for r in self._all_runs if str(r.get("id")) == str(run_id)), "")
+        return status.replace("PipelineStatus.", "").lower()
 
     def _file_row(self, fpath: Path, label: str = ""):
         suffix = fpath.suffix.lower()
@@ -331,3 +341,42 @@ def _format_size(size: int) -> str:
         return f"{size / 1024:.1f} KB"
     else:
         return f"{size / (1024 * 1024):.1f} MB"
+
+
+async def export_run(run_dir: str | Path, uc_name: str, btn=None) -> None:
+    """Build the run's UC export zip (``tools/uc_export.py``) and download it; ``btn`` spins meanwhile."""
+    from nicegui import run
+    from tools.uc_export import ExportError, build_export
+    if btn is not None:
+        btn.props("loading")
+    try:
+        path = await run.io_bound(build_export, run_dir, uc_name)
+    except ExportError as e:
+        ui.notify(str(e), type="negative", multi_line=True)
+        return
+    except Exception as e:
+        logger.error("UC export of %s failed: %s", run_dir, e, exc_info=True)
+        ui.notify(f"Export failed: {e}", type="negative")
+        return
+    finally:
+        if btn is not None:
+            btn.props(remove="loading")
+    ui.download(str(path))
+    rid = Path(run_dir).name
+    await record("run.export", target_type="run", target_id=rid, run_id=rid, uc_name=uc_name,
+                 details={"file": path.name, "bytes": path.stat().st_size})
+
+
+def export_bar(run_dir: str | Path, uc_name: str) -> None:
+    """Export of a successful run (step 10, Run Artifacts): one zip with the UC's validation rules, JSON
+    output and execution YAML, and its MockWire simulator — JAR, configs, answers and the start guide
+    step 8 wrote (``tools/uc_export.py``)."""
+    with ui.element("div").classes("cr-doc-group"):
+        with ui.row().classes("cr-file-row items-center no-wrap").style("padding: 10px 12px"):
+            ui.icon("inventory_2", size="20px").classes("cr-text-accent")
+            with ui.column().classes("gap-0 flex-1 min-w-0"):
+                ui.label(f"Export {uc_name}").classes("cr-file-label")
+                ui.label("Validation rules, JSON output, execution YAML, and the MockWire simulator: JAR, "
+                         "configs, answers, start / stop scripts and guide").classes("text-caption cr-text-dim")
+            btn = ui.button("Export", icon="download", on_click=lambda: export_run(run_dir, uc_name, btn)) \
+                .props("unelevated color=primary size=sm no-caps")

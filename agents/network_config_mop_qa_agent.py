@@ -40,6 +40,7 @@ class NetworkConfigMopQAAgent(BaseAgent):
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
         artifacts = state.get("artifacts", {})
+        from shared import run_files  # the run folder is authoritative: edits made at a review (spec 012)
 
         flow.flow("NETWORK_CONFIG_MOP_QA START — uc=%s", uc_name)
 
@@ -51,9 +52,9 @@ class NetworkConfigMopQAAgent(BaseAgent):
 
         inp = SkillInput(
             uc_name=uc_name,
-            workflow_yaml=artifacts.get("workflow_yaml", ""),
-            json_output_yaml=artifacts.get("json_template_yaml", ""),
-            validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
+            workflow_yaml=run_files.read(state, "workflow_yaml"),
+            json_output_yaml=run_files.read(state, "json_template_yaml"),
+            validation_rules_yaml=run_files.read(state, "validation_rules_yaml"),
             ciq_file_path=ciq_file_path(state),
             requirements=requirements,
             run_dir=run_dir,
@@ -73,21 +74,30 @@ class NetworkConfigMopQAAgent(BaseAgent):
             report_path.write_text(output.report_html, encoding="utf-8")
 
         # Save step 7 status
-        mop_failed = any(s.status == "FAIL" for s in output.mop_scenarios)
+        mop_failed = output.status == "failed" or any(s.status == "FAIL" for s in output.mop_scenarios)
         state["step_7_status"] = "failed" if mop_failed else "passed"
+
+        if not mop_failed:
+            state.pop("mop_feedback", None)
 
         # On MOP failure, retry workflow generation (step 6)
         if output.status == "failed":
             state["_retry_target"] = 6
+            # read by step 6's regenerate; when the JAR could not load the workflow there are no scenarios, only
+            # its test case (OB-38: the cause sat past the 200th character, step 6 never saw it)
             state["mop_feedback"] = [
-                {"scenario": s.name, "status": s.status, "error": s.error[:200]}
+                {"scenario": s.name, "status": s.status, "error": s.error[:1500]}
                 for s in output.mop_scenarios if s.status == "FAIL"
+            ] or [
+                {"scenario": t.description, "status": t.status, "error": "\n".join(t.errors)[:1500]}
+                for t in output.test_cases if t.status == "FAIL"
             ]
 
             if run_dir:
                 err_file = Path(run_dir) / "step_7_error.json"
                 err_file.write_text(json.dumps({
                     "error": f"MOP test: {output.failed}/{output.total} failed",
+                    "detail": (state["mop_feedback"][0]["error"].split("\n")[0] if state["mop_feedback"] else ""),
                     "retry_target": 6,
                 }, indent=2))
 

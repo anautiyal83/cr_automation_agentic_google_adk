@@ -43,7 +43,8 @@ def parse_llm_yaml(text: str) -> dict | list | None:
     if parsed is None:
         for label, repaired in (
             ("double-quote escapes", _requote_backslash_scalars(cleaned)),
-            ("truncation", _repair_truncated_yaml(_requote_backslash_scalars(cleaned))),
+            ("single-quote escapes", _single_quote_escapes(_requote_backslash_scalars(cleaned))),
+            ("truncation", _repair_truncated_yaml(_single_quote_escapes(_requote_backslash_scalars(cleaned)))),
         ):
             parsed = parse_yaml(repaired)
             if parsed is not None:
@@ -52,12 +53,14 @@ def parse_llm_yaml(text: str) -> dict | list | None:
     return parsed
 
 
-def salvage_yaml_entries(text: str) -> dict:
+def salvage_yaml_entries(text: str, min_share: float = 0.0) -> dict:
     """Parse a top-level YAML map entry by entry, keeping every entry that parses.
 
-    Used when the whole document is invalid because of one bad entry.
+    Used when the whole document is invalid because of one bad entry. With ``min_share`` it returns {} when fewer
+    entries than that share parse — most of the answer lost is a reason to ask again, not to fill the rest with
+    placeholders (OB-42: 3 of 27 kept, every lookup answered ``x``).
     """
-    cleaned = _requote_backslash_scalars(clean_yaml_response(text))
+    cleaned = _single_quote_escapes(_requote_backslash_scalars(clean_yaml_response(text)))
     blocks: list[list[str]] = []
     for line in cleaned.split("\n"):
         if line and not line[0].isspace() and not line.startswith(("-", "#")):
@@ -71,6 +74,8 @@ def salvage_yaml_entries(text: str) -> dict:
             result.update(parsed)
     if result:
         logger.info("Salvaged %d/%d YAML entries from invalid LLM output", len(result), len(blocks))
+    if blocks and len(result) < min_share * len(blocks):
+        return {}
     return result
 
 
@@ -92,6 +97,31 @@ def _requote_backslash_scalars(text: str) -> str:
             line = f"{m.group(1)}'{inner}'{m.group(3)}"
         out.append(line)
     return "\n".join(out)
+
+
+_SQ_SCALAR = re.compile(r"^(\s*(?:-\s+)?)'(.*)$")
+
+
+def _single_quote_escapes(text: str) -> str:
+    """``\\'`` inside a single-quoted key / item → ``''``: YAML has no backslash escapes there, so the LLM's
+    ``'oc get ns | awk \\'{print $1}\\'':`` ended the scalar early, the whole answer failed to parse and every
+    command was answered by the fill-in (``x`` from ``\\S+``, nothing for the loops) — OB-42."""
+    out = []
+    for line in text.split("\n"):
+        m = _SQ_SCALAR.match(line)
+        if m and "\\'" in m.group(2):
+            line = m.group(1) + "'" + m.group(2).replace("\\'", "''")
+        # a lone quote inside a single-quoted key / item (`- 'tar: Removing leading `/' from member names'`): a valid
+        # scalar never holds one, so it is the LLM's own quote → doubled
+        whole = _SQ_WHOLE.match(line)
+        if whole and _LONE_QUOTE.search(whole.group(2)):
+            line = f"{whole.group(1)}'{_LONE_QUOTE.sub(chr(39) * 2, whole.group(2))}'{whole.group(3)}"
+        out.append(line)
+    return "\n".join(out)
+
+
+_SQ_WHOLE = re.compile(r"^(\s*(?:-\s+)?)'(.*)'(\s*:\s*|\s*)$")
+_LONE_QUOTE = re.compile(r"(?<!')'(?!')")
 
 
 def parse_yaml(text: str) -> dict | list | None:
@@ -152,6 +182,25 @@ def yaml11_safe(data):
         return data
     if isinstance(data, str) and not isinstance(data, ScalarString) and _YAML11_NOT_STR.match(data):
         return DoubleQuotedScalarString(data)
+    return data
+
+
+def block_scalars(data):
+    """``data`` with every multi-line string as a literal block (``|-``), as production writes long commands.
+    The JAR reads a double-quoted ``\\n`` as a real newline, so ``printf '%s\\n'`` / ``awk 'printf "…\\n"'``
+    in a double-quoted multi-line send broke (spec 013 P-8); a block keeps the text exactly."""
+    from ruamel.yaml.scalarstring import LiteralScalarString, ScalarString
+    if isinstance(data, dict):
+        for key in list(data.keys()):
+            data[key] = block_scalars(data[key])
+        return data
+    if isinstance(data, list):
+        for i, item in enumerate(data):
+            data[i] = block_scalars(item)
+        return data
+    if (isinstance(data, str) and not isinstance(data, ScalarString) and "\n" in data and "\r" not in data
+            and not any(line != line.rstrip(" \t") for line in data.split("\n"))):
+        return LiteralScalarString(data)
     return data
 
 
@@ -226,6 +275,33 @@ def extract_workflow_nodes(workflow_yaml: str) -> list[str]:
     return sorted(nodes)
 
 
+_BLOCK_OPENER = re.compile(r"^\s*(?:if|for|while|until|case)\b")
+_BLOCK_CONTINUES = ("then", "else", "do", "{", "in")
+
+
+def join_compound(cmd: str) -> str:
+    """A multi-line ``if / for / while / case`` block as the one line MockWire runs (88a1915: the shell reads on until
+    the block closes) — ``if c; then a; else b; fi`` — so the branches are seen and answered like those of a one-line
+    block (run 6570694d: the IMSI lookup inside a `|-` block got no key). Other text is returned as it is."""
+    if not isinstance(cmd, str) or "\n" not in cmd or not _BLOCK_OPENER.match(cmd):
+        return cmd
+    out: list[str] = []
+    for raw in cmd.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if out:
+            prev = out[-1]
+            glue = prev.split()[-1] in _BLOCK_CONTINUES or prev.endswith((";", "&&", "||", "|", "\\"))
+            if prev.endswith("\\"):
+                out[-1] = prev[:-1].rstrip()
+            out[-1] += " " if glue else "; "
+            out[-1] += line
+        else:
+            out.append(line)
+    return out[0] if out else cmd
+
+
 def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
     """Extract commands from a workflow YAML for simulator response mapping."""
     parsed = parse_yaml(workflow_yaml)
@@ -233,15 +309,20 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
         return []
 
     commands = []
-    for phase_name, steps in _iter_phase_steps(parsed):
-        for step in steps:
+    for phase_name, steps in _iter_phase_steps(parsed, with_loop=True):
+        for step, loop in steps:
             commands.append({
-                "cmd": step.get("send", step.get("cmd", step.get("command", ""))),
+                "cmd": join_compound(step.get("send", step.get("cmd", step.get("command", "")))),
                 "node": step.get("node", ""),
                 "phase": phase_name,
+                "description": step.get("command_description", ""),
                 "validation": step.get("validation", {}),
                 "register": step.get("register") or [],
                 "prompt_regex": step.get("prompt_regex", ""),
+                "expect_reply": step.get("expect_reply") or [],  # the password question it waits for
+                "order": len(commands),  # position in the workflow: a change on another node between two reads (OB-84)
+                "transfer": isinstance(step.get("sftp"), dict),
+                "loop": loop,  # the CIQ record loop it runs in (each record passes through it in turn, OB-96)
             })
     return commands
 
@@ -250,8 +331,9 @@ def extract_workflow_commands(workflow_yaml: str) -> list[dict]:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _iter_phase_steps(parsed: dict):
-    """Yield (phase_name, [step dicts]) for phases given as a map or a list."""
+def _iter_phase_steps(parsed: dict, with_loop: bool = False):
+    """Yield (phase_name, [step dicts]) for phases given as a map or a list; ``with_loop``: [(step, id of the CIQ
+    record loop it is in, or "")]."""
     phases = parsed.get("phases", [])
     if isinstance(phases, dict):
         items = list(phases.items())
@@ -263,18 +345,20 @@ def _iter_phase_steps(parsed: dict):
         if not isinstance(phase, dict):
             continue
         steps = phase.get("steps", phase.get("commands", []))
-        yield key, list(_leaf_steps(steps))
+        leaves = list(_leaf_steps(steps))
+        yield key, leaves if with_loop else [s for s, _ in leaves]
 
 
-def _leaf_steps(steps):
-    """Steps in order; a container (``type: loop`` over CIQ records) stands for its steps."""
+def _leaf_steps(steps, loop: str = ""):
+    """(step, record loop id) in order; a container (``type: loop`` over CIQ records) stands for its steps."""
     for s in steps or []:
         if not isinstance(s, dict):
             continue
         if isinstance(s.get("steps"), list):
-            yield from _leaf_steps(s["steps"])
+            records = "records" in str(s.get("for_each") or "")
+            yield from _leaf_steps(s["steps"], str(s.get("id") or "records") if records and not loop else loop)
         else:
-            yield s
+            yield s, loop
 
 
 _UNRELATED_COMMAND = "zz_netconfig_unrelated_probe_command --x"
@@ -295,7 +379,16 @@ def safe_regex_key(key: str) -> str | None:
             out.append(body[i:i + 2])
             i += 2
             continue
-        if ch == "(":
+        if ch == "{":  # Java rejects a `{` that is no quantifier (awk '{print $1}': "Illegal repetition")
+            m = re.match(r"\{\d+(?:,\d*)?\}", body[i:])
+            if m:
+                out.append(m.group(0))
+                i += len(m.group(0))
+                continue
+            ch = "\\{"
+        elif ch == "}":
+            ch = "\\}"
+        elif ch == "(":
             depth += 1
         elif ch == ")":
             depth = max(0, depth - 1)

@@ -187,6 +187,18 @@ def generate_summary_html(
                      + ", ".join(f"<code>{html_escape(str(s))}</code>" for s in excluded) + "</p>")
     lines.append("</details>")
 
+    # -- CIQ cell rules: what UNCHANGED / blank cells mean for every step --
+    from shared import ciq_cells
+    cell_rules = ciq_cells.rules(requirements)
+    lines.append("<h2>CIQ Cell Rules</h2><div class='section'>")
+    lines.append("<p class='meta'>How the scripts and the simulator treat special CIQ cells. To change a rule, use "
+                 "Edit requirements and say it in one sentence (e.g. &quot;blank cells mean no change&quot;).</p>")
+    lines.append("<table><tr><th>CIQ cell</th><th>Means</th></tr>")
+    for cell in ciq_cells.CELLS:
+        lines.append(f"<tr><td>{html_escape(ciq_cells.LABELS[cell])}</td>"
+                     f"<td>{html_escape(ciq_cells.DESCRIPTIONS[cell_rules[cell]])}</td></tr>")
+    lines.append("</table></div>")
+
     # -- CIQ Field Mappings --
     ciq_field_mappings = cat1_req.get("ciq_field_mappings")
     if ciq_field_mappings:

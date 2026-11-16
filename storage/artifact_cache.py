@@ -150,9 +150,8 @@ class ArtifactCache:
         agent_status = meta.get("agent_status", {}).get(agent_name)
         if agent_status != "passed":
             return False
-        if meta.get("code_version", {}).get(agent_name) != code_version(agent_name):
-            logger.info("Cache for %s/%s is stale: generator code changed", uc_name, agent_name)
-            return False
+        # A generator code change no longer invalidates the cache (OB-11 reversed, user 2026-11-12: only the
+        # user's Rerun of a step clears its cache); the version is still recorded on save, for information
         if inputs and meta.get("inputs") != inputs:
             logger.info("Cache for %s/%s is stale: documents or notes changed", uc_name, agent_name)
             return False

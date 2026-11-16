@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+def _uploaded_documents(state) -> list[str]:
+    """The run's uploaded documents: step 9 copies the one of the same kind for an input file the workflow reads
+    (OB-50)."""
+    from tools.input_documents import uploaded_documents
+    return uploaded_documents(state)
+
+
 class _SimulatorControl:
     """Scenario runs restart MockWire; keep it registered so every exit path stops it."""
 
@@ -56,6 +63,7 @@ class NetworkConfigQAAgent(BaseAgent):
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
         artifacts = state.get("artifacts", {})
+        from shared import run_files  # the run folder is authoritative: edits made at a review (spec 012)
 
         flow.flow("NETWORK_CONFIG_QA START — uc=%s", uc_name)
 
@@ -71,10 +79,10 @@ class NetworkConfigQAAgent(BaseAgent):
 
         inp = SkillInput(
             uc_name=uc_name,
-            workflow_yaml=artifacts.get("workflow_yaml", ""),
+            workflow_yaml=run_files.read(state, "workflow_yaml"),
             simulator_config_yaml=artifacts.get("simulator_config_yaml", ""),
-            json_output_yaml=artifacts.get("json_template_yaml", ""),
-            validation_rules_yaml=artifacts.get("validation_rules_yaml", ""),
+            json_output_yaml=run_files.read(state, "json_template_yaml"),
+            validation_rules_yaml=run_files.read(state, "validation_rules_yaml"),
             ciq_file_path=ciq_file_path(state),
             requirements=requirements,
             run_dir=run_dir,
@@ -88,6 +96,7 @@ class NetworkConfigQAAgent(BaseAgent):
             mockwire_jar=mockwire_jar(config),
             execution_report_jar=config.get("execution_report_jar") or SkillInput.execution_report_jar,
             simulator_control=_SimulatorControl(run_id),
+            sample_inputs=_uploaded_documents(state),
         )
 
         output = await skill.test(inp)

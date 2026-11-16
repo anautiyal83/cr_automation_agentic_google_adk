@@ -23,14 +23,33 @@ _ABS_PATH = re.compile(r"(?<![\w$}])/(?:[\w.${}-]+/)*[\w.${}-]+")
 _FILE_CMD = re.compile(r"^\s*(ls|cat|test|stat|rm|head|tail|wc)\b")
 
 
+def group_names(workflow: dict, node: str) -> set[str]:
+    """``node`` and, for the first entry of a NIAM failover group (``niam_x_1``, spec 013 B-R3), the group's other
+    entries and the ``${Target<TYPE>}`` its steps run on — one simulator instance serves them all."""
+    names = {node}
+    nodes = workflow.get("nodes") or {}
+    host = str(((nodes.get(node) or {}).get("ssh") or {}).get("host") or "")
+    names |= {str(n) for n, v in nodes.items() if isinstance(v, dict) and str(v.get("type", "")).lower() == "sftp"
+              and host and str((v.get("sftp") or {}).get("host") or "") == host}  # its sftp-only twin
+    m = re.fullmatch(r"(niam_\w+)_1", node)
+    if m:
+        from skills.network_config_gen.sessions import ciq_type
+        names |= {str(n) for n in (workflow.get("nodes") or {}) if re.fullmatch(re.escape(m.group(1)) + r"_\d+", str(n))}
+        typ = ciq_type(workflow, node)
+        if typ:
+            names.add("${Target" + re.sub(r"\W", "", typ.upper()) + "}")
+    return names
+
+
 def node_steps(workflow: dict, node: str) -> list[dict]:
-    """The node's steps in execution order (nested steps included)."""
+    """The node's steps in execution order (nested steps included; a failover group's too)."""
     out: list[dict] = []
+    names = group_names(workflow, node)
 
     def walk(steps):
         for step in steps or []:
             if isinstance(step, dict):
-                if str(step.get("node") or "") == node:
+                if str(step.get("node") or "") in names:
                     out.append(step)
                 walk(step.get("steps"))
 
@@ -153,13 +172,16 @@ def _success_regexes(step: dict) -> list[str]:
     return found
 
 
-def is_vfs_command(key: str, vfs: dict | None) -> bool:
-    """A response key for a file command on a VFS path (answered by builtins instead)."""
+def is_vfs_command(key: str, vfs: dict | None, unmodelled: set[str] | frozenset = frozenset()) -> bool:
+    """A response key for a file command on a VFS path (answered by builtins instead) — not one reading a file in
+    ``unmodelled`` (copied into a pod: never in the VFS, its key answer stays — OB-53/55)."""
     if not vfs:
         return False
     text = str(key)
     body = text[len("regex:"):] if text.startswith("regex:") else text
     body = body.replace("\\", "")  # regex keys escape the path
+    if any(f in body for f in unmodelled):
+        return False
     return bool(_FILE_CMD.match(body.lstrip("^"))) and any(d in body for d in vfs.get("dirs", []))
 
 

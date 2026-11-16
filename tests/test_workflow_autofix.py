@@ -153,17 +153,17 @@ def test_local_step_reading_a_node_file_by_name_gets_a_download():
     from skills.network_config_gen.autofix import fix_missing_downloads
     from skills.network_config_gen.validator import check_file_flows
     wf = {"phases": {"activity": {"steps": [
-        {"node": "LOCAL", "send": "python create_xml.py --out ${ORDERNO}.xml"},
-        {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
-                                 "remote_path": "/in/${ORDERNO}.xml"}},
-        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
-        {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"},
+        {"node": "LOCAL", "send": "python create_xml.py --out ${ORDER_NO}.xml"},
+        {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml",
+                                 "remote_path": "/in/${ORDER_NO}.xml"}},
+        {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDER_NO}.xml.res'"},
     ]}}}
-    assert len(check_file_flows(wf)) == 1  # the uploaded ${ORDERNO}.xml is local: not flagged
+    assert len(check_file_flows(wf)) == 1  # the uploaded ${ORDER_NO}.xml is local: not flagged
     assert fix_missing_downloads(wf) == 1
     steps = wf["phases"]["activity"]["steps"]
-    assert steps[3]["sftp"] == {"operation": "download", "remote_path": "/out/${ORDERNO}.xml.res",
-                                "local_path": "${ORDERNO}.xml.res", "overwrite": True}
+    assert steps[3]["sftp"] == {"operation": "download", "remote_path": "/out/${ORDER_NO}.xml.res",
+                                "local_path": "${ORDER_NO}.xml.res", "overwrite": True}
     assert check_file_flows(wf) == []
 
 
@@ -193,8 +193,8 @@ def test_ls_of_one_file_never_prints_total():
     def wf(send, regex):
         return {"phases": {"a": {"steps": [{"node": "PGW", "send": send,
                                             "validation": {"success": {"criteria": {"regex": regex}}}}]}}}
-    assert len(check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"total\s+\d+\s+.+?\.xml\.res"))) == 1
-    assert check_file_listing_regexes(wf("ls -l /o/${ORDERNO}.xml.res", r"^-rw\S+\s+\d+.+\.xml\.res$")) == []
+    assert len(check_file_listing_regexes(wf("ls -l /o/${ORDER_NO}.xml.res", r"total\s+\d+\s+.+?\.xml\.res"))) == 1
+    assert check_file_listing_regexes(wf("ls -l /o/${ORDER_NO}.xml.res", r"^-rw\S+\s+\d+.+\.xml\.res$")) == []
     assert check_file_listing_regexes(wf("ls -l /o/", r"total\s+\d+")) == []  # a directory has a total
 
 
@@ -209,13 +209,13 @@ def test_overlay_shortens_polls_for_the_simulator():
 def test_node_file_read_from_a_made_up_local_dir_is_downloaded():
     from skills.network_config_gen.autofix import fix_missing_downloads
     wf = {"phases": {"a": {"steps": [
-        {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"},
-        {"node": "LOCAL", "send": "python parse_response.py --response_file '/tmp/${ORDERNO}.xml.res'"},
+        {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"},
+        {"node": "LOCAL", "send": "python parse_response.py --response_file '/tmp/${ORDER_NO}.xml.res'"},
     ]}}}
     assert fix_missing_downloads(wf) == 1
     steps = wf["phases"]["a"]["steps"]
-    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
-    assert steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDER_NO}.xml.res"
+    assert steps[2]["send"] == "python parse_response.py --response_file '${ORDER_NO}.xml.res'"
 
 
 def test_exit_without_su_is_dropped():
@@ -251,11 +251,12 @@ def test_when_word_operators_become_symbols_outside_quotes():
     assert fix_condition_operators("brand != ''") == "brand != ''"
 
 
-def test_local_arguments_are_single_quoted():
-    from skills.network_config_gen.autofix import single_quote_arguments
-    cmd = 'python report.py --pre "${pre}" --name "it\'s" --out "r_${ORDERNO}.html"'
-    assert single_quote_arguments(cmd) == r"python report.py --pre '${pre}' --name 'it'\''s' --out 'r_${ORDERNO}.html'"
-    assert single_quote_arguments("python x.py --a 'y'") == "python x.py --a 'y'"
+def test_local_double_quotes_are_kept():
+    """Spec 013 P-6: double quotes in LOCAL steps work on Linux (production); step 6 keeps them."""
+    from skills.network_config_gen.autofix import fix_workflow
+    send = 'python report.py --pre "${pre}" --out "r_${ORDER_NO}.html"'
+    out = fix_workflow(yaml.safe_dump({"nodes": {}, "phases": {"p": {"steps": [{"node": "LOCAL", "send": send}]}}}))
+    assert yaml.safe_load(out)["phases"]["p"]["steps"][0]["send"] == send
 
 
 def test_whole_ciq_record_placeholder_is_rejected():
@@ -268,13 +269,13 @@ def test_whole_ciq_record_placeholder_is_rejected():
 def test_single_file_listing_regex_never_expects_total():
     import re
     from skills.network_config_gen.autofix import fix_single_file_listings
-    step = {"node": "PGW", "send": "ls -l /srv/out/${ORDERNO}.xml.res 2>&1 || true",
+    step = {"node": "PGW", "send": "ls -l /srv/out/${ORDER_NO}.xml.res 2>&1 || true",
             "validation": {"description": "Response file exists and is not empty",
                            "success": {"criteria": {"regex": r"total\s+\d+\s+.*\s+.+?.xml.res"}}}}
     wf = {"phases": {"a": {"steps": [step]}}}
     assert fix_single_file_listings(wf) == 1
     regex = step["validation"]["success"]["criteria"]["regex"]
-    line = "-rw-r--r-- 1 oamsys oamsys     1647 Nov 03 09:17 /srv/out/TEST_ORDERNO.xml.res"
+    line = "-rw-r--r-- 1 oamsys oamsys     1647 Nov 03 09:17 /srv/out/TEST_ORDER_NO.xml.res"
     assert re.search(regex, line, re.M) and not re.search(regex, line.replace(" 1647 ", " 0 "), re.M)
     assert fix_single_file_listings(wf) == 0
 
@@ -284,12 +285,12 @@ def test_helper_script_called_on_a_node_runs_on_local_with_a_download():
     from skills.network_config_gen.autofix import fix_workflow
     wf = yaml.safe_load(fix_workflow(
         "nodes: {PGW: {type: remote, plugin: ssh}}\nphases:\n  a:\n    steps:\n"
-        "    - {node: PGW, send: 'ls -l /out/${ORDERNO}.xml.res'}\n"
-        "    - {node: PGW, send: \"python parse_response.py --response_file '/out/${ORDERNO}.xml.res'\"}\n"
+        "    - {node: PGW, send: 'ls -l /out/${ORDER_NO}.xml.res'}\n"
+        "    - {node: PGW, send: \"python parse_response.py --response_file '/out/${ORDER_NO}.xml.res'\"}\n"
         "    - {node: PGW, send: 'python /opt/tool/check.py'}\n"))
     steps = wf["phases"]["a"]["steps"]
-    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDERNO}.xml.res"
-    assert steps[2]["node"] == "LOCAL" and steps[2]["send"] == "python parse_response.py --response_file '${ORDERNO}.xml.res'"
+    assert steps[1]["sftp"]["remote_path"] == "/out/${ORDER_NO}.xml.res"
+    assert steps[2]["node"] == "LOCAL" and steps[2]["send"] == "python parse_response.py --response_file '${ORDER_NO}.xml.res'"
     assert steps[3]["node"] == "PGW"  # the node's own tool stays
 
 
@@ -322,19 +323,13 @@ def test_dict_argument_becomes_one_flag_per_field():
     assert split_dict_arguments("python r.py --a 'x' --b 'y'") == "python r.py --a 'x' --b 'y'"
 
 
-def test_double_quotes_in_local_commands_are_rejected():
-    from skills.network_config_gen.validator import check_script_arguments
-    wf = {"phases": {"a": {"steps": [{"node": "LOCAL", "send": "python r.py --a '{\"k\": \"v\"}'"}]}}}
-    assert any("double quote" in e for e in check_script_arguments(wf))
-
-
 def test_absence_check_runs_before_the_upload_that_produces_the_file():
     from skills.network_config_gen.autofix import order_absence_checks
-    absent = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res 2>&1 || true",
+    absent = {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res 2>&1 || true",
               "validation": {"success": {"criteria": {"regex": "No such file or directory"}}}}
-    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml",
-                                      "remote_path": "/in/${ORDERNO}.xml"}}
-    present = {"node": "PGW", "send": "ls -l /out/${ORDERNO}.xml.res"}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml",
+                                      "remote_path": "/in/${ORDER_NO}.xml"}}
+    present = {"node": "PGW", "send": "ls -l /out/${ORDER_NO}.xml.res"}
     wf = {"phases": {"a": {"steps": [upload, absent, present]}}}
     assert order_absence_checks(wf) == 1
     assert wf["phases"]["a"]["steps"] == [absent, upload, present]
@@ -639,3 +634,422 @@ def test_when_drops_register_prefixes():
     wf = {"phases": {"p": {"steps": [step]}}}
     assert when_bare_operands(wf) == 1 and when_bare_operands(wf) == 0
     assert step["when"] == "backupTarName != null && y != '' && z == 'a'"
+
+
+def test_multiline_send_written_as_block():
+    """Spec 013 P-8: the JAR reads `\n` in a double-quoted scalar as a real newline — production's awk
+    compare broke; a multi-line send is written as a literal block and reads back unchanged."""
+    from skills.network_config_gen.autofix import dump_yaml, parse_yaml
+    send = ("printf '%s\n' '${EIRRNGRAW}' |\nawk '\n/eirBlackRng/ { black=$NF }\n"
+            "/eirWhiteRng/ { printf \"%s|%s\n\", white, black; }' | sort -u | wc -l")
+    text = dump_yaml({"phases": {"p": {"steps": [{"node": "local", "send": send, "command_description": "one\nline"}]}}})
+    assert "send: |-" in text and '"printf' not in text
+    assert parse_yaml(text)["phases"]["p"]["steps"][0]["send"] == send
+
+
+def test_local_step_reading_two_node_files_gets_both_downloads():
+    """Run de9b2130: a LOCAL step read two files that exist only on a node; the second download was inserted at
+    the first one's index and the fix read `send` of a download step (KeyError: 'send')."""
+    from skills.network_config_gen.autofix import fix_missing_downloads
+    wf = {"phases": {"a": {"steps": [
+        {"node": "N", "send": "ls -l /opt/x/pre.txt /opt/x/post.txt"},
+        {"node": "LOCAL", "send": "python compare.py --pre /opt/x/pre.txt --post /opt/x/post.txt"}]}}}
+    assert fix_missing_downloads(wf) == 2
+    steps = wf["phases"]["a"]["steps"]
+    assert [s.get("sftp", {}).get("operation") for s in steps[1:3]] == ["download", "download"]
+    assert steps[3]["send"] == "python compare.py --pre pre.txt --post post.txt"
+
+
+def test_must_be_absent_captures_need_not_match_a_healthy_node():
+    """Production's "no item reports an error" checks find nothing on a healthy node: a value required empty, a
+    counter required 0, an error capture (runs de9b2130 / 66073576: rejected on the recorded healthy output)."""
+    from skills.network_config_gen.validator import check_against_samples
+    out = "pod-1\nEIR N17 Error returned 0\npod-2\nEIR N17 Error returned 0\n"
+    samples = [{"command": "for i in x; do echo $i; dump_stats; done", "output": out}]
+
+    def step(register, expr):
+        return {"phases": {"pre": {"steps": [{"node": "N", "send": "for i in x; do echo $i; dump_stats; done",
+                                               "register": register,
+                                               "validation": {"success": {"criteria": {"expr": expr}}}}]}}}
+    empty = step([{"regex": "N17 Error returned (?<N17ERROR>[1-9]\d*)"}], "N17ERROR == ''")
+    zero = step([{"regex": "N17 Error returned 0", "loop": True, "count_var": "OK"},
+                 {"regex": "N17 Error returned (?<BAD>[1-9]\d*)", "loop": True, "count_var": "BADN"}],
+                "OK > 0 && BADN == 0")
+    error = step([{"regex": "(?<CMDERROR>ERROR:.*|error:.*)"}], "CMDERROR == ''")
+    for wf in (empty, zero, error):
+        assert not [p for p in check_against_samples(wf, samples) if "captures nothing" in p], wf
+    wrong = step([{"regex": "N17 Error returned (?<N17ERROR>[1-9]\d*)"}], "N17ERROR > 0")
+    assert [p for p in check_against_samples(wrong, samples) if "captures nothing" in p]
+
+
+def test_expect_reply_takes_the_jars_form():
+    """The JAR's ExpectReplyDefinition has expect/reply/timeout_sec/repeat only: `{regex, send}` failed loading the
+    whole workflow, step 7 on every retry (OB-38)."""
+    wf = {"nodes": {"n": {"type": "ssh"}}, "phases": {"activity": {"steps": [
+        {"node": "n", "send": "ssh u@h", "expect_reply": [{"regex": "password:", "send": "${SECRET.P}"}]},
+        {"node": "n", "send": "sftp u@h", "expect_reply": {"prompt": "assword", "response": "x", "timeout": 5}},
+        {"node": "n", "send": "su - u", "expect_reply": "${SECRET.U}"},
+        {"node": "n", "send": "scp a u@h:b", "expect_reply": [{"expect": "a", "reply": "b", "repeat": True}]},
+    ]}}}
+    steps = yaml.safe_load(fix_workflow(yaml.safe_dump(wf)))["phases"]["activity"]["steps"]
+    assert [s["expect_reply"] for s in steps] == [
+        [{"expect": "password:", "reply": "${SECRET.P}"}],
+        [{"expect": "assword", "reply": "x", "timeout_sec": 5}],
+        [{"expect": "assword:", "reply": "${SECRET.U}"}],
+        [{"expect": "a", "reply": "b", "repeat": True}],
+    ]
+
+
+def test_jar_load_error_names_the_innermost_property():
+    from skills.network_config_test.jar_executor import yaml_load_error
+    stderr = ("ERROR: Cannot create property=phases for JavaBean=cliautomation.model.WorkflowDefinition@1\n"
+              " in 'reader', line 1, column 1:\n    version: 1.2\n"
+              "Cannot create property=expect_reply for JavaBean=cliautomation.model.StepDefinition@2\n"
+              " in 'reader', line 556, column 7:\n"
+              "Cannot create property=regex for JavaBean=cliautomation.model.ExpectReplyDefinition@3\n"
+              " in 'reader', line 563, column 11:\n"
+              "Caused by: org.yaml.snakeyaml.error.YAMLException: Unable to find property 'regex' on class: "
+              "cliautomation.model.ExpectReplyDefinition\n")
+    msg = yaml_load_error(stderr)
+    assert "`regex` at line 563" in msg and "Unable to find property 'regex' on class: ExpectReplyDefinition" in msg
+    assert yaml_load_error("ERROR: Missing required option --html-template") == ""
+
+
+def test_registered_value_is_braced_in_later_commands():
+    """`$DATE` after `date` registered DATE is an unset shell variable on the node (OB-39)."""
+    from skills.network_config_gen.autofix import registered_shell_variables
+    parsed = {"phases": {"a": {"steps": [
+        {"send": "date +%Y%m%d", "register": [{"regex": r"(?<DATE>\d{8})"}]},
+        {"send": "org -c x >/opt/p/predump_$DATE.txt; echo $HOME"},
+        {"send": "DATE=$(date); ls /tmp/$DATE"},
+        {"send": "awk '{print $1}' f"},
+    ]}}}
+    sftp = {"node": "n", "sftp": {"operation": "download", "remote_path": "/opt/p/predump_$DATE.txt",
+                                  "local_path": "predump_$DATE.txt"}}
+    assert registered_shell_variables({"phases": {"a": {"steps": [parsed["phases"]["a"]["steps"][0], sftp]}}}) == 2
+    assert sftp["sftp"]["remote_path"] == "/opt/p/predump_${DATE}.txt" and sftp["sftp"]["local_path"] == "predump_${DATE}.txt"
+    assert registered_shell_variables(parsed) == 1
+    assert [s["send"] for s in parsed["phases"]["a"]["steps"][1:]] == [
+        "org -c x >/opt/p/predump_${DATE}.txt; echo $HOME", "DATE=$(date); ls /tmp/$DATE", "awk '{print $1}' f"]
+
+
+def test_helper_script_on_a_node_is_reported_unless_the_mop_runs_it():
+    from skills.network_config_gen.validator import check_helper_script_nodes
+    parsed = {"phases": {"a": {"steps": [
+        {"node": "niam_eir_server", "send": "python3 /usr/local/bin/check_tac_counts.py --tac-type white"},
+        {"node": "niam_eir_server", "send": "python /opt/tools/node_tool.py -x"},
+        {"node": "LOCAL", "send": "python3 check_tac_counts.py --tac-type white"},
+    ]}}}
+    found = check_helper_script_nodes(parsed, ["python /opt/tools/node_tool.py -x"])
+    assert len(found) == 1 and "check_tac_counts.py" in found[0] and "node local" in found[0]
+
+
+def test_inline_python_program_on_a_node_is_reported():
+    """OB-65 (run b81305ff): the delta TAC check as `python3 -c "import pandas …"` on the bastion — it read the CIQ
+    workbook and the in-pod dumps from a host that has neither."""
+    from skills.network_config_gen.validator import check_helper_script_nodes
+    program = "python3 -c \"\nimport pandas as pd\ndf = pd.read_excel('${rec.data.DELTA_TAC_FILE}')\n\""
+    parsed = {"phases": {"a": {"steps": [
+        {"node": "niam_eir_server", "send": program},
+        {"node": "LOCAL", "send": program},
+        {"node": "niam_eir_server", "send": "python3 -c 'print(1)'"},
+    ]}}}
+    found = check_helper_script_nodes(parsed, ["python3 -c 'print(1)'"])
+    assert len(found) == 1 and "inline Python program" in found[0] and "node local" in found[0]
+
+
+def test_count_check_in_either_order_is_held_against_the_real_output():
+    """OB-40: `ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT` counts every ESTABLISHED line (many per pod);
+    recorded as `-n ns| grep`, written as `-n ${NS} | grep` — neither the order nor the spacing was recognised."""
+    from skills.network_config_gen.validator import check_against_samples, count_check
+    step = {"node": "n", "send": "for i in `kubectl get pods -n ${NS} | grep app`; do echo $i; netstat -an; done",
+            "register": [{"regex": "ESTABLISHED", "loop": True, "count_var": "ESTABLISHED_COUNT"},
+                         {"regex": r"app-\S+", "loop": True, "count_var": "POD_COUNT"}],
+            "validation": {"success": {"criteria": {"expr": "ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT"}}}}
+    assert count_check(step)[0::2] == ("POD_COUNT", "ESTABLISHED_COUNT")
+    sample = {"command": "for i in `kubectl get pods -n nk1| grep app`; do echo $i; netstat -an; done",
+              "output": "app-1\ntcp ESTABLISHED\ntcp ESTABLISHED\n\napp-2\ntcp ESTABLISHED\ntcp ESTABLISHED\n"}
+    found = check_against_samples({"phases": {"a": {"steps": [step]}}}, [sample])
+    assert any("count check gives" in f for f in found), found
+
+
+def test_long_listing_cannot_show_file_names_side_by_side():
+    """OB-40: `ls -lrth` puts each file on its own line after its details; `a_.+?.txt\s+b_.+?.txt` never matches."""
+    from skills.network_config_gen.validator import check_file_listing_regexes
+
+    def wf(send, regex):
+        return {"phases": {"a": {"steps": [{"node": "n", "send": send,
+                                            "validation": {"success": {"criteria": {"regex": regex}}}}]}}}
+    joined = r"postdump_white_.+?.txt\s+postdump_black_.+?.txt"
+    assert check_file_listing_regexes(wf("cd /opt/p/ && ls -lrth", joined))
+    assert not check_file_listing_regexes(wf("cd /opt/p/ && ls", joined))  # plain ls: names side by side
+    assert not check_file_listing_regexes(wf("ls -l /opt/p", r"root\s+root"))
+
+
+def test_success_expr_false_on_healthy_output_is_reported():
+    """OB-41: `NON_ESTABLISHED_COUNT == 0` counted every line without ESTABLISHED — pod names, notices — so a healthy
+    node failed; production's bad-state capture passes on the same output."""
+    from skills.network_config_gen.validator import check_against_samples
+    out = ("app-1\nDefaulted container \"eirapp\"\ntcp 0 0 10.0.0.1:3478 10.0.0.2:16611 ESTABLISHED 1/C\n\n"
+           "app-2\ntcp 0 0 10.0.0.3:3479 10.0.0.2:16611 ESTABLISHED 1/C\n")
+    send = "for i in `kubectl get pods -n ${NS} | grep app`; do echo $i; netstat -anp|grep -i 16611; done"
+    sample = {"command": send.replace("${NS}", "nk1"), "output": out}
+
+    def wf(register, expr):
+        return {"phases": {"a": {"steps": [{"node": "n", "send": send, "register": register,
+                                            "validation": {"success": {"criteria": {"expr": expr}}}}]}}}
+    wrong = wf([{"regex": "ESTABLISHED", "loop": True, "count_var": "ESTABLISHED_COUNT"},
+                {"regex": "^(?!.+ESTABLISHED).+$", "loop": True, "count_var": "NON_ESTABLISHED_COUNT"}],
+               "ESTABLISHED_COUNT > 0 && NON_ESTABLISHED_COUNT == 0")
+    assert any("is false on the real output" in p for p in check_against_samples(wrong, [sample]))
+    production = wf([{"regex": r"(?<BADSTATE>tcp6?\s+\d+\s+\d+\s+\S+\s+\S+:16611\s+(?!ESTABLISHED\b)\S+)"}],
+                    "${BADSTATE == \"\"}")
+    assert not any("is false on the real output" in p for p in check_against_samples(production, [sample]))
+
+
+
+def test_regex_line_breaks_take_crlf():
+    """OB-61 (run b81305ff): terminal output ends lines in \r\n; `\.txt\n.*predump_black` never matched the listing
+    that had every file."""
+    import re
+    from skills.network_config_gen.autofix import regex_line_breaks
+    rx = r"predump_white_.+?\.txt\n.*predump_black_.+?\.txt\n.*predump_grey_.+?\.txt"
+    fixed = regex_line_breaks(rx)
+    assert fixed == r"predump_white_.+?\.txt\r?\n.*predump_black_.+?\.txt\r?\n.*predump_grey_.+?\.txt"
+    listing = ("-rw-r--r--. 1 o o 6001 Nov 13 12:02 predump_white_20231108.txt\r\n"
+               "-rw-r--r--. 1 o o 0 Nov 13 12:02 predump_black_20231108.txt\r\n"
+               "-rw-r--r--. 1 o o 0 Nov 13 12:02 predump_grey_20231108.txt")
+    assert not re.search(rx, listing) and re.search(fixed, listing)
+    for same in (r"a\r\nb", r"a\r?\nb", r"[^\n]+", r"a\\nb"):
+        assert regex_line_breaks(same) == same
+
+
+def test_lone_ampersand_between_commands_is_and():
+    """OB-61: `cd /opt/sdf/processing/ & ls -lrth` ran ls where the shell was."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "cd /opt/sdf/processing/ & ls -lrth", "command_description": "a"},
+        {"node": "N", "send": "cmd >/tmp/x 2>&1 && echo 'a & b' && x &>/dev/null", "command_description": "b"},
+        {"node": "N", "send": "sleep 5 &", "command_description": "c"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == ["cd /opt/sdf/processing/ && ls -lrth", "cmd >/tmp/x 2>&1 && echo 'a & b' && x &>/dev/null",
+                     "sleep 5 &"]
+
+
+
+
+def test_diff_differences_do_not_fail_the_step():
+    """OB-63: real diff exits 1 when the dumps differ (MockWire's diff builtin), and the JAR fails the step."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "diff predump_white_${DATE}.txt postdump_white_${DATE}.txt", "command_description": "a"},
+        {"node": "N", "send": "cd /x && diff a b || echo none", "command_description": "b"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == ["diff predump_white_${DATE}.txt postdump_white_${DATE}.txt || true", "cd /x && diff a b || echo none"]
+    # OB-69: inside a pod
+    pod = "kubectl exec -it ${P} -n ${NS} -- bash -c 'diff /p/predump_white.txt /p/postdump_white.txt'"
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": pod, "command_description": "a"},
+        {"node": "N", "send": pod + " || echo none", "command_description": "b"}]}}}))
+    sends = [s["send"] for s in yaml.safe_load(wf)["phases"]["p"]["steps"]]
+    assert sends == [pod + " || true", pod + " || echo none"]
+
+
+
+def test_a_count_register_counts_only_in_a_loop():
+    """OB-68 (run b81305ff): `count_var` without `loop: true` is never set by the JAR; the dump check failed on files
+    that were listed."""
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "ls -lrth /p/predump_white.txt", "command_description": "a",
+         "register": [{"regex": r"predump_white_.+?\.txt", "count_var": "WHITE"}, {"regex": "(?<x>\\S+)"}],
+         "validation": {"success": {"criteria": {"expr": "WHITE == 1"}}}}]}}}))
+    regs = yaml.safe_load(wf)["phases"]["p"]["steps"][0]["register"]
+    assert regs[0]["loop"] is True and "loop" not in regs[1]
+
+
+
+def test_shell_syntax_in_a_regex_is_reported():
+    """OB-73 (run c89f1b67): `^(-rwxrwxrwx)\s+.*$(basename .+?)` never matches (`$` ends the line)."""
+    from skills.network_config_gen.validator import check_shell_in_regexes
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": "ls -ltrh /d/", "register": [
+            {"regex": r"^(-rwxrwxrwx)\s+.*$(basename .+?)", "loop": True, "count_var": "OK"}]},
+        {"node": "M", "send": "ls -ltrh /d/", "validation": {"success": {"criteria": {"regex": r"^-rwx\S+\s+.*\.wav$"}}}},
+    ]}}}
+    found = check_shell_in_regexes(parsed)
+    assert len(found) == 1 and "$(basename" in found[0]
+
+
+def test_the_activitys_check_before_the_activity_is_reported():
+    """OB-73 (run c89f1b67): the post-load listing also ran as a pre-check requiring the announcements: it failed,
+    PRECHECK_FAILED skipped the backup and the load. The same listing without a condition (backup) is fine."""
+    from skills.network_config_gen.validator import check_checked_before_load
+    ls = 'ls -ltrh ${rec.data.MRF_DESTINATION_PATH}/ | grep "$(basename ${rec.data.INPUT_FILE})" || true'
+    need = {"success": {"criteria": {"expr": "${TOTAL > 0 && OK == TOTAL}"}}}
+    parsed = {"phases": {
+        "preNodeHealthCheck": {"steps": [{"node": "M", "send": "service swms status",
+                                          "validation": {"success": {"criteria": {"regex": "running"}}}},
+                                         {"node": "M", "send": ls, "validation": need}]},
+        "backup": {"steps": [{"node": "M", "send": ls, "validation": {"success": {"message": "checked"}}}]},
+        "activity_configuration": {"steps": [{"node": "M", "send":
+            "if [[ '${MRF.VER}' == '13.'* ]]; then cp /tmp/${rec.data.INPUT_FILE} ${rec.data.MRF_DESTINATION_PATH}/; "
+            "else echo SKIPPED_BY_CONDITION; fi"}]},
+        "activity_postcheck": {"steps": [{"node": "M", "send": ls, "validation": need}]},
+        "postNodeHealthCheck": {"steps": [{"node": "M", "send": "service swms status",
+                                           "validation": {"success": {"criteria": {"regex": "running"}}}}]},
+    }}
+    found = check_checked_before_load(parsed)
+    assert len(found) == 1 and found[0].startswith("Phase 'preNodeHealthCheck'")
+    assert "${rec.data.MRF_DESTINATION_PATH}" in found[0]
+
+
+
+def test_a_listing_count_no_ls_line_can_match_is_reported():
+    """OB-74 (run c89f1b67): `^(?<TOTAL>\d+)\s+.*$` over `ls -l` output — the lines start with the mode."""
+    from skills.network_config_gen.validator import check_listing_counts
+    send = ("if [[ '${MRF.VER}' != '13.'* ]]; then chmod 777 $(tar -tf /tmp/x.tar) && ls -l $(tar -tf /tmp/x.tar); "
+            "else echo SKIPPED_BY_CONDITION; fi")
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": send, "register": [
+            {"regex": r"^(?<TOTAL>\d+)\s+.*$", "loop": True, "count_var": "TOTAL"},
+            {"regex": r"^-rwxrwxrwx", "loop": True, "count_var": "OKN"},
+            {"regex": "(?<ncSkipped>SKIPPED_BY_CONDITION)"}]},
+        {"node": "M", "send": "ls -l /d | wc -l", "register": [
+            {"regex": r"^(?<N>\d+)$", "loop": True, "count_var": "N"}]},
+    ]}}}
+    found = check_listing_counts(parsed)
+    assert len(found) == 1 and "TOTAL" in found[0] and "starts with the mode" in found[0]
+
+
+
+def test_shell_quote_escape_in_a_single_quoted_value_is_repaired():
+    '''OB-75 (run c89f1b67): `'\''` inside a single-quoted YAML value made step 6 unparsable; an unquoted shell
+    command keeps it (there it is the shell's own quoting).'''
+    from skills.network_config_gen.autofix import sanitize_yaml
+    text = ("- regex: 'tar: Removing '\\''/var/opt/clips/'\\'' from archive member names'\n"
+            "  send: echo 'it'\\''s here'\n")
+    out = sanitize_yaml(text)
+    parsed = yaml.safe_load(out)
+    assert parsed[0]["regex"] == "tar: Removing '/var/opt/clips/' from archive member names"
+    assert parsed[0]["send"] == "echo 'it'\\''s here'"
+
+
+
+def test_removing_a_whole_node_folder_is_reported():
+    """OB-76 (run c89f1b67): the rollback's fallback `|| rm -rf ${MRF_DESTINATION_PATH}/*` deletes every announcement;
+    removing the loaded file itself or a staging folder is fine."""
+    from skills.network_config_gen.validator import check_wildcard_removals
+    dest = "${rec.data.MRF_DESTINATION_PATH}"
+    parsed = {"phases": {"rollback_configuration": {"steps": [
+        {"node": "M", "send": f"tar -xzvf /tmp/b.tar.gz -C {dest} || rm -rf {dest}/*"},
+        {"node": "M", "send": f"rm -rf {dest}"},
+        {"node": "M", "send": f"rm -rf {dest}/${{rec.data.INPUT_FILE}}"},
+        {"node": "M", "send": "rm -rf /tmp/${ORDER_NO}/x/*"},
+        {"node": "M", "send": f"rm -f $(cat /tmp/${{ORDER_NO}}/items.list | sed 's#^#{dest}/#')"},
+    ]}}}
+    found = check_wildcard_removals(parsed)
+    assert len(found) == 2 and f"`{dest}/*`" in found[0] and f"`{dest}`" in found[1]
+
+
+def test_a_restore_of_an_archive_no_step_writes_is_reported():
+    """OB-76 (run c89f1b67): the backup wrote `/tmp/${ORDER_NO}/<folder>/announcement_backup_$DATE.tar.gz`, the
+    rollback extracted `/tmp/announcement_backup_*.tar.gz`."""
+    from skills.network_config_gen.validator import check_restore_sources
+    backup = {"node": "M", "send": "tar -czvf /tmp/${ORDER_NO}/${rec.data.D}/announcement_backup_$DATE.tar.gz -C /d x"}
+    upload = {"node": "M", "sftp": {"operation": "upload", "local_path": "${rec.data.F}", "remote_path": "/tmp/${rec.data.F}"}}
+    bad = {"phases": {"backup": {"steps": [upload, backup]}, "rollback_configuration": {"steps": [
+        {"node": "M", "send": "tar -xzvf /tmp/announcement_backup_*.tar.gz -C /d"}]}}}
+    good = {"phases": {"backup": {"steps": [upload, backup]}, "rollback_configuration": {"steps": [
+        {"node": "M", "send": "tar -xzvf /tmp/${ORDER_NO}/${rec.data.D}/announcement_backup_$DATE.tar.gz -C /d"},
+        {"node": "M", "send": "tar -xzvf /tmp/${backupName} -C /d"}]}}}
+    found = check_restore_sources(bad)
+    assert len(found) == 1 and "/tmp/*/*/announcement_backup_*.tar.gz" in found[0]
+    assert check_restore_sources(good) == []
+
+
+
+def test_a_condition_on_what_the_destination_holds_before_the_load_is_reported():
+    """User (2026-11-13): before the load the destination's contents are only recorded — the MRF pre-check
+    `ls -ltrh <dest>/` requiring `BADPERM_COUNT == 0` over the existing announcements blocked the load. The folder
+    itself (`ls -ld`) may be required; a listing without a condition is fine."""
+    from skills.network_config_gen.validator import check_checked_before_load
+    dest = "${rec.data.MRF_DESTINATION_PATH}"
+    cond = {"success": {"criteria": {"expr": "BADPERM_COUNT == 0"}}}
+    parsed = {"phases": {
+        "preNodeHealthCheck": {"steps": [
+            {"node": "M", "send": f"ls -ltrh {dest}/", "validation": cond},
+            {"node": "M", "send": f"ls -ld {dest}", "validation": {"success": {"criteria": {"regex": "^d"}}}},
+            {"node": "M", "send": f"ls -ltrh {dest}/ || true", "validation": {"success": {"message": "recorded"}}}]},
+        "activity_configuration": {"steps": [{"node": "M", "send": f"tar -xzvf /tmp/${{rec.data.F}} -C {dest}/"}]},
+    }}
+    found = check_checked_before_load(parsed)
+    assert len(found) == 1 and "only recorded" in found[0] and "ls -ltrh" in found[0]
+
+
+
+def test_a_grep_filter_check_that_can_never_pass_is_reported():
+    """OB-78 (run c89f1b67): `ls -ltrh <dest>/ | grep "$(basename <file> .tar)" || true` checked with
+    `No such file or directory|^total \d+$` — neither a line naming the file nor the empty output matches."""
+    from skills.network_config_gen.validator import check_grep_filter_checks
+    send = ('ls -ltrh ${rec.data.D}/ | grep "$(basename ${rec.data.F} .tar)" || true')
+    parsed = {"phases": {"p": {"steps": [
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"No such file or directory|^total \d+$"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"X5003"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r".*"}}}},
+        {"node": "M", "send": send, "validation": {"success": {"criteria": {"regex": r"^-r\S+"}}}},
+    ]}}}
+    found = check_grep_filter_checks(parsed)
+    assert len(found) == 1 and "can never pass" in found[0]
+
+
+
+def test_a_count_over_one_files_listing_does_not_want_total():
+    """OB-86 (run 61561981): `ls -l <outbox>/${ORDER_NO}.xml.res` counted with `total\s+\d+\s+.*\s+.+?.xml.res` —
+    `ls -l` of one file never prints `total`, the count stayed 0 with the file there."""
+    import re
+    wf = fix_workflow(yaml.safe_dump({"nodes": {"N": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "N", "send": "ls -l /srv/outbox/${ORDER_NO}.xml.res", "command_description": "a",
+         "register": [{"regex": r"total\s+\d+\s+.*\s+.+?.xml.res", "count_var": "responseFileCount", "loop": True}],
+         "validation": {"description": "File exists and is not empty",
+                        "success": {"criteria": {"expr": "responseFileCount > 0"}}}}]}}}))
+    rx = yaml.safe_load(wf)["phases"]["p"]["steps"][0]["register"][0]["regex"]
+    assert "total" not in rx
+    line = "-rw-r--r--. 1 oamsys oamsys     1647 Nov 13 18:56 /srv/outbox/TEST_ORDER_NO.xml.res"
+    assert re.search(rx, line) and not re.search(rx, line.replace(" 1647 ", " 0 "))
+
+
+
+def test_a_shell_guard_on_an_either_or_column_is_understood():
+    """OB-88 (run 6570694d): `if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi`
+    with resolvedImsi looked up by MSISDN for the rows without an IMSI — both checks read the whole text and
+    rejected a correct workflow (EAST "uses an empty Test IMSI", NORTH "never gets resolvedImsi")."""
+    from skills.network_config_gen.validator import check_row_variables, validate_workflow
+    ciq = "${configSequences.0.records.0.data."
+    parsed = {"phases": {"activity_configuration": {"steps": [
+        {"node": "RDS", "send": f"ldapsearch -b msisdn={ciq}Test MSISDN}} | awk '{{print $2}}'",
+         "when": "configSequences.0.records.0.data.Test IMSI == '' && configSequences.0.records.0.data.Test MSISDN != ''",
+         "register": [{"regex": "(?<resolvedImsi>\\d+)"}]},
+        {"node": "RDS", "send": f'if [ "{ciq}Test IMSI}}" != "" ]; then echo "{ciq}Test IMSI}}"; else echo "${{resolvedImsi}}"; fi',
+         "register": [{"regex": "(?<finalImsi>\\d+)"}]},
+    ]}}}
+    sheets = {"Main": {"columns": ["NodeGroup", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"NodeGroup": "EAST", "Test IMSI": "", "Test MSISDN": "9198"},
+        {"NodeGroup": "NORTH", "Test IMSI": "4045", "Test MSISDN": ""}]}}
+    assert check_row_variables(parsed, sheets, runtime_params=[]) == []
+    errors = validate_workflow(yaml.safe_dump(parsed), [], sheets, None)
+    assert not [e for e in errors if "which is empty in" in e or "resolvedImsi" in e], errors
+
+
+
+def test_an_empty_either_or_value_as_a_local_script_argument_is_the_scripts_to_handle():
+    """OB-90 (run 6570694d): the comparison report got `--ciq_test_msisdn '${…Test MSISDN}'`, empty for the rows that
+    give an IMSI — a report argument, not a value sent to a node. A node command with it is still reported."""
+    from skills.network_config_gen.validator import check_ciq_coverage
+    ciq = "${configSequences.0.records.0.data."
+    sheets = {"Main": {"columns": ["NodeGroup", "Test IMSI", "Test MSISDN"], "sample_rows": [
+        {"NodeGroup": "EAST", "Test IMSI": "", "Test MSISDN": "9198"},
+        {"NodeGroup": "NORTH", "Test IMSI": "4045", "Test MSISDN": ""}]}}
+    report = {"nodes": {"LOCAL": {"type": "local"}, "RDS": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "LOCAL", "send": f"python create_html_report.py --ciq_test_msisdn '{ciq}Test MSISDN}}' --x y"}]}}}
+    assert check_ciq_coverage(report, sheets) == []
+    node = {"nodes": {"RDS": {"type": "remote"}}, "phases": {"p": {"steps": [
+        {"node": "RDS", "send": f"ldapsearch -b msisdn={ciq}Test MSISDN}}"}]}}}
+    assert check_ciq_coverage(node, sheets)

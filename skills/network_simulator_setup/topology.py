@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skills.network_config_gen.sessions import ciq_type
+
 from .autofix import dump_yaml, extract_workflow_commands, parse_yaml
 
 logger = logging.getLogger(__name__)
@@ -44,11 +46,14 @@ class NodeSpec:
     password: str = SIM_PASSWORD
     ne_ids: list[str] = field(default_factory=list)       # empty → NIAM disabled
     escalations: dict[str, str] = field(default_factory=dict)  # "su - sdfrun" → pushed prompt
+    shells: dict[str, dict] = field(default_factory=dict)  # "oc exec -it ${P} -- bash" → {prompt, password}
+    aliases: list[str] = field(default_factory=list)  # NIAM failover: niam_x_2…n and ${TargetX} use this instance
     commands: list[dict] = field(default_factory=list)    # workflow steps for this node
     transfer: bool = False       # node runs sftp/scp
     elevate_to_root: bool = False
     vfs: dict | None = None      # sandbox dirs + triggers for file flows (file_flows.py, S8-16)
     vfs_commands: set[str] = field(default_factory=set)  # answered from the VFS, no key (DEP-59)
+    unmodelled_files: set[str] = field(default_factory=set)  # copied into a pod: never in the VFS (OB-53/55)
     prompt_templates: dict[str, str] = field(default_factory=dict)  # prompt → with \W (cwd, S8-33)
     warnings: list[str] = field(default_factory=list)
 
@@ -58,7 +63,8 @@ class NodeSpec:
         return {cmd.split()[-1]: p for cmd, p in self.escalations.items() if cmd.split()[-1] != self.user}
 
     def all_prompts(self) -> list[str]:
-        prompts = [self.login_prompt, self.root_prompt, *self.escalations.values()]
+        prompts = [self.login_prompt, self.root_prompt, *self.escalations.values(),
+                   *(s["prompt"] for s in self.shells.values())]
         return [p for i, p in enumerate(prompts) if p and p not in prompts[:i]]
 
     def summary(self) -> dict:
@@ -91,11 +97,35 @@ def build_topology(
     niam_ids = _niam_ids_by_node(ciq_json_files or [])
     commands = extract_workflow_commands(workflow_yaml)
 
+    # NIAM failover (spec 013 B-R3): niam_x_1…n log in to the same node — one instance serves the group,
+    # also the steps on ${Target<TYPE>} (the entry that answered)
+    aliases: dict[str, list[str]] = {}
+    for name in wf_nodes:
+        m = re.fullmatch(r"(niam_\w+)_(\d+)", str(name))
+        if m and m.group(2) != "1" and f"{m.group(1)}_1" in wf_nodes:
+            aliases.setdefault(f"{m.group(1)}_1", []).append(str(name))
+    for first in list(aliases) + [n for n in wf_nodes if re.fullmatch(r"niam_\w+_1", str(n)) and n not in aliases]:
+        typ = ciq_type(workflow, str(first))
+        if typ:
+            aliases.setdefault(str(first), []).append("${Target" + re.sub(r"\W", "", typ.upper()) + "}")
+    # an sftp-only node (repo_server_sftp) reaches the host of an ssh node: the same instance (spec 013)
+    for name, node in wf_nodes.items():
+        if isinstance(node, dict) and str(node.get("type", "")).lower() == "sftp":
+            host = str((node.get("sftp") or {}).get("host") or "")
+            twin = next((n for n, v in wf_nodes.items() if isinstance(v, dict) and n != name
+                         and str((v.get("ssh") or {}).get("host") or "") == host), None)
+            if twin:
+                aliases.setdefault(str(twin), []).append(str(name))
+    served = {a for group in aliases.values() for a in group}
+
     specs: list[NodeSpec] = []
     for name, node in wf_nodes.items():
-        if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")):
+        if not isinstance(node, dict) or "local" in (node.get("type"), node.get("plugin")) or name in served:
             continue
-        node_cmds = [c for c in commands if c.get("node") == name]
+        group = aliases.get(str(name), [])
+        from .vfs_commands import split_redirect_sequences
+        # `export …; source …; org -c X >/p/f` as the parts MockWire runs (OB-60)
+        node_cmds = split_redirect_sequences([c for c in commands if c.get("node") == name or c.get("node") in group])
         from .file_flows import node_steps
         if not node_cmds and not node_steps(workflow, str(name)):  # sftp-only nodes are used too
             # Declared but used by no step (e.g. an invented gateway node): the JAR never
@@ -103,7 +133,9 @@ def build_topology(
             logger.info("Topology: node %s is used by no step — no simulator instance", name)
             continue
         ssh = node.get("ssh") or {}
-        req = req_nodes.get(str(name).lower(), {})
+        typ = ciq_type(workflow, str(name))
+        req = (req_nodes.get(str(name).lower()) or req_nodes.get(typ.lower())
+               or req_nodes.get(re.sub(r"\d+$", "", typ).lower()) or _login_req(req_nodes, str(name)))
         req_ssh = req.get("ssh") or {}
         prompt_regex = str(node.get("prompt_regex") or "")
         elevate = bool(ssh.get("elevate_to_root") or req_ssh.get("elevate_to_root"))
@@ -120,9 +152,11 @@ def build_topology(
         )
         _set_prompts(spec, req_ssh)
         spec.escalations = _escalations(spec, req)
+        spec.shells = _shells(spec)
+        spec.aliases = list(group)
 
         if ssh.get("ne_id") or req.get("ne_id") or req_ssh.get("niam_login_id"):
-            spec.ne_ids = niam_ids.get(spec.name.lower(), [])
+            spec.ne_ids = niam_ids.get(spec.name.lower()) or niam_ids.get(typ.lower(), [])
             if not spec.ne_ids:
                 spec.warnings.append("workflow uses NIAM ne_id but no niamID values found in CIQ JSON; "
                                      "NIAM disabled for this node")
@@ -164,14 +198,66 @@ def build_instance_config(spec: NodeSpec, command_entries: dict | None = None) -
         cfg["transfer"] = {"sftpPrompt": "sftp> ", "scpPrompt": "scp> "}
     if spec.vfs:
         cfg["vfs"] = spec.vfs
+    from skills.network_config_gen.structure import REPO_IP_PROBE
+    if any(str(c.get("cmd", "")).strip() == REPO_IP_PROBE for c in spec.commands):
+        cfg[REPO_IP_PROBE] = {"lines": ["IPv4"]}  # who am i … → the IP version the node is reached with
+    from .skill import command_key_regex
+    for cmd, shell in spec.shells.items():  # nested sessions (spec 013): `exit` (builtin) pops the prompt
+        entry = {"pushPrompt": tpl(shell["prompt"])}
+        if shell.get("password"):
+            entry = {"interactive": [{"question": shell.get("question") or "Password: ", "noEcho": True,
+                                      "answers": {"default": entry}}]}
+        # the whole command only: MockWire searches a regex key, and `kubectl exec -it \S+ -n \S+ -- bash` took
+        # the per-pod loops `for i in …; do kubectl exec -it $i -n … -- bash -c '…'; done` as entering a pod —
+        # empty output, three health checks failed (OB-40)
+        cfg["regex:^" + command_key_regex(cmd) + r"\s*$"] = entry
 
+    from .vfs_commands import key_without_redirect
     for key, val in (command_entries or {}).items():
-        key = str(key)
+        key = key_without_redirect(str(key))  # `cmd >/p/f` keyed on cmd: MockWire writes the file (OB-40)
+        if spec.shells and _enters_session(key):
+            continue  # entering a nested shell is ours (pushPrompt above); an LLM key answered it with plain lines
+        key = _anchored_start(placeholder_key(key))
         if key in RESERVED_KEYS or key in cfg or _is_builtin_key(key):
             continue
         cfg[key] = val
 
     return dump_yaml(cfg)
+
+
+def placeholder_key(key: str) -> str:
+    """An exact key that still holds a workflow placeholder (``oc get pods -n ${EIRNAMESPACE} | grep …``) as the regex
+    key of that command: MockWire receives the resolved line (``-n nk-ei1-eir``), so the exact key never matched —
+    step 8 counted it as answering the command, and step 9 got ``oc: command not found`` (run b81305ff, OB-67)."""
+    if key.startswith("regex:") or not re.search(r"\$\{[^{}]+\}", key):
+        return key
+    from .skill import command_key_regex
+    return "regex:^" + command_key_regex(key.strip()) + r"\s*$"
+
+
+def _anchored_start(key: str) -> str:
+    """A regex key matches from the start of the command: MockWire searches it anywhere, and the lookup's key
+    ``kubectl get pods -n \\S+ | grep eirapp | awk …`` answered the loop that runs that lookup in its backticks
+    (``for i in `kubectl get pods …` ; do …``) — OB-43. A pipeline's first stage is still matched on its own."""
+    if not key.startswith("regex:"):
+        return key
+    body = key[len("regex:"):]
+    flags = re.match(r"^\(\?[a-zA-Z]+\)", body)
+    head, rest = (flags.group(0), body[flags.end():]) if flags else ("", body)
+    return key if rest.startswith("^") else f"regex:{head}^{rest}"
+
+
+def _enters_session(key: str) -> bool:
+    """An LLM response key for a command that opens a nested shell (``kubectl exec -it … -- bash``, ``ssh u@h``).
+    MockWire tries exact keys first, so the LLM's ``kubectl exec -it eirapp-… -- bash`` with plain lines beat the
+    session key: no prompt was pushed and the next ``exit`` ended the session; its unanchored regex form also
+    answered the per-pod loops (OB-43)."""
+    from skills.network_config_gen.sessions import enter_kind
+    text = key[len("regex:"):] if key.startswith("regex:") else key
+    if key.startswith("regex:"):
+        text = re.sub(r"^\^|\\s\*\$$|\$$", "", text)
+        text = re.sub(r"\\s[+*]", " ", text).replace("\\-", "-")
+    return enter_kind(text.strip()) in ("exec", "ssh", "telnet")
 
 
 def _is_builtin_key(key: str) -> bool:
@@ -198,16 +284,23 @@ def file_builtin(cmd: str) -> bool:
     if k.lower().startswith("regex:"):
         k = k[len("regex:"):].lstrip("^").replace("\\ ", " ").replace("\\-", "-")
     first = k.split(" ", 1)[0].rstrip("\\")
-    return first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
+    return (first in _FILE_BUILTINS or bool(_TAR_CREATE.match(k)) or (first in ("scp", "sftp") and is_peer_copy(k))
+            or (first == "printf" and is_peer_copy(k)))
 
 
-_PEER = re.compile(r"\S@(?:\\?\[|[\w.\\-]+:)")
+# user@host: — the host is a name, an IPv6 in brackets or, in an LLM's key, a regex token like \S+
+_PEER = re.compile(r"\S@(?:\\?\[|[^\s:@]+:)")
+
+
+_SFTP_BATCH = re.compile(r"^\s*printf\s.*\|\s*sftp\b.*\S@\S+\s*$")
 
 
 def is_peer_copy(cmd: str) -> bool:
-    """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7): MockWire
-    moves the file between the two instances' VFS (``transfer.peers``)."""
-    return bool(_PEER.search(cmd))
+    """A node's copy to / from the repo server (``scp … user@host:…``, spec 010 O-D7, or production's
+    ``printf "put|get …" | sftp … user@host``, spec 013): MockWire moves the file between the two instances'
+    VFS (``transfer.peers``)."""
+    plain = cmd[len("regex:"):].lstrip("^").replace("\\ ", " ") if cmd.startswith("regex:") else cmd
+    return bool(_PEER.search(cmd)) or bool(_SFTP_BATCH.match(plain))
 
 
 def add_peers(config_yaml: str, peers: dict[str, dict]) -> str:
@@ -309,6 +402,53 @@ def _escalations(spec: NodeSpec, req: dict) -> dict[str, str]:
             spec.warnings.append(f"no prompt found for {text!r}; using {chosen!r}")
         result[text] = _with_space(chosen, step_regex or spec.prompt_regex)
     return result
+
+
+def _login_req(req_nodes: dict, name: str) -> dict:
+    """The requirement node a NIAM node (``niam_<type>_server``) logs in through when no requirement node has
+    its name or CIQ type: the first remote one (the login host of the MOP / session log)."""
+    if not name.startswith("niam_"):
+        return {}
+    return next((n for n in req_nodes.values() if str(n.get("type", "remote")).lower() == "remote"
+                 and str(n.get("name", "")).upper() != "LOCAL"), {})
+
+
+def _shells(spec: NodeSpec) -> dict[str, dict]:
+    """Each command that opens a nested shell (``oc exec -it … -- bash``, ``ssh user@host``, ``telnet``) → the
+    prompt it pushes (matching the step's prompt_regex) and whether it asks for a password (spec 013 B-R2)."""
+    from skills.network_config_gen.sessions import _ssh_destination, enter_kind
+    result: dict[str, dict] = {}
+    for cmd in spec.commands:
+        text = str(cmd.get("cmd", "")).strip()
+        kind = enter_kind(text)
+        if kind not in ("exec", "ssh", "telnet") or text in result:
+            continue
+        regex = str(cmd.get("prompt_regex") or "") or spec.prompt_regex
+        dest = _ssh_destination(text) or ""
+        user = dest.split("@")[0] if "@" in dest and "${" not in dest.split("@")[0] else ("root" if kind == "exec" else "admin")
+        host = {"exec": "container", "ssh": "remote", "telnet": "remote"}[kind]
+        candidates = [f"[{user}@{host} ~]{'#' if user == 'root' else '$'} ", f"{user}@{host}:~> "] + _regex_examples(regex)
+        prompt = _first_matching(candidates, regex) or candidates[0]
+        result[text] = {"prompt": _with_space(prompt, regex), "password": kind in ("ssh", "telnet"),
+                        "question": _password_question(cmd, user, dest)}
+    return result
+
+
+def _password_question(cmd: dict, user: str, dest: str) -> str:
+    """The password prompt in a form the step's ``expect_reply`` matches: the JAR matches case-sensitively, and
+    `expect: 'password:'` (real ssh asks ``user@host's password:``) never saw MockWire's ``Password:`` — the rollback
+    login waited until its timeout (OB-40)."""
+    host = dest.split("@")[-1] if dest else "host"
+    candidates = [f"{user}@{host}'s password: ", "Password: ", "password: "]
+    expects = [str(e.get("expect") or "") for e in cmd.get("expect_reply") or [] if isinstance(e, dict)]
+    for expect in expects:
+        try:
+            hit = next((c for c in candidates if re.search(expect, c)), None)
+        except re.error:
+            hit = next((c for c in candidates if expect in c), None)
+        if hit:
+            return hit
+    return candidates[0] if expects else "Password: "
 
 
 def _validation_regex(cmd: dict) -> str:

@@ -25,6 +25,21 @@ PHASES: list[tuple[str, str, str]] = [
 ]
 KEYS = [k for k, _, _ in PHASES]
 LABELS = {k: label for k, label, _ in PHASES}
+# The workflow's phase key and name per model phase — as production workflows write them (spec 013)
+WORKFLOW_KEYS = {
+    "preNodeHealthCheck": "preNodeHealthCheck", "backup": "backup",
+    "activityPrecheck": "activity_precheck", "activityConfiguration": "activity_configuration",
+    "activityPostCheck": "activity_postcheck", "postNodeHealthCheck": "postNodeHealthCheck",
+    "rollbackPrecheck": "rollback_precheck", "rollbackConfiguration": "rollback_configuration",
+    "rollbackPostCheck": "rollback_postcheck",
+}
+WORKFLOW_NAMES = {
+    "preNodeHealthCheck": "PRE_NODE_HEALTH_CHECK", "backup": "BACKUP",
+    "activityPrecheck": "ACTIVITY_PRECHECK", "activityConfiguration": "ACTIVITY_CONFIGURATION",
+    "activityPostCheck": "ACTIVITY_POSTCHECK", "postNodeHealthCheck": "POST_NODE_HEALTH_CHECK",
+    "rollbackPrecheck": "ROLLBACK_PRECHECK", "rollbackConfiguration": "ROLLBACK_CONFIGURATION",
+    "rollbackPostCheck": "ROLLBACK_POSTCHECK",
+}
 GROUPS = {"activity": "Activity", "rollback": "Rollback"}
 # What each phase is for — the step 6 prompt tells the LLM where steps belong
 PURPOSE = {

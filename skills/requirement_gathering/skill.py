@@ -480,6 +480,10 @@ class RequirementGatheringSkill:
             schemas=self._schemas,
             schema_dir=self._schema_dir,
         )
+        # What UNCHANGED / blank CIQ cells mean, one table for steps 6 and 8 (shown at the step 2 review; a later
+        # specific note from Edit requirements overrides)
+        from shared import ciq_cells
+        requirements["ciq_cell_rules"] = ciq_cells.derive(requirements)
 
         # Persist all data to the canonical UC document
         _save_requirements(self._uc_name, requirements)

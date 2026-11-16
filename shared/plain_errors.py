@@ -86,6 +86,9 @@ def summarize(step: int, reasons: list[str], unmatched_commands: list[str] | Non
             found[LOGS].append(f"`{_cmd(m.group(1))}`: the workflow needs {m.group(2)} from this command, but its "
                                f"recorded output has no such value. Add an output that shows it, or say where "
                                f"{m.group(2)} comes from.")
+        elif m := re.search(r"CIQ column '([^']+)'.* the workflow never uses it", text):
+            found[SOURCE].append(f"{m.group(1)}: the CIQ fills this column but no step uses it — say which step "
+                                 "needs it and how.")
         elif m := re.search(r"uses CIQ column '([^']+)', which is empty in (\d+) of (\d+)", text):
             found[CIQ].append(f"Column {m.group(1)} is empty in {m.group(2)} of {m.group(3)} rows. Fill it in, or "
                               "say when it may be left empty.")
