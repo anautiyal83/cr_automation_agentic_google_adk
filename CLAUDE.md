@@ -3,6 +3,9 @@
 Product name (UI, documents, reports): **Azalio Autonomous Network Platform** — `core.config.PRODUCT_NAME`.
 Internal ids keep `netconfig` (ADK app name, `NETCONFIG_*` env vars, `admin@netconfig.local`).
 
+What the product is for (CRs, the manual MOP process, the cli-automation framework it writes recipes for):
+`docs/product-overview.md`; what we know about the framework and its gaps: `specs/000-product-context/spec.md`.
+
 ## Project Overview
 - **Type**: Python agentic pipeline for network activity automation using Google ADK
 - **Orchestrator**: Custom PipelineAgent(BaseAgent) — 7 agents with built-in milestones

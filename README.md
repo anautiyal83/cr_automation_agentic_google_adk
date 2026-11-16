@@ -2,6 +2,10 @@
 
 Agentic pipeline for telecom network activity automation using Google ADK (Agent Development Kit). Parses CIQ/MOP documents, gathers requirements via interactive questionnaire, generates YAML configs via LLM, validates via Java JARs, tests against MockWire simulator, with automatic retry loops on failures.
 
+New here? [docs/product-overview.md](docs/product-overview.md) explains in plain words what a CR is, how a change is
+done by hand, what the CR automation framework does and where this product fits; the framework knowledge and its
+gaps are in [specs/000-product-context](specs/000-product-context/spec.md).
+
 ## Quick Start
 
 ```powershell
