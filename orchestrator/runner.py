@@ -454,7 +454,7 @@ class PipelineRunner:
 
             is_cancelled = (
                 state.get("pipeline_cancelled")
-                or self._active_runs.get(run_id, {}).get("status") == "cancelled"
+                or self._active_runs.get(run_id, {}).get("status") in ("cancelled", "cancelling")
             )
 
             # Check for failure: session state, _active_runs, or step 10 not completed
@@ -526,7 +526,7 @@ class PipelineRunner:
                 # (it was marked cancelled and its checkpoint deleted — nothing came back, run e47b5409)
                 flow.flow("RUN INTERRUPTED by server stop — run_id=%s resumes at the next start", run_id[:8])
             else:
-                if info.get("status") in _LIVE:
+                if info.get("status") in (*_LIVE, "cancelling"):  # cancelling: a cancel never resumes
                     flow.flow("RUN STOPPED — run_id=%s: pipeline task ended without a final status", run_id[:8])
                     info["status"] = "cancelled"
                     await self._persist_run_status(run_id, "cancelled", "Pipeline task stopped")
@@ -538,7 +538,8 @@ class PipelineRunner:
     async def _monitor_milestones(self, run_id: str):
         """Monitor session state for milestone pauses and update runner status."""
         try:
-            while self._active_runs.get(run_id, {}).get("status") not in ("completed", "failed", "cancelled"):
+            while self._active_runs.get(run_id, {}).get("status") not in ("completed", "failed", "cancelled",
+                                                                          "cancelling"):
                 await asyncio.sleep(0.3)
 
                 # Read session state from cached session
@@ -674,15 +675,15 @@ class PipelineRunner:
         """The run in progress (``{"run_id", "started_by", "status"}``), if any. Only one pipeline
         runs at a time: milestone state is global (spec 006 — a new start must not silently
         cancel another user's run)."""
-        for rid, info in self._active_runs.items():
-            if info.get("status") in ("running", "paused_milestone", "paused_hil"):
+        for rid, info in self._active_runs.items():  # a cancelling run still works until its agent finishes
+            if info.get("status") in ("running", "paused_milestone", "paused_hil", "cancelling"):
                 return {"run_id": rid, "started_by": info.get("started_by", "cli"), "status": info["status"]}
         return None
 
     async def _cancel_active_runs(self):
         """Cancel all active pipeline/monitor tasks and clear stale milestone state."""
         for rid, info in list(self._active_runs.items()):
-            if info.get("status") in ("running", "paused_milestone"):
+            if info.get("status") in ("running", "paused_milestone", "cancelling"):
                 flow.flow("Cancelling stale run %s before new start", rid[:8])
                 # Cancel background tasks
                 for task_key in ("pipeline_task", "monitor_task"):
@@ -717,17 +718,18 @@ class PipelineRunner:
             pass
 
     async def cancel_run(self, run_id: str):
-        """Cancel a running pipeline."""
-        self.respond_milestone(run_id, 0, "cancel")
-        try:
-            sessions = await self._session_service.list_sessions(
-                app_name="netconfig", user_id="pipeline_user")
-            for s in sessions.sessions:
-                if s.id == run_id:
-                    s.state["pipeline_cancelled"] = True
-                    break
-        except Exception:
-            pass
+        """Cancel a pipeline wherever it is (OB-103): the pipeline reads the cancel action before and after every
+        agent, and a review (or step 1 question round) it waits at gets the decision 'cancel'. An agent at work
+        finishes first; until the run has stopped it is 'cancelling' and still holds the queue — the run end
+        persists 'cancelled'."""
+        info = self._active_runs.get(run_id)
+        ended = info is None or info.get("status") in ("completed", "failed", "cancelled")
+        pipeline_actions[run_id] = {"action": "cancel"}
+        for step_num, mw in list(milestone_waiting.items()):
+            if (mw or {}).get("waiting"):
+                self.respond_milestone(run_id, step_num, "cancel")
+        if not ended:  # respond_milestone said "cancelled": the run says so itself when it has stopped
+            info["status"] = "cancelling"
 
     def _build_initial_state(self, run_id: str, document_set: dict) -> dict:
         """Build initial session state from document set and config."""

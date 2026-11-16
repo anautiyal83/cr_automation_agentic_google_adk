@@ -2257,10 +2257,11 @@ class ProgressSection:
         except Exception:
             pass
 
-        await asyncio.sleep(2)
-
+        stopped = await self._wait_stopped(run_id)
         self._reset_to_default()
-        ui.notify("Pipeline stopped", type="warning")
+        ui.notify("Pipeline stopped" if stopped else
+                  "Stopping — the step at work finishes first, then the run stops (Pipeline Queue shows it)",
+                  type="warning")
         await record("run.stop", target_type="run", target_id=run_id, run_id=run_id)
 
     @requires("progress", "run.cancel")
@@ -2290,12 +2291,22 @@ class ProgressSection:
         except Exception:
             pass
 
-        # Show cancelling state for at least 2 seconds
-        await asyncio.sleep(2)
-
+        stopped = await self._wait_stopped(run_id)
         self._reset_to_default()
-        ui.notify("Pipeline cancelled", type="negative")
+        ui.notify("Pipeline cancelled" if stopped else
+                  "Cancelling — the step at work finishes first, then the run stops (Pipeline Queue shows it)",
+                  type="negative" if stopped else "warning")
         await record("run.cancel", target_type="run", target_id=run_id, run_id=run_id)
+
+    async def _wait_stopped(self, run_id: str, seconds: float = 3.0) -> bool:
+        """Whether a cancelled run has really stopped within ``seconds`` (an agent at work finishes first, OB-103)."""
+        deadline = time.monotonic() + seconds
+        while True:
+            if self.runner.get_status(run_id).get("status") in ("cancelled", "completed", "failed", "unknown"):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.3)
 
     async def _go_details(self):
         if self.active_run_id and self.on_view_details:

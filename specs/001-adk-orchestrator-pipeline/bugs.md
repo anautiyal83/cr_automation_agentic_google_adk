@@ -1911,3 +1911,39 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   attribute the recorded output lacks after its last attribute line (`{ciq:<col>}`: UNCHANGED / blank leave none).
 - Verified on a copy of the run (its own workflow + strict report script), steps 8 + 9: **2/2 pass** (EAST 44 steps,
   NORTH 60); each record's post read carries its own CIQ values, its pre read the recorded profile.
+
+### OB-102 — The UC export's workflow failed when run natively on Windows; nothing said to run it in WSL (High, Fixed 2026-11-16)
+- PGW export run by hand: `java -jar cli-automation-standalone.jar execute …` in Windows PowerShell. 12/13 commands
+  passed, then "Keep this record's preFullProfile for the later pass" (LOCAL, `printf '%s' "$(cat <<'NC_EOF' …)"` of
+  a 200-line LDIF) printed `dn:` instead of `NC_KEPT`. On Windows the JAR's LOCAL runner calls `bash` = the WSL
+  launcher (`WindowsApps\bash.exe`) through a Windows command line: double quotes are lost, `/path` → `C:/path`
+  (spec 013 P-6). The one-word `resolvedImsi` keep passed only because it survives unquoted. The command also ran
+  outside `scripts/`, where the later `python create_xml.py …` steps look for their scripts.
+- Step 9 never hits it (`jar_executor.in_wsl`: `wsl -d <distro> --cd <scripts> --exec java …`), but the export's
+  USER_GUIDE only said how to start the simulator, and the WSL setup lived in `docs/wsl-setup.md` (not exported).
+- **Fix** (`network_simulator_setup.guide`, `tools/uc_export`): the export ships `simulator/env_setup_windows.ps1` — checks
+  Windows build (mirrored networking), WSL + distro, WSL 2, `networkingMode=mirrored`, Java on Windows, and inside
+  WSL `env_setup_linux.sh --check`; lists what is missing, installs after confirming (`wsl --install -d`,
+  `--set-version`, `.wslconfig` edit + backup + `wsl --shutdown`, winget Temurin JRE, `env_setup_linux.sh` as root),
+  checks again, tests the simulator ports from WSL. `env_setup_linux.sh` (its WSL part, run as root) checks Java 8, python +
+  `python`, the helper scripts' non-stdlib modules and the LOCAL steps' commands (`local_requirements`, from the
+  overlay workflow + scripts) and installs the missing ones with apt-get. The guide's run section: Windows → setup,
+  `start_simulator.ps1 -Clean`, `cd ..\scripts`, `wsl -d <distro> --exec java -jar ../cli-automation-standalone.jar
+  …`, with a warning not to run it natively; Linux server (set up already) → the JAR from `scripts/`. Windows only
+  (user 2026-11-16): the scripts are named `env_setup_windows.ps1` / `env_setup_linux.sh`.
+
+### OB-103 — Cancel while a step was at work stopped nothing; the run went on and stayed "running" (High, Fixed 2026-11-16)
+- Run 7e668a02 (PGW, Re-run of 01cb2047): Cancel pressed at 08:02:36 while steps 3-5 worked. The screen reset and
+  said "Pipeline cancelled" after 2 s, the trail says `run.cancel done` — but the run wrote its step 5 QA report at
+  08:02:47, paused at the step 5 review and stayed `running` in the DB; the next Re-run was refused ("already has a
+  job"). Cancel at a review (01cb2047) worked.
+- `PipelineRunner.cancel_run` answered the review of "step 0" (the step 1 question round, not waiting) and set
+  `pipeline_cancelled` on a copy of the ADK session from `list_sessions` (session state is not shared) — never the
+  `pipeline_actions` cancel the pipeline loop reads before and after every agent. Its in-memory status became
+  `cancelled` at once, so `active_run()` saw a free pipeline while the run still worked.
+- **Fix** (`orchestrator/runner.py`, `ui/pages/progress_section.py`): `cancel_run` sets `pipeline_actions[run] =
+  cancel` and answers every review actually waiting (`milestone_waiting`) with `cancel`; the run is `cancelling` —
+  still the active run (no queued run starts beside it; a server stop does not resume it) — until it stops and
+  persists `cancelled`; an agent at work finishes first and nothing of it is cached (the existing in-agent check).
+  The screen waits up to 3 s: "Pipeline cancelled", else "Cancelling — the step at work finishes first".
+  `tests/test_cancel_run.py`; 485 tests pass.
