@@ -305,7 +305,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - UC export (step 10 artifacts tab + Run Artifacts, completed runs; `tools/uc_export.py`): zip of validation rules,
   JSON output, execution YAML, CIQ JSON, the helper scripts the workflow calls + inputs the CIQ names, and the simulator
   (JAR, configs, answers, start / stop scripts, empty VFS); one `USER_GUIDE.md`: every file described + the simulator
-  guide (servers, ports, how they work together, the workflow per server)
+  guide (servers, ports, how they work together, the workflow per server, running the JAR — in WSL on Windows);
+  `simulator/env_setup_windows.ps1` + `env_setup_linux.sh` check, then install, WSL / mirrored networking / Java 8 / python /
+  the LOCAL steps' modules + commands (`guide.local_requirements`, OB-102)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
 - Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers

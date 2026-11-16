@@ -4,6 +4,9 @@ execution YAML against them — with start / stop scripts beside the configs::
     <run_dir>/simulator/SIMULATOR_GUIDE.md
     <run_dir>/simulator/start_simulator.ps1 · start_simulator.sh   — every instance in the background
     <run_dir>/simulator/stop_simulator.ps1  · stop_simulator.sh
+    <run_dir>/simulator/env_setup_windows.ps1 · env_setup_linux.sh           — check, then install, what running the workflow
+                                                                     needs (WSL on Windows; Java 8, python, the LOCAL
+                                                                     steps' commands on Linux)
 
 Built from the files on disk (``manifest.json``, ``config/<instance>.yaml``), so the UC export
 (``tools/uc_export.py``) writes it for a run set up before the guide existed. The scripts use the
@@ -11,9 +14,11 @@ Built from the files on disk (``manifest.json``, ``config/<instance>.yaml``), so
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -21,7 +26,10 @@ from ruamel.yaml import YAML
 logger = logging.getLogger(__name__)
 
 GUIDE_NAME = "SIMULATOR_GUIDE.md"
-SCRIPT_NAMES = ("start_simulator.ps1", "start_simulator.sh", "stop_simulator.ps1", "stop_simulator.sh")
+SCRIPT_NAMES = ("start_simulator.ps1", "start_simulator.sh", "stop_simulator.ps1", "stop_simulator.sh",
+                "env_setup_windows.ps1", "env_setup_linux.sh")
+DEFAULT_WSL_DISTRO = "Ubuntu-24.04"
+CLI_JAR = "cli-automation-standalone.jar"
 DEFAULT_TTL_MINUTES = 240
 MAX_LISTED_COMMANDS = 25
 MAX_SHOWN_CHARS = 110
@@ -36,12 +44,15 @@ def write_guide(sim_dir: str | Path, uc_name: str, run_id: str = "") -> list[Pat
     if not instances:
         return []
     configs = _configs(sim_dir, instances)
+    modules, commands = local_requirements(sim_dir, uc_name)
     texts = {
         GUIDE_NAME: guide_markdown(sim_dir, uc_name, instances, configs, run_id),
         "start_simulator.ps1": _start_ps1(uc_name, instances),
         "start_simulator.sh": _start_sh(uc_name, instances),
         "stop_simulator.ps1": _STOP_PS1,
         "stop_simulator.sh": _STOP_SH,
+        "env_setup_windows.ps1": _env_setup_windows_ps1(uc_name, instances),
+        "env_setup_linux.sh": _env_setup_linux_sh(uc_name, modules, commands),
     }
     written = []
     for name, text in texts.items():
@@ -497,20 +508,157 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
     except Exception:
         params = {}
     ports = ", ".join(f"{i['name']} → {i['port']}" for i in instances)
-    command = (f"java -jar <cli-automation-standalone.jar> execute --json {data} "
-               f"--schema ../{uc_name}_validation-rules.yaml --yaml ../simulator/{uc_name}.yaml "
-               f"--node {node} --cr {cr} --output-dir ../exec_output")
-    command += "".join(f" --var {k}={v}" for k, v in params.items())
+    args = (f"execute --json {data} --schema ../{uc_name}_validation-rules.yaml --yaml ../simulator/{uc_name}.yaml "
+            f"--node {node} --cr {cr} --output-dir ../exec_output")
+    args += "".join(f" --var {k}={v}" for k, v in params.items())
+    distro = _distro()
+    modules, commands = local_requirements(sim_dir, uc_name)
+    inside = ["Java 8 (`openjdk-8-jre-headless`, the default `java`)", "`python3` and `python` (`python-is-python3`)"]
+    if modules:
+        inside.append("python modules " + ", ".join(f"`{m}`" for m in sorted(modules)))
+    if commands:
+        inside.append("the LOCAL steps' commands " + ", ".join(f"`{c}`" for c in sorted(commands)))
     return [
         "", "## Run the execution YAML against the simulator", "",
-        f"With the simulator started, run `{uc_name}.yaml` from this folder (ports: {ports}) with the "
-        "cli-automation JAR (not part of this bundle; it needs **Java 8** — it uses Nashorn), from the "
-        "`scripts/` folder, where the workflow's LOCAL steps find their helper scripts and input files:", "",
-        "```", command, "```", "",
+        f"With the simulator started, run `{uc_name}.yaml` (ports: {ports}) with the cli-automation JAR "
+        f"`{CLI_JAR}` — copy it into the package folder (beside `USER_GUIDE.md`) if it is not there. Run it "
+        "**from the `scripts/` folder**, where the workflow's LOCAL steps find their helper scripts and input files. "
+        "The JAR needs **Java 8** (it evaluates `when` / `expr` with Nashorn, gone since Java 15) and the LOCAL steps "
+        "need **Linux bash**.", "",
+        "**Not in Windows PowerShell directly:** there the JAR runs the LOCAL steps through a shell that drops their "
+        "double quotes and turns `/path` arguments into `C:/path`, so steps such as \"Keep this record's … for the "
+        "later pass\" fail. On Windows the JAR runs inside WSL, as the platform's step 9 does; the simulator stays "
+        "on Windows and WSL reaches it on `localhost` through mirrored networking.",
+        "", "### Windows: run it in WSL", "",
+        "**1. Prepare WSL (once).** In this folder (`simulator/`), PowerShell:", "",
+        "```powershell", "powershell -ExecutionPolicy Bypass -File .\\env_setup_windows.ps1", "```", "",
+        "It first checks everything and lists what is missing, installs it after you confirm, then checks again:", "",
+        "| Check | Installed with |",
+        "|---|---|",
+        "| Windows 11 22H2 or later (mirrored networking needs it) | — (cannot be installed) |",
+        f"| WSL with the `{distro}` distribution | `wsl --install -d {distro}` (create your Linux user when asked; "
+        "a first WSL install may need administrator rights and a restart — run the script again afterwards) |",
+        f"| `{distro}` runs on WSL 2 | `wsl --set-version {distro} 2` |",
+        "| Mirrored networking in `%UserProfile%\\.wslconfig` | `[wsl2]` `networkingMode=mirrored` (the old file kept "
+        "as `.wslconfig.bak`), then `wsl --shutdown` |",
+        "| Java on Windows (runs the simulator) | `winget install EclipseAdoptium.Temurin.21.JRE` |",
+        f"| Inside WSL: {'; '.join(inside)} | `env_setup_linux.sh`, which the script runs in WSL as root "
+        "(`apt-get`) |",
+        f"| `{CLI_JAR}` in the package folder | — (copy it there) |",
+        "| The simulator's ports reachable from WSL (when it is running) | — (the mirrored networking above) |", "",
+        f"Options: `-CheckOnly` (report only, change nothing), `-Yes` (install without asking), `-Distro <name>` "
+        f"(default `{distro}`). If Windows blocks the script as downloaded, `Unblock-File .\\env_setup_windows.ps1` first.", "",
+        "**2. Start the simulator** (Windows, empty simulated file systems):", "",
+        "```powershell", ".\\start_simulator.ps1 -Clean", "```", "",
+        "**3. Run the workflow in WSL, from the `scripts/` folder.** WSL starts in the current Windows folder, so the "
+        "relative paths hold; `--exec` starts `java` without a shell, so no argument is re-quoted:", "",
+        "```powershell", "cd ..\\scripts", f"wsl -d {distro} --exec java -jar ../{CLI_JAR} {args}", "```", "",
+        "**4. Results** are written to `exec_output/` in the package folder (`…_EXECUTION_REPORT_<node>.json`). Stop "
+        "the simulator with `.\\stop_simulator.ps1` (in `simulator/`). Start it with `-Clean` before each run: a run "
+        "leaves its files on the simulated nodes.",
+        "", "### Linux server", "",
+        "The automation server is already set up (Java 8, python): start the simulator and run the JAR from "
+        "`scripts/`:", "",
+        "```bash", "CLEAN=1 ./start_simulator.sh", "cd ../scripts", f"java -jar ../{CLI_JAR} {args}", "```", "",
         "`--node` / `--cr` pick one node group of the CIQ JSON; the `--var` values are the framework's "
         "runtime parameters as step 9 passed them. The simulator answers like the real nodes did in the "
         "uploaded transcripts — it is not the production network.",
     ]
+
+
+def _distro() -> str:
+    """The WSL distribution step 9 runs the JAR in (``execution.wsl_distro``), else Ubuntu 24.04."""
+    try:
+        from core.config import wsl_distro
+        return wsl_distro() or DEFAULT_WSL_DISTRO
+    except Exception:  # noqa: BLE001
+        return DEFAULT_WSL_DISTRO
+
+
+# apt packages of the python modules helper scripts import and of the commands LOCAL steps run (Debian / Ubuntu)
+_APT_MODULES = {"yaml": "python3-yaml", "PIL": "python3-pil", "bs4": "python3-bs4", "dateutil": "python3-dateutil"}
+_APT_COMMANDS = {
+    **dict.fromkeys(("sha256sum", "sha1sum", "sha512sum", "md5sum", "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir",
+                     "cut", "head", "tail", "sort", "uniq", "wc", "tr", "date", "basename", "dirname", "tee", "touch",
+                     "chmod", "chown", "ln", "stat", "du", "df", "sleep", "seq", "env", "realpath", "readlink",
+                     "split", "paste", "comm", "nl", "od", "base64"), "coreutils"),
+    "awk": "gawk", "gawk": "gawk", "grep": "grep", "egrep": "grep", "sed": "sed", "find": "findutils",
+    "xargs": "findutils", "tar": "tar", "gzip": "gzip", "gunzip": "gzip", "zcat": "gzip", "unzip": "unzip",
+    "zip": "zip", "bzip2": "bzip2", "xz": "xz-utils", "diff": "diffutils", "cmp": "diffutils",
+    "xmllint": "libxml2-utils", "jq": "jq", "sshpass": "sshpass", "ssh": "openssh-client", "scp": "openssh-client",
+    "sftp": "openssh-client", "curl": "curl", "wget": "wget", "bc": "bc", "dos2unix": "dos2unix", "file": "file",
+}
+# shell keywords / builtins, and what env_setup_linux.sh checks on its own
+_NOT_COMMANDS = {"if", "then", "else", "elif", "fi", "for", "do", "done", "while", "until", "case", "esac", "in",
+                 "function", "echo", "printf", "cd", "export", "test", "true", "false", "exit", "return", "local",
+                 "read", "set", "unset", "source", "eval", "exec", "shift", "break", "continue", "time", "command",
+                 "type", "declare", "let", "wait", "trap", "umask", "alias", "pwd", "sudo", "python", "python3",
+                 "java", "bash", "sh"}
+
+
+def local_requirements(sim_dir: str | Path, uc_name: str) -> tuple[dict[str, str], dict[str, str]]:
+    """What the workflow's LOCAL steps need on the machine that runs it: ``{python module: apt package}`` the helper
+    scripts they call import beyond the standard library, and ``{command: apt package ('' = none known)}`` of the
+    commands they run. Read from the overlay workflow and ``<run_dir>/scripts/``."""
+    sim_dir = Path(sim_dir)
+    overlay = _load(sim_dir / f"{uc_name}.yaml")
+    nodes = overlay.get("nodes") if isinstance(overlay.get("nodes"), dict) else {}
+    local = {"local", "LOCAL"} | {str(n) for n, v in nodes.items() if isinstance(v, dict) and v.get("type") == "local"}
+    sends: list[str] = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if str(value.get("node")) in local and isinstance(value.get("send"), str):
+                sends.append(value["send"])
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+    walk(overlay.get("phases"))
+
+    commands: dict[str, str] = {}
+    scripts: list[str] = []
+    for send in sends:
+        scripts += re.findall(r"\bpython[\d.]*\s+(?:\S*/)?([\w.-]+\.py)\b", send)
+        for cmd in _shell_commands(send):
+            commands.setdefault(cmd, _APT_COMMANDS.get(cmd, ""))
+    script_dir = sim_dir.parent / "scripts"
+    own = {f.stem for f in script_dir.glob("*.py")} if script_dir.is_dir() else set()
+    stdlib = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+    modules: dict[str, str] = {}
+    for name in dict.fromkeys(scripts):
+        try:
+            tree = ast.parse((script_dir / name).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            found = []
+            if isinstance(node, ast.Import):
+                found = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                found = [node.module]
+            for mod in (m.split(".")[0] for m in found):
+                if mod not in stdlib and mod not in own:
+                    modules.setdefault(mod, _APT_MODULES.get(mod, f"python3-{mod.lower()}"))
+    if "pandas" in modules:  # pandas reads the CIQ / input workbooks with openpyxl (OB-49)
+        modules.setdefault("openpyxl", "python3-openpyxl")
+    return modules, commands
+
+
+def _shell_commands(send: str) -> list[str]:
+    """The commands a LOCAL step's shell line runs: the first word of every pipeline / list / substitution part —
+    not heredoc bodies, quoted text or ``${…}`` values."""
+    text = re.sub(r"<<-?\s*'?(\w+)'?[^\n]*\n.*?\n\1\b", " ", send, flags=re.S)
+    text = re.sub(r"'[^']*'", " Q ", text).replace('"', " ")
+    text = re.sub(r"\$\{[^}]*\}", " V ", text)
+    out = []
+    for part in re.split(r"\|\||&&|[|;&\n`(){}!]", text):
+        words = [w for w in part.split() if not re.match(r"\w+=", w)]
+        if words and re.fullmatch(r"[A-Za-z][\w.+-]*", words[0]) and words[0] not in _NOT_COMMANDS \
+                and words[0] not in ("Q", "V") and not words[0].endswith((".py", ".sh")):
+            out.append(words[0])
+    return list(dict.fromkeys(out))
 
 
 def _start_ps1(uc_name: str, instances: list[dict]) -> str:
@@ -597,4 +745,253 @@ for f in logs/*.pid; do
     if kill "$(cat "$f")" 2>/dev/null; then echo "$name stopped"; else echo "$name was not running"; fi
     rm -f "$f"
 done
+"""
+
+
+def _env_setup_windows_ps1(uc_name: str, instances: list[dict]) -> str:
+    ports = ", ".join(str(int(i["port"])) for i in instances)
+    return (_ENV_SETUP_WINDOWS_PS1.replace("@@UC@@", uc_name).replace("@@DISTRO@@", _distro())
+            .replace("@@PORTS@@", ports).replace("@@CLI_JAR@@", CLI_JAR))
+
+
+def _env_setup_linux_sh(uc_name: str, modules: dict[str, str], commands: dict[str, str]) -> str:
+    return (_ENV_SETUP_LINUX_SH.replace("@@UC@@", uc_name)
+            .replace("@@MODULES@@", " ".join(f'"{m}:{p}"' for m, p in sorted(modules.items())))
+            .replace("@@COMMANDS@@", " ".join(f'"{c}:{p}"' for c, p in sorted(commands.items()))))
+
+
+# Windows: checks, then installs, what running the workflow in WSL needs (ASCII only: PowerShell 5.1 reads a file
+# without BOM in the ANSI code page)
+_ENV_SETUP_WINDOWS_PS1 = r"""# Prepares this Windows PC to run the @@UC@@ workflow with the cli-automation JAR inside WSL,
+# as the platform's step 9 does. Run natively on Windows, the JAR's LOCAL steps lose their double quotes and
+# "/path" arguments become "C:/path"; inside WSL they run under Linux bash, as on the production automation server.
+#
+# First checks everything and lists what is missing, then (after you confirm) installs it, then checks again:
+#   Windows 11 22H2+ | WSL with the distribution | WSL 2 | mirrored networking (WSL reaches the simulator on
+#   localhost) | Java on Windows (the simulator) | inside WSL: Java 8, python, the helper scripts' modules and the
+#   LOCAL steps' commands (env_setup_linux.sh) | the cli-automation JAR | the simulator reachable from WSL
+#
+# Run from this folder:  powershell -ExecutionPolicy Bypass -File .\env_setup_windows.ps1 [-Distro <name>] [-CheckOnly] [-Yes]
+param(
+    [string]$Distro = "@@DISTRO@@",
+    [switch]$CheckOnly,
+    [switch]$Yes
+)
+$ErrorActionPreference = "Stop"
+$env:WSL_UTF8 = "1"
+$Ports = @(@@PORTS@@)
+$Package = Split-Path $PSScriptRoot -Parent
+$CliJar = Join-Path $Package "@@CLI_JAR@@"
+$WslConfig = Join-Path $env:USERPROFILE ".wslconfig"
+$MinBuild = 22621
+
+function Invoke-Wsl([string[]]$WslArgs) {
+    $ErrorActionPreference = "Continue"
+    $out = & wsl.exe @WslArgs 2>&1
+    @{ Code = $LASTEXITCODE; Text = (($out | Out-String) -replace "`0", "").Trim() }
+}
+
+function Get-State {
+    $s = @{ Build = [Environment]::OSVersion.Version.Build; Distro = $false; Version = 0; Linux = $false; LinuxReport = "" }
+    if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+        foreach ($line in ((Invoke-Wsl @("-l", "-v")).Text -split "`r?`n")) {
+            if ($line -match ("^\*?\s*" + [regex]::Escape($Distro) + "\s+\S+\s+(\d)\s*$")) {
+                $s.Distro = $true
+                $s.Version = [int]$Matches[1]
+            }
+        }
+    }
+    $s.Mirrored = (Test-Path $WslConfig) -and ((Get-Content $WslConfig -Raw) -match "(?im)^[ \t]*networkingMode[ \t]*=[ \t]*mirrored[ \t]*\r?$")
+    $s.Java = [bool](Get-Command java -ErrorAction SilentlyContinue)
+    $s.CliJar = Test-Path $CliJar
+    if ($s.Distro -and $s.Version -eq 2) {
+        $r = Invoke-Wsl @("-d", $Distro, "-u", "root", "--cd", $PSScriptRoot, "--exec", "bash", "env_setup_linux.sh", "--check")
+        $s.Linux = $r.Code -eq 0
+        $s.LinuxReport = $r.Text
+    }
+    $s
+}
+
+function Row($Check, $Ok, $Fix) {
+    [pscustomobject]@{ Check = $Check; Status = $(if ($Ok) { "OK" } else { "MISSING" }); "Fixed with" = $(if ($Ok) { "" } else { $Fix }) }
+}
+
+function Show-State($s) {
+    $rows = @(
+        (Row "Windows 11 22H2 or later (build $($s.Build))" ($s.Build -ge $MinBuild) "cannot be installed: mirrored networking needs build $MinBuild or later"),
+        (Row "WSL with $Distro" $s.Distro "wsl --install -d $Distro"),
+        (Row "$Distro on WSL 2" ($s.Version -eq 2) "wsl --set-version $Distro 2"),
+        (Row "Mirrored networking (.wslconfig)" $s.Mirrored "networkingMode=mirrored in $WslConfig, then wsl --shutdown"),
+        (Row "Java on Windows (runs the simulator)" $s.Java "winget install EclipseAdoptium.Temurin.21.JRE"),
+        (Row "Inside WSL: Java 8, python, modules, commands" $s.Linux "env_setup_linux.sh in WSL as root (apt-get)"),
+        (Row "@@CLI_JAR@@ in the package folder" $s.CliJar "copy it to $Package (not installed by this script)")
+    )
+    $rows | Format-Table -AutoSize -Wrap | Out-String -Width 220 | Write-Host
+    if ($s.LinuxReport) {
+        Write-Host "Inside WSL ($Distro):"
+        Write-Host $s.LinuxReport
+        Write-Host ""
+    }
+}
+
+function Get-Missing($s) {
+    $m = @()
+    if ($s.Build -lt $MinBuild) { $m += "build" }
+    if (-not $s.Distro) { $m += "distro" } elseif ($s.Version -ne 2) { $m += "version" }
+    if (-not $s.Mirrored) { $m += "mirrored" }
+    if (-not $s.Java) { $m += "java" }
+    if (-not $s.Linux) { $m += "linux" }
+    $m
+}
+
+function Set-Mirrored {
+    $text = ""
+    if (Test-Path $WslConfig) {
+        $text = [string](Get-Content $WslConfig -Raw)
+        Copy-Item $WslConfig "$WslConfig.bak" -Force
+    }
+    if ($text -match "(?im)^[ \t]*networkingMode[ \t]*=") {
+        $text = $text -replace "(?im)^([ \t]*networkingMode[ \t]*=)[^\r\n]*", '${1}mirrored'
+    } elseif ($text -match "(?im)^[ \t]*\[wsl2\]") {
+        $text = $text -replace "(?im)^([ \t]*\[wsl2\][ \t]*)(?=\r?$)", "`$1`r`nnetworkingMode=mirrored"
+    } else {
+        $text = $text.TrimEnd() + "`r`n[wsl2]`r`nnetworkingMode=mirrored`r`n"
+    }
+    [IO.File]::WriteAllText($WslConfig, $text.TrimStart())
+    Write-Host "Mirrored networking set in $WslConfig (the old file is kept as .wslconfig.bak)."
+}
+
+function Test-Simulator {
+    foreach ($p in $Ports) {
+        if (-not (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)) {
+            Write-Host "Simulator port ${p}: not running - start it (.\start_simulator.ps1), then .\env_setup_windows.ps1 -CheckOnly tests that WSL reaches it."
+            continue
+        }
+        $r = Invoke-Wsl @("-d", $Distro, "--exec", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$p")
+        if ($r.Code -eq 0) { Write-Host "Simulator port ${p}: reachable from WSL" }
+        else { Write-Host "Simulator port ${p}: NOT reachable from WSL - check networkingMode=mirrored in $WslConfig, then run: wsl --shutdown" }
+    }
+}
+
+function Finish($s) {
+    $missing = @(Get-Missing $s)
+    if ($s.Distro -and $s.Version -eq 2) { Test-Simulator }
+    if (-not $s.CliJar) { Write-Host "Copy @@CLI_JAR@@ to $Package before running the workflow." }
+    if ($missing.Count -eq 0) {
+        Write-Host "Ready. Next: .\start_simulator.ps1 -Clean, then run the workflow in WSL from ..\scripts (USER_GUIDE.md, 'Run the execution YAML against the simulator')."
+        exit 0
+    }
+    Write-Host ("Still missing: " + ($missing -join ", "))
+    exit 1
+}
+
+Write-Host "== Checking (nothing is changed) =="
+$state = Get-State
+Show-State $state
+$missing = @(Get-Missing $state)
+if ($missing.Count -eq 0 -or $CheckOnly) { Finish $state }
+if ($missing -contains "build") {
+    Write-Host "This Windows (build $($state.Build)) has no mirrored networking: WSL cannot reach the simulator on localhost. Windows 11 22H2 (build $MinBuild) or later is needed."
+    exit 1
+}
+if (-not $Yes) {
+    $answer = Read-Host ("Install what is missing (" + ($missing -join ", ") + ")? [Y/n]")
+    if ($answer -match "^\s*(n|no)\s*$") { exit 1 }
+}
+
+Write-Host "== Installing =="
+if ($missing -contains "distro") {
+    Write-Host "Installing WSL with $Distro. When $Distro asks, create a Linux user name and password; if it then shows a Linux prompt, type exit to come back here."
+    & wsl.exe --install -d $Distro
+    $state = Get-State
+    if (-not $state.Distro) {
+        Write-Host "$Distro is not ready yet. If Windows asked for a restart, restart; if the install needs administrator rights, open PowerShell as administrator. Then run this script again."
+        exit 1
+    }
+}
+if ($state.Version -ne 2) { & wsl.exe --set-version $Distro 2 }
+if (-not $state.Mirrored) {
+    Set-Mirrored
+    Write-Host "Restarting WSL so that it takes effect (wsl --shutdown closes open WSL windows)."
+    & wsl.exe --shutdown
+}
+if (-not $state.Java) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        & winget install --id EclipseAdoptium.Temurin.21.JRE -e --accept-source-agreements --accept-package-agreements
+        $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+    } else {
+        Write-Host "winget is not available: install Java 8 or later for Windows (e.g. https://adoptium.net), then run this script again."
+    }
+}
+& wsl.exe -d $Distro -u root --cd $PSScriptRoot --exec bash env_setup_linux.sh
+
+Write-Host ""
+Write-Host "== Checking again =="
+$state = Get-State
+Show-State $state
+Finish $state
+"""
+
+# The WSL side of the Windows setup (a Linux server is set up already): checks, then installs with apt-get, Java 8,
+# python and what the LOCAL steps run
+_ENV_SETUP_LINUX_SH = r"""#!/usr/bin/env bash
+# The WSL part of env_setup_windows.ps1, which runs it inside WSL as root: checks what the @@UC@@
+# workflow needs on the Linux side to run with the cli-automation JAR, lists what is missing, then installs it with
+# apt-get and checks again:
+#   Java 8 (the JAR evaluates when / expr with Nashorn, gone since Java 15), python3 and "python" (the workflow runs
+#   python <script>.py), the python modules of the helper scripts, the commands of the workflow's LOCAL steps.
+# By hand inside WSL: sudo ./env_setup_linux.sh [--check]      --check: report only, change nothing
+cd "$(dirname "$0")"
+CHECK_ONLY=0
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
+MODULES=(@@MODULES@@)     # python module:apt package
+COMMANDS=(@@COMMANDS@@)   # command:apt package (none = no known package)
+SUDO=""
+[ "$(id -u)" = "0" ] || SUDO="sudo"
+
+java8() { java -version 2>&1 | grep -q 'version "1\.8\.'; }
+
+check() {  # <what> <apt package> <test command...>
+    local what="$1" pkg="$2"
+    shift 2
+    if "$@" >/dev/null 2>&1; then
+        printf '  OK       %s\n' "$what"
+    elif [ -n "$pkg" ]; then
+        printf '  MISSING  %s  (apt: %s)\n' "$what" "$pkg"
+        MISSING+=("$pkg")
+    else
+        printf '  WARNING  %s not found, no known package: install it by hand if the workflow needs it\n' "$what"
+    fi
+}
+
+check_all() {
+    MISSING=()
+    check "Java 8 (java -version 1.8)" openjdk-8-jre-headless java8
+    check "python3" python3 command -v python3
+    check "python (the workflow runs 'python <script>.py')" python-is-python3 command -v python
+    for m in "${MODULES[@]}"; do check "python module ${m%%:*}" "${m#*:}" python3 -c "import ${m%%:*}"; done
+    for c in "${COMMANDS[@]}"; do check "command ${c%%:*}" "${c#*:}" command -v "${c%%:*}"; done
+}
+
+use_java8() {  # Java 8 as the default java when another one is installed too
+    local j
+    j="$(update-alternatives --list java 2>/dev/null | grep -m1 'java-8')"
+    [ -n "$j" ] && $SUDO update-alternatives --set java "$j" >/dev/null
+}
+
+echo "Checking (nothing is changed):"
+check_all
+[ ${#MISSING[@]} -eq 0 ] && { echo "Everything is in place."; exit 0; }
+[ "$CHECK_ONLY" = "1" ] && exit 1
+command -v apt-get >/dev/null 2>&1 || { echo "apt-get not found: install the packages above by hand."; exit 1; }
+PACKAGES=($(printf '%s\n' "${MISSING[@]}" | sort -u))
+echo "Installing: ${PACKAGES[*]}"
+$SUDO apt-get update -q || exit 1
+$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${PACKAGES[@]}" || exit 1
+use_java8
+echo "Checking again:"
+check_all
+[ ${#MISSING[@]} -eq 0 ] && { echo "Everything is in place."; exit 0; }
+echo "Still missing: ${MISSING[*]}"
+exit 1
 """

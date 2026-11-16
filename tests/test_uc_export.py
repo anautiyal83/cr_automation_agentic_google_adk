@@ -90,7 +90,8 @@ def test_guide_says_how_to_start_log_in_and_run_the_workflow(tmp_path):
     rd, _ = _run(tmp_path)
     written = write_guide(rd / "simulator", UC, run_id=rd.name)
     assert {p.name for p in written} == {GUIDE_NAME, "start_simulator.ps1", "start_simulator.sh",
-                                         "stop_simulator.ps1", "stop_simulator.sh"}
+                                         "stop_simulator.ps1", "stop_simulator.sh", "env_setup_windows.ps1",
+                                         "env_setup_linux.sh"}
     guide = (rd / "simulator" / GUIDE_NAME).read_text(encoding="utf-8")
     # the UC's servers: ports, what they simulate, how to start each
     assert "| PGW | 22201 | PGW | pgwggn01 | oamsys / netconf-sim |" in guide
@@ -117,6 +118,53 @@ def test_guide_says_how_to_start_log_in_and_run_the_workflow(tmp_path):
     sh = (rd / "simulator" / "start_simulator.sh").read_bytes()
     assert b"\r\n" not in sh and b"start PGW 22201" in sh and b"start RDS 22200" in sh
     assert '@{ Name = "PGW"; Port = 22201 }' in (rd / "simulator" / "start_simulator.ps1").read_text(encoding="utf-8")
+    # how to run the JAR: in WSL on Windows (never natively), from scripts/, after the setup script
+    assert "powershell -ExecutionPolicy Bypass -File .\\env_setup_windows.ps1" in guide
+    assert "cd ..\\scripts\nwsl -d Ubuntu-24.04 --exec java -jar ../cli-automation-standalone.jar execute" in guide
+    assert "**Not in Windows PowerShell directly:**" in guide and "### Linux server" in guide
+    assert "sudo ./env_setup_linux.sh" not in guide  # a Linux server is set up already
+
+
+def test_setup_scripts_check_then_install_what_the_workflow_needs(tmp_path):
+    """The WSL setup (export): check everything first, then install, then check again; the Linux side checks Java
+    8, python, the helper scripts' modules and the LOCAL steps' commands — derived from this UC's workflow."""
+    from skills.network_simulator_setup.guide import local_requirements
+    rd, _ = _run(tmp_path)
+    sim = rd / "simulator"
+    (rd / "scripts" / "build_report.py").write_text(
+        "import os, sys\nimport pandas as pd\nfrom lxml import etree\nfrom create_xml import x\n", encoding="utf-8")
+    overlay = OVERLAY + (
+        "    - {node: LOCAL, send: \"python build_report.py --in '${rec.data.INPUT_FILE}'\"}\n"
+        "    - node: LOCAL\n"
+        "      send: |-\n"
+        "        mkdir -p nc_records && printf '%s' \"$(cat <<'NC_EOF'\n"
+        "        dn: uid=1 | EOF_LIKE\n"
+        "        NC_EOF\n"
+        "        )\" > nc_records/x_$(printf '%s' 'a|b' | sha1sum | cut -c1-12).txt && echo NC_KEPT\n"
+        "    - {node: LOCAL, send: \"sha256sum ${ORDER_NO}.xml | awk '{print $1}'\"}\n"
+        "    - {node: LOCAL, send: \"frobnicate --all\"}\n"
+        "    - {node: PGW, send: \"tar -cf /tmp/b.tar /srv\"}\n")
+    (sim / f"{UC}.yaml").write_text(overlay, encoding="utf-8")
+    modules, commands = local_requirements(sim, UC)
+    assert modules == {"pandas": "python3-pandas", "lxml": "python3-lxml", "openpyxl": "python3-openpyxl"}
+    assert commands == {"mkdir": "coreutils", "cat": "coreutils", "sha1sum": "coreutils", "cut": "coreutils",
+                        "sha256sum": "coreutils", "awk": "gawk", "frobnicate": ""}  # not the node's tar
+    write_guide(sim, UC, run_id=rd.name)
+    sh = (sim / "env_setup_linux.sh").read_bytes()
+    assert b"\r\n" not in sh
+    sh = sh.decode("utf-8")
+    assert 'MODULES=("lxml:python3-lxml" "openpyxl:python3-openpyxl" "pandas:python3-pandas")' in sh
+    assert '"awk:gawk"' in sh and '"frobnicate:"' in sh
+    assert "openjdk-8-jre-headless java8" in sh and "python-is-python3 command -v python" in sh
+    # report first, install only what is missing, then check again
+    assert sh.index("check_all\n[ ${#MISSING[@]} -eq 0 ]") < sh.index("apt-get install") < sh.index('echo "Checking again:"')
+    ps1 = (sim / "env_setup_windows.ps1").read_text(encoding="utf-8")
+    assert ps1.isascii() and '[string]$Distro = "Ubuntu-24.04"' in ps1 and "$Ports = @(22200, 22201)" in ps1
+    assert ps1.index("== Checking (nothing is changed) ==") < ps1.index("== Installing ==") < ps1.index("== Checking again ==")
+    assert '"env_setup_linux.sh", "--check"' in ps1 and "networkingMode=mirrored" in ps1
+    assert "@@" not in ps1 and "@@" not in sh
+    guide = (sim / GUIDE_NAME).read_text(encoding="utf-8")
+    assert "python modules `lxml`, `openpyxl`, `pandas`" in guide
 
 
 def test_no_guide_without_a_started_simulator(tmp_path):
@@ -134,11 +182,13 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
                  "simulator/mockwire.jar", "simulator/config/PGW.yaml", f"simulator/{UC}.yaml",
                  "simulator/start_simulator.ps1", "simulator/start_simulator.sh",
                  "simulator/stop_simulator.ps1", "simulator/stop_simulator.sh",
+                 "simulator/env_setup_windows.ps1", "simulator/env_setup_linux.sh",
                  "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/vfs/RDS/", "simulator/logs/"):
         assert f"{UC}/{name}" in names, name
     # the run's logs, events, LLM output, manifest and what step 9 left on the nodes stay out
     assert not [n for n in names if n.endswith((".jsonl", "raw.txt", "manifest.json", "left_by_step9.xml"))]
     assert z.getinfo(f"{UC}/simulator/start_simulator.sh").external_attr >> 16 & 0o111
+    assert z.getinfo(f"{UC}/simulator/env_setup_linux.sh").external_attr >> 16 & 0o111
     # one user guide: every file with what it is, then the simulator part (headings one level down, code intact)
     assert not [n for n in names if n.endswith(("README.md", "SIMULATOR_GUIDE.md"))]
     # from scripts/: the helper the workflow calls and the input the CIQ names — not leftovers

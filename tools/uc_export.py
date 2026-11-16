@@ -122,7 +122,9 @@ def user_guide(run_dir: Path, uc_name: str, files: list[str], dirs: list[str]) -
         "run this activity, and a network simulator to try them without the production network.",
         "",
         "Quick start: `cd simulator`, then `.\\start_simulator.ps1` (Windows) or `./start_simulator.sh` (Linux / WSL / "
-        "macOS) — see **Network simulator** below.",
+        "macOS) — see **Network simulator** below. To run the workflow against it on Windows, prepare WSL once with "
+        "`powershell -ExecutionPolicy Bypass -File .\\env_setup_windows.ps1` and run the JAR in WSL — see **Run the execution "
+        "YAML against the simulator**.",
         "",
         "## Files in this package",
         "",
@@ -210,6 +212,12 @@ def _descriptions(run_dir: Path, uc_name: str):
         if name.startswith("stop_simulator"):
             return "Stops the servers the start script started" + (" (Windows PowerShell)" if name.endswith(".ps1")
                                                                     else " (Linux / WSL / macOS)")
+        if name == "env_setup_windows.ps1":
+            return ("Prepares Windows to run the workflow in WSL: checks WSL, the distribution, mirrored networking, "
+                    "Java and what the LOCAL steps need, lists what is missing, installs it, checks again")
+        if name == "env_setup_linux.sh":
+            return ("The WSL part of `env_setup_windows.ps1`, which runs it inside WSL: checks, then installs with "
+                    "apt-get, Java 8, python, the helper scripts' modules, the LOCAL steps' commands")
         return "—"
     return describe
 
