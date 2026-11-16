@@ -21,3 +21,6 @@ config/seed.json
 
 # NiceGUI server-side storage (login sessions)
 .nicegui/
+
+# Claude Code personal settings (local permissions)
+.claude/settings.local.json

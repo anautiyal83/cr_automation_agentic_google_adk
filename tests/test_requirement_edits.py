@@ -244,3 +244,20 @@ def test_edit_from_a_later_review_is_applied_when_step_1_runs_again(tmp_path, mo
     assert calls == ["analyze", ("edit", "CRFRoutePriorityList is not part of it", ("CRFRoutePriorityList",)),
                      "reanalyze", "compile"]
     assert not (tmp_path / requirement_edits.FILE).exists()
+
+
+def test_compiled_requirements_with_null_parts_merge_with_the_previous_run():
+    """EIR steps 1-2 crashed again (2026-11-11): the LLM compiled a whole category as null, and
+    merge_previous_requirements read it with .get ('NoneType' object has no attribute 'get')."""
+    from skills.requirement_gathering.compiler import merge_previous_requirements, normalize_compiled
+    current = normalize_compiled({"category_1_node_activity": {"nodes": [{"name": "EIR", "ssh": None}, None]},
+                                  "category_3_orchestration": None, "developer_answers": None})
+    assert current["category_3_orchestration"] == {} and current["category_1_node_activity"]["nodes"] == [
+        {"name": "EIR", "ssh": {}}]
+    previous = {"category_3_orchestration": {"grouping": {"column": "ZONE"}}, "developer_answers": {"q1": "a"}}
+    merged = merge_previous_requirements(current, previous)
+    assert merged["category_3_orchestration"]["grouping"] == {"column": "ZONE"}
+    assert merged["developer_answers"] == {"q1": "a"}
+    assert merge_previous_requirements({"category_2_commands": None}, {"category_2_commands": {"x": 1}}) == {
+        "category_2_commands": {"x": 1}}
+    assert normalize_compiled(None) == {}

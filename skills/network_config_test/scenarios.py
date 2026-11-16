@@ -75,7 +75,9 @@ class WorkflowStep:
 
     @property
     def is_prompt_step(self) -> bool:
-        return bool(_PROMPT_STEP.match(self.send))
+        """su / exit and the commands that open a nested shell (spec 013): they wait for a prompt, not an output."""
+        from skills.network_config_gen.sessions import enter_kind
+        return bool(_PROMPT_STEP.match(self.send)) or bool(enter_kind(self.send))
 
 
 def phase_kind(name: str, body: dict | None = None) -> str:
@@ -196,11 +198,26 @@ def java_regex_matches(regex: str, text: str) -> bool:
     2026-11-04, run c89f65c2)."""
     if not text.strip("\r\n") and _has_caret(regex):
         return False
-    py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+    py, flags = java_to_python(regex)
     try:
-        return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE) is not None
+        return re.search(py, text.replace("\r\n", "\n"), re.MULTILINE | flags) is not None
     except re.error:
         return False
+
+
+_INLINE_FLAGS = re.compile(r"\(\?([imsx]+)\)")
+
+
+def java_to_python(regex: str) -> tuple[str, int]:
+    """A Java regex for Python's ``re``: named groups ``(?<n>…)`` → ``(?P<n>…)``; an inline flag group later in the
+    pattern (``(?:(?i).+?)`` — Java scopes it, Python 3.11+ rejects it: run 6570694d's IFC check never matched and
+    step 8 kept an empty answer, OB-93) becomes a flag of the whole pattern (a superset of what Java matches)."""
+    py = re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", regex)
+    flags = 0
+    for m in _INLINE_FLAGS.finditer(py):
+        for ch in m.group(1):
+            flags |= {"i": re.I, "m": re.M, "s": re.S, "x": re.X}[ch]
+    return _INLINE_FLAGS.sub("", py), flags
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +467,12 @@ class ScenarioSuite:
                                                "simulator_issues": ["no simulator instances"],
                                                "workflow_issues": [], "unmatched_commands": []})
         node_instance = {n: i["name"] for i in instances for n in (i.get("nodes") or [i["name"]])}
-        base = {i["name"]: (self.sim_dir / "config" / f"{i['name']}.yaml").read_text(encoding="utf-8")
-                for i in instances}
+        # behind a gateway: the node's own instance (its config, its events), not the gateway's
+        node_instance.update({n: pr["name"] for i in instances for pr in i.get("profiles") or []
+                              for n in pr.get("nodes") or [pr["name"]]})
+        base = {name: (self.sim_dir / "config" / f"{name}.yaml").read_text(encoding="utf-8")
+                for name in [i["name"] for i in instances] + [pr["name"] for i in instances
+                                                               for pr in i.get("profiles") or []]}
         for old in (self.out_root, self.report_dir):
             if old.exists():
                 shutil.rmtree(old, ignore_errors=True)
@@ -517,6 +538,11 @@ class ScenarioSuite:
             inst = node_instance.get(sc.fault.node)
             if inst:
                 configs[inst] = inject_fault(base[inst], sc.fault)
+        # post-activity answers holding CIQ values: this case's own record (OB-87)
+        records = case_records(sc.target)
+        for name, text in list(configs.items()):
+            if "{ciq" in text:
+                configs[name] = fill_ciq(text, records, self._cell_rules())
         return configs
 
     # -- one case -------------------------------------------------------------
@@ -533,7 +559,8 @@ class ScenarioSuite:
                 from ruamel.yaml import YAML
                 staged = stage_upload_inputs(
                     YAML(typ="safe").load(Path(self.workflow_path).read_text(encoding="utf-8")) or {},
-                    sc.target[0], sc.target[1], sc.target[2], self.plan["local_cwd"])
+                    sc.target[0], sc.target[1], sc.target[2], self.plan["local_cwd"],
+                    samples=self.plan.get("sample_inputs"))
                 if staged:
                     logger.info("Scenario %s: staged %d upload input(s): %s", sc.id, len(staged),
                                 ", ".join(Path(s).name for s in staged))
@@ -555,8 +582,12 @@ class ScenarioSuite:
             shutil.copytree(self.sim_dir / "vfs", out_dir / "vfs_after", dirs_exist_ok=True)
             if sc.kind == "rollback" and vfs_from is not None:
                 await self.control.stop()
-                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs")
+                result.restore_diff = node_files_diff(Path(vfs_from).parent / "vfs_before", self.sim_dir / "vfs",
+                                                      written_files(steps))
             evaluate(result, steps, node_instance)
+            if result.status == "FAIL" and result.classification != "simulator" \
+                    and failed_on_invented_answers(result, self._synthetic_keys()):
+                result.classification = "simulator"
             if not result.commands and exec_result.get("stdout"):
                 result.error = exec_result["stdout"][-600:]
             if report and self.report_jar:
@@ -597,10 +628,31 @@ class ScenarioSuite:
             shutil.copytree(vfs_from, self.sim_dir / "vfs", dirs_exist_ok=True)
         sim = await start_simulator(
             self.sim_dir,
-            [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []))
-             for i in instances],
+            [SimulatorInstance(name=i["name"], port=int(i["port"]), nodes=list(i.get("nodes") or []),
+                               profiles=list(i.get("profiles") or [])) for i in instances],
             mockwire_jar=self.mockwire_jar, java_home=self.java_home, host=self.host)
         self.control.register(sim)
+
+    def _cell_rules(self) -> dict:
+        """The UC's confirmed CIQ cell rules (``shared/ciq_cells``, from the run's requirements)."""
+        if not hasattr(self, "_cell_rules_cache"):
+            from shared import ciq_cells
+            try:
+                req = json.loads((Path(self.run_dir) / "requirements.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, AttributeError):
+                req = {}
+            self._cell_rules_cache = ciq_cells.rules(req)
+        return self._cell_rules_cache
+
+    def _synthetic_keys(self) -> set[str]:
+        """Step 8's keys of LLM-invented answers, over all instances (``simulator/synthetic_keys.json``)."""
+        if not hasattr(self, "_synthetic_cache"):
+            try:
+                data = json.loads((self.sim_dir / "synthetic_keys.json").read_text(encoding="utf-8"))
+                self._synthetic_cache = {k for keys in data.values() for k in keys}
+            except (OSError, ValueError, AttributeError):
+                self._synthetic_cache = set()
+        return self._synthetic_cache
 
     def _collect_events(self, out_dir: Path) -> list[dict]:
         events: list[dict] = []
@@ -614,6 +666,42 @@ class ScenarioSuite:
                 except ValueError:
                     continue
         return events
+
+
+def case_records(target: tuple[str, str, str]) -> list[dict]:
+    """The CIQ records of a test case's node group, in order (``target`` = json file, node, CR group)."""
+    from tools.ciq_json import node_groups
+    json_file, node, cr_group = target
+    try:
+        doc = json.loads(Path(json_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    for cr, group in node_groups(doc):
+        if (not cr_group or cr == cr_group) and node in [str(n.get("node")) for n in group.get("nodes") or []]:
+            seqs = group.get("configSequences") or [{}]
+            records = ((seqs[0] or {}).get("records") or []) if seqs else []
+            return [dict((r or {}).get("data") or {}) for r in records]
+    return []
+
+
+def case_record(target: tuple[str, str, str]) -> dict:
+    """The first CIQ record of a test case's node group."""
+    return (case_records(target) or [{}])[0]
+
+
+def fill_ciq(config_text: str, records: dict | list[dict], rules: dict | None = None) -> str:
+    """An instance config with its CIQ lines filled for a case's records (``state_changes``: a read chain of a record
+    loop gets one pass per record, other lines the first record's values; the UC's cell rules)."""
+    from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
+    from skills.network_simulator_setup.state_changes import expand_records, resolve_ciq
+    records = [records] if isinstance(records, dict) else list(records or [])
+    cfg = parse_yaml(config_text)
+    if not isinstance(cfg, dict):
+        return config_text
+    changed = expand_records(cfg, records, rules)
+    if not resolve_ciq(cfg, (records or [{}])[0], rules) and not changed:
+        return config_text
+    return dump_yaml(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -753,9 +841,47 @@ def _commands(report: dict) -> list[CommandResult]:
     ) for key, info in (report.get("data") or {}).items() if isinstance(info, dict)]
 
 
-def node_files_diff(before: Path, after: Path) -> list[str]:
+_STEP_CHECKS = ("Every executed step passed", "Every rollback step passed", "Run reported PASS")
+
+
+def failed_on_invented_answers(result: "ScenarioResult", synthetic: set[str]) -> bool:
+    """The case failed only on steps, and every failing remote step was answered by an answer the LLM invented
+    for the simulator: those are built to pass the step's own check, so a failure is the simulator's (retry step 8,
+    step 6's workflow kept) — `ls -lrths /tmp/bulkProvisioning.json` answered with the bare file name (OB-51).
+    Recorded real output or the VFS failing a step is the workflow's."""
+    if not synthetic or any(not c.ok and not c.description.startswith(_STEP_CHECKS) for c in result.checks):
+        return False
+    failed = [c for c in result.commands if not c.success or c.validation_status == "failed"]
+    if not failed:
+        return False
+    for c in failed:
+        if str(c.node).upper() == "LOCAL":
+            return False  # the automation server's own steps: no simulator answer involved
+        keys = [str(e.get("matchedKey") or "") for e in result.events if str(e.get("input", "")).strip() == c.command.strip()]
+        if not keys or not all(k in synthetic for k in keys):
+            return False
+    return True
+
+
+def written_files(steps: list[WorkflowStep]) -> list[re.Pattern]:
+    """Files the workflow writes with ``cmd > file`` (``${…}`` = any name part): evidence such as production's
+    ``org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt``, kept on the node and zipped — a
+    rollback leaves them on purpose (OB-40)."""
+    from skills.network_simulator_setup.vfs_commands import _simple_commands, redirect_targets
+    patterns = []
+    for step in steps:
+        for simple in _simple_commands(step.send or ""):
+            for target in redirect_targets(simple):
+                if target.startswith("/") and not target.startswith("/tmp/"):
+                    parts = re.split(r"\$\{[^}]*\}", target)
+                    patterns.append(re.compile("[^/]*".join(re.escape(p) for p in parts)))
+    return patterns
+
+
+def node_files_diff(before: Path, after: Path, written: list[re.Pattern] | None = None) -> list[str]:
     """Files of the simulated nodes that differ between two VFS snapshots — outside /tmp (backups,
-    lists, staged inputs) and the repo server: what a rollback must have put back."""
+    lists, staged inputs) and the repo server: what a rollback must have put back. New files the workflow itself
+    writes (``written``, evidence dumps) are not left-overs."""
     from skills.network_config_gen.structure import _repo_config
     repo = _repo_config()["node"]
 
@@ -771,7 +897,8 @@ def node_files_diff(before: Path, after: Path) -> list[str]:
         return out
     b, a = files(Path(before)), files(Path(after))
     diff = [f"missing: /{k.partition('/')[2]}" for k in sorted(b.keys() - a.keys())]
-    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())]
+    diff += [f"left behind: /{k.partition('/')[2]}" for k in sorted(a.keys() - b.keys())
+             if not any(p.fullmatch("/" + k.partition("/")[2]) for p in written or [])]
     diff += [f"changed: /{k.partition('/')[2]}" for k in sorted(b.keys() & a.keys()) if a[k] != b[k]]
     return diff
 
@@ -822,8 +949,16 @@ def evaluate(result: ScenarioResult, steps: list[WorkflowStep], node_instance: d
         result.actual = (f"{len(cmds)} steps ran, {len(failed)} failed; run {result.overall_status}")
     elif sc.kind == "rollback":
         # matched against the rollback's steps only: the backup's identical sha256sum came first
-        idx = align(cmds, [s for s in steps if s.phase_kind == "rollback"])
-        outside = [c for c, i in zip(cmds, idx) if i is None or steps[i].phase_kind != "rollback"]
+        rollback_steps = [s for s in steps if s.phase_kind == "rollback"]
+
+        def norm(phase: str) -> str:  # the report says ROLLBACK_CONFIGURATION, the workflow rollback_configuration
+            return re.sub(r"[_\s-]", "", str(phase or "")).lower()
+        rollback_phases = {norm(s.phase) for s in rollback_steps}
+        idx = align(cmds, rollback_steps)
+        # the report's own phase decides; the alignment only when it gives none. Its index counts the rollback
+        # steps — read as an index of all steps, a rollback download was "outside" the rollback (OB-47)
+        outside = [c for c, i in zip(cmds, idx)
+                   if (norm(c.phase) not in rollback_phases if c.phase else i is None)]
         checks.append(Check("Rollback steps ran", bool(cmds),
                             f"{len(cmds)} commands" if cmds else
                             "nothing ran: the rollback steps are skipped without values from earlier phases"))

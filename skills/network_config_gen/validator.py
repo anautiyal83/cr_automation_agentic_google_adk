@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any
 
-from .autofix import parse_yaml, is_placeholder
+from .autofix import _walk_all_steps, parse_yaml, is_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,9 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
         errors.append("'nodes' must be a mapping")
 
     # Collect known node names
-    known_nodes = set()
+    known_nodes = {"local", "LOCAL"}  # the framework provides the automation server (production declares none)
     if isinstance(nodes, dict):
-        known_nodes = set(nodes.keys())
+        known_nodes |= set(nodes.keys())
 
     # Must have phases
     phases = parsed.get("phases", {})
@@ -84,12 +84,23 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
                     step_errors = _validate_step(step, j, phase_name, known_nodes, known_registers)
                     errors.extend(step_errors)
 
-    errors.extend(check_placeholders(parsed, node_fields=((expected or {}).get("record_columns") or {}).get("node_fields")))
+    rc = (expected or {}).get("record_columns") or {}
+    errors.extend(check_placeholders(parsed, node_fields=rc.get("node_fields"), node_types=rc.get("node_types")))
     errors.extend(check_file_flows(parsed))
     errors.extend(check_expr_vars(parsed))
     errors.extend(check_empty_registers(parsed))
     errors.extend(check_file_listing_regexes(parsed))
     errors.extend(check_script_arguments(parsed))
+    errors.extend(check_shell_in_regexes(parsed))
+    errors.extend(check_listing_counts(parsed))
+    errors.extend(check_checked_before_load(parsed))
+    errors.extend(check_wildcard_removals(parsed))
+    errors.extend(check_grep_filter_checks(parsed))
+    errors.extend(check_restore_sources(parsed))
+    errors.extend(check_helper_script_nodes(parsed, list((expected or {}).get("mop_commands") or [])
+                                            + [str(c.get("command") or "") for c in command_samples or []
+                                               if isinstance(c, dict)]))
+    errors.extend(check_iteration(parsed))
     errors.extend(check_unbalanced_quotes(parsed))
     errors.extend(check_condition_syntax(parsed))
     errors.extend(check_record_columns(parsed, (expected or {}).get("record_columns")))
@@ -105,6 +116,283 @@ def validate_workflow(yaml_text: str, command_samples: list[dict] | None = None,
         errors.extend(check_alternative_columns(parsed, ciq_sheets))
         errors.extend(check_request_inputs(parsed, ciq_sheets, (expected or {}).get("request_columns") or {}))
         errors.extend(check_row_variables(parsed, ciq_sheets))
+    return errors
+
+
+_PY_CALL = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+(\S*?)([\w.-]+\.py)\b")
+_PY_INLINE = re.compile(r"^\s*(?:sudo\s+)?python[\d.]*\s+-c\s")
+
+
+_SHELL_IN_REGEX = re.compile(r"\$\(")  # not backticks: GNU tar prints ``Removing leading `/'``
+
+
+def check_shell_in_regexes(parsed: dict) -> list[str]:
+    """A validation / register regex holding shell syntax (``^(-rwxrwxrwx)\\s+.*$(basename .+?)``, OB-73): a regex
+    sees only the command's output — ``$`` is the end of a line, so it never matches and a count stays 0."""
+    from .autofix import _criteria_blocks
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        regexes = [str(c.get("regex")) for c in _criteria_blocks(step) if isinstance(c.get("regex"), str)]
+        regexes += [str(r.get("regex")) for r in step.get("register") or []
+                    if isinstance(r, dict) and isinstance(r.get("regex"), str)]
+        for rx in dict.fromkeys(regexes):
+            if _SHELL_IN_REGEX.search(rx):
+                errors.append(f"Phase '{phase}': the regex {rx!r} of `{str(step.get('send') or '')[:80]}` contains "
+                              "shell syntax (`$(…)`) — a regex only sees the command's output text and `$` "
+                              "is the end of a line, so it never matches. Match what the output line shows (e.g. the "
+                              "file name as `ls` prints it).")
+    return errors
+
+
+_LS_LONG_CMD = re.compile(r"\bls\s+(?:-\S+\s+)*-[a-zA-Z]*l[a-zA-Z]*\b")
+_KEEPS_LINES = {"grep", "egrep", "fgrep", "head", "tail", "sort"}
+# `^` then group openers, then a number or a space first — where an `ls -l` line has its mode (`-rwxrwxrwx.`)
+_STARTS_WITH_NUMBER = re.compile(r"^\^(?:\((?:\?<[A-Za-z][A-Za-z0-9]*>|\?:)?)*(?:\\d|\[0-9|\[\[:digit:|\d|\\s| )")
+
+
+def check_listing_counts(parsed: dict) -> list[str]:
+    """A count over an `ls -l` listing whose regex wants the line to start with a number (OB-74, run c89f1b67:
+    `^(?<TOTAL>\\d+)\\s+.*$`, `^(?<OKN>\\d+)\\s+-rwxrwxrwx.*$`): a long listing line starts with the mode
+    (`-rwxrwxrwx. 1 user group 65 Nov 13 16:04 name`), so the count stays 0 and the check fails on every node. Only
+    when the listing reaches the output as it is (piped to grep / head / sort at most)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        m = _LS_LONG_CMD.search(send)
+        if not m:
+            continue
+        rest = re.split(r"\s*(?:&&|;|\|\||\bfi\b|\belse\b)", send[m.end():])[0]
+        rest = re.sub(r"\$\([^()]*\)", "", rest)  # the pipes of `$(tar -tf … | sed …)` are not the listing's
+        if any(seg.split()[0] not in _KEEPS_LINES for seg in rest.split("|")[1:] if seg.split()):
+            continue  # `ls -l … | wc -l` / `| awk …`: the output is no longer the listing
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and reg.get("loop") and reg.get("count_var") \
+                    and _STARTS_WITH_NUMBER.match(str(reg.get("regex") or "")):
+                errors.append(f"Phase '{phase}': `{send[:90]}` counts {reg['count_var']} with {reg['regex']!r}, which "
+                              "wants each line to start with a number — an `ls -l` line starts with the mode "
+                              "(`-rwxrwxrwx. 1 user group 65 Nov 13 16:04 name`), so the count stays 0. Count the "
+                              "lines that show the file (`^[-d]\\S{9}`) and those with the wanted mode (`^-rwxrwxrwx`).")
+    return errors
+
+
+_WRITE_DEST = re.compile(r"\b(?:cp|mv|install)\s+(?:-\S+\s+)*(\S+)\s+(\S+)|\btar\s+-?\w*x\w*f?\s+(\S+).*?\s-C\s+(\S+)")
+_PLACEHOLDER = re.compile(r"\$\{[^{}]+\}")
+
+
+def check_checked_before_load(parsed: dict) -> list[str]:
+    """A check before the activity that requires what the activity loads (OB-73, run c89f1b67): `ls -ltrh
+    <destination>/ | grep <INPUT_FILE>` requiring the announcements ran in the pre-check, found nothing (nothing is
+    loaded yet), set PRECHECK_FAILED and the backup and the load never ran. A pre-check / backup step that reads where
+    the activity copies or extracts to, names the file it loads, and has a success condition is reported."""
+    from .contract import ACTIVITY, BACKUP, PRE, phase_kind
+    phases = parsed.get("phases") or {}
+    if not isinstance(phases, dict):
+        return []
+    loads: list[tuple[str, set[str]]] = []  # (destination, placeholders of the file loaded there)
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) != ACTIVITY:
+            continue
+        for _, step in _iter_steps({key: body}):
+            for m in _WRITE_DEST.finditer(str(step.get("send") or "")):
+                src, dest = (m.group(1), m.group(2)) if m.group(2) else (m.group(3), m.group(4))
+                dest = dest.strip("'\";").rstrip("/")
+                names = set(_PLACEHOLDER.findall(src or ""))
+                if dest and names and not dest.startswith("/tmp"):
+                    loads.append((dest, names))
+    errors = []
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) not in (PRE, BACKUP):
+            continue
+        for _, step in _iter_steps({key: body}):
+            send = str(step.get("send") or "")
+            loaded = next((d for d, names in loads if d in send and any(n in send for n in names)), "")
+            listed = next((d for d, _ in loads if _lists_contents(send, d)), "")
+            if not (loaded or listed):
+                continue
+            criteria = ((step.get("validation") or {}).get("success") or {}).get("criteria") or {}
+            if not criteria.get("expr") and str(criteria.get("regex") or ".*") in (".*", ""):
+                continue  # records what is there, requires nothing
+            if loaded:
+                errors.append(f"Phase '{key}': `{send.strip()[:100]}` requires the file the activity loads into "
+                              f"{loaded} before the activity runs — nothing is loaded yet, so it fails and the backup "
+                              "and the load never run. Before the activity, list what is there without requiring it "
+                              "(no success condition on the loaded files); check them after the load.")
+            else:
+                # user, 2026-11-13: what the folder holds before the load is recorded, never a condition (MRF:
+                # `BADPERM_COUNT == 0` over the existing announcements blocked the load)
+                errors.append(f"Phase '{key}': `{send.strip()[:100]}` puts a condition on what {listed} holds before "
+                              "the activity — the files already there are not the activity's: before the load, the "
+                              "folder's contents are only recorded (no success condition, no PRECHECK_FAILED). Check "
+                              "the loaded files after the load.")
+    return errors
+
+
+def _lists_contents(send: str, folder: str) -> bool:
+    """`ls [-l…] <folder>[/]` (not `ls -d`, the folder itself) or `find <folder>` — the files in the folder."""
+    for m in re.finditer(r"\b(ls|find)\s+((?:-\S+\s+)*)(\S+)", send):
+        arg = m.group(3).strip("'\"").rstrip("/")
+        if arg == folder and not (m.group(1) == "ls" and "d" in m.group(2).replace("-", "")):
+            return True
+    return False
+
+
+_GREP_FILTER = re.compile(r"\|\s*e?grep\s+((?:-[a-zA-Z]+\s+)*)(\"[^\"]*\"|'[^']*'|\S+)\s*\|\|\s*true\b")
+
+
+def _grep_sample(pattern: str) -> str:
+    """A name the grep pattern finds: quotes off, `$(basename A .ext)` → A's file name without .ext, `${…}` → X."""
+    text = pattern.strip("'\"")
+
+    def basename(m: re.Match) -> str:
+        args = m.group(1).split()
+        name = args[0].rsplit("/", 1)[-1] if args else ""
+        return name[: -len(args[1])] if len(args) > 1 and name.endswith(args[1]) else name
+    text = re.sub(r"\$\(basename\s+([^()]*)\)", basename, text)
+    return re.sub(r"\$\{[^{}]+\}|\$\([^()]*\)", "X5003", text).replace("\\", "")
+
+
+def check_grep_filter_checks(parsed: dict) -> list[str]:
+    """`… | grep <name> || true` prints the lines naming <name>, or nothing: a success regex matching neither can
+    never pass (OB-78, run c89f1b67: the rollback's `ls -ltrh <dest>/ | grep "<file>" || true` wanted
+    `No such file or directory|^total \\d+$` — failed with the restored original listed, and on the empty output too,
+    where a `^` regex never matches)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        greps = [m for m in _GREP_FILTER.finditer(send) if not re.search(r"[vcqlL]", m.group(1))]
+        if not greps:
+            continue
+        criteria = ((step.get("validation") or {}).get("success") or {}).get("criteria") or {}
+        rx = criteria.get("regex")
+        if not isinstance(rx, str) or not rx or criteria.get("expr"):
+            continue
+        try:
+            py = re.compile(re.sub(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", r"(?P<\1>", rx), re.MULTILINE)
+        except re.error:
+            continue
+        empty_ok = "^" not in rx and py.search("") is not None  # the JAR: a `^` regex never matches empty output
+        lines = [f"-rw-r--r--. 1 user group 69 Nov 13 16:29 {_grep_sample(m.group(2))}" for m in greps]
+        if empty_ok or any(py.search(line) for line in lines):
+            continue
+        errors.append(f"Phase '{phase}': `{send.strip()[:100]}` filters with `grep … || true`, so it prints the lines "
+                      f"naming the file (like `{lines[0]}`) or nothing — its success regex {rx!r} matches neither, the "
+                      "step can never pass. Check for the named line (present) or accept the empty output (absent).")
+    return errors
+
+
+_RM_WIDE = re.compile(r"\brm\s+((?:-\w+\s+)*)([^\s;|&()]+)")
+
+
+def _temp_path(path: str) -> bool:
+    return path.strip("'\"").startswith(("/tmp/", "/var/tmp/")) or "${ORDER_NO}" in path
+
+
+def check_wildcard_removals(parsed: dict) -> list[str]:
+    """`rm` of a whole node folder (`<dir>/*`, or `rm -r <dir>`) outside the staging area (OB-76, run c89f1b67: the
+    rollback's fallback `|| rm -rf ${MRF_DESTINATION_PATH}/*` deleted every announcement): the user's rule is never
+    to touch files the activity did not load — remove exactly the loaded files (structure.py's items list)."""
+    errors = []
+    for phase, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        for m in _RM_WIDE.finditer(send):
+            flags, target = m.group(1), m.group(2)
+            if _temp_path(target) or target.startswith("$("):
+                continue
+            bare = target.strip("'\"")
+            folder = bare.endswith("/") or bool(re.fullmatch(r"\$\{[^{}]+\}", bare))
+            if bare.endswith("/*") or ("r" in flags.replace("-", "") and folder):
+                errors.append(f"Phase '{phase}': `{send.strip()[:110]}` removes `{target}` — everything in that node "
+                              "folder, not only what the activity loaded (never touch files unrelated to the activity). "
+                              "Remove exactly the loaded files, e.g. from the list of what the activity put there.")
+    return errors
+
+
+_TAR_CREATE = re.compile(r"\btar\s+-?\w*c\w*f\s+(\S+)")
+_TAR_EXTRACT = re.compile(r"\btar\s+-?\w*x\w*f\s+(\S+)")
+_PRINTF_GET = re.compile(r"\b(?:get|put)\s+(\S+)\s+(\S+)")
+_COPY_DEST = re.compile(r"\b(?:cp|mv|scp)\s+(?:-\S+\s+)*\S+\s+(\S+)")
+
+
+def _path_pattern(path: str) -> str:
+    """A path with its placeholders and shell variables as wildcards (`/tmp/${ORDER_NO}/x_$DATE.tar.gz` →
+    `/tmp/*/x_*.tar.gz`)."""
+    path = path.strip("'\";")
+    path = re.sub(r"\$\{[^{}]+\}|\$\([^()]*\)|\$[A-Za-z_]\w*", "*", path)
+    return re.sub(r"/+", "/", path)
+
+
+def check_restore_sources(parsed: dict) -> list[str]:
+    """A rollback that extracts an archive no step writes (OB-76, run c89f1b67: the backup wrote
+    `/tmp/${ORDER_NO}/<folder>/announcement_backup_….tar.gz` and the repo copy, the rollback extracted
+    `/tmp/announcement_backup_*.tar.gz` — nothing to restore, the node kept the loaded files)."""
+    import fnmatch
+    from .contract import ROLLBACK, phase_kind
+    phases = parsed.get("phases") or {}
+    if not isinstance(phases, dict):
+        return []
+    written: set[str] = set()
+    for phase, step in _iter_steps(phases):
+        send = str(step.get("send") or "")
+        written |= {_path_pattern(m.group(1)) for m in _TAR_CREATE.finditer(send)}
+        written |= {_path_pattern(m.group(2)) for m in _PRINTF_GET.finditer(send)}
+        written |= {_path_pattern(m.group(1)) for m in _COPY_DEST.finditer(send)}
+        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
+        for key in ("remote_path", "local_path"):
+            if sftp.get(key):
+                written.add(_path_pattern(str(sftp[key])))
+    written.discard("")
+    errors = []
+    for key, body in phases.items():
+        if not isinstance(body, dict) or phase_kind(str(key), body) != ROLLBACK:
+            continue
+        for _, step in _iter_steps({key: body}):
+            send = str(step.get("send") or "")
+            for m in _TAR_EXTRACT.finditer(send):
+                archive = _path_pattern(m.group(1))
+                name = archive.rsplit("/", 1)[-1]
+                if not archive.startswith("/") or archive in written or not name.replace("*", "").strip("._-"):
+                    continue  # a registered name (`/tmp/${backupExists}`) cannot be told
+                literal = [w for w in written if w.rsplit("/", 1)[-1].replace("*", "").strip("._-")]
+                if any(fnmatch.fnmatch(w, archive) or fnmatch.fnmatch(archive, w) for w in literal):
+                    continue
+                backups = sorted(w for w in written if w.rsplit("/", 1)[-1].split("*")[0][:6]
+                                 and name.split("*")[0][:6] == w.rsplit("/", 1)[-1].split("*")[0][:6])
+                errors.append(f"Phase '{key}': `{send.strip()[:110]}` restores `{m.group(1)}`, which no step writes"
+                              + (f" — the backup is written as {', '.join(f'`{b}`' for b in backups[:3])}" if backups
+                                 else "") + ". Restore the archive the backup wrote (the same path, copied back to "
+                              "the node first when it is on the repo server).")
+    return errors
+
+
+def check_helper_script_nodes(parsed: dict, known_commands: list[str]) -> list[str]:
+    """A Python script the MOP / recorded sessions never run is one of ours: the pipeline generates it for the
+    automation server (helper_script_gen), no node has it (OB-39: ``python3 /usr/local/bin/check_tac_counts.py`` on
+    the EIR node, an invented path). It runs on ``local``, after the files it reads are copied there."""
+    known = "\n".join(known_commands)
+    errors = []
+    for phase, step in _walk_all_steps(parsed.get("phases") or {}):
+        node = str(step.get("node") or "")
+        send = str(step.get("send") or "")
+        if not node or node.upper() == "LOCAL" or node.startswith("${"):
+            continue
+        if _PY_INLINE.match(send) and send.strip() not in known:
+            # OB-65 (run b81305ff): `python3 -c "import pandas … read_excel(DELTA_TAC_FILE) … open(dump)"` on the
+            # bastion — the CIQ file is on the automation server, the dumps inside the pod
+            errors.append(f"Phase '{phase}': an inline Python program (`python3 -c …`) runs on {node}, but the "
+                          "nodes have neither the pipeline's input files nor its Python libraries — make it a helper "
+                          "script the pipeline generates: `python3 <name>.py --<arg> …` on node local (bare name), "
+                          "after copying every node file it reads to the automation server (out of a pod with "
+                          "`oc cp`/`kubectl cp` to the node first, then an sftp download step)")
+            continue
+        m = _PY_CALL.match(send)
+        if not m:
+            continue
+        if m.group(2) in known:
+            continue  # the node's own tool
+        errors.append(f"Phase '{phase}': `{m.group(1)}{m.group(2)}` runs on {node}, but no node has it — it is a "
+                      f"helper script the pipeline generates for the automation server: run `python3 {m.group(2)} …` "
+                      "on node local (bare name), after copying every node file it reads to the automation server "
+                      "(out of a pod with `oc cp`/`kubectl cp` to the node first, then an sftp download step)")
     return errors
 
 
@@ -154,18 +442,30 @@ def check_ciq_coverage(parsed: dict, ciq_sheets: dict) -> list[str]:
     def empty(row: dict, col: str) -> bool:
         return str(row.get(col, "") if row.get(col) is not None else "").strip() == ""
 
+    nodes = parsed.get("nodes") or {}
+    local = {"LOCAL", "local"} | {str(n) for n, v in nodes.items() if isinstance(v, dict)
+                                  and "local" in (str(v.get("type", "")).lower(), str(v.get("plugin", "")).lower())}
     problems: dict[str, str] = {}
     for phase_name, step in _iter_steps(parsed.get("phases") or {}):
         send = str(step.get("send") or "")
         guard = str(step.get("when") or "")
+        on_local = str(step.get("node") or "") in local
         for col in {c.strip() for c in _CIQ_COLUMN.findall(send)}:
             rows = columns.get(col)
             if not rows or col in guard or col in problems:
                 continue
-            missing = [r for r in rows if empty(r, col)]
+            # a helper script's argument on the automation server (`--ciq_test_msisdn '${…Test MSISDN}'` of a
+            # report, run 6570694d): an empty optional value is the script's to handle — what reaches a node is
+            # checked here, the request a script builds by check_request_inputs (OB-90)
+            if on_local and re.search(r"--[\w-]+[ =]['\"]?\$\{configSequences\.\d+\.records\.\d+\.data\."
+                                      + re.escape(col) + r"\s*\}", send):
+                continue
+            # a shell guard on the column (`if [ "${…Test IMSI}" != "" ]; then …; else …; fi`, run 6570694d) runs the
+            # branch without it for the rows that leave it empty (OB-88)
+            missing = [r for r in rows if empty(r, col) and col in _CIQ_COLUMN.findall(_runs_for_row(send, r))]
             # Empty everywhere = an optional value passed through (scripts skip it); only a
             # column some rows fill and others leave empty breaks those node groups
-            if not missing or len(missing) == len(rows):
+            if not missing or len([r for r in rows if empty(r, col)]) == len(rows):
                 continue
             sheet_cols = [c for c in columns if columns[c] is rows]
             words = set(re.findall(r"[a-z]+", col.lower()))
@@ -365,6 +665,53 @@ def check_unbalanced_quotes(parsed: dict) -> list[str]:
             if isinstance(step.get("send"), str) and unbalanced_quotes(step["send"])]
 
 
+_SELF_COMPARE = re.compile(r"(?<![\w.])([A-Za-z_][\w.]*)\s*(?:==|!=|>=|<=)\s*\1(?![\w.])")
+
+
+def check_iteration(parsed: dict) -> list[str]:
+    """Per-item work the framework does not do the way the LLM wrote it (spec 013, EIR):
+    - ``for_each`` on a step without ``type: loop`` is ignored: the command runs once;
+    - a variable a looped register (``loop: true``) captures holds no value when a step reads it (probed: '');
+    - an expression comparing a value with itself is always true (``A == A`` checked nothing).
+    Production runs a command per item as one shell loop: ``for i in `<list>`; do <cmd with $i>; done``."""
+    phases = parsed.get("phases") or {}
+    looped, plain = set(), set()
+    for _, step in _iter_steps(phases):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict):
+                names = set(_NAMED_GROUP.findall(str(reg.get("regex") or "")))
+                (looped if reg.get("loop") else plain).update(names)
+    looped -= plain
+    loop_fix = ("run the command for every item in ONE step as a shell loop over the list command: "
+                "`for i in `<command that lists them>`; do <command using $i>; done`")
+    problems, seen = [], set()
+    for phase, step in _iter_steps(phases):
+        send = str(step.get("send") or "")
+        where = f"Step '{send[:70]}' ({phase})"
+        if "for_each" in step and step.get("type") != "loop":
+            problems.append(f"{where}: `for_each` only works on a `type: loop` step — here it is ignored and the "
+                            f"command runs once; {loop_fix}.")
+        for name in sorted(looped):
+            if name not in seen and re.search(r"\$\{" + re.escape(name) + r"\}", send):
+                seen.add(name)
+                problems.append(f"{where}: ${{{name}}} comes from a register with `loop: true` (it only counts "
+                                f"matches) and is empty here; {loop_fix}.")
+        texts = [str(step.get(k) or "") for k in ("when", "skip_when")]
+        v = step.get("validation")
+        for branch in ("success", "failure", "warning"):
+            crit = (v.get(branch) or {}).get("criteria") if isinstance(v, dict) and isinstance(v.get(branch), dict) else None
+            if isinstance(crit, dict):
+                texts.append(str(crit.get("expr") or ""))
+        for t in texts:
+            m = _SELF_COMPARE.search(t)
+            if m:
+                problems.append(f"{where}: `{m.group(0)}` compares {m.group(1)} with itself — always true, it checks "
+                                "nothing. Compare the values that must agree (e.g. the counts of all items: "
+                                "`… | sort -u | wc -l` must be 1).")
+                break
+    return problems
+
+
 def check_script_arguments(parsed: dict) -> list[str]:
     """A LOCAL ``python <script>.py --flag value …`` call must reach the script as flag/value
     pairs. ``--ciq_data '{'Mandatory Cap': '…'}'`` nests quotes: the shell splits the value
@@ -374,11 +721,6 @@ def check_script_arguments(parsed: dict) -> list[str]:
     for phase_name, step in _iter_steps(parsed.get("phases") or {}):
         send = str(step.get("send") or "")
         if str(step.get("node", "")).upper() != "LOCAL" or not re.match(r"\s*python3?\s+\S+\.py\b", send):
-            continue
-        if '"' in send:
-            problems.append(f"LOCAL step '{send[:80]}' ({phase_name}): contains a double quote — the framework "
-                            "breaks LOCAL commands at double quotes (even inside single quotes); use single "
-                            "quotes only and no quotes inside values.")
             continue
         try:
             argv = shlex.split(_PLACEHOLDER.sub("X", send), posix=True)
@@ -419,6 +761,33 @@ def check_file_listing_regexes(parsed: dict) -> list[str]:
                     f"Step '{step.get('send')}' ({phase_name}): `ls -l` of a single file prints only the "
                     f"file's line (e.g. '-rw-r--r-- 1 user group 312 Nov  3 00:45 {m.group(1)}'), never a "
                     f"'total' line — its regex {regex!r} can never match. Match the file's line instead.")
+    problems += _long_listing_name_runs(parsed)
+    return problems
+
+
+_LS_LONG = re.compile(r"(?:^|[;&|]\s*)ls\s+-\w*l")
+# `….txt\s+name…`: two file names next to each other (an extension, then whitespace, then a name)
+_NAMES_JOINED = re.compile(r"\\?\.[A-Za-z0-9]{1,5}(?:\\s[+*]|\s+)[A-Za-z_]")
+
+
+def _long_listing_name_runs(parsed: dict) -> list[str]:
+    """``ls -l`` prints one file per line, its mode / owner / size / date before the name, in the listing's order
+    (``-t``: by time): a regex wanting the names next to each other (``a_.+?.txt\\s+b_.+?.txt\\s+c_.+?.txt``) never
+    matches — the EIR rollback's dump check failed on the files it had just written (OB-40)."""
+    problems = []
+    from .autofix import _criteria_blocks
+    for phase_name, step in _iter_steps(parsed.get("phases") or {}):
+        send = str(step.get("send") or "")
+        if not _LS_LONG.search(send):
+            continue
+        for criteria in _criteria_blocks(step):
+            regex = str(criteria.get("regex") or "")
+            if _NAMES_JOINED.search(regex):
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): `ls -l` prints one file per line with its details before "
+                    f"the name, in the listing's order — the regex {regex!r} wants the names next to each other "
+                    "and never matches. Check each file: a loop count (register {regex: '<name pattern>', loop: "
+                    "true, count_var: N} per file, expr 'N1 > 0 && N2 > 0 …') or one `ls -l <file>` step per file.")
     return problems
 
 
@@ -449,6 +818,23 @@ def check_row_variables(parsed: dict, ciq_sheets: dict, runtime_params: list[str
         "every row — e.g. look the value up from a column that row fills, as the developer "
         "notes / MOP describe."
         for g in row_variable_gaps(parsed, ciq_sheets, runtime_params)]
+
+
+_SHELL_GUARD = re.compile(
+    r"""if\s+\[\[?\s*(-n|-z)?\s*["']?\$\{configSequences\.\d+\.records\.\d+\.data\.([^}]+)\}["']?\s*"""
+    r"""(?:(!=|==|=)\s*(?:""|''))?\s*\]\]?\s*;\s*then\s+(.*?)(?:\s*;\s*else\s+(.*?))?\s*;\s*fi\b""", re.S)
+
+
+def _runs_for_row(send: str, row: dict) -> str:
+    """The command text that runs for one CIQ row: a simple shell guard on a CIQ column being empty or not
+    (``if [ "${…Test IMSI}" != "" ]; then echo "${…Test IMSI}"; else echo "${resolvedImsi}"; fi``) keeps only
+    the branch the row takes (OB-88)."""
+    def branch(m: re.Match) -> str:
+        value = str(row.get(m.group(2).strip()) or "").strip()
+        flag, op = m.group(1), m.group(3)
+        filled = flag == "-n" or op == "!=" or (flag is None and op is None)
+        return (m.group(4) or "") if (bool(value) == filled) else (m.group(5) or "")
+    return _SHELL_GUARD.sub(branch, send)
 
 
 def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] | None = None) -> list[dict]:
@@ -498,7 +884,8 @@ def row_variable_gaps(parsed: dict, ciq_sheets: dict, runtime_params: list[str] 
             for step, guard in zip(steps, guards):
                 if not runs(guard, row):
                     continue
-                for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(str(step.get("send") or ""))}:
+                for name in {m.group(1).strip() for m in _PLACEHOLDER.finditer(
+                        _runs_for_row(str(step.get("send") or ""), row))}:
                     if "." in name or name in defined_always or name in registered or name in problems:
                         continue
                     problems[name] = {"variable": name, "row": row, "label": label,
@@ -579,9 +966,32 @@ def check_against_samples(parsed: dict, command_samples: list[dict]) -> list[str
                 "expr fails on a healthy node — the register regex captures the wrong field. Real output "
                 f"(relevant lines):\n{_excerpt(matching[0]['output'], _success_regex(step) or '')}\n"
                 "Count the columns in this output and capture the right one.")
+        if not counted and not captured:
+            false = _expr_false_on_real_output(step, outputs)
+            if false:
+                problems.append(
+                    f"Step '{send[:80]}' ({phase_name}): its success expr "
+                    f"{((step.get('validation') or {}).get('success') or {}).get('criteria', {}).get('expr')!r} is "
+                    f"false on the real output of a healthy node ({false}). Every line of the output counts — item "
+                    "names, notices like 'Defaulted container …', blank lines. Check for the bad state instead: "
+                    "register a capture of a line in a wrong state (e.g. (?<BADSTATE>… (?!ESTABLISHED\\b)\\S+)) and "
+                    "expr 'BADSTATE == \"\"'. Real output (relevant lines):\n"
+                    f"{_excerpt(matching[0]['output'], '')}")
+        exprs = " ".join(str(((step.get("validation") or {}).get(b) or {}).get("criteria", {}).get("expr", ""))
+                         for b in ("success", "failure", "warning") if isinstance(step.get("validation"), dict)
+                         and isinstance((step["validation"].get(b) or {}), dict)
+                         and isinstance((step["validation"].get(b) or {}).get("criteria"), dict))
         for reg in step.get("register") or []:
             rx = reg.get("regex") if isinstance(reg, dict) else None
             if not isinstance(rx, str):
+                continue
+            # production's "must be absent" captures find nothing on a healthy node: a bad state / non-zero
+            # count the step requires empty, or an error capture (ERROR:.*|error:.*) — spec 013
+            names = _NAMED_GROUP.findall(rx)
+            count = str(reg.get("count_var") or "") if isinstance(reg, dict) else ""
+            if any(re.search(rf"(?<![\w.]){re.escape(n)}\s*==\s*(?:''|\"\")", exprs) for n in names) \
+                    or (count and re.search(rf"(?<![\w.]){re.escape(count)}\s*==\s*0(?![\d.])", exprs)) \
+                    or re.fullmatch(r"\(\?<\w+>(?:[Ee]rror|ERROR)[^|)]*(?:\|(?:[Ee]rror|ERROR)[^|)]*)*\)", rx):
                 continue
             verdict = _regex_matches_any(rx, outputs)
             if verdict is not True:
@@ -672,8 +1082,10 @@ def check_completeness(parsed: dict, expected: dict | None) -> list[str]:
             problems.append(f"The requirements have {'an' if kind == 'activity' else 'a'} {labels[kind]} phase but the workflow has no "
                             f"{labels[kind]} steps — generate the COMPLETE workflow (all phases of the MOP).")
     node_cmds: dict[str, int] = expected.get("node_commands") or {}
+    # Hosts reached from a NIAM login run as nested sessions on its node (spec 013 B-R2): covered by it
+    nested = any(n.startswith("NIAM_") for n in used_nodes)
     for node, count in sorted(node_cmds.items()):
-        if count >= 2 and node.upper() not in used_nodes:
+        if count >= 2 and node.upper() not in used_nodes and not nested:
             problems.append(f"The requirements list {count} commands on node {node} but no workflow step "
                             f"runs on {node} — include its steps.")
     wanted = sum(node_cmds.values())
@@ -765,22 +1177,118 @@ def _expr_on_real_output(step: dict, outputs: list[str]) -> tuple[str, str]:
     return ("fail", ", ".join(seen)) if seen else ("n/a", "")
 
 
-_COUNT_EXPR = re.compile(r"^\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*==\s*\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*&&\s*"
-                         r"\$?\{?([A-Za-z][A-Za-z0-9]*)\}?\s*>\s*0\s*$")
+_EXPR_TERM = re.compile(r"""^\s*([A-Za-z]\w*|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*(==|!=|>=|<=|>|<)\s*"""
+                        r"""([A-Za-z]\w*|-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*$""")
 
 
-def count_check(step: dict) -> tuple[str, str, str, str] | None:
-    """(ok var, ok regex, total var, total regex) of a count check: ``register`` two loop
-    counts and ``expr: OK == TOTAL && TOTAL > 0`` (spec 011 "every item"); None otherwise."""
+def _register_values(step: dict, output: str) -> dict[str, str | int] | None:
+    """What the JAR registers from ``output``: a loop ``count_var`` → how many matches, a named group → the first
+    match's FIRST group ("" when nothing matched). None when a regex does not compile."""
+    values: dict[str, str | int] = {}
+    text = output.replace("\r\n", "\n")
+    for reg in step.get("register") or []:
+        rx = reg.get("regex") if isinstance(reg, dict) else None
+        if not isinstance(rx, str):
+            continue
+        compiled = _py(rx)
+        if compiled is None:
+            return None
+        if reg.get("loop") and isinstance(reg.get("count_var"), str):
+            values[reg["count_var"]] = sum(1 for _ in compiled.finditer(text))
+        for name in _NAMED_GROUP.findall(rx):
+            hit = compiled.search(text)
+            values.setdefault(name, (hit.group(1) or "") if hit and hit.re.groups else "")
+    return values
+
+
+def _evaluate_expr(expr: str, values: dict) -> bool | None:
+    """``A OP B`` terms joined by ``&&`` / ``||`` (``&&`` binds tighter, as in the JAR), operands registered names,
+    numbers or quoted strings. None when it uses anything else (a name the step does not register, parentheses…)."""
+    expr = expr.strip()
+    if expr.startswith("${") and expr.endswith("}"):
+        expr = expr[2:-1]
+    if "(" in expr or not expr:
+        return None
+
+    def operand(tok: str):
+        if tok[0] in "'\"":
+            return tok[1:-1]
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", tok):
+            return tok
+        return values[tok] if tok in values else KeyError
+
+    def term(text: str) -> bool | None:
+        m = _EXPR_TERM.match(text)
+        if not m:
+            return None
+        a, op, b = operand(m.group(1)), m.group(2), operand(m.group(3))
+        if a is KeyError or b is KeyError:
+            return None
+        try:
+            a, b = float(a), float(b)
+        except (TypeError, ValueError):
+            a, b = str(a), str(b)
+            if op not in ("==", "!="):
+                return None
+        return {"==": a == b, "!=": a != b, ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b}[op]
+
+    any_of = []
+    for alternative in expr.split("||"):
+        parts = [term(t) for t in alternative.split("&&")]
+        if any(p is None for p in parts):
+            return None
+        any_of.append(all(parts))
+    return any(any_of)
+
+
+def _expr_false_on_real_output(step: dict, outputs: list[str]) -> str:
+    """'NAME=value, …' when the step's success expr is false on every recorded (healthy) output — e.g. a count of
+    lines WITHOUT "ESTABLISHED" that must be 0, while every pod also prints its name (OB-41). Empty otherwise."""
     validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
     success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
     criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
-    m = _COUNT_EXPR.match(str(criteria.get("expr") or ""))
-    if not m or m.group(2) != m.group(3):
+    expr = str(criteria.get("expr") or "")
+    if not expr or not outputs:
+        return ""
+    seen = []
+    for out in outputs:
+        values = _register_values(step, out)
+        if values is None:
+            return ""
+        verdict = _evaluate_expr(expr, values)
+        if verdict is None or verdict:
+            return ""
+        used = [n for n in re.findall(r"[A-Za-z]\w*", expr) if n in values]
+        seen.append(", ".join(f"{n}={values[n]!r}" for n in dict.fromkeys(used)))
+    return "; ".join(seen[:2])
+
+
+_COUNT_NAME = r"\$?\{?([A-Za-z]\w*)\}?"  # count_var names may hold `_` (only regex group names may not)
+_COUNT_EQUAL = re.compile(rf"^\s*{_COUNT_NAME}\s*==\s*{_COUNT_NAME}\s*$")
+_COUNT_POSITIVE = re.compile(rf"^\s*{_COUNT_NAME}\s*>\s*0\s*$")
+
+
+def count_check(step: dict) -> tuple[str, str, str, str] | None:
+    """(ok var, ok regex, total var, total regex) of a count check: ``register`` two loop counts and
+    ``expr: OK == TOTAL && TOTAL > 0`` (spec 011 "every item") — the two terms in either order, the ``> 0`` on either
+    count (``ESTABLISHED_COUNT > 0 && ESTABLISHED_COUNT == POD_COUNT``, OB-40); None otherwise."""
+    validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+    success = validation.get("success") if isinstance(validation.get("success"), dict) else {}
+    criteria = success.get("criteria") if isinstance(success.get("criteria"), dict) else {}
+    expr = str(criteria.get("expr") or "").strip()
+    if expr.startswith("${") and expr.endswith("}"):
+        expr = expr[2:-1]
+    terms = expr.split("&&")
+    if len(terms) != 2:
+        return None
+    equal = next((m for m in map(_COUNT_EQUAL.match, terms) if m), None)
+    positive = next((m for m in map(_COUNT_POSITIVE.match, terms) if m), None)
+    if not equal or not positive or positive.group(1) not in equal.groups():
         return None
     counts = {r["count_var"]: str(r.get("regex") or "") for r in step.get("register") or []
               if isinstance(r, dict) and r.get("loop") and isinstance(r.get("count_var"), str)}
-    ok, total = m.group(1), m.group(2)
+    total = positive.group(1)
+    ok = equal.group(2) if equal.group(1) == total else equal.group(1)
     if ok not in counts or total not in counts:
         return None
     return ok, counts[ok], total, counts[total]
@@ -956,11 +1464,15 @@ def _normalise(cmd: str) -> str:
 
 
 def _command_matches(send: str, recorded: str) -> bool:
+    """``send`` is the recorded command: ``${…}`` stands for any value, and spacing around shell operators is free
+    (``-n ${NS} | grep`` ran as ``-n nkasjock1ei1| grep`` — the per-pod count check was never held against its
+    real output, OB-40)."""
+    from tools.command_samples import literal_pattern
     send, recorded = _normalise(send), _normalise(recorded)
-    if "${" not in send:
-        return send == recorded
+    if send == recorded:
+        return True
     parts = re.split(r"\$\{[^}]*\}", send)
-    pattern = ".+?".join(re.escape(p) for p in parts)
+    pattern = ".+?".join(literal_pattern(p) for p in parts)
     return re.fullmatch(pattern, recorded) is not None
 
 
@@ -1032,7 +1544,8 @@ _NAMED_GROUP = re.compile(r"\(\?P?<([A-Za-z][A-Za-z0-9]*)>")
 
 
 def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
-                       node_fields: dict[str, list[str]] | None = None) -> list[str]:
+                       node_fields: dict[str, list[str]] | None = None,
+                       node_types: dict[str, int] | None = None) -> list[str]:
     """Report ``${…}`` placeholders the cli-automation JAR cannot resolve.
 
     ``runtime_params`` (default: config ``execution.runtime_params``) are passed by the
@@ -1051,6 +1564,8 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             defined |= set((body.get("vars") or {}).keys())
     for regex in _iter_register_regexes(phases):
         defined |= set(_NAMED_GROUP.findall(regex))
+    for _, step in _iter_steps(phases):  # computed registers: - name: X / value: … (production)
+        defined |= {str(r["name"]) for r in step.get("register") or [] if isinstance(r, dict) and r.get("name")}
     defined |= set(_iter_count_vars(phases))
 
     problems: dict[str, str] = {}
@@ -1063,8 +1578,13 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             expr = m.group(1).strip()
             root = expr.split(".", 1)[0]
             if "." in expr:
-                if root in _DOTTED_ROOTS or (root in node_names and re.match(
+                # ${<TYPE>.niamID-n}: the CIQ node type's NIAM entry (spec 013); older workflows name the node so
+                if root in _DOTTED_ROOTS or ((root in node_names or root in (node_types or {})) and re.match(
                         rf"^{re.escape(root)}\.niamID-\d+$", expr)):
+                    continue
+                if node_types and re.match(r"^[^.]+\.niamID-\d+$", expr):
+                    problems.setdefault(m.group(0), f"'{root}' is not a node type of the CIQ — the NIAM login is "
+                                        f"${{<TYPE>.niamID-<n>}} with TYPE one of {', '.join(sorted(node_types))}")
                     continue
                 # Node values the CIQ JSON carries on the node entry (${MRF.VER})
                 if expr.split(".", 1)[1] in ((node_fields or {}).get(root) or []):
@@ -1074,7 +1594,11 @@ def check_placeholders(parsed: dict, runtime_params: list[str] | None = None,
             elif expr not in defined:
                 problems.setdefault(m.group(0), "variable is never registered by a step "
                                     "(add a register with a (?<name>…) group on the step that produces it)")
-    return [f"Unresolvable placeholder {ref}: {why}" for ref, why in problems.items()]
+    return [f"Unresolvable placeholder {ref}: {why}"
+            + (" — a bash array element: the framework fills every ${…} before the node sees it, so "
+               "arrays cannot be used; compute it in one pipeline instead (e.g. `… | sort -u | wc -l`)"
+               if "[" in ref else "")
+            for ref, why in problems.items()]
 
 
 def _iter_strings(value: Any):

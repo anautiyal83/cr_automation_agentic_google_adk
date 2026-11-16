@@ -140,12 +140,38 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - NOT supported (empty at execute): `configData.*`, `nodeGroups.*`, `node_row.*`, `register.*`, `env.*`, `${{…}}`
 - Regexes are Java: `(?<name>…)`, names letters/digits only (no `(?P<…>)`, no `_`)
 - `su`/`exit` steps: step-level `prompt_regex`, no output regex (prompts are stripped)
-- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (bare operand, no `${}`)
+- Optional columns: `when: "configSequences.0.records.0.data.<Col> != ''"` (plain form inside step 6; written as `${…}`)
 - `when` joins conditions with `&&`/`||` — with `and`/`or` the step is always skipped (autofix rewrites)
-- LOCAL steps: the JAR splits double-quoted arguments at spaces (`--a "x y"` → `['--a','x']`); single quotes
-  arrive intact (autofix rewrites); `${configSequences.0.records.0.data}` (whole record) is `[object Object]`
-- LOCAL steps break on a double quote anywhere, even inside single quotes: no JSON/dict values — one flag per
+- LOCAL steps: double quotes are fine on Linux (production); only on WINDOWS the JAR's `bash -c` (commands
+  ≤ 8000 chars) loses them and `/word` becomes `C:/word` — so on Windows step 9 runs `execute` in WSL
+  (`execution.wsl_distro`, `jar_executor.in_wsl`: Java 8 — the JAR needs Nashorn —, python, `.wslconfig`
+  networkingMode=mirrored to reach MockWire on localhost; spec 013 P-6, PF-D5);
+  `${configSequences.0.records.0.data}` (whole record) is `[object Object]`; no JSON/dict values — one flag per
   field (autofix expands `--x '{'K': '${…}'}'` into `--x_k '${…}'`)
+- Spec 013 production format (`skills/network_config_gen/production.py`, last pass of `structure.apply`, undone
+  by `flatten`): `version`/`name`/`globals.defaults`, production phase keys + UPPER_SNAKE names
+  (`run_options.WORKFLOW_KEYS`/`WORKFLOW_NAMES`; the generated title → `description`), explicit `on_failure`
+  (JAR default is stop), `validation.enabled`, and every expression as one `${…}` (`${A != "" && B == "x"}`) —
+  the JAR evaluates it exactly like the plain form step 6 works with internally. Multi-line sends are `|-`
+  blocks (a double-quoted `\n` reaches the shell as a newline, P-8). CIQ references stay ours (PF-D1)
+- Spec 013 node model (`sessions.py`, step 6 `_ciq_fixes`): one `niam_<type>_server` per CIQ node type (`node_types`
+  of the CIQ JSON template; `ne_id ${<TYPE>.niamID-1}`); hosts reached from it (`oc/kubectl exec -it … -- bash`,
+  `ssh user@host`, `telnet`, `su`) are nested sessions on that node (enter step with the new prompt, `exit`);
+  several NIAM entries → `failover.py` (`niam_<type>_1…n`, login probes, steps on `${Target<TYPE>}`, undone by
+  flatten). Step 8: enter commands push the nested prompt (MockWire pushPrompt / interactive password, builtin
+  `exit`); a failover group is one instance (`NodeSpec.aliases`, `file_flows.group_names`)
+- Spec 013 Stage C (structure.py): runtime params by production names (`ORDER_NO`, `CHILD_REQ_ID`, `NODE_NAME`,
+  `NIAM_IP`, `M2M*`, `REPO_*`; `${ORDERNO}` rewritten); NIAM nodes log in with them; repo nodes `repo_server` (ssh) +
+  `repo_server_sftp` (framework sftp; step 8 alias of the repo instance); `BACK_UP_LOCATION_REPO` =
+  `<backup_dir>/<UC type>/${CHILD_REQ_ID}/${NODE_NAME}` (backups in `/BACKUP/<folder>/`); inputs from `${LOCAL_PATH}`
+  with a presence check; every transfer `checked_transfer` (sha256 | awk, status, `${LOOP_RETRY}` retry loop, guard);
+  node ↔ repo sftp = `printf "put|get …
+bye
+" | sftp … user@host` (MockWire 4e17e37); repo IP by `who am i` when
+  `repo_server.ip_v4`/`ip_v6` are set; rollback-only re-runs the lookups it needs (`nc_rbl*`)
+- CIQ cell rules (`shared/ciq_cells.py`, OB-94): what `UNCHANGED` / blank cells mean (`keep` | `delete`), derived from
+  the developer's answers / notes (a later specific sentence wins), stored as `ciq_cell_rules`, shown at the step 2
+  review; helper scripts (step 6) and the simulator's per-case answers (step 9) apply the same table
 - Either-or CIQ columns (Test IMSI / Test MSISDN, found by step 1): the workflow must use both; CIQ values in the
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)
@@ -157,6 +183,9 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
 - `network_config_gen` autofix rewrites the old forms; its validator rejects unresolvable placeholders and regexes that
   don't match the real outputs in `requirements.doc_extracted.command_samples` (from uploaded `.txt`/`.log` transcripts)
 - Helper scripts must accept exactly the workflow's flags and print what its success regex expects (step 6 checks both)
+- Step 6 validator also rejects (OB-73..76): a pre-check requiring the file the activity loads, `$(…)` inside a
+  regex, a count over `ls -l` expecting a leading number, `rm` of a whole node folder (`<dir>/*`), a rollback
+  restoring an archive no step writes, an inline `python3 -c` on a node
 - JAR facts (probed 2026-11-04): on EMPTY output a regex with `^` never matches (`^$` fails, `.*` passes —
   autofix `empty_output_success`); `expr` fails on any parenthesis and binds `&&` tighter than `||` (autofix drops
   them); a looped register counts `.*` twice per line (autofix → `.+`); an unregistered variable reads as `''`;
@@ -185,6 +214,11 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   structure backs up only the files the load overwrites (`items.list` → `overwritten.list`, uploads moved to the
   backup phase), the rollback removes exactly the loaded files then restores; `<dest>/*` after an untar → members
 - Step 9's rollback-only case starts from the files its node group's sunny day left (`vfs_after`), not a clean node
+- Several CIQ records (OB-96): a value one record loop registers and a later step reads makes that step loop too;
+  `structure.keep_record_values` keeps it per record (`nc_keep_*` → `nc_records/<name>_<sha1 of the record>.txt` on
+  the automation server, `nc_load_*` reads it back); a per-record script writing one file for all (`--output_file
+  '${ORDER_NO}.xml'`) gets `nc_fresh_*` before the loop and must ADD its record (step 6h `check_accumulates`).
+  Step 8 chains a read repeated in record loops as `changed:readN:records:<L1.L1>`; step 9 expands it per record
 - Every review (2-9): **Edit requirements** — at a later review the decision `edit` sends the run back to
   step 1 like `clarify` (cache cleared, no retry counted), which applies the pending edit after its analysis.
   Step 2 review: **Edit requirements** (`shared/requirement_edits.py`, `requirement_edits.json`) — changed answers
@@ -192,6 +226,12 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   authoritative; a corrected CIQ workbook / unticked sheets (`excluded_ciq_sheets`, kept per UC) are applied;
   step 1 re-analyses (no questionnaire), compiles again and pauses at step 2 again. Later steps take the CIQ
   path from `agents.requirements_agent.ciq_file_path(state)`. Hidden CIQ sheets are never read
+- Spec 012 file editor (steps 3–4 + 6 reviews, `ui/pages/file_editor.py`, pre-built dialog): the run folder is
+  authoritative — agents read generated files with `shared.run_files.read(state, key)`, never `artifacts[...]`, and
+  writers call `run_files.record_generated`; versions in `run_dir/edits/`; checks `shared/edit_checks.check`;
+  workflow table `shared/workflow_table` (rows = flat form, `nc_*` rebuilt by `structure.apply` with the run's
+  options). "Continue with my edit" deletes the step's error file and continues; `pipeline_agent` then marks
+  the step passed and refreshes the cache from the run folder (`run_files.refresh_artifacts`)
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):
@@ -245,16 +285,32 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - CIQ JSON (step 4): one `<UC>.json` with `crGroups[].nodeGroups[].nodes[]` (`json_output_builder`, from the CIQ layout);
   read it with `tools.ciq_json.node_groups` (also handles the older per-CR files with `nodeGroups` at the root)
 - How a UC simulator must behave for cli-automation: `AGENTS.md` of the MockWire repo (read before changing step 8)
+- NIAM nodes run behind ONE simulated gateway (MW-13, `gateway.py`): `config/<name>_gateway.yaml` (login, prompts,
+  `niam.profiles`: neId → node YAML) + the node YAMLs unchanged; one process / port, the neId picks the node; other
+  nodes (repo server) run on their own. Post-activity answers may hold `{ciq:<column>}` — step 9 fills them per case
 - Step 8 builds one MockWire instance per remote node (`skills/network_simulator_setup/topology.py`):
   login prompt → `ctrl+p+e` → root prompt, `su` via `auth.users`, NIAM neIds from CIQ JSON
-- MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm …` on its VFS: step 8
+- MockWire runs `if [[ … ]]; then …; fi`, `$(…)`, `cp mv chmod chown tar -c/-x ls cat rm diff …` on its VFS: step 8
   (`vfs_commands.py`) gives no response key to a command whose paths all lie where the workflow puts files (`/tmp`,
   uploads, copy / extract targets, backup sources, archives) and creates those folders per CIQ record (DEP-59);
-  staged `.tar` inputs are real archives (step 9)
+  staged `.tar` inputs are real archives (step 9). `kubectl|oc exec … -- bash -c '<script>'` with no key for the
+  line runs the script on the VFS (MockWire e72d022): step 8 answers such a script part by part when it writes or
+  only reads files (OB-66); an exact key holding `${…}` is written as the command's regex (OB-67)
 - Per-run layout `run_dir/simulator/`: `config/`, `outputs/`, `logs/<inst>.log`, `logs/<inst>.events.jsonl`,
-  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts)
+  `vfs/`, `manifest.json`, and `<uc>.yaml` = **overlay workflow** step 9 executes (never production hosts);
+  `SIMULATOR_GUIDE.md` + `start_/stop_simulator.ps1/.sh` (`guide.py`, written by step 8)
+- UC baseline (`storage/uc_baseline.py`, OB-71): a run whose step 9 passed saves workflow + helper scripts + simulator
+  configs to `data/knowledge/<uc>/baseline/`; step 6 starts from it (same requirements: no LLM), step 8 reuses the
+  configs for the same workflow + CIQ JSON. "Clear cache" keeps it (user); Artifact Cache page discards it
+- UC export (step 10 artifacts tab + Run Artifacts, completed runs; `tools/uc_export.py`): zip of validation rules,
+  JSON output, execution YAML, CIQ JSON, the helper scripts the workflow calls + inputs the CIQ names, and the simulator
+  (JAR, configs, answers, start / stop scripts, empty VFS); one `USER_GUIDE.md`: every file described + the simulator
+  guide (servers, ports, how they work together, the workflow per server)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
+- Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers
+  the changed output after the change command (`setState`/`whenState`); the LLM gives a line template over the
+  uploaded input document's rows, expanded in code. Helper scripts get their step's check + the formats they read (OB-58)
 - Step 9 classifies failures from the MockWire event log: unmatched clean command → step 8, otherwise → step 6
 - Step 10 lists the run's deliverables in order (`skills/report_generation/deliverables.py`): requirements document, validation rules,
   JSON output, execution YAML, MOP, QA-Validation, QA-Execution, execution summary + success/failure reports

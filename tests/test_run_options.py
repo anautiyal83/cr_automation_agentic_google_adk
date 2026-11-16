@@ -70,7 +70,7 @@ def test_cache_entry_of_step6_needs_the_same_options(tmp_path):
 
 
 def test_backup_stays_on_the_node_unless_via_repo():
-    """O-D2: Backup without "via repo server" keeps the archive on the node (/tmp/${ORDERNO}/…, the
+    """O-D2: Backup without "via repo server" keeps the archive on the node (/tmp/${ORDER_NO}/…, the
     naming convention); with it, the repo route."""
     import copy
 
@@ -81,15 +81,15 @@ def test_backup_stays_on_the_node_unless_via_repo():
         "rollbackConfiguration": {"name": "Rollback", "steps": [{"node": "MRF", "send": "tar -xzvf /tmp/b.tar.gz -C /"}]}}}
     node_only = copy.deepcopy(wf)
     assert backups_by_convention(node_only, {"run_options": {}}) == 1                      # default: on the node
-    assert "REPO" not in node_only["nodes"]
+    assert "repo_server" not in node_only["nodes"]
     assert node_only["phases"]["backup"]["steps"][0]["send"] == \
-        "mkdir -p /tmp/${ORDERNO}/var/opt/x && tar -czvf /tmp/${ORDERNO}/var/opt/x/b.tar.gz /var/opt/x/ " \
-        "&& ls -1 /tmp/${ORDERNO}/var/opt/x/b.tar.gz"
+        "mkdir -p /tmp/${ORDER_NO}/var/opt/x && tar -czvf /tmp/${ORDER_NO}/var/opt/x/b.tar.gz /var/opt/x/ " \
+        "&& ls -1 /tmp/${ORDER_NO}/var/opt/x/b.tar.gz"
     restore = node_only["phases"]["rollbackConfiguration"]["steps"]
-    assert restore[0]["id"] == "nc_rb1_check" and restore[1]["send"] == "tar -xzvf /tmp/${ORDERNO}/var/opt/x/b.tar.gz -C /"
+    assert restore[0]["id"] == "nc_rb1_check" and restore[1]["send"] == "tar -xzvf /tmp/${ORDER_NO}/var/opt/x/b.tar.gz -C /"
     via_repo = copy.deepcopy(wf)
     assert backups_by_convention(via_repo, {"run_options": {"backup_via_repo": True}}) > 0
-    assert "REPO" in via_repo["nodes"]
+    assert "repo_server" in via_repo["nodes"]
 
 
 def test_activity_holds_the_run_phases(tmp_path):

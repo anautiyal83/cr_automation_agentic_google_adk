@@ -443,6 +443,7 @@ class RequirementGatheringSkill:
             self._all_answers,
             raw_artifacts=self._raw_artifacts,
         )
+        requirements = compiler.normalize_compiled(requirements)
 
         # Merge with previous run's requirements (fill gaps, keep existing data)
         if self._previous_requirements:
@@ -479,6 +480,10 @@ class RequirementGatheringSkill:
             schemas=self._schemas,
             schema_dir=self._schema_dir,
         )
+        # What UNCHANGED / blank CIQ cells mean, one table for steps 6 and 8 (shown at the step 2 review; a later
+        # specific note from Edit requirements overrides)
+        from shared import ciq_cells
+        requirements["ciq_cell_rules"] = ciq_cells.derive(requirements)
 
         # Persist all data to the canonical UC document
         _save_requirements(self._uc_name, requirements)

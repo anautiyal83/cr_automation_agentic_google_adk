@@ -52,6 +52,21 @@ def node_fields(template: dict) -> dict[str, list[str]]:
     return {k: v for k, v in out.items() if v}
 
 
+def node_types(template: dict) -> dict[str, int]:
+    """{node type key: number of NIAM entries (``niamID-1…n``)} of a built template — the CIQ JSON keys a
+    workflow node logs in to (``${<TYPE>.niamID-<n>}``, spec 013 B-R1)."""
+    try:
+        nodes = template["data"]["crGroups"]["nodeGroups"]["nodes"]
+    except (KeyError, TypeError):
+        return {}
+    out: dict[str, int] = {}
+    for e in ([nodes] if isinstance(nodes, dict) else list(nodes or [])):
+        for k, v in (e.items() if isinstance(e, dict) else []):
+            if isinstance(v, dict) and not k.startswith("_"):
+                out[k] = max(out.get(k, 0), sum(1 for f in v if f.startswith("niamID-")))
+    return out
+
+
 def _q(col: str) -> str:
     """Column reference in a lookup expression: quoted when it has a space ('NIAM NAME')."""
     return f"'{col}'" if " " in col else col

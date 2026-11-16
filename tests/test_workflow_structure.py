@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from skills.network_config_gen import structure
+from skills.network_config_gen.production import unwrap
 from skills.network_config_gen.autofix import dump_yaml, parse_yaml
 from skills.network_config_gen.validator import check_placeholders, validate_workflow
 
@@ -62,12 +63,14 @@ def _applied(requirements: dict | None = None) -> dict:
 
 
 def _leaves(parsed: dict, phase: str) -> list[dict]:
-    return list(structure._all_steps(parsed["phases"][phase]["steps"]))
+    """Steps of a phase by its model key — the workflow writes production keys (spec 013)."""
+    from shared.run_options import WORKFLOW_KEYS
+    return list(structure._all_steps(parsed["phases"][WORKFLOW_KEYS.get(phase, phase)]["steps"]))
 
 
 def test_record_steps_loop_over_all_records():
     parsed = _applied()
-    loop = parsed["phases"]["activityConfiguration"]["steps"][0]
+    loop = parsed["phases"]["activity_configuration"]["steps"][0]
     assert loop["type"] == "loop" and loop["for_each"] == "${configSequences.0.records}"
     assert loop["item_var"] == "rec" and loop["reverse_order"] is False  # null NPEs in the JAR
     sends = [s.get("send", "") for s in loop["steps"]]
@@ -77,13 +80,16 @@ def test_record_steps_loop_over_all_records():
 
 def test_every_transfer_is_checksummed_on_both_ends():
     steps = _leaves(_applied(), "backup")  # the upload moved before the backup (what it overwrites)
-    i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${rec.data.FILE}")
+    # production: the input comes from ${LOCAL_PATH} on the automation server (spec 013 C4)
+    i = next(k for k, s in enumerate(steps) if (s.get("sftp") or {}).get("local_path") == "${LOCAL_PATH}/${rec.data.FILE}")
     before, after = steps[i - 1], steps[i + 1]
-    assert before["node"] == "LOCAL" and before["send"] == "sha256sum ${rec.data.FILE}"
-    assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE}"
+    assert before["node"] == "local" and before["send"] == "sha256sum ${LOCAL_PATH}/${rec.data.FILE} | awk '{print $1}'"
+    check = steps[i - 2]
+    assert check["id"].startswith("nc_in") and check["send"] == 'ls -lrt ${LOCAL_PATH} | grep "${rec.data.FILE}"'
+    assert after["node"] == "MRF" and after["send"] == "sha256sum /tmp/${rec.data.FILE} | awk '{print $1}'"
     src = before["register"][0]["regex"].split("<")[1].split(">")[0]
     dst = after["register"][0]["regex"].split("<")[1].split(">")[0]
-    assert after["validation"]["success"]["criteria"]["expr"] == f"{dst} == {src}"
+    assert unwrap(after["validation"]["success"]["criteria"]["expr"]) == f"{dst} == {src}"
 
 
 def test_backup_goes_to_repo_server_and_rollback_fetches_it():
@@ -91,12 +97,12 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     framework logs in to the node, through NIAM for Nokia), checked with sha256sum on both ends,
     the repo password answered by expect_reply."""
     parsed = _applied(VIA_REPO)
-    assert parsed["nodes"]["REPO"]["ssh"]["auth"]["password"] == "${SECRET.repo_password}"
+    assert parsed["nodes"]["repo_server"]["ssh"]["auth"]["password"] == "${REPO_PASSWORD}"
     backup = _leaves(parsed, "backup")
     tar = next(s for s in backup if "tar -c" in s.get("send", ""))
     # the naming convention (no $(date), per order and source folder): a rollback-only run finds it;
     # only the files the copy will overwrite (user rule: never touch anything else on the node)
-    lst = "/tmp/${ORDERNO}/${rec.data.DEST}"
+    lst = "/tmp/${ORDER_NO}/${rec.data.DEST}"
     node_file = f"{lst}/clips_backup.tar.gz"
     assert tar["send"] == (f"if [[ -s {lst}/overwritten.list ]]; then tar -czvf {node_file} -C ${{rec.data.DEST}} "
                            f"$(cat {lst}/overwritten.list) && ls -1 {node_file}; else echo NO_FILES_TO_BACK_UP; fi")
@@ -109,14 +115,14 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
     assert ids.index("nc_bk1_items0") < ids.index("nc_bk1_existing") < ids.index(None, ids.index("nc_bk1_existing"))
     assert ids.index("nc_bk1_sum_node") < ids.index("nc_bk1_copy") < ids.index("nc_bk1_sum_repo")
     copy_ = backup[ids.index("nc_bk1_copy")]
-    # no node name column in this CIQ: the node's hostname names its folder
-    repo_file = "/backup/netconfig/${ORDERNO}/${bkHost1}/${rec.data.DEST}/clips_backup.tar.gz"
-    assert copy_["node"] == "MRF" and copy_["when"] == "ncArchived1 != ''"   # only when there is an archive
-    assert copy_["send"] == f"scp {node_file} backup@repo-server:{repo_file}"
-    assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${SECRET.repo_password}\n", "timeout_sec": 30}]
+    # production: <BACK_UP_LOCATION_REPO>/BACKUP/<source folder> (CHILD_REQ_ID / NODE_NAME passed at run time)
+    repo_file = "${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/clips_backup.tar.gz"
+    assert copy_["node"] == "MRF" and unwrap(copy_["when"]) == "ncArchived1 != ''"   # only when there is an archive
+    assert copy_["send"] == f"scp {node_file} ${{REPO_USER}}@${{REPO_IP}}:{repo_file}"
+    assert copy_["expect_reply"] == [{"expect": "assword:", "reply": "${REPO_PASSWORD}\n", "timeout_sec": 30}]
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # nothing changes on the node
     check = backup[ids.index("nc_bk1_sum_repo")]
-    assert check["send"] == f"sha256sum {repo_file}" and check["validation"]["success"]["criteria"]["expr"] == "bk1Dst == bk1Src"
+    assert check["send"] == f"sha256sum {repo_file} | awk '{{print $1}}'" and unwrap(check["validation"]["success"]["criteria"]["expr"]) == "bk1Dst == bk1Src"
     assert not any("sftp" in s and s["sftp"]["remote_path"].startswith("/tmp") for s in backup)  # via the repo
     assert not any("${node}" in json.dumps(s) for s in backup)  # empties multi-node MOPs
     rollback = _leaves(parsed, "rollbackConfiguration")
@@ -128,11 +134,11 @@ def test_backup_goes_to_repo_server_and_rollback_fetches_it():
         f"if [[ -f {lst}/items.list ]]; then rm -f $(cat {lst}/items.list | grep -v '/$' "
         f"| sed 's#^#${{rec.data.DEST}}/#'); fi")
     assert rollback[ids.index("nc_rb1_check")]["send"] == f"ls -1 {repo_file} 2>/dev/null || true"
-    assert rollback[ids.index("nc_rs1_copy")]["send"] == f"scp backup@repo-server:{repo_file} {node_file}"
+    assert rollback[ids.index("nc_rs1_copy")]["send"] == f"scp ${{REPO_USER}}@${{REPO_IP}}:{repo_file} {node_file}"
     restore = rollback[ids.index(None)]
     # decided by the backup file, not by what the backup step registered (unset in rollback-only)
-    assert restore["send"] == f"tar -xzvf {node_file} -C ${{rec.data.DEST}}" and restore["when"] == "ncBackup1 != ''"
-    loop = parsed["phases"]["rollbackConfiguration"]["steps"]
+    assert restore["send"] == f"tar -xzvf {node_file} -C ${{rec.data.DEST}}" and unwrap(restore["when"]) == "ncBackup1 != ''"
+    loop = parsed["phases"]["rollback_configuration"]["steps"]
     assert len(loop) == 1 and restore in loop[0]["steps"]  # extracted in the same record pass
 
 
@@ -142,14 +148,14 @@ def test_input_files_go_through_the_repo_server():
     steps = _leaves(_applied(VIA_REPO), "backup")  # moved before the backup of what it overwrites
     ids = [s.get("id") for s in steps]
     stage = steps[ids.index("nc_xr1_stage")]
-    assert stage["node"] == "REPO"
-    assert stage["sftp"]["remote_path"] == "/backup/netconfig/${crGroup}/files/${rec.data.FILE}"
+    assert stage["node"] == "repo_server_sftp"   # production: framework sftp on the sftp node (spec 013)
+    assert stage["sftp"]["remote_path"] == "${BACK_UP_LOCATION_REPO}/${rec.data.FILE}"
     copy_ = steps[ids.index("nc_xr1_copy")]
     assert copy_["node"] == "MRF"
-    assert copy_["send"] == "scp backup@repo-server:/backup/netconfig/${crGroup}/files/${rec.data.FILE} /tmp/${rec.data.FILE}"
+    assert copy_["send"] == "scp ${REPO_USER}@${REPO_IP}:${BACK_UP_LOCATION_REPO}/${rec.data.FILE} /tmp/${rec.data.FILE}"
     assert '"CHANGES_MADE": "true"' not in json.dumps(copy_)  # into /tmp
     assert ids.index("nc_xr1_stage") < ids.index("nc_xr1_copy") < ids.index("nc_xr1_sum_node")
-    assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE}"
+    assert steps[ids.index("nc_xr1_sum_node")]["send"] == "sha256sum /tmp/${rec.data.FILE} | awk '{print $1}'"
     assert not any(s.get("node") == "MRF" and "sftp" in s for s in steps)
 
 
@@ -158,18 +164,20 @@ def test_sftp_node_types_and_node_changes_through_the_repo():
     sftp_reqs = {**VIA_REPO, "category_1_node_activity": {"nodes": [{"name": "MRF", "ssh": {"file_transfer": "sftp"}}]}}
     backup = _leaves(_applied(sftp_reqs), "backup")
     assert next(s for s in backup if s.get("id") == "nc_bk1_copy")["send"] == (
-        "sftp backup@repo-server:/backup/netconfig/${ORDERNO}/${bkHost1}/${rec.data.DEST} "
-        "<<< 'put /tmp/${ORDERNO}/${rec.data.DEST}/clips_backup.tar.gz clips_backup.tar.gz'")
-    assert structure.repo_copy("sftp", "u", "repo", "/opt/a/f.wav", "/r/f.wav", False) == "sftp u@repo:/r/f.wav /opt/a/f.wav"
+        'printf "put /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz '
+        '${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/clips_backup.tar.gz\\nbye\\n" | '
+        'sftp -o StrictHostKeyChecking=no ${REPO_USER}@${REPO_IP}')       # production's sftp batch (spec 013)
+    assert structure.repo_copy("sftp", "u", "repo", "/opt/a/f.wav", "/r/f.wav", False) == (
+        'printf "get /r/f.wav /opt/a/f.wav\\nbye\\n" | sftp -o StrictHostKeyChecking=no u@repo')
     assert structure.repo_copy("scp", "u", "fd00::1", "/tmp/f", "/r/f", True) == "scp /tmp/f u@[fd00::1]:/r/f"
     # a copy from the repo onto the node outside /tmp changes it; a copy to the repo and the repo's own
     # steps do not
-    assert changes_node({"node": "MRF", "send": "sftp u@repo:/r/f.wav /opt/a/f.wav"}, {"LOCAL"}, {"REPO"})
-    assert changes_node({"node": "MRF", "send": "scp u@[fd00::1]:/r/f /opt/a/"}, {"LOCAL"}, {"REPO"})
-    assert not changes_node({"node": "MRF", "send": "scp u@repo:/r/f /tmp/f"}, {"LOCAL"}, {"REPO"})
-    assert not changes_node({"node": "MRF", "send": "scp /opt/f u@repo:/r/f"}, {"LOCAL"}, {"REPO"})
-    assert not changes_node({"node": "MRF", "send": "sftp u@repo:/r <<< 'put /opt/f f'"}, {"LOCAL"}, {"REPO"})
-    assert not changes_node({"node": "REPO", "send": "mkdir -p /backup/x"}, {"LOCAL"}, {"REPO"})
+    assert changes_node({"node": "MRF", "send": "sftp u@repo:/r/f.wav /opt/a/f.wav"}, {"LOCAL"}, {"repo_server"})
+    assert changes_node({"node": "MRF", "send": "scp u@[fd00::1]:/r/f /opt/a/"}, {"LOCAL"}, {"repo_server"})
+    assert not changes_node({"node": "MRF", "send": "scp u@repo:/r/f /tmp/f"}, {"LOCAL"}, {"repo_server"})
+    assert not changes_node({"node": "MRF", "send": "scp /opt/f u@repo:/r/f"}, {"LOCAL"}, {"repo_server"})
+    assert not changes_node({"node": "MRF", "send": "sftp u@repo:/r <<< 'put /opt/f f'"}, {"LOCAL"}, {"repo_server"})
+    assert not changes_node({"node": "repo_server", "send": "mkdir -p /backup/x"}, {"LOCAL"}, {"repo_server"})
 
 
 def test_apply_is_idempotent_and_flatten_gives_the_llm_form():
@@ -179,7 +187,7 @@ def test_apply_is_idempotent_and_flatten_gives_the_llm_form():
         structure.apply(again, reqs)
         assert dump_yaml(again) == once
         flat = structure.flattened(parse_yaml(once))
-        assert "REPO" not in flat["nodes"]
+        assert "repo_server" not in flat["nodes"]
         text = dump_yaml(flat)
         assert "nc_" not in text and "rec.data" not in text and REC + "FILE" in text
         upload = flat["phases"]["backup"]["steps"][1]  # back on its node and path (moved before the backup)
@@ -282,16 +290,16 @@ def test_step8_repo_copies_reach_the_node_instance():
     assert file_builtin(r"regex:^scp\ /tmp/a\.tgz\ backup@repo\-server:/r/") and file_builtin("scp b@repo:/r/a /tmp/")
     cfg = parse_yaml(add_peers("config: {prompt: '$ '}\n", {"MRF": {"root": "/sim/vfs/MRF", "password": "pw"}}))
     assert cfg["transfer"]["peers"] == {"MRF": {"root": "/sim/vfs/MRF", "password": "pw"}}
-    specs = [NodeSpec(name="MRF", instance="MRF", prompt="mrf:~ # "), NodeSpec(name="REPO", instance="REPO", prompt="$ ")]
-    overlay = parse_yaml(build_overlay(dump_yaml(_applied(VIA_REPO)), specs, {"MRF": 22200, "REPO": 22201}))
+    specs = [NodeSpec(name="MRF", instance="MRF", prompt="mrf:~ # "), NodeSpec(name="repo_server", instance="repo_server", prompt="$ ")]
+    overlay = parse_yaml(build_overlay(dump_yaml(_applied(VIA_REPO)), specs, {"MRF": 22200, "repo_server": 22201}))
     copy_ = next(s for s in _leaves(overlay, "backup") if s.get("id") == "nc_bk1_copy")
-    assert copy_["send"].startswith("scp /tmp/${ORDERNO}/${rec.data.DEST}/clips_backup.tar.gz backup@REPO:/backup/")
+    assert copy_["send"].startswith("scp /tmp/${ORDER_NO}/${rec.data.DEST}/clips_backup.tar.gz ${REPO_USER}@repo_server:${BACK_UP_LOCATION_REPO}/BACKUP/")
     assert copy_["expect_reply"][0]["reply"] == "netconf-sim\n"
 
 
 def test_rollback_only_needs_no_registered_value():
     """User 2026-11-05: a rollback-only run has no value the execution registered — backups follow a
-    naming convention (${ORDERNO}, the CIQ node name) and the rollback checks the file. Run 9de5fcb8:
+    naming convention (${ORDER_NO}, the CIQ node name) and the rollback checks the file. Run 9de5fcb8:
     `restore when: ${backupTarName} != null`, `rm -rf … when: ${backupTarName} == null` wiped the
     folder instead of restoring it."""
     def sheet(cols, *rows):
@@ -322,14 +330,15 @@ phases:
 """)
     structure.apply(wf, reqs)
     text = json.dumps(wf)
-    assert "backupTarName}" not in text.split('"rollbackConfiguration"')[1]      # nothing registered is read
-    assert "/backup/netconfig/${ORDERNO}/${MRF.NODE_NAME}/${rec.data.DEST}/bk.tar.gz" in text
+    assert "backupTarName}" not in text.split('"rollback_configuration"')[1]      # nothing registered is read
+    assert "${BACK_UP_LOCATION_REPO}/BACKUP/${rec.data.DEST}/bk.tar.gz" in text
+    assert "/repo-server/config/CR_AUTOMATION/${CHILD_REQ_ID}/${NODE_NAME}" in text   # runtime params: rollback-only too
     assert "nc_bk1_host" not in text and "rsHost" not in text                     # no hostname steps
     rollback = _leaves(wf, "rollbackConfiguration")
     restore = next(s for s in rollback if "tar -x" in str(s.get("send")))
     wipe = next(s for s in rollback if "rm -rf" in str(s.get("send")))
-    assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C /"
-    assert restore["when"] == "ncBackup1 != ''" and wipe["when"] == "ncBackup1 == ''"
+    assert restore["send"] == "tar -xzvf /tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C /"
+    assert unwrap(restore["when"]) == "ncBackup1 != ''" and unwrap(wipe["when"]) == "ncBackup1 == ''"
 
 
 def test_backup_and_rollback_touch_only_what_the_activity_loads():
@@ -366,7 +375,7 @@ phases:
     assert "chmod 777 $(tar -tf /tmp/${rec.data.FILE} | grep -v '/$' | sed 's#^#${rec.data.DEST}/#')" in chmod["send"]
     items = next(s for s in _leaves(wf, "backup") if s.get("id") == "nc_bk1_items1")
     assert items["send"] == ("if [[ ! '${MRF.VER}' == '13.'* ]]; then tar -tf /tmp/${rec.data.FILE} "
-                             ">> /tmp/${ORDERNO}/${rec.data.DEST}/items.list; fi")
+                             ">> /tmp/${ORDER_NO}/${rec.data.DEST}/items.list; fi")
     assert not _leaves(wf, "activityConfiguration")[0].get("sftp")           # the upload moved to the backup
     rollback = _leaves(wf, "rollbackConfiguration")
     assert not any(str(s.get("send", "")).startswith("rm -rf") for s in rollback)
@@ -407,10 +416,10 @@ phases:
     rollback = _leaves(wf, "rollbackConfiguration")
     sends = [str(s.get("send")) for s in rollback]
     restore = next(s for s in rollback if "tar -xzvf" in str(s.get("send")))
-    assert restore["when"] == "ncBackup1 != ''"                               # nothing from the backup step
+    assert unwrap(restore["when"]) == "ncBackup1 != ''"                               # nothing from the backup step
     assert not any("$(basename" in x or "announcement_backup_*" in x for x in sends)   # LLM wildcards gone
     assert "rm -f /tmp/${rec.data.FILE}" in sends                              # the activity's own input stays
-    assert "ncArchived1" not in json.dumps(wf).split('"rollbackConfiguration"')[1]
+    assert "ncArchived1" not in json.dumps(wf).split('"rollback_configuration"')[1]
 
 
 def test_llm_backup_with_dash_c_gets_the_exact_lists():
@@ -423,7 +432,7 @@ phases:
   backup:
     steps:
     - node: MRF
-      send: mkdir -p /tmp/${{ORDERNO}} && tar -czvf /tmp/${{ORDERNO}}/bk.tar.gz -C ${{{REC}DEST}} $(ls -1 ${{{REC}DEST}}/ | grep "${{{REC}FILE}}" || true) && ls -1 /tmp/${{ORDERNO}}/bk.tar.gz || echo NO_FILES_TO_BACK_UP
+      send: mkdir -p /tmp/${{ORDER_NO}} && tar -czvf /tmp/${{ORDER_NO}}/bk.tar.gz -C ${{{REC}DEST}} $(ls -1 ${{{REC}DEST}}/ | grep "${{{REC}FILE}}" || true) && ls -1 /tmp/${{ORDER_NO}}/bk.tar.gz || echo NO_FILES_TO_BACK_UP
   activityConfiguration:
     steps:
     - node: MRF
@@ -432,19 +441,19 @@ phases:
     name: Rollback
     steps:
     - node: MRF
-      send: tar -xzvf /tmp/${{ORDERNO}}/bk.tar.gz -C ${{{REC}DEST}}
+      send: tar -xzvf /tmp/${{ORDER_NO}}/bk.tar.gz -C ${{{REC}DEST}}
 """)
     structure.apply(wf, None)
     tar = next(s for s in _leaves(wf, "backup") if "tar -czvf" in str(s.get("send")))
-    assert tar["send"].startswith("if [[ -s /tmp/${ORDERNO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
-                                  "/tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat ")
+    assert tar["send"].startswith("if [[ -s /tmp/${ORDER_NO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
+                                  "/tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat ")
     assert any(s.get("id") == "nc_bk1_existing" for s in _leaves(wf, "backup"))
     restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -xzvf" in str(s.get("send")))
-    assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
+    assert restore["send"] == "tar -xzvf /tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
 
 
 def test_restore_step_is_exactly_the_restore():
-    """Run 3f5d8990: the LLM wrapped the restore in `if [[ -f /tmp/${ORDERNO}/<archive> ]]; then …
+    """Run 3f5d8990: the LLM wrapped the restore in `if [[ -f /tmp/${ORDER_NO}/<archive> ]]; then …
     else rm …; fi` — another path than the backup's, no `;` before else — the original never came back."""
     wf = parse_yaml(f"""
 nodes:
@@ -462,12 +471,12 @@ phases:
     name: Rollback
     steps:
     - node: MRF
-      send: if [[ -f /tmp/${{ORDERNO}}/bk.tar.gz ]]; then tar -xzvf /tmp/bk.tar.gz -C ${{{REC}DEST}} else rm -rf ${{{REC}DEST}}/x; fi 2>&1 || true
+      send: if [[ -f /tmp/${{ORDER_NO}}/bk.tar.gz ]]; then tar -xzvf /tmp/bk.tar.gz -C ${{{REC}DEST}} else rm -rf ${{{REC}DEST}}/x; fi 2>&1 || true
 """)
     structure.apply(wf, None)
     restore = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -x" in str(s.get("send")))
-    assert restore["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
-    assert restore["when"] == "ncBackup1 != ''"
+    assert restore["send"] == "tar -xzvf /tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}"
+    assert unwrap(restore["when"]) == "ncBackup1 != ''"
 
 
 def test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_folder():
@@ -478,9 +487,9 @@ def test_dated_archive_and_source_under_the_load_folder_are_backups_of_that_fold
         (f"if [[ -s ${{{REC}DEST}}/$(basename ${{{REC}FILE}}) ]]; then tar -czvf /tmp/bk_$(date +%Y%m%d%H%M%S).tar.gz "
          f"-C ${{{REC}DEST}} $(basename ${{{REC}FILE}}) else echo NO_FILES_TO_BACK_UP; fi",
          f"tar -xzvf /tmp/bk.tar.gz -C ${{{REC}DEST}}"),
-        (f"tar -czvf /tmp/${{ORDERNO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz "
+        (f"tar -czvf /tmp/${{ORDER_NO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz "
          f"${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar) 2>&1 || echo NO_FILES_TO_BACK_UP",
-         f"tar -xzvf /tmp/${{ORDERNO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz -C ${{{REC}DEST}}"),
+         f"tar -xzvf /tmp/${{ORDER_NO}}/${{{REC}DEST}}/$(basename ${{{REC}FILE}} .tar)/bk.tar.gz -C ${{{REC}DEST}}"),
     ):
         wf = parse_yaml(f"""
 nodes:
@@ -502,7 +511,115 @@ phases:
 """)
         structure.apply(wf, None)
         tar = next(s for s in _leaves(wf, "backup") if "tar -czvf" in str(s.get("send")))
-        assert tar["send"].startswith("if [[ -s /tmp/${ORDERNO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
-                                      "/tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat "), backup
+        assert tar["send"].startswith("if [[ -s /tmp/${ORDER_NO}/${rec.data.DEST}/overwritten.list ]]; then tar -czvf "
+                                      "/tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST} $(cat "), backup
         back = next(s for s in _leaves(wf, "rollbackConfiguration") if "tar -xzvf" in str(s.get("send")))
-        assert back["send"] == "tar -xzvf /tmp/${ORDERNO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}", restore
+        assert back["send"] == "tar -xzvf /tmp/${ORDER_NO}/${rec.data.DEST}/bk.tar.gz -C ${rec.data.DEST}", restore
+
+
+def test_rollback_only_runs_the_lookups_it_needs_again():
+    """Spec 013 PF024: a value the rollback reads that only an earlier phase registers is looked up again at the
+    start of the rollback in a rollback-only run — with its own inputs, and the shell it was read in."""
+    wf = {"nodes": {"N": {"type": "remote", "ssh": {"host": "h"}}},
+          "phases": {
+              "preNodeHealthCheck": {"steps": [
+                  {"node": "N", "send": "get-ns", "register": [{"regex": "(?<NS>\S+)"}]},
+                  {"node": "N", "send": "get-pod -n ${NS}", "register": [{"regex": "(?<POD>\S+)"}]},
+                  {"node": "N", "send": "oc exec -it ${POD} -n ${NS} -- bash"},
+                  {"node": "N", "send": "ip a", "register": [{"regex": "inet (?<IP>\S+)"}]},
+                  {"node": "N", "send": "exit"},
+                  {"node": "N", "send": "unrelated", "register": [{"regex": "(?<OTHER>\S+)"}]}]},
+              "rollbackConfiguration": {"steps": [{"node": "N", "send": "restore --ip ${IP} -n ${NS}"}]}}}
+    assert structure.rollback_lookups(wf) == 5
+    added = [s for s in wf["phases"]["rollbackConfiguration"]["steps"] if s.get("id", "").startswith("nc_rbl")]
+    assert [s["send"] for s in added] == ["get-ns", "get-pod -n ${NS}", "oc exec -it ${POD} -n ${NS} -- bash",
+                                          "ip a", "exit"]
+    assert all(s["when"] == "ROLLBACK_ONLY == 'true'" for s in added)
+    assert "unrelated" not in [s["send"] for s in added]
+
+
+def test_repo_ip_chosen_by_ip_version_like_production():
+    """Spec 013 PF022: with the repo's IPv4 and IPv6 configured, each phase that reaches the repo starts with
+    production's `who am i` probe (once per run) and REPO_IP is computed; flatten removes it again."""
+    reqs = {**VIA_REPO, "repo_server": {"ip_v4": "10.0.0.4", "ip_v6": "fd00::4"}}
+    wf = _applied(reqs)
+    assert wf["globals"]["vars"]["REPO_IP_V4"] == "10.0.0.4" and wf["globals"]["vars"]["REPO_IP_V6"] == "fd00::4"
+    for key in ("backup", "rollback_configuration"):
+        probe = wf["phases"][key]["steps"][0]
+        assert probe["id"].startswith("nc_repoip") and probe["send"] == structure.REPO_IP_PROBE
+        assert unwrap(probe["when"]) == "REPO_IP == ''" and probe["node"] == "MRF"
+        assert [r.get("name") for r in probe["register"]] == [None, "REPO_IP", "REPO_IP"]
+    flat = structure.flattened(wf)
+    assert "REPO_IP_V4" not in json.dumps(flat) and "nc_repoip" not in json.dumps(flat)
+    assert "nc_repoip" not in json.dumps(_applied(VIA_REPO))      # not configured: REPO_IP stays a runtime param
+
+
+def test_upload_written_after_the_backup_moves_before_what_reads_it():
+    """Fresh MRF (spec 013): the LLM uploaded the input in the backup phase after the backup tar; the lists of what
+    the load overwrites read that file (`tar -tf /tmp/<input>`), so the upload must come first."""
+    REC = "${configSequences.0.records.0.data."
+    wf = parse_yaml(f"""
+nodes:
+  MRF: {{type: remote, plugin: ssh, ssh: {{host: '${{MRF.niamID-1}}'}}}}
+phases:
+  backup:
+    steps:
+    - node: MRF
+      send: tar -czvf /tmp/bk.tar.gz -C {REC}DEST}} .
+    - node: MRF
+      sftp: {{operation: upload, local_path: '{REC}FILE}}', remote_path: '/tmp/{REC}FILE}}'}}
+  activityConfiguration:
+    steps:
+    - node: MRF
+      send: tar -xf /tmp/{REC}FILE}} -C {REC}DEST}}
+""")
+    structure.apply(wf, {})
+    steps = _leaves(wf, "backup")
+    up = next(i for i, s in enumerate(steps) if (s.get("sftp") or {}).get("operation") == "upload")
+    reads = [i for i, s in enumerate(steps) if "tar -tf /tmp/" in str(s.get("send"))]
+    assert reads and up < min(reads)
+    assert sum(1 for s in steps if (s.get("sftp") or {}).get("operation") == "upload"
+               and not str(s.get("id", "")).endswith("_retry_copy")) == 1                     # moved, not copied
+
+
+LOCAL_READ = f"""
+nodes:
+  local: {{type: local, plugin: local}}
+phases:
+  activity_configuration:
+    name: Load
+    steps:
+    - node: local
+      send: python3 check_tac.py --delta_file "${{{REC}DELTA_FILE}}" --name "${{{REC}NODE}}"
+      command_description: check the delta
+"""
+
+
+def test_local_step_reads_a_ciq_input_file_from_local_path():
+    """OB-57: a LOCAL step reading a CIQ file column by its bare name takes it from ${LOCAL_PATH} (production's
+    input folder), after a presence check; other CIQ values stay as they are; flatten undoes it."""
+    req = {"doc_extracted": {"ciq_sheets": {"S": {"sample_rows": [
+        {"DELTA_FILE": "SD_TAC_Addition_150926.xlsx", "NODE": "eir01.v2"}]}}}}
+    parsed = parse_yaml(LOCAL_READ)
+    structure.apply(parsed, req)
+    steps = _leaves(parsed, "activity_configuration")
+    run = next(s for s in steps if "check_tac.py" in s.get("send", ""))
+    assert run["send"] == ('python3 check_tac.py --delta_file "${LOCAL_PATH}/${rec.data.DELTA_FILE}" '
+                           '--name "${rec.data.NODE}"')
+    check = next(s for s in steps if str(s.get("id", "")).startswith("nc_in"))
+    assert check["send"] == 'ls -lrt ${LOCAL_PATH} | grep "${rec.data.DELTA_FILE}"'
+    assert parsed["globals"]["vars"]["LOCAL_PATH"]
+    flat = structure.flattened(parsed)
+    sends = [s.get("send") for s in structure._all_steps(flat["phases"]["activity_configuration"]["steps"])]
+    assert sends == [f'python3 check_tac.py --delta_file "${{{REC}DELTA_FILE}}" --name "${{{REC}NODE}}"']
+    again = parse_yaml(dump_yaml(parsed))
+    structure.apply(again, req)
+    assert dump_yaml(again) == dump_yaml(parsed)  # idempotent
+
+
+def test_every_ssh_node_accepts_the_host_key():
+    """OB-64 (user 2026-11-13): `strict_host_key_checking: false` on ssh nodes as well (repo_server had none)."""
+    parsed = _applied(VIA_REPO)
+    for name in ("MRF", "repo_server"):
+        assert parsed["nodes"][name]["ssh"]["strict_host_key_checking"] is False, name
+    assert parsed["nodes"]["repo_server_sftp"]["sftp"]["strict_host_key_checking"] is False

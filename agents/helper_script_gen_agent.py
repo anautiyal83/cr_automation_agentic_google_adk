@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 flow = get_flow_logger(__name__)
 
 
+def _without_helper_errors(err_file: Path) -> dict:
+    """``step_6_error.json`` without what helper_script_gen wrote (network_config_gen's failure stays): each attempt
+    replaces the last one's message instead of piling them up."""
+    import json
+    try:
+        previous = json.loads(err_file.read_text(encoding="utf-8")) if err_file.exists() else {}
+    except ValueError:
+        previous = {}
+    previous.pop("helper_script_errors", None)
+    previous["failed_agents"] = [a for a in previous.get("failed_agents") or [] if a != "helper_script_gen"]
+    previous["error"] = "; ".join(part for part in str(previous.get("error") or "").split("; Helper scripts: ")[0:1]
+                                  if part and not part.startswith("Helper scripts: "))
+    return previous
+
+
 class HelperScriptGenAgent(BaseAgent):
     """Generates Python helper scripts for LOCAL workflow steps."""
     name: str = "helper_script_gen"
@@ -30,6 +45,7 @@ class HelperScriptGenAgent(BaseAgent):
         from shared.llm import get_llm_fn
         from agents.requirements_agent import requirements_store
         from skills.helper_script_gen import HelperScriptGenSkill, SkillInput
+        from tools.input_documents import uploaded_documents
 
         state = ctx.session.state
         run_id = state.get("run_id", "")
@@ -38,8 +54,9 @@ class HelperScriptGenAgent(BaseAgent):
         config = state.get("pipeline_config", {})
         requirements = requirements_store.get(run_id, {})
         artifacts = state.get("artifacts", {})
+        from shared import run_files  # the run folder is authoritative: edits made at a review (spec 012)
 
-        workflow_yaml = artifacts.get("workflow_yaml", "")
+        workflow_yaml = run_files.read(state, "workflow_yaml")
         if not workflow_yaml:
             flow.flow("HELPER_SCRIPT_GEN: No workflow YAML — skipping")
             return
@@ -47,13 +64,24 @@ class HelperScriptGenAgent(BaseAgent):
 
         flow.flow("HELPER_SCRIPT_GEN START — uc=%s", uc_name)
 
-        skill = HelperScriptGenSkill(llm_fn=get_llm_fn(config))
-        output = await skill.generate(SkillInput(
-            uc_name=uc_name,
-            workflow_yaml=workflow_yaml,
-            requirements=requirements,
-            run_dir=run_dir,
-        ))
+        # the workflow is the UC's proven one: so are its scripts (storage/uc_baseline.py, user 2026-11-13)
+        from storage import uc_baseline
+        from skills.helper_script_gen import SkillOutput
+        baseline = uc_baseline.load(uc_name)
+        if baseline and baseline.scripts and uc_baseline.workflow_fingerprint(baseline.workflow_yaml) \
+                == uc_baseline.workflow_fingerprint(workflow_yaml):
+            output = SkillOutput(scripts=dict(baseline.scripts), status="passed")
+            flow.flow("HELPER_SCRIPT_GEN: %d scripts reused from the baseline of run %s", len(output.scripts),
+                      baseline.run_id[:8])
+        else:
+            skill = HelperScriptGenSkill(llm_fn=get_llm_fn(config))
+            output = await skill.generate(SkillInput(
+                uc_name=uc_name,
+                workflow_yaml=workflow_yaml,
+                requirements=requirements,
+                run_dir=run_dir,
+                sample_inputs=uploaded_documents(state),  # the formats of the files the scripts read (OB-58)
+            ))
 
         # Write scripts to run directory
         if run_dir and output.scripts:
@@ -62,6 +90,8 @@ class HelperScriptGenAgent(BaseAgent):
             for name, content in output.scripts.items():
                 script_path = scripts_dir / name
                 script_path.write_text(content, encoding="utf-8")
+                from shared import run_files
+                run_files.record_generated(run_dir, f"scripts/{name}")  # a re-run never silently replaces an edit
                 flow.flow("HELPER_SCRIPT_GEN: Wrote %s (%d chars)", name, len(content))
 
             # Store script paths in artifacts for downstream use
@@ -77,18 +107,25 @@ class HelperScriptGenAgent(BaseAgent):
             if run_dir:
                 import json
                 err_file = Path(run_dir) / "step_6_error.json"
-                previous = {}
-                if err_file.exists():
-                    try:
-                        previous = json.loads(err_file.read_text(encoding="utf-8"))
-                    except ValueError:
-                        previous = {}
+                previous = _without_helper_errors(err_file)
                 message = f"Helper scripts: {output.error}"
                 combined = "; ".join(e for e in (previous.get("error", ""), message) if e)
                 failed = list(previous.get("failed_agents") or []) + ["helper_script_gen"]
                 err_file.write_text(json.dumps({**previous, "error": combined, "failed_agents": failed,
                                                 "helper_script_errors": output.error}, indent=2),
                                     encoding="utf-8")
+        elif run_dir:
+            # the scripts pass now: an earlier attempt's failure no longer holds step 6 (OB-85, run 61561981 — a
+            # re-run of the scripts alone passed, the file of the attempt before kept step 6 failed)
+            import json
+            err_file = Path(run_dir) / "step_6_error.json"
+            if err_file.exists():
+                rest = _without_helper_errors(err_file)
+                if rest.get("failed_agents"):
+                    err_file.write_text(json.dumps(rest, indent=2), encoding="utf-8")
+                else:
+                    err_file.unlink()
+                    state["step_6_status"] = "passed"
 
         if output.error:
             flow.flow("HELPER_SCRIPT_GEN DONE — status=%s, error=%s", output.status, output.error[:200])

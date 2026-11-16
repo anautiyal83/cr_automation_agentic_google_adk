@@ -136,11 +136,11 @@ phases:
 def test_framework_runtime_params_count_as_defined():
     from skills.network_config_gen.validator import check_placeholders
     wf = {"phases": {"activity": {"steps": [
-        {"node": "LOCAL", "send": "python mk.py --out '${ORDERNO}.xml' --id '${batchId}'"}]}}}
-    problems = check_placeholders(wf, runtime_params=["ORDERNO"])
+        {"node": "LOCAL", "send": "python mk.py --out '${ORDER_NO}.xml' --id '${batchId}'"}]}}}
+    problems = check_placeholders(wf, runtime_params=["ORDER_NO"])
     assert len(problems) == 1 and "${batchId}" in problems[0]     # unregistered vars still flagged
-    assert any("${ORDERNO}" in p for p in check_placeholders(wf, runtime_params=[]))
-    assert not any("${ORDERNO}" in p for p in check_placeholders(wf))  # configured default
+    assert any("${ORDER_NO}" in p for p in check_placeholders(wf, runtime_params=[]))
+    assert not any("${ORDER_NO}" in p for p in check_placeholders(wf))  # configured default
 
 
 def test_step6_prompt_lists_runtime_params():
@@ -151,7 +151,7 @@ def test_step6_prompt_lists_runtime_params():
         return "nodes: {}\nphases: {}\n"
 
     asyncio.run(NetworkConfigGenSkill(llm).generate(SkillInput(uc_name="UC")))
-    assert "${ORDERNO}" in seen[0] and "never register" in seen[0]
+    assert "${ORDER_NO}" in seen[0] and "never register" in seen[0]
 
 
 def test_step9_passes_runtime_params_as_vars(tmp_path, monkeypatch):
@@ -170,10 +170,10 @@ def test_step9_passes_runtime_params_as_vars(tmp_path, monkeypatch):
     wf.write_text("nodes: {}\nphases: {}\n")
     asyncio.run(jar_executor.run_execution_test(
         "cli.jar", str(wf), str(tmp_path / "schema.yaml"), "", str(tmp_path),
-        runtime_vars={"ORDERNO": "T1", "BATCH": "B1"}))
+        runtime_vars={"ORDER_NO": "T1", "BATCH": "B1"}))
     execute = [c for c in calls if "execute" in c]
     assert execute, calls
-    assert "ORDERNO=T1" in execute[0] and "BATCH=B1" in execute[0]
+    assert "ORDER_NO=T1" in execute[0] and "BATCH=B1" in execute[0]
 
 
 def test_sample_check_mirrors_jar_regex_semantics():
@@ -327,18 +327,20 @@ def test_expected_coverage_skips_local_and_niam_entries():
     req = {"category_3_orchestration": {"phases": ["activity"]},
            "category_2_commands": {"commands": [{"node": "RDS"}, {"node": "LOCAL"}, {"node": "niam_lookup"},
                                                 {"node": "RDS"}]}}
-    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2},
+    assert _expected_coverage(req) == {"phases": ["activity"], "node_commands": {"RDS": 2}, "mop_commands": [],
                                      "request_columns": {}, "record_columns": {}}
 
 
-def test_cache_is_stale_after_code_or_input_change(tmp_path, monkeypatch):
+def test_cache_is_stale_after_input_change_not_code_change(tmp_path, monkeypatch):
+    """Other documents are other inputs; a generator code change keeps the cache — only the user's Rerun of the
+    step clears it (user 2026-11-12, OB-11 reversed)."""
     import storage.artifact_cache as ac
     cache = ac.ArtifactCache(str(tmp_path))
     cache.save_cache("UC", "network_config_gen", {"workflow_yaml": "phases: {}"}, inputs="a")
     assert cache.has_cache("UC", "network_config_gen", "a")
     assert not cache.has_cache("UC", "network_config_gen", "b")
     monkeypatch.setattr(ac, "code_version", lambda name: "changed")
-    assert not cache.has_cache("UC", "network_config_gen", "a")
+    assert cache.has_cache("UC", "network_config_gen", "a")
 
 
 def test_regenerated_agent_invalidates_later_caches(tmp_path):
@@ -466,11 +468,11 @@ def test_smoke_run_feeds_the_sample_response_to_parsers():
              "p.add_argument('--response_file')\na = p.parse_args()\nroot = ET.parse(a.response_file).getroot()\n"
              "if not root.findall('spml:response', {'spml': 'urn:x'}):\n    print('FAILURE'); raise SystemExit(1)\n"
              "print('SUCCESS')\n")
-    cmd = ["python parse.py --response_file '${ORDERNO}.xml.res'"]
-    assert smoke_run("parse.py", wrong, cmd, {"ORDERNO": "T"}, response_sample=sample)
+    cmd = ["python parse.py --response_file '${ORDER_NO}.xml.res'"]
+    assert smoke_run("parse.py", wrong, cmd, {"ORDER_NO": "T"}, response_sample=sample)
     right = wrong.replace("root.findall('spml:response', {'spml': 'urn:x'})", "root.findall('response')")
-    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["SUCCESS"]) == []
-    assert smoke_run("parse.py", right, cmd, {"ORDERNO": "T"}, response_sample=sample, output_regexes=["ALL OK"])
+    assert smoke_run("parse.py", right, cmd, {"ORDER_NO": "T"}, response_sample=sample, output_regexes=["SUCCESS"]) == []
+    assert smoke_run("parse.py", right, cmd, {"ORDER_NO": "T"}, response_sample=sample, output_regexes=["ALL OK"])
 
 
 def test_nested_quotes_in_script_arguments_are_rejected():
@@ -501,22 +503,31 @@ def test_request_builder_must_get_the_request_identifiers():
         {"Zone": "EAST", "Test MSISDN": "9810217635"}, {"Zone": "NORTH", "Test IMSI": "404530000000132"}]}}
     lookup = {"node": "RDS", "send": "ldapsearch msisdn=${configSequences.0.records.0.data.Test MSISDN}",
               "register": [{"regex": r"provisionedIMSI: (?<resolvedImsi>\d+)"}]}
-    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDERNO}.xml", "remote_path": "/in/${ORDERNO}.xml"}}
-    parse = {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDERNO}.xml.res'"}
+    upload = {"node": "PGW", "sftp": {"operation": "upload", "local_path": "${ORDER_NO}.xml", "remote_path": "/in/${ORDER_NO}.xml"}}
+    parse = {"node": "LOCAL", "send": "python parse_response.py --response_file '${ORDER_NO}.xml.res'"}
 
     def wf(build):
         return {"phases": {"a": {"steps": [lookup, {"node": "LOCAL", "send": build}, upload, parse]}}}
     columns = {"Test IMSI": "404530000000132"}
-    missing = check_request_inputs(wf("python create_xml.py --vni '6' --output_file '${ORDERNO}.xml'"), sheets, columns)
+    missing = check_request_inputs(wf("python create_xml.py --vni '6' --output_file '${ORDER_NO}.xml'"), sheets, columns)
     assert len(missing) == 1 and "create_xml.py" in missing[0] and "${resolvedImsi}" in missing[0]
-    given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDERNO}.xml'"
+    given = "python create_xml.py --imsi '${resolvedImsi}' --output_file '${ORDER_NO}.xml'"
     assert check_request_inputs(wf(given), sheets, columns) == []
 
 
-def test_step6_is_cached_only_after_step9_passes(tmp_path):
-    """DEP-55: step 6 passing its validator is no proof; its artifacts are cached when step 9
-    passes, dropped (with any cached copy) when step 9 fails."""
+def test_step6_is_cached_at_its_review():
+    """Step 6 is cached when it passes its review, like steps 1-4 (user 2026-11-12: DEP-55's wait for step 9
+    reversed) — only the user's Rerun of step 6 clears it."""
+    from orchestrator.pipeline_agent import _CACHE_AFTER_STEP
+    assert "network_config_gen" not in _CACHE_AFTER_STEP and "helper_script_gen" not in _CACHE_AFTER_STEP
+
+
+def test_deferred_cache_waits_for_its_proof_step(tmp_path, monkeypatch):
+    """The deferral mechanism (DEP-55, now unused): cached when the proof step passes, not cached when it fails —
+    and the cache is never cleared then, only by the user's Rerun (OB-48)."""
+    from orchestrator import pipeline_agent
     from orchestrator.pipeline_agent import _settle_deferred_cache
+    monkeypatch.setattr(pipeline_agent, "_CACHE_AFTER_STEP", {"network_config_gen": 9, "helper_script_gen": 9})
 
     class Cache:
         def __init__(self):
@@ -534,9 +545,83 @@ def test_step6_is_cached_only_after_step9_passes(tmp_path):
     assert not cache.saved and not cache.cleared and len(pending) == 2
     (tmp_path / "step_9_error.json").write_text("{}")                              # step 9 failed (disk)
     _settle_deferred_cache(cache, "UC", dict(pending), [9], {"step_9_status": "passed"}, str(tmp_path))
-    assert not cache.saved and sorted(cache.cleared) == ["helper_script_gen", "network_config_gen"]
+    assert not cache.saved and not cache.cleared
     (tmp_path / "step_9_error.json").unlink()
     cache = Cache()
     _settle_deferred_cache(cache, "UC", pending, [9], {}, str(tmp_path))           # step 9 passed
     assert cache.saved == {"network_config_gen": {"workflow_yaml": "w"}, "helper_script_gen": {"s": "x"}}
     assert not pending and not cache.cleared
+
+
+def test_output_contract_reads_f_string_fields_as_any_text():
+    """`f"… for {args.tac_type}"` prints `… for white` when the workflow passes `--tac-type white` (OB-39)."""
+    from skills.helper_script_gen.skill import check_output_contract
+    code = 'import sys\nkind = sys.argv[1]\nprint(f"TAC counts validated successfully for {kind}")\n'
+    assert check_output_contract(code, ["TAC counts validated successfully for white",
+                                        "TAC counts validated successfully for grey"]) == []
+    assert check_output_contract(code, ["All TACs loaded"])
+    assert check_output_contract('print(f"{x}")\n', ["All TACs loaded fine"])  # no fixed text: matches nothing
+
+
+
+def test_an_fstring_printing_an_argument_meets_a_regex_on_its_value():
+    """OB-81 (run 61561981): `print(f"XML modification file generated successfully: {output_file}")` with
+    `--output_file '${ORDER_NO}.xml'` prints `….xml` — the check (fields as `x`) rejected it three times."""
+    from skills.helper_script_gen.skill import arg_values, check_output_contract
+    code = 'print(f"XML modification file generated successfully: {output_file}")\n'
+    cmd = ["python create_xml.py --imsi '${resolvedImsi}' --apn '${rec.data.APN}' --output_file '${ORDER_NO}.xml'"]
+    assert arg_values(cmd) == ["X1", "X1.xml"]
+    assert check_output_contract(code, [r".*\.xml", r"(?<xmlFileName>.*\.xml)"]) != []
+    assert check_output_contract(code, [r".*\.xml", r"(?<xmlFileName>.*\.xml)"], arg_values(cmd)) == []
+    assert check_output_contract('print(f"done: {n}")\n', [r".*\.xml"], arg_values(cmd)) == []  # a field can hold it
+    assert check_output_contract('print("done")\n', [r".*\.xml"], arg_values(cmd)) != []
+
+
+
+def test_the_scripts_namespaced_lookups_are_run_on_the_sample():
+    """OB-82 (run 61561981): `findall('spml:response', ns)` / `'{urn:…}response'` find nothing in a response whose
+    `<response>` is unqualified; the rejection says so with counts from the sample."""
+    from skills.helper_script_gen.skill import _lookup_evidence
+    sample = ('<?xml version="1.0"?><spml:batchResponse result="success" xmlns:spml="urn:siemens:names:prov:gw:SPML:2:0">'
+              '<version>v10</version><response result="success"/></spml:batchResponse>')
+    code = ("responses = root.findall('spml:response', ns)\n"
+            "if not responses:\n    responses = root.findall('{urn:siemens:names:prov:gw:SPML:2:0}response')\n"
+            "v = root.find('version')\n")
+    hint = _lookup_evidence(code, sample)
+    assert "`root.findall('spml:response')` finds 0 elements in the sample, `root.findall('response')` finds 1" in hint
+    assert "'{urn:siemens:names:prov:gw:SPML:2:0}response'" in hint and "version" not in hint
+    assert _lookup_evidence("x = root.findall('response')\n", sample) == ""
+
+
+def test_a_passing_script_attempt_drops_the_earlier_attempts_failure(tmp_path):
+    """OB-85 (run 61561981): a re-run of the helper scripts alone passed, but step_6_error.json of the attempt before
+    kept step 6 failed; failed attempts piled their messages up. The workflow generator's failure stays."""
+    import json
+    from agents.helper_script_gen_agent import _without_helper_errors
+    f = tmp_path / "step_6_error.json"
+    f.write_text(json.dumps({"error": "Helper scripts: a; Helper scripts: b", "helper_script_errors": "b",
+                             "failed_agents": ["helper_script_gen", "helper_script_gen"]}), encoding="utf-8")
+    assert _without_helper_errors(f) == {"error": "", "failed_agents": []}
+    f.write_text(json.dumps({"error": "bad workflow; Helper scripts: a",
+                             "failed_agents": ["network_config_gen", "helper_script_gen"]}), encoding="utf-8")
+    assert _without_helper_errors(f) == {"error": "bad workflow", "failed_agents": ["network_config_gen"]}
+
+
+
+def test_a_comparison_script_handles_the_cells_the_developer_defined():
+    """OB-92 (run 6570694d): the developer said a blank cell deletes the attribute; the report script compared it as a
+    value (blank vs absent → MISMATCH) and failed — the answer sat past the 3000 characters of answers in the prompt."""
+    from skills.helper_script_gen.skill import cell_semantics, check_cell_handling
+    req = {"developer_answers": {"q7": "Use the CIQ value. If a field is 'UNCHANGED' or blank, the corresponding XML "
+                                       "attribute should be omitted for 'UNCHANGED' indicating no change, and create "
+                                       "empty tag in case of blank to delete it.", "q1": "Use port 16611."}}
+    sem = cell_semantics(req)
+    assert len(sem) == 1 and "blank" in sem[0]
+    only_unchanged = ("def status(exp, post):\n    if exp == 'UNCHANGED':\n        return 'UNCHANGED'\n"
+                      "    return 'MATCH' if post == exp else 'MISMATCH'\n")
+    found = check_cell_handling(only_unchanged, sem)
+    assert found and "blank" in found[0]
+    handles = only_unchanged.replace("    return 'MATCH'", "    if exp in ('', None):\n        return 'MATCH' if post is None else 'MISMATCH'\n    return 'MATCH'")
+    assert check_cell_handling(handles, sem) == []
+    assert check_cell_handling(only_unchanged, ["Unchanged parameters should remain the same."]) == []  # no blank rule
+    assert check_cell_handling("print('ok')\n", sem) == []  # not a comparison

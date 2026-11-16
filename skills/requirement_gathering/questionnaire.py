@@ -550,7 +550,8 @@ def repo_server_question(mop_commands: list[dict]) -> list[dict]:
         "default_value": f"{cfg['user']}@{cfg['host']}:{cfg['port']} {cfg['backup_dir']}",
         "context": ("The backup archive is copied from the node to the automation server and from there to "
                     "the repo server; a rollback fetches it back the same way. The server becomes the node "
-                    f"{cfg['node']} of the execution YAML (password: secret {cfg['password_secret']})."),
+                    f"{cfg['node']} of the execution YAML (password: "
+                    f"{cfg.get('password') or 'secret ' + cfg.get('password_secret', 'repo_password')})."),
         "helper_text": "e.g. backup@10.20.30.40:22 /backup/netconfig",
     }]
 

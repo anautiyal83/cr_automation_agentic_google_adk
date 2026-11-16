@@ -263,7 +263,7 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
 
     db = await init_database("data/pipeline.db")
     rows = await db.execute(
-        "SELECT d.uc_name, d.ciq_file_path, d.command_outputs_path, d.additional_documents "
+        "SELECT d.uc_name, d.ciq_file_path, d.command_outputs_path, d.additional_documents, d.run_options "
         "FROM pipeline_runs r "
         "JOIN uc_document_sets d ON r.document_set_id = d.id WHERE r.id = ?", (run_id,))
     if not rows:
@@ -289,8 +289,14 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         flat = parse_yaml(workflow_yaml)  # autofix works on the LLM's flat form
         workflow_yaml = fix_workflow(dump_yaml(structure.flattened(flat)) if flat else workflow_yaml)
         parsed = parse_yaml(workflow_yaml)
-        if parsed:  # records loop, repo backups, transfer checksums (as step 6 does)
-            structure.apply(parsed, json.loads(read("requirements.json") or "{}"))
+        if parsed:  # NIAM nodes + nested sessions, records loop, repo backups, checksums (as step 6 does)
+            from skills.network_config_gen import sessions
+            from skills.network_config_gen.skill import _expected_coverage as _cov
+            reqs0 = {"uc_name": uc_name, **json.loads(read("requirements.json") or "{}")}
+            if rows[0]["run_options"] and "run_options" not in reqs0:  # the run's phases / repo route (spec 010)
+                reqs0["run_options"] = json.loads(rows[0]["run_options"])
+            sessions.nested_sessions(parsed, (_cov(reqs0).get("record_columns") or {}).get("node_types"))
+            structure.apply(parsed, reqs0)
             workflow_yaml = dump_yaml(parsed)
         (work / f"{uc_name}.yaml").write_text(workflow_yaml, encoding="utf-8")
         # with step 6's context: CIQ sheets know node values like ${MRF.VER}
@@ -318,6 +324,10 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         "run_dir": str(work),
         "uc_name": uc_name,
         "ciq_file_path": ciq_file_path,
+        # the run's options (phases, backup via repo — spec 010), as the runner puts them in the state
+        "document_set": {"run_options": json.loads(rows[0]["run_options"] or "{}"),
+                         # the uploaded documents: inputs the activity loads (steps 6, 8, 9; OB-58/59)
+                         "additional_documents": rows[0]["additional_documents"] or "[]"},
         "pipeline_config": config,
         "artifacts": {
             "workflow_yaml": workflow_yaml,

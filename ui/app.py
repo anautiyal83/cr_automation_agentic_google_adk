@@ -413,6 +413,14 @@ html, body { margin: 0 !important; height: 100vh; overflow: hidden; }
 .cr-card-inner { border-radius: 10px !important; }
 /* Buttons: sentence case everywhere */
 .q-btn { text-transform: none !important; letter-spacing: normal !important; }
+/* Review actions on one line: the buttons keep their size and one-line labels (a narrow review panel squeezed
+   them into two-line, swollen buttons); the row scrolls sideways when it does not fit */
+.cr-review-actions { scrollbar-width: thin; padding-bottom: 2px; }
+.cr-review-actions::-webkit-scrollbar { height: 4px; }
+.cr-review-actions > * { flex-shrink: 0; }
+.cr-review-actions .q-btn__content { flex-wrap: nowrap; white-space: nowrap; }
+.cr-review-actions .q-btn { padding: 2px 10px; }
+.cr-review-actions .q-btn .q-icon.on-left { margin-right: 6px; }
 /* Toolbars: filters left, actions right, aligned on one baseline */
 .cr-toolbar { width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .cr-toolbar .q-select, .cr-toolbar .q-input { min-width: 170px; }

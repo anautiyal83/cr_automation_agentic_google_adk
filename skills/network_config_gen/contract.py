@@ -165,12 +165,14 @@ def _text(value: Any) -> str:
 # --------------------------------------------------------------------------- apply / strip
 
 def _leaves(steps: list):
+    """The steps the contract governs: not those a retry loop checks again (a ``warning`` branch — their
+    guard carries the failure, spec 013 PF022)."""
     for step in steps:
         if not isinstance(step, dict):
             continue
         if isinstance(step.get("steps"), list):
             yield from _leaves(step["steps"])
-        else:
+        elif not (isinstance(step.get("validation"), dict) and "warning" in step["validation"]):
             yield step
 
 
@@ -217,13 +219,29 @@ def _put(d: dict, key: str, value: Any) -> None:
     d[key] = value
 
 
+def _description(step: dict) -> str:
+    return str(step.get("command_description") or "").strip().rstrip(".") or DESCRIPTION
+
+
+def _message(step: dict, branch: str) -> str:
+    """The message of a branch the contract adds — worded as production's (``<what the step does> — failed.``)
+    and recognised again by ``strip``."""
+    return f"{_description(step)} — {'completed' if branch == 'success' else 'failed'}."
+
+
+def _added_branch(step: dict, branch: str, b: Any) -> bool:
+    return (isinstance(b, dict) and set(b) <= {"message", "vars"}
+            and b.get("message") in (_message(step, branch), f"{DESCRIPTION}: {branch}")
+            and set(b.get("vars") or {}) <= set(FLAGS))
+
+
 def _add_vars(step: dict, branch: str, values: dict) -> None:
     validation = step.get("validation")
     if not isinstance(validation, dict):
-        validation = step["validation"] = {"description": DESCRIPTION}
+        validation = step["validation"] = {"description": _description(step)}
     b = validation.get(branch)
     if not isinstance(b, dict):
-        b = validation[branch] = {"message": f"{DESCRIPTION}: {branch}"}  # removed again by strip
+        b = validation[branch] = {"message": _message(step, branch)}  # removed again by strip
     b.setdefault("vars", {}).update(values)
 
 
@@ -318,8 +336,11 @@ def strip(parsed: dict) -> int:
             validation = step.get("validation")
             if not isinstance(validation, dict):
                 continue
-            if validation.get("description") == DESCRIPTION:
-                del step["validation"]
+            branches = [b for b in ("success", "failure", "warning") if b in validation]
+            if (validation.get("description") in (DESCRIPTION, _description(step))
+                    and set(validation) <= {"enabled", "description", "success", "failure"} and branches
+                    and all(_added_branch(step, b, validation[b]) for b in branches)):
+                del step["validation"]  # only what the contract added
                 changed += 1
                 continue
             for branch in ("success", "failure"):
@@ -331,7 +352,7 @@ def strip(parsed: dict) -> int:
                             changed += 1
                     if not b["vars"]:
                         del b["vars"]
-                if isinstance(b, dict) and set(b) == {"message"} and b["message"] == f"{DESCRIPTION}: {branch}":
+                if isinstance(b, dict) and set(b) == {"message"} and _added_branch(step, branch, b):
                     del validation[branch]  # a branch the contract added to the LLM's validation
                     changed += 1
     return changed

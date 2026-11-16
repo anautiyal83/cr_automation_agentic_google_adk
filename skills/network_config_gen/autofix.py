@@ -132,6 +132,16 @@ def clean_yaml_response(text: str) -> str:
 _SQ_BACKSLASH_QUOTE = re.compile(r"(?m)^(\s*(?:- )?[\w.-]+:[ \t]*)'((?:[^'\n]|\\'|'')*\\'(?:[^'\n]|\\'|'')*)'[ \t]*$")
 
 
+# `key: 'text '\''quoted'\'' more'` — the shell's way to put a quote in a single-quoted string; YAML writes it ''
+# (OB-75, run c89f1b67: `regex: 'tar: Removing '\''/var/…/'\'' from archive member names'` left step 6 unparsable)
+_SQ_SHELL_QUOTE = re.compile(r"(?m)^(\s*(?:- )?[\w.-]+:[ \t]*)'(.*'\\''.*)'[ \t]*$")
+
+
+def _sq_shell_quote(m: re.Match) -> str:
+    inner = m.group(2).replace("'\\''", "''")
+    return m.group(0) if "'" in inner.replace("''", "") else m.group(1) + "'" + inner + "'"
+
+
 _PLAIN_KEY_LINE = re.compile(r"^(\s*(?:- )?)[\w.-]+\s*:\s+(?![\"'\[{|>&*!#])\S")
 
 
@@ -166,6 +176,7 @@ def sanitize_yaml(text: str) -> str:
     text = _REC_ROW.sub(_rec_row_column, text)
     text = _SUBSCRIPT_COLUMN.sub(_dot_column, text)
     text = _QUOTED_COLUMN.sub(_unquote_column, text)
+    text = _SQ_SHELL_QUOTE.sub(_sq_shell_quote, text)
     text = _SQ_BACKSLASH_QUOTE.sub(lambda m: m.group(1) + "'" + m.group(2).replace("\\'", "''") + "'", text)
     fixed_lines = []
     for line in _fold_plain_continuations(text.split("\n")):
@@ -219,9 +230,41 @@ def dump_yaml(data: dict) -> str:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.width = 200
-    from skills.network_simulator_setup.autofix import yaml11_safe  # the JAR reads YAML 1.1 too
-    yaml.dump(yaml11_safe(data), stream)
+    from skills.network_simulator_setup.autofix import block_scalars, yaml11_safe  # the JAR reads YAML 1.1 too
+    yaml.dump(block_scalars(yaml11_safe(data)), stream)
     return stream.getvalue()
+
+
+_PARAM_ALIASES = {"ORDERNO": "ORDER_NO", "ORDER_NUMBER": "ORDER_NO", "ORDERID": "ORDER_NO"}
+
+
+def runtime_param_aliases(parsed: dict) -> int:
+    """``${ORDERNO}`` → ``${ORDER_NO}``: runtime parameters by production's names (spec 013 PF020) — an older
+    name the framework does not pass resolves to ''. Only names that are not configured themselves."""
+    from core.config import runtime_params
+    params = runtime_params()
+    aliases = {old: new for old, new in _PARAM_ALIASES.items() if old not in params and new in params}
+    if not aliases:
+        return 0
+    pattern = re.compile(r"\$\{(" + "|".join(map(re.escape, aliases)) + r")\}")
+    count = 0
+
+    def fix(value):
+        nonlocal count
+        if isinstance(value, str):
+            new, n = pattern.subn(lambda m: "${" + aliases[m.group(1)] + "}", value)
+            count += n
+            return new
+        if isinstance(value, list):
+            return [fix(v) for v in value]
+        if isinstance(value, dict):
+            return {k: fix(v) for k, v in value.items()}
+        return value
+
+    for key in ("phases", "globals"):
+        if key in parsed:
+            parsed[key] = fix(parsed[key])
+    return count
 
 
 def fix_workflow(yaml_text: str) -> str:
@@ -277,10 +320,13 @@ def fix_workflow(yaml_text: str) -> str:
                 fixed_phases[phase_name] = _fix_phase({"steps": phase_body}, known_nodes)
         parsed["phases"] = fixed_phases
 
+    runtime_param_aliases(parsed)
     # --- Regex named groups + placeholders the JAR cannot resolve ---
     renames = fix_named_groups(parsed.get("phases", {}))
     rename_expr_vars(parsed.get("phases", {}), renames)
     shell_variables_unbraced(parsed)
+    registered_shell_variables(parsed)
+    loop_over_lookup(parsed)
     parsed = fix_placeholders(parsed, renames)
     fix_regex_placeholders(parsed.get("phases", {}))
     shell_guard_conditions(parsed)
@@ -291,12 +337,18 @@ def fix_workflow(yaml_text: str) -> str:
     tar_create_success(parsed)
     empty_output_success(parsed)
     list_after_silent(parsed)
+    count_needs_loop(parsed)
+    block_numbers_end_their_line(parsed)
+    use_resolved_column(parsed)
     loop_count_nonempty(parsed)
     expr_without_parentheses(parsed)
     guard_skip_expr(parsed)
     untar_member_check(parsed)
     when_bare_operands(parsed)
     grep_no_match_ok(parsed)
+    diff_differences_ok(parsed)
+    crlf_line_breaks(parsed)
+    background_ampersand(parsed)
     unify_alternative_columns(parsed)
     order_absence_checks(parsed)
     single_token_condition_vars(parsed)
@@ -477,9 +529,11 @@ def _fix_nodes(nodes: dict) -> dict:
 
 # Commands that are handled by framework config, not explicit steps
 _FRAMEWORK_HANDLED = {
-    "niam login", "ssh $", "ctrl+p+e", "press ctrl+p+e",
+    "niam login", "ctrl+p+e", "press ctrl+p+e",
     "elevate_to_root", "su - root",
 }
+# `ssh ${NIAM…}` / `ssh $NODE` is the framework's own login; `ssh user@${IP}` opens a nested session (spec 013)
+_FRAMEWORK_SSH = re.compile(r"^\s*ssh\s+(?:\S+@)?\$\{?(?:niam|node|host)\w*\}?\s*$", re.I)
 
 
 def _fix_phase(phase: dict, known_nodes: set) -> dict:
@@ -489,7 +543,7 @@ def _fix_phase(phase: dict, known_nodes: set) -> dict:
     phase.pop("commands", None)
 
     # Remove phase-level keys that don't belong in framework schema
-    for bad_key in ("group_by", "niam_failover", "description"):
+    for bad_key in ("group_by", "niam_failover"):
         if bad_key in phase and bad_key != "name":
             # Keep "name" but move "description" to "name" if name is missing
             if bad_key == "description" and "name" not in phase:
@@ -504,7 +558,7 @@ def _fix_phase(phase: dict, known_nodes: set) -> dict:
                 # Skip commands that framework handles automatically
                 cmd_text = (step.get("send") or step.get("cmd") or
                             step.get("command") or step.get("name", "")).lower()
-                if any(handled in cmd_text for handled in _FRAMEWORK_HANDLED):
+                if any(handled in cmd_text for handled in _FRAMEWORK_HANDLED) or _FRAMEWORK_SSH.match(cmd_text):
                     logger.debug("Removed framework-handled command: %s", cmd_text[:60])
                     continue
                 step = _fix_step(step, known_nodes)
@@ -555,6 +609,10 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
     _fix_criteria_expr(step)
 
     _fix_prompt_change_step(step)
+    _fix_expect_reply(step)
+    for sub in step.get("steps") or [] if isinstance(step.get("steps"), list) else []:
+        if isinstance(sub, dict):  # loop body
+            _fix_expect_reply(sub)
     _fix_transfer_step(step)
     _fix_absence_check(step)
     for key in ("when", "skip_when"):
@@ -569,8 +627,10 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
         step["node"] = "LOCAL"
     if isinstance(step.get("send"), str):
         step["send"] = drop_stray_quote(step["send"])
+    # Double quotes stay as written: production's LOCAL server is Linux, where they reach bash intact
+    # (only the Windows dev machine dropped them — spec 013 P-6)
     if str(step.get("node", "")).upper() == "LOCAL" and isinstance(step.get("send"), str):
-        step["send"] = single_quote_arguments(split_dict_arguments(step["send"]))
+        step["send"] = split_dict_arguments(step["send"])
 
     # Strip unknown fields that cause JAR deserialization errors
     for key in list(step.keys()):
@@ -584,7 +644,6 @@ def _fix_step(step: dict, known_nodes: set) -> dict:
 
 
 _HELPER_CALL = re.compile(r"^\s*python3?\s+[\w.-]+\.py(?:\s|$)")
-_DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
 _DICT_ARG = re.compile(r"(--[A-Za-z][\w-]*)\s+(['\"]?)\{(.*?)\}\2(?=\s+--|\s*$)", re.DOTALL)
@@ -594,8 +653,8 @@ _DICT_PAIR = re.compile(r"""['"]?([^'":,{}]+?)['"]?\s*:\s*(?:['"]?(\$\{[^}]*\}|[
 def split_dict_arguments(command: str) -> str:
     """``--ciq_data '{'Mandatory Cap': '${…}', 'VNI': '${…}'}'`` → ``--ciq_data_mandatory_cap
     '${…}' --ciq_data_vni '${…}'``: one flag per field. The JAR's LOCAL runner breaks on any
-    double quote and nested single quotes are split by the shell, so a dict/JSON value can
-    never arrive in one argument (probed; DEP-44). Helper scripts are generated afterwards
+    nested single quotes are split by the shell, so a dict/JSON value never arrives in one
+    argument (DEP-44). Helper scripts are generated afterwards
     from these flags."""
     def expand(m: re.Match) -> str:
         pairs = [(k.strip(), v.strip()) for k, v in _DICT_PAIR.findall(m.group(3)) if k.strip()]
@@ -605,17 +664,6 @@ def split_dict_arguments(command: str) -> str:
         return " ".join(f"{flag}_{re.sub(r'[^a-z0-9]+', '_', k.lower()).strip('_')} '{v}'" for k, v in pairs)
     return _DICT_ARG.sub(expand, command)
 
-
-def single_quote_arguments(command: str) -> str:
-    """``--a "x y"`` → ``--a 'x y'`` in a LOCAL command. The JAR's LOCAL runner splits
-    double-quoted arguments at spaces and drops the rest of the line (probed:
-    ``--a "x y" --c "z"`` reached the program as ``['--a', 'x']``); single quotes arrive
-    intact, multi-line values too. ``${…}`` is filled in by the JAR before the shell runs,
-    so single quotes lose nothing (DEP-36)."""
-    def quote(m: re.Match) -> str:
-        value = re.sub(r'\\(["\\$`])', r"\1", m.group(1))
-        return "'" + value.replace("'", "'\\''") + "'"
-    return _DOUBLE_QUOTED.sub(quote, command)
 
 
 def unbalanced_quotes(command: str) -> bool:
@@ -724,6 +772,47 @@ def _fix_prompt_change_step(step: dict) -> None:
     validation["description"] = (f"Prompt matches {step['prompt_regex']!r} after '{send}' "
                                  "(checked by step prompt_regex)")
     logger.info("Step %r: prompt validation moved to step prompt_regex %r", send, step["prompt_regex"])
+
+
+# The JAR's ExpectReplyDefinition has exactly these properties; any other key fails loading the whole workflow
+# (“Unable to find property 'regex'”, OB-38) — step 7 then fails on every retry
+_EXPECT_REPLY_KEYS = ("expect", "reply", "timeout_sec", "repeat")
+_EXPECT_ALIASES = ("regex", "pattern", "prompt", "match", "expect_regex", "wait_for")
+_REPLY_ALIASES = ("send", "response", "answer", "value", "input", "text")
+
+
+def _fix_expect_reply(step: dict) -> None:
+    """``expect_reply`` in the JAR's form: a list of ``{expect, reply[, timeout_sec, repeat]}``."""
+    if "expect_reply" not in step:
+        return
+    value = step["expect_reply"]
+    if isinstance(value, str):  # just the reply: the usual password prompt
+        value = [{"expect": "assword:", "reply": value}]
+    elif isinstance(value, dict):
+        value = [value]
+    fixed = []
+    for entry in value if isinstance(value, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        entry = dict(entry)
+        for alias in _EXPECT_ALIASES:
+            if alias in entry:
+                entry.setdefault("expect", entry.pop(alias))
+        for alias in _REPLY_ALIASES:
+            if alias in entry:
+                entry.setdefault("reply", entry.pop(alias))
+        if "timeout" in entry:
+            entry.setdefault("timeout_sec", entry.pop("timeout"))
+        out = {k: entry[k] for k in _EXPECT_REPLY_KEYS if k in entry}
+        if out.get("expect") and "reply" in out:
+            out["expect"] = str(out["expect"])
+            fixed.append(out)
+    if fixed != step["expect_reply"]:
+        logger.info("Step %r: expect_reply rewritten to the JAR's form", str(step.get("send", ""))[:60])
+    if fixed:
+        step["expect_reply"] = fixed
+    else:
+        step.pop("expect_reply")
 
 
 def fix_placeholders(value: Any, renames: dict[str, str] | None = None) -> Any:
@@ -1179,7 +1268,15 @@ def remote_file_reads(parsed: dict) -> list[dict]:
             walk(phase, step.get("steps"))
 
     for phase, body in items:
+        # a rollback-only run executes the rollback phase alone: the files earlier phases downloaded are not on
+        # the automation server then (`diff predump_white_….txt postrollbackdump_…` — No such file, OB-47)
+        before = set(downloaded)
+        if re.search(r"rollback", str(phase), re.I):
+            downloaded.clear()
         walk(phase, body.get("steps") if isinstance(body, dict) else body)
+        if re.search(r"rollback", str(phase), re.I):
+            downloaded.clear()
+            downloaded.update(before)
     return hits
 
 
@@ -1312,10 +1409,18 @@ def fix_single_file_listings(parsed: dict) -> int:
         name = re.sub(r"\\\$\\\{[^}]*\\\}", ".+?", re.escape(m.group(2)))
         about = json_text(step.get("validation")).lower()
         size = r"[1-9]\d*" if "empty" in about else r"\d+"
+        line = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
         for criteria in _criteria_blocks(step):
             regex = str(criteria.get("regex") or "")
             if re.search(r"(?<![A-Za-z])total\b", regex):
-                criteria["regex"] = rf"^[-l][rwxsStT-]{{9}}\S*\s+\d+\s+\S+\s+\S+\s+{size}\s+.+{name}\s*$"
+                criteria["regex"] = line
+                changed += 1
+        # the same in a count register (OB-86, run 61561981: `total\s+\d+\s+.*\s+.+?.xml.res` counted 0 on the
+        # PGW response file that was there — `responseFileCount > 0` failed on every node)
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and reg.get("count_var") and isinstance(reg.get("regex"), str) \
+                    and re.search(r"(?<![A-Za-z])total\b", reg["regex"]):
+                reg["regex"] = line
                 changed += 1
     return changed
 
@@ -1477,6 +1582,72 @@ def list_after_silent(parsed: dict) -> int:
     return changed
 
 
+def count_needs_loop(parsed: dict) -> int:
+    """The JAR sets a register's ``count_var`` only when the register has ``loop: true`` (ResultProcessor, read
+    2026-11-13): ``{regex: 'predump_white_.+?\\.txt', count_var: WHITE_BACKUP_COUNT}`` left the count unset, it read as
+    ``''`` and ``WHITE_BACKUP_COUNT == 1`` failed on files that were there (run b81305ff, OB-68)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and str(reg.get("count_var") or "").strip() and not reg.get("loop"):
+                reg["loop"] = True
+                changed += 1
+    return changed
+
+
+_BARE_NUMBER = re.compile(r"^\(\?<([A-Za-z][A-Za-z0-9]*)>\\d\+\)$")
+
+
+def block_numbers_end_their_line(parsed: dict) -> int:
+    r"""After a multi-line send the JAR sends its done-marker on a line of its own: the shell's prompt printed in
+    between is part of the output, and a bare ``(?<x>\d+)`` took the digits of the hostname (`rdsggn01:~ #` → every
+    record's IMSI read as 01, run 6570694d, OB-97). The number must end its line."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        if "\n" not in str(step.get("send") or "").strip():
+            continue
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str) and _BARE_NUMBER.match(reg["regex"].strip()):
+                reg["regex"] = reg["regex"].strip() + r"(?=\s*$)"
+                changed += 1
+    return changed
+
+
+_COLUMN_REF = r"\$\{(?:configSequences\.\d+\.records\.\d+|rec)\.data\.%s\s*\}"
+_ECHO_COLUMN = re.compile(r"""^\s*(?:echo|printf\s+(['"])%s\1)\s+(['"]?)\$\{(?:configSequences\.\d+\.records\.\d+|rec)"""
+                          r"""\.data\.([^}]+?)\s*\}\2\s*$""")
+
+
+def use_resolved_column(parsed: dict) -> int:
+    """A variable one step registers by echoing a CIQ column and another step by a lookup (``resolvedImsi``: Test
+    IMSI when the row gives it, else looked up by Test MSISDN) is that column's value for EVERY row. A later step
+    using the column itself gets it empty on rows without it: EAST's create_xml.py ran with ``--imsi ''`` (run
+    6570694d, OB-100). Later steps use the variable; a step guarded on the column (``when``) is left alone."""
+    steps = [s for _, s in _walk_all_steps(parsed.get("phases") or {})]
+    registered: dict[str, list[int]] = {}
+    for i, step in enumerate(steps):
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict):
+                for name in re.findall(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", str(reg.get("regex") or "")):
+                    registered.setdefault(name, []).append(i)
+    changed = 0
+    for var, at in registered.items():
+        if len(at) < 2:
+            continue
+        columns = {m.group(3).strip() for i in at if (m := _ECHO_COLUMN.match(str(steps[i].get("send") or "")))}
+        if len(columns) != 1:
+            continue
+        column = columns.pop()
+        ref = re.compile(_COLUMN_REF % re.escape(column))
+        for step in steps[max(at) + 1:]:
+            send = step.get("send")
+            if not isinstance(send, str) or not ref.search(send) or column in str(step.get("when") or ""):
+                continue
+            step["send"] = ref.sub("${" + var + "}", send)
+            changed += 1
+    return changed
+
+
 def loop_count_nonempty(parsed: dict) -> int:
     """A looped register counts every match: ``(?<line>.*)`` also matches the empty string after
     each line, so one line counted 2 and ``OK == TOTAL`` never held (probed 2026-11-04). A loop
@@ -1538,6 +1709,81 @@ def shell_variables_unbraced(parsed: dict) -> int:
             changed += 1
     if changed:
         logger.info("Shell variables written as $NAME in %d step(s) (the JAR fills ${NAME} itself)", changed)
+    return changed
+
+
+_UNBRACED_VAR = re.compile(r"(?<![\\$])\$([A-Za-z_]\w*)")
+_GROUP_NAME = re.compile(r"\(\?<([A-Za-z][A-Za-z0-9]*)>")
+
+
+def registered_shell_variables(parsed: dict) -> int:
+    """``$NAME`` of a value a step registers (``date +%Y%m%d`` → ``(?<DATE>…)``) is a shell variable no one set on
+    the node — empty there, so ``predump_$DATE.txt`` is ``predump_.txt`` (OB-39, EIR): it becomes ``${NAME}``, which
+    the JAR fills in. Names the command sets or loops over stay shell variables (``shell_variables_unbraced``)."""
+    registered: set[str] = set()
+    steps = list(_walk_all_steps(parsed.get("phases") or {}))
+    for _, step in steps:
+        for reg in step.get("register") or []:
+            if isinstance(reg, dict) and isinstance(reg.get("regex"), str):
+                registered.update(_GROUP_NAME.findall(reg["regex"]))
+    if not registered:
+        return 0
+    changed = 0
+    for _, step in steps:
+        # sftp paths reach no shell at all: `$DATE` there is the literal text (OB-45 — the download, and the
+        # checksum / repo copy steps built from it, used `predump_white_$DATE.txt`)
+        sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
+        for field in ("remote_path", "local_path"):
+            path = sftp.get(field)
+            if isinstance(path, str) and "$" in path:
+                new_path = _UNBRACED_VAR.sub(lambda m: "${" + m.group(1) + "}" if m.group(1) in registered
+                                             else m.group(0), path)
+                if new_path != path:
+                    sftp[field] = new_path
+                    changed += 1
+        send = step.get("send")
+        if not isinstance(send, str) or "$" not in send:
+            continue
+        own = set(_SHELL_ASSIGN.findall(send)) | set(_SHELL_LOOP_VAR.findall(send))
+        new = _UNBRACED_VAR.sub(lambda m: "${" + m.group(1) + "}" if m.group(1) in registered - own
+                                else m.group(0), send)
+        if new != send:
+            step["send"] = new
+            changed += 1
+    if changed:
+        logger.info("Registered values written as ${NAME} in %d step(s) ($NAME is an unset shell variable)", changed)
+    return changed
+
+
+_ECHO_LIST = re.compile(r"""`echo\s+("?)\$\{([A-Za-z]\w*)\}\1`|\$\(echo\s+("?)\$\{([A-Za-z]\w*)\}\3\)""")
+_WHOLE_OUTPUT = re.compile(r"\[\\s\\S\]|\[\\S\\s\]|\(\?s\)")
+
+
+def loop_over_lookup(parsed: dict) -> int:
+    """``for i in `echo "${PODS}"` `` where PODS captures a lookup's whole (multi-line) output → the lookup itself
+    in the backticks, as production writes it (``for i in `kubectl get pods -n ${NS} | grep app | awk …` ``). The
+    JAR puts the registered lines into the command, the shell gets a command broken over several lines
+    (``-bash: for: command not found``), and a rollback-only run has no value at all (OB-43)."""
+    lookups: dict[str, str] = {}
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if isinstance(send, str) and lookups:
+            def inline(m: re.Match) -> str:
+                name = m.group(2) or m.group(4)
+                return f"`{lookups[name]}`" if name in lookups else m.group(0)
+            new = _ECHO_LIST.sub(inline, send)
+            if new != send:
+                step["send"] = new
+                changed += 1
+        if isinstance(send, str) and "`" not in send and "$(" not in send:
+            for reg in step.get("register") or []:
+                rx = reg.get("regex") if isinstance(reg, dict) else None
+                if isinstance(rx, str) and not reg.get("loop") and _WHOLE_OUTPUT.search(rx):
+                    for name in re.findall(r"\(\?<([A-Za-z][A-Za-z0-9]*)>", rx):
+                        lookups[name] = send.strip()
+    if changed:
+        logger.info("Loops over a registered list run its lookup instead in %d step(s)", changed)
     return changed
 
 
@@ -1699,6 +1945,114 @@ def grep_no_match_ok(parsed: dict) -> int:
     return changed
 
 
+def regex_line_breaks(regex: str) -> str:
+    r"""``\n`` in a regex → ``\r?\n``: the JAR captures terminal output, whose lines end in ``\r\n`` (MockWire and a
+    real node's pty alike), so ``predump_white_.+?\.txt\n.*predump_black…`` never matched a listing that had every
+    file (run b81305ff, OB-61). Left alone: an escaped backslash (``\\n``), one already after ``\r`` / ``\r?``,
+    and character classes (``[^\n]`` already takes ``\r``)."""
+    out, i, in_class = [], 0, False
+    while i < len(regex):
+        ch = regex[i]
+        if ch == "\\" and i + 1 < len(regex):
+            pair = regex[i:i + 2]
+            if pair == "\\n" and not in_class and not "".join(out).endswith(("\\r", "\\r?")):
+                out.append("\\r?\\n")
+            else:
+                out.append(pair)
+            i += 2
+            continue
+        if ch == "[" and not in_class:
+            in_class = True
+        elif ch == "]" and in_class:
+            in_class = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def crlf_line_breaks(parsed: dict) -> int:
+    """Every validation and register regex matches lines ending in ``\\r\\n`` (``regex_line_breaks``, OB-61)."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        holders = list(_criteria_blocks(step)) + [r for r in step.get("register") or [] if isinstance(r, dict)]
+        for h in holders:
+            rx = h.get("regex")
+            if isinstance(rx, str) and "\\n" in rx:
+                fixed = regex_line_breaks(rx)
+                if fixed != rx:
+                    h["regex"] = fixed
+                    changed += 1
+    return changed
+
+
+def _top_level_ampersands(send: str) -> list[int]:
+    """Positions of a lone ``&`` between two commands, outside quotes, backticks and ``$(…)`` (not ``&&``,
+    ``2>&1``, ``&>``, ``>&``, nor a trailing ``&``)."""
+    found, quote, depth, i = [], "", 0, 0
+    while i < len(send):
+        ch = send[i]
+        if quote:
+            if ch == "\\" and quote != "'":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif send.startswith("$(", i):
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif ch == "&" and not depth:
+            if send.startswith("&&", i):
+                i += 2
+                continue
+            before, after = send[:i].rstrip(), send[i + 1:]
+            if not before.endswith((">", "<", "|")) and not after.startswith((">", "&")) and after.strip():
+                found.append(i)
+        i += 1
+    return found
+
+
+def background_ampersand(parsed: dict) -> int:
+    """``cd /opt/sdf/processing/ & ls -lrth`` runs ``cd`` in the background and ``ls`` where the shell was (run
+    b81305ff: "Post-rollback dump files not found", OB-61): a workflow step waits for its command, so a lone ``&``
+    between two commands is ``&&``."""
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str):
+            continue
+        spots = _top_level_ampersands(send)
+        for i in reversed(spots):
+            send = send[:i].rstrip() + " && " + send[i + 1:].lstrip()
+        if spots:
+            step["send"] = send
+            changed += 1
+    return changed
+
+
+def diff_differences_ok(parsed: dict) -> int:
+    """``diff a b`` exits 1 when the files differ, and the JAR fails a non-zero step before its check: a pre / post
+    dump comparison that expects the activity's changes failed on the real diff (run b81305ff, MockWire's diff
+    builtin, OB-63). Differences are the answer the step reads: ``|| true`` (a missing file still prints
+    ``No such file``, which the step's check sees). The same for a diff run inside a pod
+    (``kubectl exec P -- bash -c 'diff a b'``: kubectl exits with the script's code, OB-69)."""
+    from skills.network_simulator_setup.vfs_commands import pod_script
+    changed = 0
+    for _, step in _walk_all_steps(parsed.get("phases") or {}):
+        send = step.get("send")
+        if not isinstance(send, str) or _is_guarded(send):
+            continue
+        body = pod_script(send) or send
+        if "||" in body or (body is not send and "||" in send.replace(body, "")):
+            continue
+        last = re.split(r"\s*(?:;|&&)\s*", body.strip())[-1]
+        if re.match(r"^(?:diff|cmp)\s", last):
+            step["send"] = send.rstrip() + " || true"
+            changed += 1
+    return changed
+
 def _is_guarded(send: str) -> bool:
     return send.lstrip().startswith("if ")
 
@@ -1767,10 +2121,11 @@ _SESSION_CLOSED = re.compile(r"(?i)connection\b.*\bclosed|logout|closed\.")
 
 
 def drop_session_exits(parsed: dict) -> int:
-    """Drop ``exit`` steps that leave no ``su`` on their node: they close the login session
-    the JAR opened and manages. An ``exit`` that leaves an ``su`` but waits for
+    """Drop ``exit`` steps that leave no ``su`` or nested shell on their node: they close the login
+    session the JAR opened and manages. An ``exit`` that leaves an ``su`` but waits for
     "Connection to .* closed." (printed by a local ssh client, never by the node) waits for
     the node's prompt instead (DEP-33)."""
+    from .sessions import enter_kind
     phases = parsed.get("phases") or {}
     bodies = list(phases.values()) if isinstance(phases, dict) else list(phases)
     nodes = parsed.get("nodes") or {}
@@ -1785,11 +2140,14 @@ def drop_session_exits(parsed: dict) -> int:
             node = str(step.get("node") or "")
             send = str(step.get("send") or "").strip()
             if node and node.upper() != "LOCAL":
-                if _SU.match(send):
+                if _SU.match(send) or enter_kind(send):
                     depth[node] = depth.get(node, 0) + 1
                 elif send in ("exit", "logout"):
-                    if depth.get(node, 0) > 0:
-                        depth[node] -= 1
+                    # the LLM may write the shell's steps (and its exit) on a node of its own: spec 013
+                    # folds them into the login node, so an exit after any open shell is kept
+                    owner = node if depth.get(node, 0) > 0 else next((n for n, d in depth.items() if d > 0), node)
+                    if depth.get(owner, 0) > 0:
+                        depth[owner] -= 1
                         # Leaving su returns to the node's own prompt, not "Connection … closed"
                         if _SESSION_CLOSED.search(str(step.get("prompt_regex") or "")):
                             node_regex = (nodes.get(node) or {}).get("prompt_regex") if isinstance(nodes, dict) else None
@@ -1817,9 +2175,10 @@ def fix_missing_downloads(parsed: dict) -> int:
     from the step that lists the file there); absolute remote paths in the LOCAL command
     are pointed at the local copy."""
     hits = remote_file_reads(parsed)
-    for hit in reversed(hits):  # later inserts first: indices stay valid
-        steps, i = hit["steps"], hit["index"]
-        step = steps[i]
+    targets = [hit["steps"][hit["index"]] for hit in hits]  # one LOCAL step may read several node files
+    for hit, step in reversed(list(zip(hits, targets))):
+        steps = hit["steps"]
+        i = next(k for k, s in enumerate(steps) if s is step)  # where the step is now (downloads inserted)
         if hit["token"].startswith("/"):
             step["send"] = str(step["send"]).replace(hit["token"], hit["local_name"])
         download = {

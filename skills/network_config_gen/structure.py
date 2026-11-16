@@ -30,6 +30,8 @@ import logging
 import re
 from typing import Any
 
+from .sessions import ciq_type
+
 logger = logging.getLogger(__name__)
 
 AUTO_ID = "nc_"
@@ -103,8 +105,13 @@ def _moved_files(step: dict) -> set[str]:
     sftp = step.get("sftp") if isinstance(step.get("sftp"), dict) else {}
     files = {str(sftp[k]) for k in ("remote_path", "local_path") if sftp.get(k) and "/" in str(sftp[k])}
     if _is_auto(step) and str(step.get("id")).endswith("_copy"):  # the node's scp / sftp with the repo
-        files |= {re.sub(r"^\S*@(?:\[[^\]]*\]|[^\s:@]+):", "", tok) for tok in str(step.get("send") or "").split()[1:]
-                  if "/" in tok and not tok.startswith("'")}
+        send = str(step.get("send") or "")
+        batch = re.search(r"\b(?:put|get)\s+(\S+)\s+(\S+?)(?:\\n|\")", send)
+        if batch:  # printf "put|get <a> <b>\nbye\n" | sftp … (production's batch)
+            files |= {batch.group(1), batch.group(2)}
+        else:
+            files |= {re.sub(r"^\S*@(?:\[[^\]]*\]|[^\s:@]+):", "", tok) for tok in send.split()[1:]
+                      if "/" in tok and not tok.startswith("'")}
     return files
 
 
@@ -134,9 +141,11 @@ def _step(sid: str, node: str, description: str, when: str = "", **body) -> dict
 def flatten(parsed: dict) -> int:
     """Undo ``apply``: unwrap record loops (``${rec.data.X}`` → ``records.0``) and drop the
     added ``nc_`` steps. Returns the number of changes."""
-    from . import contract
-    changed = contract.strip(parsed)
+    from . import contract, production
+    changed = production.plain(parsed)  # first: the contract recognises its own plain expressions
+    changed += contract.strip(parsed)
     changed += _unstage(parsed)
+    changed += _local_path_undo(parsed)
 
     def walk(steps: list) -> list:
         nonlocal changed
@@ -160,11 +169,28 @@ def flatten(parsed: dict) -> int:
     for _, body in _phase_bodies(parsed):
         body["steps"] = walk(body["steps"])
     nodes = parsed.get("nodes")
+    vars_ = (parsed.get("globals") or {}).get("vars")
+    if isinstance(vars_, dict):  # globals the structure adds come back in the same order on every apply
+        for k, v in RETRY_GLOBALS.items():
+            if vars_.get(k) == v:
+                del vars_[k]
+        if str(vars_.get(BACKUP_VAR, "")).endswith("${CHILD_REQ_ID}/${NODE_NAME}"):
+            del vars_[BACKUP_VAR]
+        if not vars_:
+            parsed["globals"].pop("vars", None)
+            if not parsed["globals"]:
+                parsed.pop("globals")
+            vars_ = None
+    if isinstance(vars_, dict) and "REPO_IP_V4" in vars_ and not any(
+            str(s.get("id", "")).startswith(f"{AUTO_ID}repoip") for _, b in _phase_bodies(parsed) for s in b["steps"]):
+        for k in ("REPO_IP_V4", "REPO_IP_V6", "REPO_IP"):
+            vars_.pop(k, None)
     repo = _repo_config()["node"]
-    if changed and isinstance(nodes, dict) and repo in nodes:
+    if changed and isinstance(nodes, dict):
         used = {str(s.get("node")) for _, body in _phase_bodies(parsed) for s in _all_steps(body["steps"])}
-        if repo not in used:  # added by backups_by_convention
-            del nodes[repo]
+        for name in (repo, f"{repo}_sftp"):
+            if name in nodes and name not in used:  # added by backups_by_convention / files_via_repo
+                del nodes[name]
     return changed
 
 
@@ -187,22 +213,26 @@ def flattened(parsed: dict) -> dict:
 def loop_record_steps(parsed: dict) -> int:
     """Wrap each run of steps that use record columns in a loop over all records.
 
-    A run starts at a step that uses a record column and goes on while the next step uses
-    one, reads a variable registered inside the run, uses a file moved inside the run (the
-    restored backup is extracted in the same pass), or was added for a step of the run."""
+    A run starts at a step that uses a record column — or a value an earlier run registered (one per record: the
+    IMSI a record resolved, its profile read before the activity, OB-96) — and goes on while the next step uses
+    one, reads a variable registered inside the run, uses a file moved inside the run (the restored backup is
+    extracted in the same pass), or was added for a step of the run. ``keep_record_values`` carries the values
+    from one run to the next."""
     wrapped = 0
+    per_record: set[str] = set()
     for name, body in _phase_bodies(parsed):
         steps, out, i = body["steps"], [], 0
         while i < len(steps):
             step = steps[i]
-            if not isinstance(step, dict) or is_record_loop(step) or not _uses_record(step):
+            if not isinstance(step, dict) or is_record_loop(step) or not (
+                    _uses_record(step) or _uses_vars(step, per_record - _registers(step))):
                 out.append(step)
                 i += 1
                 continue
             run, regs, files = [step], _registers(step), _moved_files(step)
             j = i + 1
             while j < len(steps) and isinstance(steps[j], dict) and not is_record_loop(steps[j]) and (
-                    _uses_record(steps[j]) or _uses_vars(steps[j], regs) or _is_auto(steps[j])
+                    _uses_record(steps[j]) or _uses_vars(steps[j], regs | per_record) or _is_auto(steps[j])
                     or any(f in s for f in files for s in _strings(steps[j]))):
                 run.append(steps[j])
                 regs |= _registers(steps[j])
@@ -224,12 +254,92 @@ def loop_record_steps(parsed: dict) -> int:
                 "reverse_order": False,
                 "steps": [_rewrite(s, pattern, f"{ITEM_VAR}.data.") for s in run],
             })
+            per_record |= regs
             wrapped += 1
             i = j
         body["steps"] = out
     if wrapped:
         logger.info("Structure: %d step runs loop over all CIQ records", wrapped)
     return wrapped
+
+
+KEEP_DIR = "nc_records"  # on the automation server: one file per record and value carried between record loops
+
+
+def keep_record_values(parsed: dict) -> int:
+    """A value one record loop registers (the IMSI a record resolved, its profile read before the activity) and a
+    later loop reads would be the LAST record's in every pass: the first loop keeps each record's value in a file of
+    its own on the automation server (named by the record's columns), the later loop reads it back before its first
+    use (OB-96). The change itself may sit between the loops (one order for all records)."""
+    loops = [step for _, body in _phase_bodies(parsed) for step in body["steps"] if is_record_loop(step)]
+    if len(loops) < 2:
+        return 0
+    cols = sorted({c for loop in loops for t in _strings(loop) for c in re.findall(rf"\$\{{{ITEM_VAR}\.data\.([^}}]+)\}}", t)})
+    if not cols:
+        return 0
+    joined = "|".join(f"${{{ITEM_VAR}.data.{c}}}" for c in cols)
+    key = f"$(printf '%s' '{joined}' | sha1sum | cut -c1-12)"
+    local = _local_node(parsed)
+    source: dict[str, dict] = {}  # value → the latest loop registering it
+    count = 0
+    for loop in loops:
+        steps, seen, needs = loop["steps"], set(), []
+        for k, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            for name in sorted(source):
+                if name not in seen and source[name] is not loop and _uses_vars(step, {name}):
+                    needs.append((k, name))
+                    seen.add(name)
+            seen |= _registers(step)
+        for k, name in reversed(needs):
+            if any(isinstance(s, dict) and s.get("id") == f"{AUTO_ID}load_{name}" for s in steps):
+                continue
+            path = f"{KEEP_DIR}/{name}_{key}.txt"
+            steps.insert(k, _step(f"{AUTO_ID}load_{name}", local, f"This record's {name} kept by the earlier pass",
+                                  send=f"cat {path} 2>/dev/null || true", register=[{"regex": rf"(?<{name}>[\s\S]+)"}]))
+            src = source[name]["steps"]
+            if not any(isinstance(s, dict) and s.get("id") == f"{AUTO_ID}keep_{name}" for s in src):
+                at = max(i for i, s in enumerate(src) if isinstance(s, dict) and name in _registers(s))
+                src.insert(at + 1, _step(
+                    f"{AUTO_ID}keep_{name}", local, f"Keep this record's {name} for the later pass",
+                    # a quoted here-document keeps quotes and `$` of the value; $(…) drops its last newline
+                    send=(f"mkdir -p {KEEP_DIR} && printf '%s' \"$(cat <<'NC_EOF'\n${{{name}}}\nNC_EOF\n)\" > {path}"
+                          " && echo NC_KEPT"),
+                    validation={"description": "The value is kept", "success": {"criteria": {"regex": "NC_KEPT"},
+                                                                               "message": "kept"},
+                                "failure": {"message": f"Could not keep {name}"}}))
+            count += 1
+        for step in steps:  # a value read back stays the first loop's
+            if isinstance(step, dict) and not str(step.get("id") or "").startswith(f"{AUTO_ID}load_"):
+                for name in _registers(step):
+                    source[name] = loop
+    if count:
+        logger.info("Structure: %d per-record value(s) carried to a later record loop", count)
+    return count
+
+
+def fresh_shared_outputs(parsed: dict) -> int:
+    """A script run once per record that writes one file for all records (``helper_script_gen.context
+    .shared_outputs``: each pass adds its record) starts from no file: an added step before the loop removes it
+    on the automation server (OB-96)."""
+    from skills.helper_script_gen.context import shared_outputs
+    local, count = _local_node(parsed), 0
+    for _, body in _phase_bodies(parsed):
+        out = []
+        for step in body["steps"]:
+            if is_record_loop(step):
+                files = list(dict.fromkeys(f for s in step["steps"] if isinstance(s, dict)
+                                           and str(s.get("node")).lower() in (local.lower(), "local")
+                                           and isinstance(s.get("send"), str)
+                                           for f in shared_outputs(s["send"])))
+                if files:
+                    count += 1
+                    out.append(_step(f"{AUTO_ID}fresh_{count}", local, "Start the file all records' passes add to",
+                                     send="rm -f " + " ".join(files)))
+            out.append(step)
+        body["steps"] = out
+    return count
 
 
 # --------------------------------------------------------------------------- checksums
@@ -256,27 +366,16 @@ def verify_transfers(parsed: dict) -> int:
                 continue
             count += 1
             node, when = str(step.get("node")), str(step.get("when") or "")
-            src_var, dst_var = f"xferSrc{count}", f"xferDst{count}"
+            shell = shell_node(parsed, node)
             if op == "upload":
                 src = (local, lpath, "local file")
-                dst = (node, rpath.rstrip("/") + ("/" + lpath.rsplit("/", 1)[-1] if rpath.endswith("/") else ""),
-                       f"file on {node}")
+                dst = (shell, rpath.rstrip("/") + ("/" + lpath.rsplit("/", 1)[-1] if rpath.endswith("/") else ""),
+                       f"file on {shell}")
             else:
-                src = (node, rpath, f"file on {node}")
+                src = (shell, rpath, f"file on {shell}")
                 dst = (local, lpath, "local copy")
-            out.append(_step(f"{AUTO_ID}sum{count}_src", src[0], f"Checksum of the {src[2]} before the transfer", when,
-                             send=f"sha256sum {src[1]}",
-                             register=[{"regex": f"(?<{src_var}>{_SUM})"}]))
-            out.append(step)
-            out.append(_step(f"{AUTO_ID}sum{count}_dst", dst[0], f"Verify the transferred file: checksum of the {dst[2]} equals the source",
-                             when, send=f"sha256sum {dst[1]}",
-                             register=[{"regex": f"(?<{dst_var}>{_SUM})"}],
-                             validation={
-                                 "description": "SHA-256 of the transferred file must equal the source file's",
-                                 "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
-                                             "message": "Checksums match: the complete file was transferred."},
-                                 "failure": {"message": "Checksum mismatch: the file was not transferred completely."},
-                             }))
+            out += checked_transfer(parsed, f"xfer{count}", step, src, dst, when,
+                                    f"{AUTO_ID}sum{count}_src", f"{AUTO_ID}sum{count}_dst")
         return out
 
     for _, body in _phase_bodies(parsed):
@@ -311,11 +410,36 @@ def _repo_node(parsed: dict, cfg: dict) -> str:
             "host": cfg["host"],
             "port": str(cfg.get("port") or "22"),
             "user": cfg["user"],
-            "auth": {"password": "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
+            "auth": {"password": cfg.get("password") or "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
             "connect_timeout_sec": "30",
         },
     }
     return cfg["node"]
+
+
+def _repo_sftp_node(parsed: dict, cfg: dict) -> str:
+    """``repo_server_sftp`` — production's node for the framework's sftp steps between the automation server and
+    the repo server (``type: sftp``, ``plugin: sftp-plugin``, same login as ``repo_server``; spec 013 PF022)."""
+    name = f"{cfg['node']}_sftp"
+    nodes = parsed.setdefault("nodes", {})
+    if name not in nodes:
+        nodes[name] = {"type": "sftp", "plugin": "sftp-plugin", "sftp": {
+            "host": cfg["host"], "port": int(cfg.get("port") or 22), "user": cfg["user"],
+            "auth": {"password": cfg.get("password") or "${SECRET." + cfg.get("password_secret", "repo_password") + "}"},
+            "strict_host_key_checking": False, "connect_timeout_sec": 15}}
+    return name
+
+
+def shell_node(parsed: dict, node: str) -> str:
+    """The node that runs shell commands for ``node``: an sftp-only node's commands (a checksum of a file it
+    received) run on the ssh node with the same host; any other node is its own."""
+    nodes = parsed.get("nodes") or {}
+    spec = nodes.get(node)
+    if not (isinstance(spec, dict) and str(spec.get("type", "")).lower() == "sftp"):
+        return node
+    host = str((spec.get("sftp") or {}).get("host") or "")
+    return next((n for n, v in nodes.items() if isinstance(v, dict) and n != node
+                 and str((v.get("ssh") or {}).get("host") or "") == host), node)
 
 
 def tar_archive(send: str) -> tuple[str, list[str]] | None:
@@ -358,16 +482,21 @@ def node_login(parsed: dict, node: str) -> tuple[str, str, str]:
     return str(ssh.get("user") or "root"), str(ssh.get("host") or node), str(auth.get("password") or ssh.get("password") or "")
 
 
-def file_transfer(requirements: dict | None, node: str) -> str:
-    """``sftp`` when the node type supports SFTP, else ``scp`` (vendor profile, O-D6)."""
+def file_transfer(requirements: dict | None, node: str, parsed: dict | None = None) -> str:
+    """``sftp`` when the node type supports SFTP, else ``scp`` (vendor profile, O-D6). A NIAM node
+    (spec 013) is looked up by its CIQ node type too (``niam_eir_server`` → EIR1 / EIR)."""
+    from .sessions import ciq_type
     nodes = (((requirements or {}).get("category_1_node_activity") or {}).get("nodes") or []) \
         if isinstance(requirements, dict) else []
-    for n in nodes:
-        if isinstance(n, dict) and str(n.get("name", "")).upper() == node.upper():
-            method = str((n.get("ssh") or {}).get("file_transfer") or "").lower()
-            if method in ("sftp", "scp"):
-                return method
-    return "sftp"
+    typ = ciq_type(parsed, node) if isinstance(parsed, dict) else ""
+    names = [n.upper() for n in (node, typ, re.sub(r"\d+$", "", typ)) if n]
+    methods = {str(n.get("name", "")).upper(): str((n.get("ssh") or {}).get("file_transfer") or "").lower()
+               for n in nodes if isinstance(n, dict)}
+    for name in names:
+        if methods.get(name) in ("sftp", "scp"):
+            return methods[name]
+    found = {m for m in methods.values() if m in ("sftp", "scp")}
+    return found.pop() if node.startswith("niam_") and len(found) == 1 else "sftp"
 
 
 def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: str, to_repo: bool) -> str:
@@ -375,39 +504,78 @@ def repo_copy(method: str, user: str, address: str, node_path: str, repo_path: s
     remote = f"{user}@{f'[{address}]' if ':' in address else address}:"  # brackets for IPv6 only
     if method == "scp":
         return f"scp {node_path} {remote}{repo_path}" if to_repo else f"scp {remote}{repo_path} {node_path}"
-    if not to_repo:
-        return f"sftp {remote}{repo_path} {node_path}"
-    folder, _, name = repo_path.rpartition("/")
-    return f"sftp {remote}{folder or '/'} <<< 'put {node_path} {name}'"
+    # production: an sftp batch fed by printf (spec 013 PF022)
+    op = f"put {node_path} {repo_path}" if to_repo else f"get {repo_path} {node_path}"
+    return f'printf "{op}\\nbye\\n" | sftp -o StrictHostKeyChecking=no {remote[:-1]}'
+
+
+RETRY_GLOBALS = {"RETRY_COUNT": 3, "LOOP_RETRY": [1, 2, 3]}
+_SUM_LINE = "(?m)^(?<{var}>[a-fA-F0-9]{{64}})$"
+
+
+def _sum_step(sid: str, node: str, path: str, var: str, description: str, when: str) -> dict:
+    return _step(sid, node, description, when, send=f"sha256sum {path} | awk '{{print $1}}'",
+                 register=[{"regex": _SUM_LINE.format(var=var)}])
+
+
+def checked_transfer(parsed: dict, tag: str, copy_: dict, src: tuple[str, str, str], dst: tuple[str, str, str],
+                     when: str, src_id: str, dst_id: str) -> list[dict]:
+    """A transfer as production writes it (spec 013 PF022): checksum at the source, the copy, the checksum at the
+    destination compared with the source (``<tag>Status`` SUCCESS, else a warning sets it FAILED), the copy and
+    the check again up to ``RETRY_COUNT`` times while it is not SUCCESS (``type: loop`` over ``${LOOP_RETRY}``,
+    ``break_when``), then a guard that stops when it still is not. ``src`` / ``dst``: (node, path, what)."""
+    from .contract import combine
+    vars_ = parsed.setdefault("globals", {}).setdefault("vars", {})
+    for k, v in RETRY_GLOBALS.items():
+        vars_.setdefault(k, v)
+    src_var, dst_var, status = f"{tag}Src", f"{tag}Dst", f"{tag}Status"
+    dst_step = _sum_step(dst_id, dst[0], dst[1], dst_var,
+                         f"Verify the transferred file: checksum of the {dst[2]} equals the source", when)
+    dst_step["on_failure"] = "continue"
+    dst_step["validation"] = {
+        "description": "SHA-256 of the transferred file must equal the source file's",
+        "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
+                    "message": "Checksums match: the complete file was transferred.", "vars": {status: "SUCCESS"}},
+        "warning": {"message": "Checksum mismatch: retrying the transfer and the checksum up to ${RETRY_COUNT} times.",
+                    "vars": {status: "FAILED"}},
+    }
+    not_ok = f"{status} != 'SUCCESS'"
+    retry_copy, retry_sum = copy.deepcopy(copy_), copy.deepcopy(dst_step)
+    retry_copy["id"], retry_sum["id"] = f"{AUTO_ID}{tag}_retry_copy", f"{AUTO_ID}{tag}_retry_sum"
+    for st in (retry_copy, retry_sum):
+        st.pop("when", None)
+    retry = {"id": f"{AUTO_ID}{tag}_retry", "type": "loop",
+             "command_description": "Retry the transfer and its checksum up to ${RETRY_COUNT} times",
+             "for_each": "${LOOP_RETRY}", "item_var": "ATTEMPT", "reverse_order": False,
+             "when": combine(not_ok, when) if when else not_ok, "break_when": f"{status} == 'SUCCESS'",
+             "hide_when_skipped": True, "steps": [retry_copy, retry_sum]}
+    guard = _step(f"{AUTO_ID}{tag}_guard", _local_node(parsed),
+                  "Abort if the checksum still does not match after ${RETRY_COUNT} retries",
+                  combine(not_ok, when) if when else not_ok, send="echo checksum-guard", hide_when_skipped=True,
+                  on_failure="stop",
+                  validation={"description": "Runs only when the checksum did not match after all retries",
+                              "success": {"criteria": {"expr": f"{status} == 'SUCCESS'"}, "message": "checksum matched"},
+                              "failure": {"message": "Checksum did not match after all retry attempts - aborting."}})
+    return [_sum_step(src_id, src[0], src[1], src_var, f"Checksum of the {src[2]} before the transfer", when),
+            copy_, dst_step, retry, guard]
 
 
 def _repo_transfer(tag: str, repo: str, node: str, login: tuple[str, str, str], method: str,
-                   node_path: str, repo_path: str, to_repo: bool, when: str, what: str) -> list[dict]:
-    """Checksum at the source, the node's copy to / from the repo server (repo password by
-    ``expect_reply``), checksum at the destination compared with the source's. Ids
-    ``nc_<tag>_sum_node`` / ``_copy`` / ``_sum_repo`` (``flatten`` reads the node side back)."""
+                   node_path: str, repo_path: str, to_repo: bool, when: str, what: str,
+                   parsed: dict | None = None) -> list[dict]:
+    """The node's copy to / from the repo server (repo password by ``expect_reply``), checked as production does
+    (``checked_transfer``). Ids ``nc_<tag>_sum_node`` / ``_copy`` / ``_sum_repo`` (``flatten`` reads the node side
+    back)."""
     user, address, password = login
-    src_var, dst_var = f"{tag}Src", f"{tag}Dst"
-    node_sum = (node, node_path, f"nc_{tag}_sum_node", f"file on {node}")
-    repo_sum = (repo, repo_path, f"nc_{tag}_sum_repo", "file on the repo server")
+    node_sum = (node, node_path, f"file on {node}")
+    repo_sum = (repo, repo_path, "file on the repo server")
     src, dst = (node_sum, repo_sum) if to_repo else (repo_sum, node_sum)
+    ids = (f"nc_{tag}_sum_node", f"nc_{tag}_sum_repo") if to_repo else (f"nc_{tag}_sum_repo", f"nc_{tag}_sum_node")
     copy_ = _step(f"nc_{tag}_copy", node, what, when,
                   send=repo_copy(method, user, address, node_path, repo_path, to_repo))
     if password:
         copy_["expect_reply"] = [{"expect": "assword:", "reply": f"{password}\n", "timeout_sec": 30}]
-    return [
-        _step(src[2], src[0], f"Checksum of the {src[3]} before the transfer", when,
-              send=f"sha256sum {src[1]}", register=[{"regex": f"(?<{src_var}>{_SUM})"}]),
-        copy_,
-        _step(dst[2], dst[0], f"Verify the transferred file: checksum of the {dst[3]} equals the source", when,
-              send=f"sha256sum {dst[1]}", register=[{"regex": f"(?<{dst_var}>{_SUM})"}],
-              validation={
-                  "description": "SHA-256 of the transferred file must equal the source file's",
-                  "success": {"criteria": {"expr": f"{dst_var} == {src_var}"},
-                              "message": "Checksums match: the complete file was transferred."},
-                  "failure": {"message": "Checksum mismatch: the file was not transferred completely."},
-              }),
-    ]
+    return checked_transfer(parsed if parsed is not None else {}, tag, copy_, src, dst, when, *ids)
 
 
 def _order_ref() -> str:
@@ -417,6 +585,24 @@ def _order_ref() -> str:
     from core.config import runtime_params
     key = next((k for k in runtime_params() if re.search(r"(?i)order", k)), None)
     return "${" + key + "}" if key else "${crGroup}"
+
+
+BACKUP_VAR = "BACK_UP_LOCATION_REPO"
+
+
+def backup_location(parsed: dict, cfg: dict, requirements: dict | None) -> str:
+    """``${BACK_UP_LOCATION_REPO}`` — production's repo folder of the order and node,
+    ``<backup_dir>/<UC type>/${CHILD_REQ_ID}/${NODE_NAME}`` (a global; both runtime parameters, so a rollback-only
+    run finds it too — spec 013 PF021). '' when the framework does not pass them (the older convention)."""
+    from core.config import runtime_params
+    params = runtime_params()
+    if not ("CHILD_REQ_ID" in params and "NODE_NAME" in params):
+        return ""
+    uc = str((requirements or {}).get("uc_name") or "") if isinstance(requirements, dict) else ""
+    group = uc.split("_", 1)[0].upper() if "_" in uc else ""
+    value = "/".join(x for x in (cfg["backup_dir"].rstrip("/"), group, "${CHILD_REQ_ID}", "${NODE_NAME}") if x)
+    parsed.setdefault("globals", {}).setdefault("vars", {})[BACKUP_VAR] = value
+    return "${" + BACKUP_VAR + "}"
 
 
 def node_name_ref(node: str, requirements: dict | None) -> str:
@@ -569,8 +755,10 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
         phase_is_backup = bool(_BACKUP_PHASE.search(name) or _BACKUP_PHASE.search(str(body.get("name") or "")))
         if _ROLLBACK_PHASE.search(name) or _ROLLBACK_PHASE.search(str(body.get("name") or "")):
             continue
-        out = []
+        out, taken = [], set()
         for step in list(body["steps"]):
+            if id(step) in taken:  # an upload moved ahead of the backup that reads it
+                continue
             if not isinstance(step, dict) or _is_auto(step) or str(step.get("node", "")) == local:
                 out.append(step)
                 continue
@@ -610,7 +798,16 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                         step["when"] = " && ".join(terms)
                     else:
                         step.pop("when")
-                out += _take_uploads(parsed, body, {ld["src"] for ld in dest_loads})
+                srcs = {ld["src"] for ld in dest_loads}
+                out += _take_uploads(parsed, body, srcs)
+                # the LLM may upload in the backup phase itself, after the backup (fresh MRF, spec 013): the
+                # lists of what the load overwrites read the uploaded file, so the upload comes first
+                later = [s for s in body["steps"][body["steps"].index(step) + 1:]
+                         if isinstance(s, dict) and isinstance(s.get("sftp"), dict) and not _is_auto(s)
+                         and str(s["sftp"].get("operation", "")).lower() == "upload"
+                         and str(s["sftp"].get("remote_path") or "") in srcs]
+                taken |= {id(s) for s in later}
+                out += later
                 out += _overwritten_steps(k, step, dest_loads, src.rstrip("/"), node_dir, path)
                 step["send"] = (f"if [[ -s {node_dir}/overwritten.list ]]; then tar -czvf {path} -C {src.rstrip('/')} "
                                 f"$(cat {node_dir}/overwritten.list) && ls -1 {path}; else echo {NOTHING_TO_BACK_UP}; fi")
@@ -639,8 +836,11 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
             if repo_route:
                 copy_when = " && ".join(x for x in (when, f"ncArchived{k} != ''" if dest_loads else "") if x)
                 repo = _repo_node(parsed, cfg)
-                who = node_name_ref(node, requirements)
-                if who:
+                location = backup_location(parsed, cfg, requirements)
+                who = "" if location else node_name_ref(ciq_type(parsed, node) or node, requirements)
+                if location:  # production: <BACK_UP_LOCATION_REPO>/BACKUP/<source folder>
+                    repo_dir = f"{location}/BACKUP{mirror}"
+                elif who:
                     repo_dir = f"{cfg['backup_dir'].rstrip('/')}/{order}/{who}{mirror}"
                 else:  # no node name column in the CIQ: the node's hostname
                     out.append(_hostname_step(f"{AUTO_ID}bk{k}_host", node, f"bkHost{k}", copy_when))
@@ -650,8 +850,8 @@ def backups_by_convention(parsed: dict, requirements: dict | None = None) -> int
                     _step(f"{AUTO_ID}bk{k}_dir", repo, "Create the backup directory on the repo server", copy_when,
                           send=f"mkdir -p {repo_dir}"),
                     *_repo_transfer(f"bk{k}", repo, node, node_login(parsed, repo),
-                                    file_transfer(requirements, node), path, repo_path, True, copy_when,
-                                    f"{node} copies the backup {basename} to the repo server"),
+                                    file_transfer(requirements, node, parsed), path, repo_path, True, copy_when,
+                                    f"{node} copies the backup {basename} to the repo server", parsed=parsed),
                 ]
             absolute = not dest_loads and bool(sources) and all(x.startswith(("/", "${")) for x in sources)
             # a rollback reads none of the backup step's values (the LLM's or ncArchived<k>): a
@@ -743,8 +943,8 @@ def _rollback_by_convention(parsed: dict, cfg: dict, backup: tuple, k: int, requ
                     out.append(_step(f"{AUTO_ID}rs{k}_dir", node, "Create the restore folder on the node", when,
                                      send=f"mkdir -p {lst}"))
                     out += _repo_transfer(f"rs{k}", check_on, node, node_login(parsed, check_on),
-                                          file_transfer(requirements, node), path, repo_path, False, when,
-                                          f"{node} copies the backup {basename} back from the repo server")
+                                          file_transfer(requirements, node, parsed), path, repo_path, False, when,
+                                          f"{node} copies the backup {basename} back from the repo server", parsed=parsed)
                 placed = True
             out.append(step)
         body["steps"] = out
@@ -766,7 +966,7 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
         return 0
     cfg = _repo_config(requirements)
     local = _local_node(parsed)
-    stage_dir = f"{cfg['backup_dir'].rstrip('/')}/${{crGroup}}/files"
+    stage_dir = backup_location(parsed, cfg, requirements) or f"{cfg['backup_dir'].rstrip('/')}/${{crGroup}}/files"
     count = 0
 
     def walk(steps: list) -> list:
@@ -791,13 +991,15 @@ def files_via_repo(parsed: dict, requirements: dict | None = None) -> int:
             node_path = rpath.rstrip("/") + "/" + name if op == "upload" and rpath.endswith("/") else rpath
             staged = f"{stage_dir}/{name}"
             step["id"] = f"{AUTO_ID}xr{count}_stage"
-            step["node"] = repo
+            step["node"] = _repo_sftp_node(parsed, cfg)
             sftp["remote_path"] = staged
+            sftp.setdefault("overwrite", True)
+            sftp.setdefault("create_dirs", True)
             mkdir = _step(f"{AUTO_ID}xr{count}_dir", repo, "Create the file directory on the repo server", when,
                           send=f"mkdir -p {stage_dir}")
             copy_ = _repo_transfer(f"xr{count}", repo, node, node_login(parsed, repo),
-                                   file_transfer(requirements, node), node_path, staged, op == "download", when,
-                                   f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server")
+                                   file_transfer(requirements, node, parsed), node_path, staged, op == "download", when,
+                                   f"{node} copies {name} {'to' if op == 'download' else 'from'} the repo server", parsed=parsed)
             out += [mkdir, step, *copy_] if op == "upload" else [mkdir, *copy_, step]
         return out
 
@@ -816,8 +1018,8 @@ def _unstage(parsed: dict) -> int:
     for s in steps:
         m = re.fullmatch(rf"{AUTO_ID}(xr\d+)_sum_node", str(s.get("id") or ""))
         if m:
-            path = str(s.get("send", ""))[len("sha256sum "):]
-            origin[m.group(1)] = (str(s.get("node")), path.replace("${" + ITEM_VAR + ".data.", "${" + _REC0))
+            path = str(s.get("send", ""))[len("sha256sum "):].split(" | ", 1)[0]  # without `| awk '{print $1}'`
+            origin[m.group(1)] =(str(s.get("node")), path.replace("${" + ITEM_VAR + ".data.", "${" + _REC0))
     restored = 0
     for s in steps:
         m = re.fullmatch(rf"{AUTO_ID}(xr\d+)_stage", str(s.get("id") or ""))
@@ -826,6 +1028,278 @@ def _unstage(parsed: dict) -> int:
             s["node"], s["sftp"]["remote_path"] = origin[m.group(1)]
             restored += 1
     return restored
+
+
+# --------------------------------------------------------------------------- input files
+
+LOCAL_PATH_VAR = "LOCAL_PATH"
+_LOCAL_PREFIX = "${" + LOCAL_PATH_VAR + "}/"
+
+
+def _local_path_value() -> str:
+    from core.config import local_path
+    return local_path()
+
+
+# a file name by its extension (not a host name like eir01.example.com or a version like v2.1)
+_FILE_VALUE = re.compile(r"[\w.\-]+\.(?:xlsx|xlsm|xls|csv|tsv|txt|json|xml|ya?ml|tar|t?gz|tgz|bz2|zip|dat|log|cfg|"
+                         r"conf|ini|sql|py|sh|bin|pdf|docx?|properties|lic|pem|crt|key|jar|rpm)", re.I)
+# a CIQ reference as a whole shell word (not part of a path): `--delta_file "${…data.X}"`, `<${…data.X}`
+_LOCAL_READ = re.compile(r"(?<![\w./\-}])(\$\{(?:configSequences\.\d+\.records\.\d+|" + ITEM_VAR
+                         + r")\.data\.([^}]+)\})")
+
+
+def _file_columns(requirements: dict | None) -> set[str] | None:
+    """CIQ columns whose test values are file names (``SD_TAC_Addition_150926.xlsx``); None without CIQ samples."""
+    sheets = ((requirements or {}).get("doc_extracted") or {}).get("ciq_sheets") if isinstance(requirements, dict) \
+        else None
+    if not sheets:
+        return None
+    columns = set()
+    for sheet in sheets.values():
+        for row in (sheet or {}).get("sample_rows") or []:
+            for k, v in (row.items() if isinstance(row, dict) else []):
+                if _FILE_VALUE.fullmatch(str(v or "").strip()):
+                    columns.add(str(k).strip())
+    return columns
+
+
+def _is_file_column(column: str, files: set[str] | None) -> bool:
+    return column.strip() in files if files is not None else bool(re.search(r"file", column, re.I))
+
+
+def inputs_from_local_path(parsed: dict, requirements: dict | None = None) -> int:
+    """The activity's input files come from ``${LOCAL_PATH}`` on the automation server, as production writes it
+    (``/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}``, spec 013 C4): an upload whose local file is named by a
+    CIQ column takes it from there, after a check that it is present (``ls -lrt ${LOCAL_PATH} | grep "<file>"``;
+    missing → the run stops). So does a LOCAL step that reads a CIQ file column by its bare name
+    (``python3 check.py --delta_file "${…data.DELTA_TAC_FILE}"``, OB-57). Files the workflow makes itself (a
+    LOCAL script's output) stay where they are. Checks: ``nc_in<k>_check``."""
+    value = _local_path_value()
+    if not value:
+        return 0
+    local = _local_node(parsed)
+    files = _file_columns(requirements)
+    count = 0
+
+    def check(name: str, when: str, node: str = "") -> dict:
+        return _step(f"{AUTO_ID}in{count}_check", node or local, f"Check the input file {name} is present on the automation "
+                     "server", when, send=f'ls -lrt ${{{LOCAL_PATH_VAR}}} | grep "{name}"', on_failure="stop",
+                     validation={"description": f"{name} is in ${{{LOCAL_PATH_VAR}}}",
+                                 "success": {"criteria": {"regex": r"\S"},
+                                             "message": f"{name} is present on the automation server."},
+                                 "failure": {"message": f"{name} is not in ${{{LOCAL_PATH_VAR}}} on the "
+                                                        "automation server."}})
+
+    def walk(steps: list) -> list:
+        nonlocal count
+        out = []
+        for step in steps:
+            if isinstance(step, dict) and isinstance(step.get("steps"), list):
+                step["steps"] = walk(step["steps"])
+            sftp = step.get("sftp") if isinstance(step, dict) else None
+            lpath = str((sftp or {}).get("local_path") or "") if isinstance(sftp, dict) else ""
+            if (isinstance(sftp, dict) and str(sftp.get("operation") or "").lower() == "upload" and lpath
+                    and not lpath.startswith(("/", "${" + LOCAL_PATH_VAR)) and _RECORD_REF.search(lpath.replace(
+                        "${" + ITEM_VAR + ".data.", "${configSequences.0.records.0.data."))):
+                count += 1
+                out.append(check(lpath.rsplit("/", 1)[-1], str(step.get("when") or "")))
+                sftp["local_path"] = _LOCAL_PREFIX + lpath
+            send = step.get("send") if isinstance(step, dict) else None
+            if (isinstance(send, str) and str(step.get("node")) in (local, "local", "LOCAL") and not _is_auto(step)
+                    and not isinstance(step.get("sftp"), dict)):
+                reads = [m for m in _LOCAL_READ.finditer(send) if _is_file_column(m.group(2), files)]
+                for ref in dict.fromkeys(m.group(1) for m in reads):
+                    count += 1
+                    out.append(check(ref, str(step.get("when") or ""), str(step["node"])))
+                if reads:
+                    step["send"] = _LOCAL_READ.sub(
+                        lambda m: _LOCAL_PREFIX + m.group(1) if _is_file_column(m.group(2), files) else m.group(1),
+                        send)
+            out.append(step)
+        return out
+
+    for _, body in _phase_bodies(parsed):
+        body["steps"] = walk(body["steps"])
+    if count:  # first among the globals: the same order on every apply
+        globals_ = parsed.setdefault("globals", {})
+        globals_["vars"] = {LOCAL_PATH_VAR: value, **{k: v for k, v in (globals_.get("vars") or {}).items()
+                                                     if k != LOCAL_PATH_VAR}}
+    return count
+
+
+def _local_path_undo(parsed: dict) -> int:
+    """``flatten`` for ``inputs_from_local_path``: the uploads and LOCAL reads take their files by the LLM's name
+    again."""
+    undone = 0
+    prefixed = re.compile(re.escape(_LOCAL_PREFIX) + r"(?=\$\{(?:configSequences\.\d+\.records\.\d+|"
+                          + ITEM_VAR + r")\.data\.)")
+    for _, body in _phase_bodies(parsed):
+        for s in _all_steps(body["steps"]):
+            sftp = s.get("sftp")
+            if isinstance(sftp, dict) and str(sftp.get("local_path") or "").startswith(_LOCAL_PREFIX):
+                sftp["local_path"] = str(sftp["local_path"])[len(_LOCAL_PREFIX):]
+                undone += 1
+            if isinstance(s.get("send"), str) and not _is_auto(s) and prefixed.search(s["send"]):
+                s["send"] = prefixed.sub("", s["send"])
+                undone += 1
+    vars_ = (parsed.get("globals") or {}).get("vars")
+    if undone and isinstance(vars_, dict):
+        vars_.pop(LOCAL_PATH_VAR, None)
+    return undone
+
+
+# --------------------------------------------------------------------------- repo IP
+
+REPO_IP_PROBE = ("who am i | grep -oP '(?<=\\()[^)]+(?=\\))' | "
+                 "{ read -r h; [[ $h == *:* ]] && echo IPv6 || echo IPv4; }")
+
+
+def repo_ip_probe(parsed: dict, requirements: dict | None = None) -> int:
+    """Production picks the repo server's address by the IP version the node is reached with: ``who am i`` on the
+    NIAM node, then ``REPO_IP`` = ``REPO_IP_V4`` or ``[REPO_IP_V6]`` (computed registers). Added at the start of
+    each phase that reaches the repo, only while ``REPO_IP`` is empty (once per run; a rollback-only run too) —
+    when ``execution.repo_server`` has ``ip_v4`` and ``ip_v6`` (spec 013 PF022). Ids ``nc_repoip_*``."""
+    cfg = _repo_config(requirements)
+    v4, v6 = str(cfg.get("ip_v4") or "").strip(), str(cfg.get("ip_v6") or "").strip()
+    if not (v4 and v6):
+        return 0
+    repo_nodes = {cfg["node"], f"{cfg['node']}_sftp"}
+    niam = next((n for n in (parsed.get("nodes") or {}) if str(n).startswith("niam_")), None)
+    added = 0
+    for name, body in _phase_bodies(parsed):
+        steps = [s for s in _all_steps(body["steps"]) if not str(s.get("id", "")).startswith(f"{AUTO_ID}repoip")]
+        uses = [s for s in steps if str(s.get("node")) in repo_nodes or "${REPO_IP}" in " ".join(_strings(s))]
+        if not uses:
+            continue
+        node = next((str(s.get("node")) for s in steps if "${REPO_IP}" in str(s.get("send") or "")
+                     and str(s.get("node")) not in repo_nodes), niam)
+        if not node:
+            continue
+        probe = _step(f"{AUTO_ID}repoip_{name}", node, "Identify IP version and select repository server IP",
+                      "REPO_IP == ''", send=REPO_IP_PROBE, on_failure="continue",
+                      register=[{"regex": "(?<IPTYPE>IPv4|IPv6)"},
+                                {"name": "REPO_IP", "when": "IPTYPE == 'IPv4'", "value": "${REPO_IP_V4}"},
+                                {"name": "REPO_IP", "when": "IPTYPE == 'IPv6'", "value": "[${REPO_IP_V6}]"}])
+        body["steps"] = [probe] + list(body["steps"])
+        added += 1
+    if added:
+        vars_ = parsed.setdefault("globals", {}).setdefault("vars", {})
+        vars_.setdefault("REPO_IP_V4", v4)
+        vars_.setdefault("REPO_IP_V6", v6)
+        vars_.setdefault("REPO_IP", "")
+    return added
+
+
+# --------------------------------------------------------------------------- rollback-only lookups
+
+_PLACEHOLDER_NAME = re.compile(r"\$\{([A-Za-z_]\w*)\}")
+
+
+def _step_registers(step: dict) -> set[str]:
+    names = _registers(step)
+    for reg in step.get("register") or []:
+        if isinstance(reg, dict):
+            if reg.get("name"):
+                names.add(str(reg["name"]))
+            if reg.get("count_var"):
+                names.add(str(reg["count_var"]))
+    return names
+
+
+def _used_names(step: dict) -> set[str]:
+    text = " ".join(_strings({k: v for k, v in step.items() if k != "register"}))
+    return set(_PLACEHOLDER_NAME.findall(text)) | {
+        n for e in _strings([step.get("when"), step.get("skip_when")]) for n in re.findall(r"[A-Za-z_]\w*", e)}
+
+
+def rollback_lookups(parsed: dict) -> int:
+    """A rollback-only run skips every earlier phase: a value the rollback reads that only an earlier phase
+    registers is empty (EIR: `oc get pods -n ${ZT2NAMESPACE}` → `oc get pods -n `). As production does, the
+    steps that produce such values run again at the start of the rollback, only in a rollback-only run
+    (``when: ROLLBACK_ONLY == 'true'``) — with the steps they need themselves and, for a step inside a nested
+    shell (pod, server), the step that opens it and an ``exit`` (spec 013 PF024). Added steps: ``nc_rbl_*``."""
+    from .sessions import enter_kind, is_exit
+    bodies = list(_phase_bodies(parsed))
+    rollbacks = [(n, b) for n, b in bodies if _ROLLBACK_PHASE.search(f"{n} {b.get('name') or ''}")]
+    earlier = [(n, b) for n, b in bodies if (n, b) not in rollbacks]
+    if not rollbacks or not earlier:
+        return 0
+    # producers: variable → (phase steps, index, enter index) of the last earlier step that registers it
+    producers: dict[str, tuple[list, int, int | None]] = {}
+    for _, body in earlier:
+        steps, open_at = body["steps"], []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or _is_auto(step):
+                continue
+            send = str(step.get("send") or "")
+            if is_exit(send):
+                if open_at:
+                    open_at.pop()
+                continue
+            for name in _step_registers(step) | {n for c in _all_steps(step.get("steps") or []) for n in _step_registers(c)}:
+                producers[name] = (steps, i, open_at[-1] if open_at else None)
+            if enter_kind(send) and enter_kind(send) != "su":
+                open_at.append(i)
+    changed = 0
+    for _, body in rollbacks:
+        own = {n for s in _all_steps(body["steps"]) if not _is_auto(s) for n in _step_registers(s)}
+        needed = {n for s in _all_steps(body["steps"]) if not _is_auto(s) for n in _used_names(s)}
+        wanted, queue = set(), [n for n in needed if n in producers and n not in own]
+        while queue:  # the producers' own inputs too
+            name = queue.pop()
+            if name in wanted:
+                continue
+            wanted.add(name)
+            steps, i, enter = producers[name]
+            inputs = _used_names(steps[i]) | (_used_names(steps[enter]) if enter is not None else set())
+            queue += [n for n in inputs if n in producers and n not in own and n not in wanted]
+        if not wanted:
+            continue
+        picked: dict[tuple[int, int], dict] = {}
+        for name in wanted:
+            steps, i, enter = producers[name]
+            picked[(id(steps), i)] = {"steps": steps, "i": i, "enter": enter}
+        order = sorted(picked.values(), key=lambda p: ([id(b["steps"]) for _, b in earlier].index(id(p["steps"])), p["i"]))
+        copies, k, current_enter = [], 0, None
+        for p in order:
+            steps, enter = p["steps"], p["enter"]
+            if current_enter is not None and (enter is None or enter != current_enter):
+                k += 1
+                copies.append(_rbl_exit(copies[-1]["node"], k))
+                current_enter = None
+            if enter is not None and enter != current_enter:
+                k += 1
+                copies.append(_rbl_copy(steps[enter], k))
+                current_enter = enter
+            k += 1
+            copies.append(_rbl_copy(steps[p["i"]], k))
+        if current_enter is not None:
+            k += 1
+            copies.append(_rbl_exit(copies[-1]["node"], k))
+        body["steps"] = copies + list(body["steps"])
+        changed += len(copies)
+    return changed
+
+
+def _rbl_exit(node: str, k: int) -> dict:
+    """Leaves the shell a rollback-only lookup opened — only then: without its enter step it would close the
+    NIAM login itself."""
+    return _step(f"nc_rbl{k}_exit", node, "exit (leave the shell opened for the rollback-only lookups)",
+                 when="ROLLBACK_ONLY == 'true'", send="exit", on_failure="stop")
+
+
+def _rbl_copy(step: dict, k: int) -> dict:
+    from .contract import combine
+    copy_ = copy.deepcopy(step)
+    copy_["id"] = f"nc_rbl{k}"
+    # the rollback phase's rule decides (contract.py), not the source's: a second pass copied the pre-check's
+    # `continue` the contract had written by then, and re-processing a proven workflow changed it (OB-72)
+    copy_.pop("on_failure", None)
+    own = str(copy_.get("when") or "").strip()
+    copy_["when"] = combine("ROLLBACK_ONLY == 'true'", own) if own else "ROLLBACK_ONLY == 'true'"
+    copy_["command_description"] = f"Rollback-only: {copy_.get('command_description') or copy_.get('send')}"
+    return copy_
 
 
 # --------------------------------------------------------------------------- entry point
@@ -860,14 +1334,24 @@ def select_phases(parsed: dict, requirements: dict | None = None) -> int:
 
 def apply(parsed: dict, requirements: dict | None = None) -> int:
     """flatten → repo backups → record loops → transfer checksums → execution contract
-    (spec 011; idempotent)."""
-    from . import contract
+    (spec 011) → production format (spec 013); idempotent."""
+    from . import contract, production
     flatten(parsed)
     changes = select_phases(parsed, requirements)
     changes += loaded_members_only(parsed)
     changes += backups_by_convention(parsed, requirements)
     changes += files_via_repo(parsed, requirements)
+    changes += inputs_from_local_path(parsed, requirements)
     changes += loop_record_steps(parsed)
+    changes += keep_record_values(parsed)
+    changes += fresh_shared_outputs(parsed)
     changes += verify_transfers(parsed)
+    changes += rollback_lookups(parsed)
+    changes += repo_ip_probe(parsed, requirements)
     changes += contract.apply(parsed)
+    types = (requirements or {}).get("node_types")
+    if types is None and isinstance(requirements, dict) and requirements.get("doc_extracted"):
+        from .skill import _record_columns
+        types = _record_columns(requirements).get("node_types")
+    changes += production.apply(parsed, str((requirements or {}).get("uc_name") or ""), types)
     return changes

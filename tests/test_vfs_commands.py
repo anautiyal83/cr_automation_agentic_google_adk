@@ -18,7 +18,7 @@ MRF = [
     "systemctl status swms --no-pager",                                         # health check
     f"ls -ltrh {DEST}/ | grep \"{FILE}\" || true",                             # pre-check
     f"tar -czvf /tmp/announcement_backup.tar.gz {DEST}/ && ls -1 /tmp/announcement_backup.tar.gz",
-    f"scp backup@repo-server:/backup/netconfig/${{crGroup}}/files/{FILE} /tmp/{FILE}",
+    f"scp ${{REPO_USER}}@${{REPO_IP}}:/backup/netconfig/${{crGroup}}/files/{FILE} /tmp/{FILE}",
     f"sha256sum /tmp/{FILE}",
     GUARD % f"cp /tmp/{FILE} {DEST}/",
     GUARD % f"chmod 777 {DEST}/{FILE}",
@@ -122,9 +122,9 @@ def test_loop_pass_aligns_with_the_nearest_preceding_step():
 
     def step(i, kind, node, send):
         return WorkflowStep(index=i, phase=kind, phase_kind=kind, node=node, send=send, regex="", on_failure="stop")
-    steps = [step(0, "backup", "REPO", "sha256sum /r/x"), step(1, "rollback", "REPO", "sha256sum /r/x"),
+    steps = [step(0, "backup", "repo_server", "sha256sum /r/x"), step(1, "rollback", "repo_server", "sha256sum /r/x"),
              step(2, "rollback", "MRF", "tar -xzvf /t/x")]
-    cmds = [SimpleNamespace(node="REPO", command="sha256sum /r/x"), SimpleNamespace(node="MRF", command="tar -xzvf /t/x")]
+    cmds = [SimpleNamespace(node="repo_server", command="sha256sum /r/x"), SimpleNamespace(node="MRF", command="tar -xzvf /t/x")]
     # a loop's 2nd pass goes to the nearest preceding match, not the backup's identical command
     assert align(cmds * 2, steps)[2:] == [1, 2]
     # rollback-only: matched against the rollback steps, indexes stay the workflow's
@@ -135,7 +135,7 @@ def test_rollback_result_is_compared_with_the_node_before(tmp_path):
     """Rollback-only "passed" twice while the original file was gone: the node's files are compared."""
     from skills.network_config_test.scenarios import node_files_diff
     before, after = tmp_path / "b", tmp_path / "a"
-    for root, files in ((before, {"MRF/d/a.wav": "old", "MRF/d/x": "x", "MRF/tmp/l": "1", "REPO/bk": "1"}),
+    for root, files in ((before, {"MRF/d/a.wav": "old", "MRF/d/x": "x", "MRF/tmp/l": "1", "repo_server/bk": "1"}),
                         (after, {"MRF/d/x": "x", "MRF/d/new.wav": "n", "MRF/tmp/l": "2"})):
         for rel, text in files.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -165,3 +165,74 @@ def test_staged_inputs_are_made_again_real_ones_kept(tmp_path):
     (tmp_path / "real.tar").write_bytes(b"not ours")
     assert _staged_by_step9(tmp_path / "a.tar") and _staged_by_step9(tmp_path / "b.txt")
     assert not _staged_by_step9(tmp_path / "real.tar")
+
+
+def test_redirected_output_lands_in_the_vfs_and_cd_ls_reads_it():
+    """OB-40 (EIR rollback): `org -c … >/opt/sdf/processing/x.txt` was keyed with its redirect, so MockWire answered
+    the line and wrote no file; `cd /opt/sdf/processing/ && ls -lrth` then got a canned listing."""
+    from skills.network_simulator_setup.vfs_commands import (key_without_redirect, vfs_handled,
+                                                             workflow_prefixes)
+    assert key_without_redirect(r"regex:org -c eirWhiteRng >/opt/sdf/processing/post_white_\S+.txt") \
+        == r"regex:^org -c eirWhiteRng\s*$"
+    assert key_without_redirect(r"regex:^org\s+-c\s+x\s*>\s*/opt/p/x_\S+\.txt\s*$") == r"regex:^org\s+-c\s+x\s*$"
+    assert key_without_redirect("org -c x > /opt/p/a.txt") == "org -c x"
+    for unchanged in ("ls -l /tmp 2>/dev/null", "cat a > b", "regex:df -h"):
+        assert key_without_redirect(unchanged) == unchanged
+    cmds = [{"cmd": "org -c eirWhiteRng >/opt/sdf/processing/predump_white_${DATE}.txt"},
+            {"cmd": "cd /opt/sdf/processing/ && ls -lrth"}]
+    prefixes = workflow_prefixes(cmds, [], None)
+    assert "/opt/sdf/processing" in prefixes
+    assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth", prefixes)
+    assert vfs_handled("cd /opt/sdf/processing/ && ls -lrth predump_white_${DATE}.txt", prefixes)
+    assert not vfs_handled("cd /etc && ls", prefixes) and not vfs_handled("ls -l", prefixes)
+
+
+def test_file_copied_into_a_pod_is_not_read_from_the_vfs():
+    """OB-53: `for i in …; do oc cp bulkProvisioning.json "ns/$i:/tmp"; done` — MockWire runs neither the loop nor
+    `oc cp`, so `ls -lrths /tmp/bulkProvisioning.json` on the VFS said "No such file"; it keeps a key answer."""
+    from skills.network_simulator_setup.vfs_commands import pod_copied_files, vfs_handled, workflow_prefixes
+    cmds = [{"cmd": "for i in `oc get pods -n ${NS} | grep -i dsserver | awk '{print $1}'`; do echo $i; "
+                    "oc cp bulkProvisioning.json \"${NS}/$i:/tmp\"; echo; done"},
+            {"cmd": "oc cp ${POD}:/opt/p/b.json_backup -c eirapp -n ${NS} b.json_backup"},
+            {"cmd": "kubectl cp /tmp/a.tar ns/pod:/var/x/b.tar -c app"}]
+    unmodelled = pod_copied_files(cmds)
+    assert unmodelled == {"/tmp/bulkProvisioning.json", "/var/x/b.tar"}
+    prefixes = workflow_prefixes(cmds, [], None)
+    assert not vfs_handled("ls -lrths /tmp/bulkProvisioning.json", prefixes, unmodelled)
+    assert vfs_handled("ls -l /tmp/other.txt", prefixes, unmodelled)
+
+
+def test_answer_for_a_pod_copied_file_is_not_dropped():
+    """OB-55: the AI answered `ls -lrths /tmp/bulkProvisioning.json`, but `is_vfs_command` dropped it (a file command
+    on the VFS folder /tmp) — MockWire's ls then said "No such file"."""
+    from skills.network_simulator_setup.file_flows import is_vfs_command
+    vfs = {"dirs": ["/tmp", "/opt/sdf/processing"]}
+    assert not is_vfs_command("ls -lrths /tmp/bulkProvisioning.json", vfs, {"/tmp/bulkProvisioning.json"})
+    assert is_vfs_command("ls -l /tmp/other.txt", vfs, {"/tmp/bulkProvisioning.json"})
+
+
+def test_redirected_dump_gets_the_recorded_output_of_the_command():
+    """OB-49: the redirected dump recorded '' (it prints nothing), the LLM answered `lines: []`, every dump file was
+    empty; `org -c eirWhiteRng | grep …` in the session log has the rows."""
+    from skills.network_simulator_setup.vfs_commands import redirect_contents
+    samples = [{"command": "org -c eirWhiteRng >/opt/p/predump_white_28-July-26.txt", "output": ""},
+               {"command": "org -c eirWhiteRng | grep -i3 28-July-2026", "output": "1,sb,eir,white,9900,9901,,\n1,sb,eir,white,9902,9903,,"},
+               {"command": "org -c localsdf", "output": "Object Class = localsdf"}]
+    cmds = [{"cmd": "org -c eirWhiteRng >/opt/p/predump_white_${DATE}.txt"},
+            {"cmd": "org -c eirGreyRng >/opt/p/predump_grey_${DATE}.txt"},
+            {"cmd": "ls -l /opt/p"}]
+    assert redirect_contents(cmds, samples) == {
+        "org -c eirWhiteRng": {"lines": ["1,sb,eir,white,9900,9901,,", "1,sb,eir,white,9902,9903,,"]}}
+
+
+
+def test_a_multiline_if_block_is_read_as_mockwire_runs_it():
+    """OB-91 (run 6570694d): MockWire runs a `|-` if-block as one line; step 8 must see the same line, so the
+    `ldapsearch` in its branch gets an answer."""
+    from skills.network_simulator_setup.autofix import extract_workflow_commands, join_compound
+    block = 'if [[ "${rec.data.Test MSISDN}" != "" ]]; then\n  ldapsearch -b msisdn=x | awk \'{print $2}\'\nelse\n  echo "${rec.data.Test IMSI}"\nfi'
+    assert join_compound(block) == ('if [[ "${rec.data.Test MSISDN}" != "" ]]; then ldapsearch -b msisdn=x | '
+                                    'awk \'{print $2}\'; else echo "${rec.data.Test IMSI}"; fi')
+    assert join_compound("python3 -c \"\nimport os\n\"") == "python3 -c \"\nimport os\n\""
+    wf = "phases:\n  p:\n    steps:\n    - node: RDS\n      send: |-\n" + "".join(f"        {l}\n" for l in block.split("\n"))
+    assert extract_workflow_commands(wf)[0]["cmd"] == join_compound(block)

@@ -26,6 +26,7 @@ from typing import Awaitable, Callable
 
 from . import prompts
 from .autofix import parse_llm_yaml, safe_regex_key, salvage_yaml_entries
+from .guide import write_guide
 from .simulator_runner import (
     BASE_PORT,
     DEFAULT_TTL_MINUTES,
@@ -68,6 +69,12 @@ class SkillInput:
     base_port: int = BASE_PORT
     ttl_minutes: int = DEFAULT_TTL_MINUTES
     startup_timeout: int = STARTUP_TIMEOUT
+    sample_inputs: list[str] = field(default_factory=list)  # the run's uploaded documents (OB-59)
+    # the UC's proven simulator (storage/uc_baseline.py) when it was proven on this workflow and CIQ data
+    baseline_configs: dict[str, str] = field(default_factory=dict)  # instance → config yaml
+    baseline_synthetic: dict = field(default_factory=dict)
+    baseline_outputs: str = ""  # its outputs/ folder
+    baseline_run: str = ""
 
 
 @dataclass
@@ -95,6 +102,7 @@ class SkillOutput:
     report_html: str = ""  # step 8 milestone report
     status: str = "pending"  # "passed" | "failed" | "pending"
     error: str = ""
+    origin: str = ""  # where the answers came from (shown at the step 8 review)
 
 
 def _sample_on(sample: dict, node: str) -> bool:
@@ -153,11 +161,12 @@ class NetworkSimulatorSetupSkill:
                 logger.info("Topology node %s: %d backup sources seeded in the VFS", n.name, len(seeds))
             # File commands on paths the workflow fills run on the VFS, not from keys (DEP-59)
             from .file_flows import node_steps
-            from .vfs_commands import resolved_dirs, vfs_handled, workflow_prefixes
+            from .vfs_commands import pod_copied_files, resolved_dirs, vfs_handled, workflow_prefixes
             prefixes = workflow_prefixes(n.commands, node_steps(workflow_doc, n.name)
                                          if isinstance(workflow_doc, dict) else [], n.vfs)
+            n.unmodelled_files = unmodelled = pod_copied_files(n.commands)
             n.vfs_commands = {str(c.get("cmd") or "").strip() for c in n.commands
-                              if vfs_handled(str(c.get("cmd") or ""), prefixes)}
+                              if vfs_handled(str(c.get("cmd") or ""), prefixes, unmodelled)}
             if n.vfs_commands:
                 n.vfs = n.vfs or {"dirs": []}
                 n.vfs["dirs"] = sorted(set(n.vfs.get("dirs") or []) | set(resolved_dirs(prefixes, inp.ciq_json_files)))
@@ -167,51 +176,16 @@ class NetworkSimulatorSetupSkill:
                             len(n.vfs.get("triggers", [])))
 
         # --- Phase 2: Command responses per node ---
-        # Real outputs recorded on the nodes are served verbatim; the LLM only invents
-        # responses for commands nobody recorded
-        recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
-        # Commands answered from real output, incl. placeholder commands as templates (S8-21)
-        covered: dict[str, set[str]] = {}
-        for n in nodes:
-            covered[n.name] = set(recorded[n.name])
-            for cmd, (key, entry) in templated_responses(n.commands, samples).items():
-                recorded[n.name][key] = entry
-                covered[n.name].add(cmd)
-        hints = str(inp.generation_hints.get("step_8", "") or "")
-        results = await asyncio.gather(
-            *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
-                                            skip=covered[n.name] | n.vfs_commands) for n in nodes),
-            return_exceptions=True,
-        )
-        errors: list[str] = []
-        instance_configs: dict[str, str] = {}
-        row = _first_row_values(inp.requirements)
-        for node, result in zip(nodes, results):
-            if isinstance(result, Exception):
-                logger.error("Response generation failed for %s: %s", node.name, result)
-                errors.append(f"{node.name}: response generation failed: {result}")
-                result = {}
-            # File commands on VFS paths are answered by MockWire builtins from file state
-            from .file_flows import is_vfs_command
-            dropped = [k for k in result if is_vfs_command(k, node.vfs)]
-            for k in dropped:
-                result.pop(k)
-            recorded[node.name] = {k: v for k, v in recorded[node.name].items()
-                                   if not is_vfs_command(k, node.vfs)}
-            if dropped:
-                logger.info("Phase 2: %s — %d file commands left to the VFS builtins", node.name, len(dropped))
-            # Invented responses stand for a healthy node: they must pass the step's own
-            # success check (recorded real output is the ground truth and is never changed)
-            result = await self._conform_synthetic(inp.uc_name, node, result, covered[node.name], row)
-            if recorded[node.name]:
-                logger.info("Phase 2: %s — %d responses from recorded real output",
-                            node.name, len(recorded[node.name]))
-            merged = merge_responses(recorded[node.name], result, node.commands, covered[node.name], row)
-            # Bash-guarded commands: evaluated per CIQ target, ahead of the generic keys (S8-29)
-            from .guards import guarded_responses
-            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
-            merged = drop_vfs_answers(node, merged, row)
-            instance_configs[node.instance] = build_instance_config(node, merged)
+        # The UC's proven simulator (its step 9 passed on this very workflow and CIQ data) is reused as it is
+        # (storage/uc_baseline.py, user 2026-11-13); otherwise the answers are built again
+        reuse = bool(inp.baseline_configs) and {n.instance for n in nodes} <= set(inp.baseline_configs) \
+            and not inp.feedback
+        if reuse:  # the node configs (a gateway's YAML is built again from them)
+            instance_configs = {n.instance: inp.baseline_configs[n.instance] for n in nodes}
+            synthetic_keys, errors = dict(inp.baseline_synthetic), []
+            logger.info("Phase 2: simulator configs reused from the baseline of run %s", inp.baseline_run[:8])
+        else:
+            instance_configs, synthetic_keys, errors = await self._responses(inp, nodes, samples)
         review_yaml = _review_yaml(nodes, instance_configs)
         # A node without responses fails validation below; the report still gets written
 
@@ -232,6 +206,8 @@ class NetworkSimulatorSetupSkill:
             config_dir = str(sim_dir)
             for node_name, raw in self._raw_llm_outputs.items():
                 (sim_dir / "logs" / f"llm_{node_name}_raw.txt").write_text(raw, encoding="utf-8")
+            import json as _json
+            (sim_dir / SYNTHETIC_KEYS_FILE).write_text(_json.dumps(synthetic_keys, indent=1), encoding="utf-8")
             # The nodes copy files to / from the repo server (spec 010 O-D7): their instances reach
             # the repo instance's VFS (the overlay names the repo in the copy commands)
             from .topology import add_peers, is_peer_copy
@@ -241,6 +217,9 @@ class NetworkSimulatorSetupSkill:
                 if any(is_peer_copy(str(c.get("cmd", ""))) for c in node.commands):
                     instance_configs[node.instance] = add_peers(
                         instance_configs[node.instance], {k: v for k, v in peers.items() if k != node.name})
+            if reuse and inp.baseline_outputs and Path(inp.baseline_outputs).is_dir():
+                import shutil
+                shutil.copytree(inp.baseline_outputs, sim_dir / "outputs", dirs_exist_ok=True)
             for node in nodes:
                 write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
                 errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
@@ -253,9 +232,25 @@ class NetworkSimulatorSetupSkill:
 
             elif inp.auto_start:
                 try:
-                    node_ports = allocate_ports(len(nodes), inp.base_port)
-                    instances = [SimulatorInstance(name=n.instance, port=p, nodes=[n.name])
-                                 for n, p in zip(nodes, node_ports)]
+                    # the nodes behind the vendor's access gateway share one gateway server and port, the neId
+                    # picks the node (MW-13); the others (the repository server) run on their own
+                    from .gateway import gateway_config, gateway_name, gateway_nodes
+                    behind = gateway_nodes(nodes)
+                    alone = [n for n in nodes if n not in behind]
+                    node_ports = allocate_ports(len(alone) + (1 if behind else 0), inp.base_port)
+                    instances = []
+                    if behind:
+                        gw = gateway_name(inp.requirements)
+                        from .autofix import parse_yaml
+                        write_instance_files(sim_dir, gw, gateway_config(
+                            behind, inp.requirements,
+                            {n.instance: parse_yaml(instance_configs[n.instance]) or {} for n in behind}))
+                        instances.append(SimulatorInstance(
+                            name=gw, port=node_ports.pop(0),
+                            nodes=[x for n in behind for x in (n.name, *n.aliases)],
+                            profiles=[{"name": n.instance, "nodes": [n.name, *n.aliases]} for n in behind]))
+                    instances += [SimulatorInstance(name=n.instance, port=p, nodes=[n.name, *n.aliases])
+                                  for n, p in zip(alone, node_ports)]
                     simulator = await start_simulator(
                         sim_dir, instances,
                         mockwire_jar=inp.mockwire_jar,
@@ -271,6 +266,11 @@ class NetworkSimulatorSetupSkill:
                     Path(overlay_path).write_text(build_overlay(
                         inp.workflow_yaml, nodes, {n.name: simulator.port_for(n.name) for n in nodes},
                         host=inp.host), encoding="utf-8")
+                    # how to start these instances by hand (the UC export ships it)
+                    try:
+                        write_guide(sim_dir, inp.uc_name, run_id=Path(inp.run_dir).name)
+                    except Exception as e:  # never fails the setup
+                        logger.warning("Simulator guide not written: %s", e)
                     logger.info("Simulator started: %s", ", ".join(
                         f"{i.name}:{i.port}" for i in simulator.instances))
                 except SimulatorStartError as e:
@@ -307,7 +307,76 @@ class NetworkSimulatorSetupSkill:
             report_html=generate_simulator_report(
                 inp.uc_name, nodes, simulator, sanity, errors, config_dir),
             status="failed" if errors else "passed",
+            origin=(f"Reused the simulator proven in run {inp.baseline_run[:8]} (same workflow and CIQ data; no AI "
+                    "call)") if reuse else "Answers built from the recorded outputs and the AI",
         )
+
+    async def _responses(self, inp: SkillInput, nodes: list[NodeSpec], samples: list[dict]
+                         ) -> tuple[dict[str, str], dict[str, list[str]], list[str]]:
+        """Phase 2: the answers of every node (recorded real output first, the LLM for the rest) as instance
+        configs; also the keys the LLM invented (OB-51) and the errors."""
+        # Real outputs recorded on the nodes are served verbatim; the LLM only invents
+        # responses for commands nobody recorded
+        recorded = {n.name: recorded_responses(n.commands, samples) for n in nodes}
+        # Commands answered from real output, incl. placeholder commands as templates (S8-21)
+        covered: dict[str, set[str]] = {}
+        for n in nodes:
+            covered[n.name] = set(recorded[n.name])
+            for cmd, (key, entry) in templated_responses(n.commands, samples).items():
+                recorded[n.name][key] = entry
+                covered[n.name].add(cmd)
+        hints = str(inp.generation_hints.get("step_8", "") or "")
+        results = await asyncio.gather(
+            *(self._generate_node_responses(inp.uc_name, n, hints, inp.feedback,
+                                            skip=covered[n.name] | n.vfs_commands) for n in nodes),
+            return_exceptions=True,
+        )
+        errors: list[str] = []
+        instance_configs: dict[str, str] = {}
+        synthetic_keys: dict[str, list[str]] = {}
+        row = _first_row_values(inp.requirements)
+        for node, result in zip(nodes, results):
+            if isinstance(result, Exception):
+                logger.error("Response generation failed for %s: %s", node.name, result)
+                errors.append(f"{node.name}: response generation failed: {result}")
+                result = {}
+            # File commands on VFS paths are answered by MockWire builtins from file state
+            from .file_flows import is_vfs_command
+            dropped = [k for k in result if is_vfs_command(k, node.vfs, node.unmodelled_files)]
+            for k in dropped:
+                result.pop(k)
+            recorded[node.name] = {k: v for k, v in recorded[node.name].items()
+                                   if not is_vfs_command(k, node.vfs, node.unmodelled_files)}
+            if dropped:
+                logger.info("Phase 2: %s — %d file commands left to the VFS builtins", node.name, len(dropped))
+            # Invented responses stand for a healthy node: they must pass the step's own
+            # success check (recorded real output is the ground truth and is never changed)
+            result = await self._conform_synthetic(inp.uc_name, node, result, covered[node.name], row)
+            if recorded[node.name]:
+                logger.info("Phase 2: %s — %d responses from recorded real output",
+                            node.name, len(recorded[node.name]))
+            merged = merge_responses(recorded[node.name], result, node.commands, covered[node.name], row)
+            # Bash-guarded commands: evaluated per CIQ target, ahead of the generic keys (S8-29)
+            from .guards import guarded_responses
+            merged = {**guarded_responses(node.commands, merged, inp.ciq_json_files, node.vfs_commands), **merged}
+            merged = drop_vfs_answers(node, merged, row)
+            # `cmd >/p/f`: the file gets cmd's recorded output (first: it beats the empty answer, OB-49)
+            from .vfs_commands import redirect_contents, source_answers
+            merged = {**redirect_contents(node.commands, samples), **merged}
+            merged = {**source_answers(node.commands), **merged}  # `source <profile>` prints nothing (OB-60)
+            merged = {**ls_paths_as_given(node.commands, merged), **merged}
+            # a read repeated after the activity shows what the activity changed (OB-59)
+            from . import state_changes
+            from .autofix import extract_workflow_commands
+            merged = await state_changes.apply(self._llm_fn, inp.uc_name, node, merged, row, inp.sample_inputs,
+                                               others=[c for o in nodes if o is not node for c in o.commands],
+                                               workflow_commands=extract_workflow_commands(inp.workflow_yaml),
+                                               mapping=state_changes.column_attributes(inp.requirements))
+            # answers the LLM invented (not recorded real output): step 9 blames these on the simulator (OB-51)
+            real = set(recorded[node.name]) | set(redirect_contents(node.commands, samples))
+            synthetic_keys[node.instance] = sorted({config_key(k) for k in merged if k not in real})
+            instance_configs[node.instance] = build_instance_config(node, merged)
+        return instance_configs, synthetic_keys, errors
 
     async def regenerate(self, feedback: RegenerateFeedback) -> SkillOutput:
         """Rebuild and restart the simulator using execution test feedback."""
@@ -357,7 +426,7 @@ class NetworkSimulatorSetupSkill:
             key = safe_regex_key(str(key))
             if key is None:
                 continue
-            if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs) or key in recorded:
+            if key in RESERVED_KEYS or _is_builtin_key(key) or is_vfs_command(key, node.vfs, node.unmodelled_files) or key in recorded:
                 continue
             if isinstance(new, dict) and isinstance(new.get("lines"), str):
                 new = {**new, "lines": new["lines"].splitlines()}
@@ -411,7 +480,8 @@ class NetworkSimulatorSetupSkill:
                 break
             logger.warning("Phase 2: %s — invalid YAML from LLM (attempt %d/%d)",
                            node.name, attempt, LLM_ATTEMPTS)
-            parsed = salvage_yaml_entries(raw) or None
+            # most of the answer lost: ask again (the last attempt keeps what parses)
+            parsed = salvage_yaml_entries(raw, min_share=0.8 if attempt < LLM_ATTEMPTS else 0.0) or None
             if parsed:
                 break
             user_prompt += prompts.INVALID_YAML_RETRY
@@ -428,7 +498,11 @@ class NetworkSimulatorSetupSkill:
                 if safe is None:
                     logger.warning("Phase 2: %s — dropped response key %r: it matches any command", node.name, str(key)[:80])
                     continue
-                entries[safe] = dict(val)
+                # anchored now, as written to the config: every later check (unanswered → rekeyed) must see what
+                # MockWire matches — unanchored, the lookup key "answered" the TAC loop and its own key, broken by
+                # an unescaped `?`, was never rebuilt (OB-44)
+                from .topology import _anchored_start
+                entries[_anchored_start(safe)] = dict(val)
         logger.info("Phase 2: %s — %d responses for %d commands", node.name, len(entries), len(commands))
         return entries
 
@@ -508,7 +582,8 @@ def rekey_unanswered(node: NodeSpec, entries: dict, recorded: set[str], row: dic
         for key in list(entries):
             if not str(key).startswith("regex:"):
                 continue
-            head = re.split(r"\\[SdwsDWb]|\.\*|\.\+|\[|\(|\|", str(key)[6:])[0]
+            body_text = re.sub(r"^(?:\(\?[a-zA-Z]+\))?\^", "", str(key)[6:])  # keys are anchored (OB-44)
+            head = re.split(r"\\[SdwsDWb]|\.\*|\.\+|\[|\(|\|", body_text)[0]
             head = re.sub(r"\\(.)", r"\1", head)
             if len(head) >= 8 and m["resolved"].startswith(head):
                 entries["regex:" + body] = entries.pop(key)
@@ -581,12 +656,53 @@ def unanswered_commands(node: NodeSpec, entries: dict, recorded: set[str], row: 
         cmd = str(c.get("cmd", "")).strip()
         first = cmd.split(" ", 1)[0] if cmd else ""
         if (not cmd or cmd in seen or cmd in recorded or first in _SIM_BUILTINS or file_builtin(cmd)
-                or is_vfs_command(cmd, node.vfs) or cmd in node.vfs_commands):
+                or is_vfs_command(cmd, node.vfs, node.unmodelled_files) or cmd in node.vfs_commands):
             continue
         seen.add(cmd)
         resolved = resolve_command(cmd, row)
         if _find_entry(entries, cmd, resolved)[1] is None:
             out.append({"cmd": cmd, "resolved": resolved, "regex": _validation_regex(c)})
+    return out
+
+
+SYNTHETIC_KEYS_FILE = "synthetic_keys.json"  # {instance: [config keys of LLM-invented answers]} (OB-51)
+
+
+def config_key(key: str) -> str:
+    """The key as ``build_instance_config`` writes it (redirect dropped, regex anchored) — MockWire's matchedKey."""
+    from .topology import _anchored_start, placeholder_key
+    from .vfs_commands import key_without_redirect
+    return _anchored_start(placeholder_key(key_without_redirect(str(key))))
+
+
+_LS_PATHS = re.compile(r"^ls(?:\s+-[A-Za-z]+)*((?:\s+/[^\s;|&<>$`'\"]+)+)\s*$")
+
+
+def ls_paths_as_given(commands: list[dict], entries: dict) -> dict:
+    """Exact answers for ``ls -l… /abs/file …`` with literal paths: ls prints each argument as given, the LLM's
+    generic ``regex:^ls -lrths \\S+`` answered with the bare name and ``/tmp/bulkProvisioning.json`` never matched
+    (OB-51). The answering line's last field becomes the path; exact keys win in MockWire."""
+    out: dict = {}
+    for c in commands:
+        cmd = str(c.get("cmd") or "").strip()
+        m = _LS_PATHS.match(cmd)
+        if not m or cmd in entries:
+            continue
+        key, entry = _find_entry(entries, cmd, cmd)
+        lines = [str(x) for x in (entry or {}).get("lines") or []] if isinstance(entry, dict) else []
+        if not lines:
+            continue
+        paths = m.group(1).split()
+        fixed, changed = [], False
+        for line in lines:
+            hit = next((p for p in paths if line.rstrip().endswith(" " + p.rsplit("/", 1)[-1])
+                        and not line.rstrip().endswith(" " + p)), None)
+            if hit:
+                line = line.rstrip()[: -len(hit.rsplit("/", 1)[-1])] + hit
+                changed = True
+            fixed.append(line)
+        if changed:
+            out[cmd] = {**entry, "lines": fixed}
     return out
 
 
@@ -708,6 +824,9 @@ def _first_row_values(requirements: dict) -> dict:
 _PH = re.compile(r"\$\{([^{}]+)\}")
 
 
+from tools.command_samples import literal_pattern as _literal_pattern  # noqa: E402 — shared with step 6
+
+
 def templated_responses(commands: list[dict], samples: list[dict]) -> dict[str, tuple[str, dict]]:
     """Recorded real output as a template for commands with ``${…}`` (S8-21).
 
@@ -732,7 +851,7 @@ def templated_responses(commands: list[dict], samples: list[dict]) -> dict[str, 
                 py += f"(?P<{name}>.+?)"
                 java += f"(?<{name}>.+?)"
             else:
-                lit = "".join(r"\s+" if t.isspace() else re.escape(t) for t in re.split(r"(\s+)", part) if t)
+                lit = _literal_pattern(part)
                 py += lit
                 java += lit
         try:
