@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--uc-name", required=True, help="UC name (e.g. DSR_1058_IFC_CAPABILITY_MODIFICATION)")
     parser.add_argument("--mop", help="Path to MOP document")
     parser.add_argument("--constraints", help="Path to constraints file")
-    parser.add_argument("--model", default="openrouter/google/gemini-2.5-flash", help="LLM model")
+    parser.add_argument("--model", default="openrouter/google/gemini-3.8-flash", help="LLM model")
     parser.add_argument("--api-key", help="OpenRouter API key")
     parser.add_argument("--ciq-jar", help="Path to ciq-processor JAR")
     parser.add_argument("--cli-jar", help="Path to cli-automation JAR")

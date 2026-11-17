@@ -6,6 +6,8 @@ import logging
 import re
 from typing import Any, Awaitable, Callable
 
+from shared.llm import LlmSetupError
+
 from .prompts import QUESTIONS_PROMPT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,8 @@ async def generate_questions(
             response = m.group(1) if m else response
         questions = json.loads(response)
         return questions if isinstance(questions, list) else []
+    except LlmSetupError:
+        raise
     except Exception as e:
         logger.error("Question generation failed: %s", e)
         return []

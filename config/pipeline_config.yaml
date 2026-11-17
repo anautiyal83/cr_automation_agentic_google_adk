@@ -1,11 +1,11 @@
 openrouter_api_key: "${OPENROUTER_API_KEY}"
 
 models:
-  default: "openrouter/google/gemini-2.5-flash"
+  default: "openrouter/google/gemini-3.8-flash"
   per_step:
     1: null  # DOC Parser
     2: null  # DOC Analyzer
-    3: "openrouter/google/gemini-2.5-pro"  # CIQ Config Generation — needs stronger model for column matching
+    3: "openrouter/google/gemini-4-argon"  # CIQ Config Generation — needs stronger model for column matching
     4: null  # Generate CIQ JSON Config
     6: null  # Generate Execution Config
     8: null  # Simulator Setup

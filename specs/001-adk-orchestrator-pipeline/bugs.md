@@ -1947,3 +1947,18 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   persists `cancelled`; an agent at work finishes first and nothing of it is cached (the existing in-agent check).
   The screen waits up to 3 s: "Pipeline cancelled", else "Cancelling — the step at work finishes first".
   `tests/test_cancel_run.py`; 485 tests pass.
+
+### OB-104 — A retired LLM model did not stop step 1; it asked questions about an empty analysis (High, Fixed 2026-11-17)
+- Runs 81e07f01 and the 15:43 run (PGW_RDS_HSS_HFE_1097): Settings default `openrouter/qwen/qwen3-235b-a22b`, retired
+  by OpenRouter on 2026-10-09 (404 "deprecated"). `analyzer.analyze_uc` logged "UC analysis failed", returned a
+  placeholder analysis, and step 1 went on to a question round (10 questions, "readiness=COMPLETE") — nothing on
+  screen said the model was gone. The Settings list still offered that model and 9 other retired ones (Claude Sonnet 4 /
+  Haiku 4, DeepSeek R1, the old `:free` models); the code default `claude-sonnet-4-20250514` was retired too.
+- Run fa9cb4eb (Qwen4 Max) looked hung but was not: two step 1 calls of ~100 s each, then the question round.
+- **Fix** (`shared/llm.py`, `orchestrator/pipeline_agent.py`, step 1 `analyzer` / `questionnaire`): `call_llm` turns
+  OpenRouter's NotFound / Authentication / PermissionDenied into `LlmSetupError` (no retry) with OpenRouter's reason
+  and "pick another model or check the API key in Settings → LLM", noted per run in `shared.state.llm_setup_errors`;
+  step 1 re-raises it; the pipeline fails the step with that message after the agent ends — also when a step caught
+  the error itself. The Settings list now holds OpenRouter's current models (prices of 2026-11-17, cost table too —
+  Gemini 2.5 Flash was priced $0.15/$0.60 instead of $0.30/$2.50); defaults Gemini 3.8 Flash, step 3 Gemini 4 Argon.
+  `tests/test_llm_usage.py`; 486 tests pass.

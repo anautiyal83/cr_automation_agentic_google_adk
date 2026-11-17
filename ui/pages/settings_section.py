@@ -8,25 +8,31 @@ from nicegui import ui
 
 from ui.access import action, record, requires
 
+# OpenRouter ids and prices per 1M tokens input/output (openrouter.ai/api/v1/models, 2026-11-17)
 AVAILABLE_MODELS = [
     # Tier 1: Best value (paid)
-    {"id": "openrouter/google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier": "Best Value", "cost": "$0.15/$0.60"},
-    {"id": "openrouter/google/gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite", "tier": "Best Value", "cost": "$0.075/$0.30"},
-    {"id": "openrouter/deepseek/deepseek-chat", "label": "DeepSeek V3 0324", "tier": "Best Value", "cost": "$0.14/$0.28"},
-    {"id": "openrouter/deepseek/deepseek-r1", "label": "DeepSeek R1", "tier": "Best Value", "cost": "$0.55/$2.19"},
-    {"id": "openrouter/qwen/qwen3-235b-a22b", "label": "Qwen3 235B", "tier": "Best Value", "cost": "$0.20/$0.60"},
+    {"id": "openrouter/google/gemini-3.8-flash", "label": "Gemini 3.8 Flash", "tier": "Best Value", "cost": "$0.83/$4.13"},
+    {"id": "openrouter/google/gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash Lite", "tier": "Best Value", "cost": "$0.30/$2.50"},
+    {"id": "openrouter/google/gemini-3.8-flash", "label": "Gemini 2.5 Flash (proven)", "tier": "Best Value", "cost": "$0.30/$2.50"},
+    {"id": "openrouter/anthropic/claude-haiku-5.5", "label": "Claude Haiku 5.5", "tier": "Best Value", "cost": "$0.10/$0.50"},
+    {"id": "openrouter/openai/gpt-6-luna", "label": "GPT-6 Luna", "tier": "Best Value", "cost": "$0.10/$0.50"},
+    {"id": "openrouter/deepseek/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash", "tier": "Best Value", "cost": "$0.05/$0.57"},
+    {"id": "openrouter/deepseek/deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro", "tier": "Best Value", "cost": "$0.11/$4.44"},
+    {"id": "openrouter/qwen/qwen3.8-flash", "label": "Qwen3.8 Flash", "tier": "Best Value", "cost": "$0.15/$0.47"},
     # Tier 2: Premium
-    {"id": "openrouter/anthropic/claude-sonnet-4", "label": "Claude Sonnet 4", "tier": "Premium", "cost": "$3/$15"},
-    {"id": "openrouter/anthropic/claude-haiku-4", "label": "Claude Haiku 4", "tier": "Premium", "cost": "$0.80/$4"},
-    {"id": "openrouter/google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "tier": "Premium", "cost": "$1.25/$10"},
-    {"id": "openrouter/openai/gpt-4o", "label": "GPT-4o", "tier": "Premium", "cost": "$2.50/$10"},
-    {"id": "openrouter/openai/gpt-4.1-mini", "label": "GPT-4.1 Mini", "tier": "Premium", "cost": "$0.40/$1.60"},
+    {"id": "openrouter/google/gemini-4-argon", "label": "Gemini 4 Argon", "tier": "Premium", "cost": "$2/$10"},
+    {"id": "openrouter/google/gemini-4-carbon", "label": "Gemini 4 Carbon", "tier": "Premium", "cost": "$2/$10"},
+    {"id": "openrouter/google/gemini-4-hydrogen", "label": "Gemini 4 Hydrogen", "tier": "Premium", "cost": "$1.50/$7.50"},
+    {"id": "openrouter/anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5", "tier": "Premium", "cost": "$2/$10"},
+    {"id": "openrouter/anthropic/claude-opus-5.5", "label": "Claude Opus 5.5", "tier": "Premium", "cost": "$4/$20"},
+    {"id": "openrouter/openai/gpt-6.1-sol", "label": "GPT-6.1 Sol", "tier": "Premium", "cost": "$2/$10"},
+    {"id": "openrouter/openai/gpt-6.1-terra", "label": "GPT-6.1 Terra", "tier": "Premium", "cost": "$1/$5"},
+    {"id": "openrouter/qwen/qwen4-max", "label": "Qwen4 Max", "tier": "Premium", "cost": "$1.43/$4.28"},
     # Tier 3: Free (rate limited)
-    {"id": "openrouter/google/gemini-2.5-flash:free", "label": "Gemini 2.5 Flash (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/google/gemini-2.5-flash-lite:free", "label": "Gemini 2.5 Flash Lite (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/meta-llama/llama-4-maverick:free", "label": "Llama 4 Maverick (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/qwen/qwen3-235b-a22b:free", "label": "Qwen3 235B (Free)", "tier": "Free", "cost": "Free"},
-    {"id": "openrouter/deepseek/deepseek-r1:free", "label": "DeepSeek R1 (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/google/gemma-4-31b-it:free", "label": "Gemma 4 31B (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/google/gemma-4-26b-a4b-it:free", "label": "Gemma 4 26B (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "label": "Nemotron 3 Ultra (Free)", "tier": "Free", "cost": "Free"},
+    {"id": "openrouter/nvidia/nemotron-3.5-lightning:free", "label": "Nemotron 3.5 Lightning (Free)", "tier": "Free", "cost": "Free"},
 ]
 
 MODEL_OPTIONS = {m["id"]: f'{m["label"]}  —  {m["cost"]}' for m in AVAILABLE_MODELS}
@@ -176,7 +182,7 @@ class SettingsSection:
                     ui.label("Default LLM Model").classes("text-caption font-semibold")
                     self.model_select = ui.select(
                         MODEL_OPTIONS,
-                        value="openrouter/google/gemini-2.5-flash",
+                        value="openrouter/google/gemini-3.8-flash",
                         label="Default Model",
                     ).classes("w-full").props("outlined dense")
 

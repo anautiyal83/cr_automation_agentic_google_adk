@@ -6,6 +6,8 @@ import logging
 import re
 from typing import Any, Awaitable, Callable
 
+from shared.llm import LlmSetupError
+
 from .prompts import ANALYZE_PROMPT, COMPILE_PROMPT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,8 @@ async def analyze_uc(
     try:
         response = await llm_fn(SYSTEM_PROMPT, prompt)
         return json.loads(_extract_json(response))
+    except LlmSetupError:
+        raise  # a refused model must stop step 1, not ask questions about an empty analysis
     except Exception as e:
         logger.error("UC analysis failed: %s", e)
         return {"overall_readiness": "INSUFFICIENT", "error": str(e)}
@@ -90,6 +94,8 @@ async def compile_requirements(
     try:
         response = await llm_fn(SYSTEM_PROMPT, prompt)
         return json.loads(_extract_json(response))
+    except LlmSetupError:
+        raise
     except Exception as e:
         logger.error("Requirements compilation failed: %s", e)
         return {

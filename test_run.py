@@ -47,7 +47,7 @@ async def main():
 
     runner = PipelineRunner(
         config={
-            "default_model": "openrouter/google/gemini-2.5-flash",
+            "default_model": "openrouter/google/gemini-3.8-flash",
             "openrouter_api_key": API_KEY,
             "ciq_processor_jar": str(PROJECT_ROOT / "lib" / "ciq-processor-1.0.3-cli.jar"),
             "cli_automation_jar": str(PROJECT_ROOT / "lib" / "cli-automation-standalone.jar"),

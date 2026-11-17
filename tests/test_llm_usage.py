@@ -57,3 +57,34 @@ def test_a_hanging_llm_call_times_out_and_is_retried(monkeypatch):
     text = asyncio.run(llm.call_llm("s", "u", model="openrouter/x",
                                     config={"llm_timeout_sec": 0.2, "openrouter_api_key": "k"}))
     assert text == "ok" and calls["n"] == 2
+
+
+def test_a_refused_model_stops_step_1_instead_of_asking_questions(monkeypatch):
+    """2026-11-17: a retired model (404) was logged, the analysis came back empty and step 1 asked
+    10 questions about it — the run must stop with OpenRouter's reason."""
+    import httpx
+    import litellm
+    import pytest
+
+    from shared import llm
+    from shared.state import llm_setup_errors
+    from skills.requirement_gathering import analyzer
+    calls = {"n": 0}
+
+    async def acompletion(**kw):
+        calls["n"] += 1
+        raise litellm.NotFoundError(
+            message='OpenrouterException - {"error":{"message":"Qwen3 235B A22B was deprecated on Oct 9, 2026.",'
+                    '"code":404}}', model=kw["model"], llm_provider="openrouter",
+            response=httpx.Response(404, request=httpx.Request("POST", "https://openrouter.ai")))
+
+    monkeypatch.setattr(litellm, "acompletion", acompletion)
+    llm.set_llm_context(run_id="r404", step="requirements_gatherer")
+    try:
+        with pytest.raises(llm.LlmSetupError) as err:
+            asyncio.run(analyzer.analyze_uc(llm.get_llm_fn({"openrouter_api_key": "k"}), "UC", "", "", "", ""))
+    finally:
+        llm.set_llm_context()
+    assert calls["n"] == 1                                   # no retries
+    assert "deprecated on Oct 9, 2026" in str(err.value) and "Settings" in str(err.value)
+    assert "deprecated on Oct 9, 2026" in llm_setup_errors.pop("r404")

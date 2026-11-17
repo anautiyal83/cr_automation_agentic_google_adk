@@ -359,24 +359,36 @@ class PipelineAgent(BaseAgent):
                 # ----- EXECUTE AGENT -----
                 flow.flow("AGENT START [%d/%d] %s", index + 1, total, agent.name)
 
+                failure = None
                 try:
                     async for evt in agent.run_async(ctx):
                         yield evt
                 except Exception as e:
+                    failure = e
+                    logger.error("Agent %s failed after %.1fs: %s", agent.name, time.monotonic() - agent_t0, e,
+                                 exc_info=True)
+                # A model / API key OpenRouter refused fails the step even where the step caught the error
+                # and went on without the answer (step 1 asked questions about an empty analysis)
+                from shared.llm import LlmSetupError
+                from shared.state import llm_setup_errors, run_failures
+                setup_error = llm_setup_errors.pop(run_id_str, None) or (
+                    str(failure) if isinstance(failure, LlmSetupError) else None)
+                if failure is not None or setup_error:
+                    error = setup_error or str(failure)
                     elapsed = time.monotonic() - agent_t0
-                    logger.error("Agent %s failed after %.1fs: %s", agent.name, elapsed, e, exc_info=True)
                     flow.flow("AGENT FAILED [%d/%d] %s — %.1fs", index + 1, total, agent.name, elapsed)
                     ctx.session.state["pipeline_failed"] = True
-                    ctx.session.state["pipeline_error"] = str(e)
-                    from shared.state import run_failures
+                    ctx.session.state["pipeline_error"] = error
                     steps = "–".join(str(n) for n in (display_steps[:1] + display_steps[-1:] if len(display_steps) > 1
                                                        else display_steps)) or "?"
+                    plural = "s" if len(display_steps) > 1 else ""
                     run_failures[run_id_str] = (
-                        f"Step{'s' if len(display_steps) > 1 else ''} {steps} stopped on an internal error — not a "
+                        f"Step{plural} {steps} stopped: {setup_error}" if setup_error else
+                        f"Step{plural} {steps} stopped on an internal error — not a "
                         f"problem in your documents. Start the run again; if it happens again, report it. "
-                        f"({type(e).__name__}: {str(e)[:200]})")
+                        f"({type(failure).__name__}: {str(failure)[:200]})")
                     for sn in display_steps:
-                        await self._publish(run_id_str, "step_failed", sn, {"error": str(e)})
+                        await self._publish(run_id_str, "step_failed", sn, {"error": error})
                     break
 
             elapsed = time.monotonic() - agent_t0

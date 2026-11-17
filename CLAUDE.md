@@ -9,7 +9,7 @@ What the product is for (CRs, the manual MOP process, the cli-automation framewo
 ## Project Overview
 - **Type**: Python agentic pipeline for network activity automation using Google ADK
 - **Orchestrator**: Custom PipelineAgent(BaseAgent) — 7 agents with built-in milestones
-- **LLM**: LiteLlm/OpenRouter via `shared/llm.py` (default: Gemini 2.5 Flash)
+- **LLM**: LiteLlm/OpenRouter via `shared/llm.py` (default: Gemini 3.8 Flash; Settings → LLM lists the OpenRouter models)
 - **UI**: NiceGUI (sidebar 140px, content area, single-row step tracker)
 - **Storage**: SQLite for metadata + file system for artifacts
 - **Port**: 8000, start via `start.ps1`

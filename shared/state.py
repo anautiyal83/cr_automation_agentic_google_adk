@@ -22,6 +22,10 @@ reviewer_feedback: dict[str, str] = {}  # "run_id:step_num" -> feedback text
 # reason (ADK session state written there does not reach the runner reliably)
 run_failures: dict[str, str] = {}  # run_id -> plain message
 
+# The model or API key OpenRouter refused (retired model, wrong key) — set by shared.llm.call_llm; the
+# step that met it fails even when it caught the error itself (PipelineAgent)
+llm_setup_errors: dict[str, str] = {}  # run_id -> plain message
+
 # Running MockWire simulators — registered by step 8, stopped by step 9, on step 8
 # re-run, when the pipeline ends (any outcome), and on app shutdown
 simulator_processes: dict[str, object] = {}  # run_id -> SimulatorProcess

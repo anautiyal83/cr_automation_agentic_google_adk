@@ -81,7 +81,7 @@ class PipelineConfiguration(BaseModel):
     """Validated pipeline configuration."""
 
     openrouter_api_key: str = ""
-    default_model: str = "openrouter/anthropic/claude-sonnet-4-20250514"
+    default_model: str = "openrouter/google/gemini-3.8-flash"
     step_models: dict[int, str | None] = Field(default_factory=dict)
     test_retry_limit: int = Field(default=3, ge=1, le=10)
     infra_retry_limit: int = Field(default=3, ge=1, le=10)
@@ -404,34 +404,34 @@ class ConfigManager:
         """
         # Well-known model catalogue (can be extended or loaded from a remote registry)
         catalogue: dict[str, ModelInfo] = {
-            "openrouter/anthropic/claude-sonnet-4-20250514": ModelInfo(
-                model_id="openrouter/anthropic/claude-sonnet-4-20250514",
-                display_name="Claude Sonnet 4 (2025-05-14)",
-                context_window=200_000,
-                cost_per_1k_tokens=0.003,
+            "openrouter/google/gemini-3.8-flash": ModelInfo(
+                model_id="openrouter/google/gemini-3.8-flash",
+                display_name="Gemini 3.8 Flash",
+                context_window=1_048_576,
+                cost_per_1k_tokens=0.000825,
             ),
-            "openrouter/anthropic/claude-opus-4-20250514": ModelInfo(
-                model_id="openrouter/anthropic/claude-opus-4-20250514",
-                display_name="Claude Opus 4 (2025-05-14)",
-                context_window=200_000,
-                cost_per_1k_tokens=0.015,
+            "openrouter/google/gemini-4-argon": ModelInfo(
+                model_id="openrouter/google/gemini-4-argon",
+                display_name="Gemini 4 Argon",
+                context_window=1_048_576,
+                cost_per_1k_tokens=0.002,
             ),
-            "openrouter/google/gemini-2.5-pro": ModelInfo(
-                model_id="openrouter/google/gemini-2.5-pro",
-                display_name="Gemini 2.5 Pro",
+            "openrouter/anthropic/claude-sonnet-5.5": ModelInfo(
+                model_id="openrouter/anthropic/claude-sonnet-5.5",
+                display_name="Claude Sonnet 5.5",
                 context_window=1_000_000,
-                cost_per_1k_tokens=0.00125,
+                cost_per_1k_tokens=0.002,
             ),
-            "openrouter/openai/gpt-4o": ModelInfo(
-                model_id="openrouter/openai/gpt-4o",
-                display_name="GPT-4o",
-                context_window=128_000,
-                cost_per_1k_tokens=0.005,
-            ),
-            "openrouter/openai/gpt-4.1": ModelInfo(
-                model_id="openrouter/openai/gpt-4.1",
-                display_name="GPT-4.1",
+            "openrouter/anthropic/claude-opus-5.5": ModelInfo(
+                model_id="openrouter/anthropic/claude-opus-5.5",
+                display_name="Claude Opus 5.5",
                 context_window=1_000_000,
+                cost_per_1k_tokens=0.004,
+            ),
+            "openrouter/openai/gpt-6.1-sol": ModelInfo(
+                model_id="openrouter/openai/gpt-6.1-sol",
+                display_name="GPT-6.1 Sol",
+                context_window=1_050_000,
                 cost_per_1k_tokens=0.002,
             ),
         }

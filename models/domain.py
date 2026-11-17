@@ -165,7 +165,7 @@ class TestReport(BaseModel):
 class PipelineConfiguration(BaseModel):
     id: uuid.UUID = Field(default_factory=_uuid)
     openrouter_api_key: str = ""
-    default_model: str = "openrouter/anthropic/claude-sonnet-4-20250514"
+    default_model: str = "openrouter/google/gemini-3.8-flash"
     step_models: dict[int, str | None] = Field(default_factory=dict)
     test_retry_limit: int = Field(default=3, ge=1, le=10)
     infra_retry_limit: int = Field(default=3, ge=1, le=10)

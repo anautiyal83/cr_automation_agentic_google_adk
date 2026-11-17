@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -49,16 +50,29 @@ async def _record_usage(entry: dict) -> None:
 # Current context — set by the pipeline before each agent runs
 _current_context: dict[str, str] = {"run_id": "", "uc_name": "", "step": ""}
 
-# Approximate cost per 1M tokens (input/output) for common models
+# Approximate cost per 1M tokens (input/output), OpenRouter prices 2026-11-17. The first key the
+# model id contains wins — a longer name before its prefix (flash-lite before flash, mini before 4o)
 _MODEL_COSTS: dict[str, tuple[float, float]] = {
-    "gemini-2.5-flash": (0.15, 0.60),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-1.5-pro": (1.25, 5.00),
+    "gemini-3.8-flash": (0.825, 4.125),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-pro": (1.25, 10.00),
-    "claude-sonnet": (3.00, 15.00),
-    "claude-haiku": (0.25, 1.25),
-    "gpt-4o": (2.50, 10.00),
+    "gemini-4-hydrogen": (1.50, 7.50),
+    "gemini-4-": (2.00, 10.00),
+    "claude-opus-5.5": (4.00, 20.00),
+    "claude-sonnet-5.5": (2.00, 10.00),
+    "claude-haiku-5.5": (0.10, 0.50),
+    "gpt-6-luna": (0.10, 0.50),
+    "gpt-6.1-sol": (2.00, 10.00),
+    "gpt-6.1-terra": (1.00, 5.00),
+    "deepseek-v4.1-flash": (0.051, 0.567),
+    "deepseek-v4-pro-0813": (0.111, 4.44),
+    "qwen3.8-flash": (0.15, 0.47),
+    "qwen4-max": (1.425, 4.275),
+    ":free": (0.0, 0.0),
     "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
 }
 
 
@@ -87,6 +101,24 @@ _TRANSIENT = ("payload is not completed", "connection", "timed out", "timeout", 
 def _transient(error: Exception) -> bool:
     text = str(error).lower()
     return any(t in text for t in _TRANSIENT)
+
+
+class LlmSetupError(RuntimeError):
+    """OpenRouter refused the model or the API key (retired model, wrong key, no access): no retry
+    helps and no step may go on without the answer — the run stops with this message."""
+
+
+def _setup_error(model: str, error: Exception) -> LlmSetupError:
+    m = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', str(error))
+    reason = m.group(1) if m else str(error)[:300]
+    msg = (f"OpenRouter refused the LLM model {model.removeprefix('openrouter/')}: {reason} — pick another "
+           f"model or check the API key in Settings → LLM, then start the run again.")
+    run_id = _current_context.get("run_id")
+    if run_id:
+        from shared.state import llm_setup_errors
+        llm_setup_errors.setdefault(run_id, msg)
+    logger.error(msg)
+    return LlmSetupError(msg)
 
 
 async def call_llm(
@@ -140,7 +172,7 @@ async def call_llm(
             pass
 
     model = model or config.get("default_model", os.environ.get(
-        "LLM_MODEL", "openrouter/google/gemini-2.5-flash"
+        "LLM_MODEL", "openrouter/google/gemini-3.8-flash"
     ))
 
     api_key = config.get("openrouter_api_key") or os.environ.get("OPENROUTER_API_KEY", "")
@@ -171,6 +203,8 @@ async def call_llm(
                 timeout=timeout,
             ), timeout=timeout * 1.05 + 1)
             break  # success
+        except (litellm.NotFoundError, litellm.AuthenticationError, litellm.PermissionDeniedError) as e:
+            raise _setup_error(model, e) from e
         except (litellm.ServiceUnavailableError, litellm.RateLimitError, litellm.Timeout,
                 litellm.APIConnectionError, litellm.InternalServerError, asyncio.TimeoutError) as e:
             last_error = e
