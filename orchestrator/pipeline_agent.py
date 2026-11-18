@@ -338,6 +338,8 @@ class PipelineAgent(BaseAgent):
             # ----- SET LLM CONTEXT for usage tracking -----
             from shared.llm import set_llm_context
             set_llm_context(run_id=run_id_str, uc_name=uc_name, step=agent.name)
+            from shared import jar_logs
+            jar_logs.set_context(ctx.session.state.get("run_dir", ""), (display_steps or [0])[-1])
             agent_t0 = time.monotonic()
 
             if resume_pause:

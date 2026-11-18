@@ -119,7 +119,8 @@ async def run_negative_cases(cases: list[TestCase], *, jar_path: str, ciq_path: 
                 return tc.id, None
             res = await run_ciq_processor(jar_path=jar_path, ciq_file_path=ciq, validation_rules_path=rules_path,
                                           json_output_path="", output_dir=str(root / tc.id),
-                                          java_home=java_home, uc_name=uc_name)
+                                          java_home=java_home, uc_name=uc_name,
+                                          label=f"ciq-processor (negative {tc.id})")
             return tc.id, parse_jar_output(res.get("output_dir", ""))
 
     done = await asyncio.gather(*(one(tc) for tc in cases if tc.mutations))

@@ -2334,13 +2334,15 @@ _STEP_OUTPUTS = {
     7: "MOP QA report", 8: "Simulator configs, simulator report",
     9: "Test-case report and results", 10: "Final pipeline report",
 }
-# File-name fragments per step (relative path inside the run folder)
+# File-name fragments per step; one with a "/" is the start of a path inside the run folder
+# (jar_logs/step<N>_: the step's JAR calls with their full output, shared.jar_logs)
 _STEP_FILE_RULES = {
     1: ("requirements.json",), 2: ("requirements-summary", "requirements.json"),
     3: ("validation-rules",), 4: ("json-output", "json_data/"),
-    5: ("ciq-qa-report", "json_data/", "ciq_validation/", "qa/"), 6: ("{uc}.yaml", "scripts/"),
-    7: ("mop-qa-report", "mop_output/"), 8: ("simulator-report", "simulator-config", "simulator/manifest"),
-    9: ("network-qa-report", "test-cases.json", "exec_report/"), 10: ("{uc}_report.",),
+    5: ("ciq-qa-report", "json_data/", "ciq_validation/", "qa/", "jar_logs/step5_"), 6: ("{uc}.yaml", "scripts/"),
+    7: ("mop-qa-report", "mop_output/", "jar_logs/step7_"),
+    8: ("simulator-report", "simulator-config", "simulator/manifest"),
+    9: ("network-qa-report", "test-cases.json", "exec_report/", "jar_logs/step9_"), 10: ("{uc}_report.",),
 }
 _STEP_LOG_KEYS = {
     1: ("requirements",), 2: ("requirements",), 3: ("ciq_validation_json_gen", "CIQ_GEN"),
@@ -2376,7 +2378,7 @@ def _step_files(run_dir: str, uc_name: str, step: int) -> list:
                                                    "simulator/vfs", "simulator/config")):
             continue
         top_level = "/" not in rel
-        if any((r.endswith("/") and rel.startswith(r)) or (not r.endswith("/") and top_level and r in f.name)
+        if any(("/" in r and rel.startswith(r)) or ("/" not in r and top_level and r in f.name)
                for r in rules):
             found.append(f)
     return found[:60]
@@ -2439,7 +2441,7 @@ def _review_file_label(path: str) -> str:
 def _file_icon(path) -> str:
     suffix = Path(path).suffix.lower()
     return {".html": "web", ".json": "data_object", ".yaml": "code", ".yml": "code",
-            ".py": "terminal", ".xml": "code"}.get(suffix, "description")
+            ".py": "terminal", ".xml": "code", ".log": "receipt_long"}.get(suffix, "description")
 
 
 def _size(n: int) -> str:

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 from core.config import runtime_params
@@ -297,7 +298,8 @@ async def execute_target(
     _point_local_path(workflow_path, cwd, distro)
     if distro:  # LOCAL steps as on the production (Linux) server (spec 013 PF-D5)
         cmd, cwd = in_wsl(cmd, distro, cwd), None
-    result = await _run_jar(cmd, java_home, timeout, f"execution test ({cr_group}/{node})", cwd=cwd)
+    result = await _run_jar(cmd, java_home, timeout, f"execution test ({Path(out_dir).name} {cr_group}/{node})",
+                            cwd=cwd)
     result.update(node=node, cr_group=cr_group)
     return result
 
@@ -822,6 +824,8 @@ async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: s
     if java_home:
         env["JAVA_HOME"] = java_home
 
+    from shared import jar_logs
+    t0 = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -836,10 +840,11 @@ async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: s
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         exit_code = proc.returncode or 0
+        log = jar_logs.write(label, cmd, cwd, exit_code, time.monotonic() - t0, stdout, stderr)
 
         if exit_code != 0:
-            logger.warning("%s failed: exit_code=%d\nstdout: %s\nstderr: %s",
-                          label, exit_code, stdout[:500], stderr[:500])
+            logger.warning("%s failed: exit_code=%d (full output: %s)\nstdout: %s\nstderr: %s",
+                          label, exit_code, log or "not kept", stdout[:500], stderr[:500])
         else:
             logger.info("%s finished: exit_code=%d, stdout=%d chars", label, exit_code, len(stdout))
         return {
@@ -851,7 +856,9 @@ async def _run_jar(cmd: list[str], java_home: str | None, timeout: int, label: s
 
     except asyncio.TimeoutError:
         logger.error("%s timed out after %ds", label, timeout)
+        jar_logs.write(label, cmd, cwd, -1, time.monotonic() - t0, "", f"Timeout after {timeout}s")
         return {"success": False, "exit_code": -1, "stdout": "", "stderr": f"Timeout after {timeout}s"}
     except Exception as e:
         logger.error("%s failed: %s", label, e)
+        jar_logs.write(label, cmd, cwd, -1, time.monotonic() - t0, "", str(e))
         return {"success": False, "exit_code": -1, "stdout": "", "stderr": str(e)}

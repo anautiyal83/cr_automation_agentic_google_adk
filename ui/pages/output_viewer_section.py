@@ -22,7 +22,7 @@ SYNTAX_MAP = {
 ICON_MAP = {
     ".yaml": "data_object", ".yml": "data_object", ".json": "data_object",
     ".xml": "code", ".py": "code", ".html": "language",
-    ".txt": "description", ".csv": "table_chart",
+    ".txt": "description", ".log": "receipt_long", ".csv": "table_chart",
     ".xlsx": "table_chart", ".xls": "table_chart",
     ".docx": "description", ".pdf": "picture_as_pdf",
 }

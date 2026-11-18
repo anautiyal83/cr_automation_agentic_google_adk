@@ -311,6 +311,9 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
   guide (servers, ports, how they work together, the workflow per server, running the JAR — in WSL on Windows);
   `simulator/env_setup_windows.ps1` + `env_setup_linux.sh` check, then install, WSL / mirrored networking / Java 8 / python /
   the LOCAL steps' modules + commands (`guide.local_requirements`, OB-102)
+- Every JAR call (ciq-processor, cli-automation generate / execute, execution-report-generator) writes its command,
+  exit code and whole stdout / stderr to `run_dir/jar_logs/step<N>_<NN>_<label>.log` (`shared/jar_logs.py`; the
+  pipeline sets run folder + step before each agent; OB-105)
 - Step 9 writes one execution-report-generator HTML per executed case to `run_dir/exec_report/` (`--json-file`: summary
   + detail for every case, pass or fail); JAR from Settings → External Modules (`execution_report_jar`)
 - Read → change → read again (`state_changes.py`, OB-59): a read the node repeats around activity commands answers

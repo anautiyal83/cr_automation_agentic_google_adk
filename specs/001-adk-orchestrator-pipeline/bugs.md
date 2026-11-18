@@ -1962,3 +1962,18 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   the error itself. The Settings list now holds OpenRouter's current models (prices of 2026-11-17, cost table too —
   Gemini 2.5 Flash was priced $0.15/$0.60 instead of $0.30/$2.50); defaults Gemini 3.8 Flash, step 3 Gemini 4 Argon.
   `tests/test_llm_usage.py`; 486 tests pass.
+
+### OB-105 — A JAR's console output was lost; only 500 characters of a failed call reached the logs (Medium, Fixed 2026-11-18)
+- User 2026-11-18: where are the JAR execution logs of validation (step 5), MOP generation (step 7) and execution
+  (step 9)? The run folder kept the JARs' report files only. `_run_jar` / step 5's `run_ciq_processor` logged the
+  first 500 characters of stdout / stderr of a failed call to the shared `logs/error.log` + `trace.log` (cut after
+  the "=== MOP Execution ===" header) and nothing of a passed one — a YAML load error, a Java exception or a stop
+  before the report was written left nothing complete to read.
+- **Fix** (`shared/jar_logs.py`, both JAR runners, `pipeline_agent` sets run folder + step before each agent):
+  every ciq-processor (step 5 + each negative case, steps 7 / 9 prep), cli-automation `generate` / `execute` and
+  execution-report-generator call writes `<run_dir>/jar_logs/step<N>_<NN>_<label>.log` — command line, working
+  folder, exit code, duration, whole stdout and stderr; numbered in call order per step, never overwritten (a
+  retried step adds after). The execute label names the test case (`execution test (TC-P01 CR1/NORTH1)`); a failed
+  call's log line names its file. Steps 5 / 7 / 9 list their logs among the step's files; Run Artifacts shows a
+  "Jar Logs" group. `_step_files`: a rule with a "/" is a path prefix (`simulator/manifest` never matched before).
+  `tests/test_jar_logs.py`.

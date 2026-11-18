@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ async def run_ciq_processor(
     java_home: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     uc_name: str = "",
+    label: str = "ciq-processor (validation)",
 ) -> dict:
     """Run the ciq-processor JAR and return execution metadata.
 
@@ -34,6 +36,7 @@ async def run_ciq_processor(
         java_home: Optional JAVA_HOME override
         timeout: Subprocess timeout in seconds
         uc_name: Use case name for deriving node_type and activity
+        label: Names the call in its log (``shared.jar_logs``)
 
     Returns:
         dict with keys: success, exit_code, stdout, stderr, output_dir
@@ -71,6 +74,8 @@ async def run_ciq_processor(
     if java_home:
         env["JAVA_HOME"] = java_home
 
+    from shared import jar_logs
+    t0 = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -87,6 +92,7 @@ async def run_ciq_processor(
 
         logger.info("ciq-processor finished: exit_code=%d, stdout=%d chars, stderr=%d chars",
                      exit_code, len(stdout), len(stderr))
+        jar_logs.write(label, cmd, None, exit_code, time.monotonic() - t0, stdout, stderr)
 
         return {
             "success": exit_code == 0,
@@ -98,6 +104,7 @@ async def run_ciq_processor(
 
     except asyncio.TimeoutError:
         logger.error("ciq-processor timed out after %ds", timeout)
+        jar_logs.write(label, cmd, None, -1, time.monotonic() - t0, "", f"Timeout after {timeout}s")
         return {
             "success": False,
             "exit_code": -1,
@@ -107,6 +114,7 @@ async def run_ciq_processor(
         }
     except Exception as e:
         logger.error("ciq-processor execution failed: %s", e)
+        jar_logs.write(label, cmd, None, -1, time.monotonic() - t0, "", str(e))
         return {
             "success": False,
             "exit_code": -1,
