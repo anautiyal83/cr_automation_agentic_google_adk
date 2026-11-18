@@ -1,7 +1,8 @@
 """The run's final documents, grouped by category and in the order the pipeline produces them.
 
 Categories (in this order): Requirement (steps 1-2), CIQ Validation (steps 3-5), Execution
-(steps 6-9), General (step 10: the final report). Within a category the documents follow the
+(steps 6-9), General (step 10: the final report), JAR Logs (every JAR call of steps 5, 7 and 9 with
+its whole output, shared.jar_logs). Within a category the documents follow the
 step that writes them; step 9's reports follow the cases as they ran (summary, then detail),
 and the QA-Execution report that sums them up comes last.
 """
@@ -15,7 +16,8 @@ REQUIREMENT = "Requirement"
 CIQ_VALIDATION = "CIQ Validation"
 EXECUTION = "Execution"
 GENERAL = "General"
-CATEGORIES = (REQUIREMENT, CIQ_VALIDATION, EXECUTION, GENERAL)
+JAR_LOGS = "JAR Logs"
+CATEGORIES = (REQUIREMENT, CIQ_VALIDATION, EXECUTION, GENERAL, JAR_LOGS)
 
 
 @dataclass
@@ -63,6 +65,7 @@ def collect_deliverables(run_dir: str | Path, uc_name: str, include_final: bool 
     if include_final:
         add(GENERAL, "Final Report", rd / f"{uc_name}_report.html")
         add(GENERAL, "Final Report (Excel)", rd / f"{uc_name}_report.xlsx")
+    _jar_logs(rd, add)
     return out
 
 
@@ -98,6 +101,25 @@ def _execution_reports(rd: Path, uc_name: str, add) -> None:
         elif name.endswith("_detail.html"):
             kind = "Failure" if status.get(name) == "FAIL" else "Success"
             add(EXECUTION, f"Execution {kind} Report — {_case(f, uc_name, '_detail.html')}", f)
+
+
+def _jar_logs(rd: Path, add) -> None:
+    """Every JAR call of the run (``jar_logs/step<N>_<NN>_<label>.log``) in call order per step, labelled
+    by step and the call (the log's first line: ``JAR call: execution test (TC-P01 CR1/NORTH1)``)."""
+    import re
+    from shared.jar_logs import FOLDER
+    logs = []
+    for f in (rd / FOLDER).glob("*.log"):
+        m = re.match(r"step(\d+)_(\d+)_", f.name)
+        if m:
+            logs.append((int(m.group(1)), int(m.group(2)), f))
+    for step, _, f in sorted(logs, key=lambda x: x[:2]):
+        try:
+            first = f.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        except OSError:
+            continue
+        call = first.split(":", 1)[1].strip() if first.startswith("JAR call:") else f.stem.split("_", 2)[-1]
+        add(JAR_LOGS, f"Step {step} · {call}", f)
 
 
 def _case_key(name: str, ordered: list[str]) -> int:

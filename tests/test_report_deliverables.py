@@ -21,6 +21,11 @@ def test_deliverables_in_order(tmp_path):
     (tmp_path / "json_data").mkdir()
     (tmp_path / "json_data" / f"{uc}.json").write_text("{}", encoding="utf-8")
     (tmp_path / f"{uc}_report.html").write_text("x", encoding="utf-8")
+    (tmp_path / "jar_logs").mkdir()  # every JAR call, in call order per step (shared.jar_logs)
+    (tmp_path / "jar_logs" / "step9_02_execution-test-TC-P01-CR1-EAST.log").write_text(
+        "JAR call: execution test (TC-P01 CR1/EAST)\nStep: 9\n", encoding="utf-8")
+    (tmp_path / "jar_logs" / "step5_01_ciq-processor-validation.log").write_text(
+        "JAR call: ciq-processor (validation)\nStep: 5\n", encoding="utf-8")
     items = collect_deliverables(tmp_path, uc)
     # grouped by category, in the order the pipeline produces the documents
     assert [(d.category, d.label) for d in items] == [
@@ -30,6 +35,8 @@ def test_deliverables_in_order(tmp_path):
         ("Execution", "Execution YAML"), ("Execution", "Generated MOP"), ("Execution", "QA-MOP Report"),
         ("Execution", "Execution Summary Report — TC-P01 EAST"), ("Execution", "Execution Success Report — TC-P01 EAST"),
         ("Execution", "Execution Failure Report — TC-P02 NORTH"), ("Execution", "QA-Execution Report"),
-        ("General", "Final Report")]
-    assert [c for c, _ in group_deliverables(items)] == ["Requirement", "CIQ Validation", "Execution", "General"]
+        ("General", "Final Report"),
+        ("JAR Logs", "Step 5 · ciq-processor (validation)"), ("JAR Logs", "Step 9 · execution test (TC-P01 CR1/EAST)")]
+    assert [c for c, _ in group_deliverables(items)] == ["Requirement", "CIQ Validation", "Execution", "General",
+                                                         "JAR Logs"]
     assert "Final Report" not in [d.label for d in collect_deliverables(tmp_path, uc, include_final=False)]

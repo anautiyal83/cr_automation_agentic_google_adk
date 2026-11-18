@@ -319,7 +319,7 @@ def _final_documents(run_root: Path, uc_name: str) -> list[tuple[str, list[tuple
 
 
 _CATEGORY_ICONS = {"Requirement": "assignment", "CIQ Validation": "fact_check",
-                   "Execution": "terminal", "General": "summarize"}
+                   "Execution": "terminal", "General": "summarize", "JAR Logs": "receipt_long"}
 
 
 def _category_box(category: str, count: int):
