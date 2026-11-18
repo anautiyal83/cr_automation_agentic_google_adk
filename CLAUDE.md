@@ -235,6 +235,10 @@ bye
   workflow table `shared/workflow_table` (rows = flat form, `nc_*` rebuilt by `structure.apply` with the run's
   options). "Continue with my edit" deletes the step's error file and continues; `pipeline_agent` then marks
   the step passed and refreshes the cache from the run folder (`run_files.refresh_artifacts`)
+- Every validation rules file ends with the mandatory `outputs:` CR_LIST (`distinct`) / CR_COUNT (`distinct_count`)
+  over the CIQ's INDEX sheet + CR group column, comments as production writes them
+  (`validation_gen.with_cr_outputs`: step 3, and step 5 before the JAR — cached / edited rules too); the JAR
+  copy keeps `outputs` (`_sanitize_rules_for_jar`); the JAR prints `CR_LIST=CR1,CR2` / `CR_COUNT=2` on a pass
 - Step 3: a cross-sheet business rule from the developer answers becomes `conditionalPattern` (lookup chain, e.g.
   GROUP → INDEX.NODE → Node_Details.VER decides INPUT_FILE's type); kept even when the CIQ breaks it (DEP-60)
 - Step 8 derives MockWire `vfs.dirs` + `triggers` from those flows (`network_simulator_setup/file_flows.py`):

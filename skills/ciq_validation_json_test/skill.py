@@ -109,6 +109,11 @@ class CiqValidationJsonTestSkill:
         val_path = ""
         json_path = ""
         if inp.validation_rules_yaml:
+            # Rules from a cached step 3 or edited at its review get the mandatory CR outputs too
+            from skills.ciq_validation_json_gen.rules_baseline import read_ciq_rows
+            from skills.ciq_validation_json_gen.validation_gen import with_cr_outputs
+            inp.validation_rules_yaml = with_cr_outputs(
+                inp.validation_rules_yaml, ciq_sheets, read_ciq_rows(inp.ciq_file_path, ciq_sheets))
             val_path = write_yaml_to_file(
                 inp.validation_rules_yaml, inp.run_dir,
                 f"{inp.uc_name}_validation-rules.yaml",

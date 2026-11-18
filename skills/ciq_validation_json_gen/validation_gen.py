@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Awaitable, Callable
 
 from . import prompts
@@ -92,7 +93,57 @@ def _with_ciq_baseline(yaml_text: str, ciq_sheets: dict, ciq_file_path: str) -> 
     refs = sum(1 for s in rules["sheets"].values() for c in s["columns"].values() if "crossRef" in c)
     logger.info("Validation rules from the CIQ (%d rows): %d sheets, %d cross-sheet references",
                 sum(len(r) for r in rows.values()), len(rules["sheets"]), refs)
-    return dump_yaml(rules)
+    return with_cr_outputs(dump_yaml(rules), ciq_sheets, rows)
+
+
+# Mandatory in every validation rules file (user 2026-11-18, as production writes it —
+# ciq-processor src/main/resources/MRF_ANNOUNCEMENT_LOADING_validation-rules.yaml): the JAR prints
+# CR_LIST=CR1,CR2 / CR_COUNT=2 when validation passes. Sheet and column are the CIQ's own names.
+_CR_OUTPUTS = """
+# ---------------------------------------------------------------------------
+# Post-validation outputs (computed only when validation passes)
+# ---------------------------------------------------------------------------
+# Each entry key is used as the parameter name unless 'name' is specified.
+# Supported aggregates: distinct | count | sum
+# ---------------------------------------------------------------------------
+outputs:
+  # Distinct CR group identifiers from the Index sheet
+  CR_LIST:
+    sheet: {sheet}
+    column: {column}
+    aggregate: distinct
+    separator: ","
+
+  # Count of unique CRGroup values
+  CR_COUNT:
+    sheet: {sheet}
+    column: {column}
+    aggregate: distinct_count
+"""
+CR_OUTPUTS = ("CR_LIST", "CR_COUNT")
+
+
+def with_cr_outputs(yaml_text: str, ciq_sheets: dict, rows: dict) -> str:
+    """``yaml_text`` with the mandatory CR_LIST / CR_COUNT outputs; other outputs are kept, a file
+    that has both is returned as it is (an edit at the review stays)."""
+    from .json_output_builder import cr_group_source
+    parsed = parse_yaml(yaml_text)
+    if not isinstance(parsed, dict):
+        return yaml_text
+    outputs = parsed.get("outputs") if isinstance(parsed.get("outputs"), dict) else {}
+    if all(k in outputs for k in CR_OUTPUTS):
+        return yaml_text
+    sheet, column = cr_group_source(ciq_sheets, rows)
+    if not sheet:
+        logger.warning("Validation rules: no INDEX sheet in the CIQ — CR_LIST / CR_COUNT outputs not added")
+        return yaml_text
+    quote = lambda s: s if re.fullmatch(r"[A-Za-z_][\w.\-]*", s) else '"' + s.replace('"', '\\"') + '"'
+    block = _CR_OUTPUTS.format(sheet=quote(sheet), column=quote(column))
+    if not outputs:
+        parsed.pop("outputs", None)
+        return dump_yaml(parsed).rstrip("\n") + "\n" + block
+    parsed["outputs"] = {**parse_yaml(block)["outputs"], **outputs}  # the file's own outputs win
+    return dump_yaml(parsed)
 
 
 def _build_requirements_summary(requirements: dict) -> str:

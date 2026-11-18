@@ -84,6 +84,17 @@ def _natural(c: str):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", c.lower())]
 
 
+def cr_group_source(ciq_sheets: dict, rows: dict) -> tuple[str, str]:
+    """The CIQ's INDEX sheet and its CR group column (``("", "")`` without an INDEX sheet)."""
+    index = next((s for s, r in sheet_roles(ciq_sheets, rows).items() if r == "index"), "")
+    icols = _columns(ciq_sheets, rows, index) if index else []
+    if not icols:
+        return "", ""
+    cr_col = _find(icols, lambda c: re.search(r"cr[\s_\-]*group", c, re.I)) or \
+        _find(icols, lambda c: "cr" in _tokens(c)) or icols[0]
+    return index, cr_col
+
+
 def build_json_output(ciq_sheets: dict, rows: dict, uc_name: str, hints: dict | None = None) -> dict:
     hints = hints or {}
     roles = sheet_roles(ciq_sheets, rows)
@@ -95,8 +106,7 @@ def build_json_output(ciq_sheets: dict, rows: dict, uc_name: str, hints: dict | 
     icols = _columns(ciq_sheets, rows, index)
     ncols = _columns(ciq_sheets, rows, node) if node else []
 
-    cr_col = _find(icols, lambda c: re.search(r"cr[\s_\-]*group", c, re.I)) or \
-        _find(icols, lambda c: "cr" in _tokens(c)) or icols[0]
+    cr_col = cr_group_source(ciq_sheets, rows)[1]
     email_col = _find(icols, lambda c: "mail" in c.lower())
     niam_cols = sorted((c for c in ncols if "niam" in c.lower()), key=_natural)
 

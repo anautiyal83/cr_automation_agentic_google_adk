@@ -531,6 +531,7 @@ report_output:
 #
 # Supported aggregates:
 #   distinct  — deduplicated non-blank values from 'column' joined by 'separator' (default ",")
+#   distinct_count — number of distinct non-blank values of 'column' (ciq-processor 1.0.3; CR_COUNT)
 #   count     — number of non-blank rows for 'column'; total row count when 'column' is omitted
 #   sum       — numeric sum of 'column' values (non-numeric cells silently ignored)
 #   group     — groups distinct 'column' values by each distinct 'groupBy' value;

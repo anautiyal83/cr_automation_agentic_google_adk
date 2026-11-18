@@ -71,7 +71,7 @@ _VALID_WHEN_OPERATORS = {
     "==", "!=", ">", ">=", "<", "<=",
 }
 
-_VALID_OUTPUT_AGGREGATES = {"distinct", "count", "sum", "group"}
+_VALID_OUTPUT_AGGREGATES = {"distinct", "distinct_count", "count", "sum", "group"}  # distinct_count: JAR 1.0.3, probed 2026-11-18
 
 _VALID_OUTPUT_MODES = {"individual", "single"}
 

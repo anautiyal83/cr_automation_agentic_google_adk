@@ -531,11 +531,17 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
                                     changed = True
 
         # --- Remove top-level keys the LLM often generates incorrectly ---
-        # Only keep keys the JAR can reliably parse from LLM output
-        _SAFE_TOP_KEYS = {"sheets", "settings"}
+        # Only keep keys the JAR can reliably parse from LLM output; outputs (CR_LIST / CR_COUNT, added
+        # in code — validation_gen.with_cr_outputs) are mandatory
+        _SAFE_TOP_KEYS = {"sheets", "settings", "outputs"}
+        _OUTPUT_KEYS = {"name", "sheet", "column", "aggregate", "separator", "groupBy"}
         for key in list(data.keys()):
             if key not in _SAFE_TOP_KEYS:
                 del data[key]
+                changed = True
+        for out in (data.get("outputs") or {}).values():
+            for k in [k for k in (out if isinstance(out, dict) else {}) if k not in _OUTPUT_KEYS]:
+                del out[k]
                 changed = True
 
         if not changed:
