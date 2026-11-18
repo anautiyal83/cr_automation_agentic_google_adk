@@ -180,6 +180,8 @@ def test_no_guide_without_a_started_simulator(tmp_path):
 
 def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
     rd, jar = _run(tmp_path)
+    (rd / "jar_logs").mkdir()
+    (rd / "jar_logs" / "step9_01_execution-test-TC-P01-CR1-NORTH1.log").write_text("JAR call: …", encoding="utf-8")
     out = build_export(rd, UC, jar=jar)
     assert out == rd / "export" / f"{UC}_export.zip"
     z = zipfile.ZipFile(out)
@@ -209,6 +211,10 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
     assert "server **PGW** (port 22201, simulates PGW)" in guide
     assert "`work/SD_input.xlsx` | Input file the CIQ names in column `INPUT_FILE`" in guide
     assert f"{UC}/scripts/SD_input.xlsx" not in names  # inputs are the order's (LOCAL_PATH), not the scripts'
+    # every JAR call of the run with its whole output (shared.jar_logs → logs/)
+    assert f"{UC}/logs/step9_01_execution-test-TC-P01-CR1-NORTH1.log" in names
+    assert ("| `logs/step9_01_execution-test-TC-P01-CR1-NORTH1.log` | JAR call of step 9 (QA-Execution): "
+            "`execution test TC P01 CR1 NORTH1`") in guide
     # the MOP: the template this JAR fills, and step 7's command (--schema = the JSON output configuration)
     assert f"{UC}/templates/mop_summary_report_template_v2.html" in names
     assert ("java -jar cli-automation-standalone.jar generate --json json_data/" + f"{UC}.json --schema {UC}_json-output.yaml "

@@ -337,8 +337,24 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         },
     }
 
+    from google.adk.agents import BaseAgent
+
+    class JarLogStep(BaseAgent):
+        """Names the run folder and step the next agents' JAR calls log under (shared.jar_logs), as the
+        pipeline does before each agent."""
+        run_dir: str = ""
+        step: int = 0
+
+        async def _run_async_impl(self, ctx):
+            from shared import jar_logs
+            jar_logs.set_context(self.run_dir, self.step)
+            return
+            yield
+
     sub_agents = []
     for step in steps:
+        sub_agents.append(JarLogStep(name=f"jar_logs_step_{step}", run_dir=str(work),
+                                     step=int("".join(c for c in step if c.isdigit()) or 0)))
         for module, cls in _STEP_AGENTS[step]:
             sub_agents.append(getattr(importlib.import_module(module), cls)())
     root = SequentialAgent(name="step_test", sub_agents=sub_agents)

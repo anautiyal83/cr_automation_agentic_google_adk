@@ -9,18 +9,20 @@ Layout (mirrors the run folder, so the simulator guide's relative paths hold in 
     <UC>/scripts/                      — the helper scripts the LOCAL steps run (step 6; ACTIVITY_PYTHON_SCRIPT_PATH)
     <UC>/work/                         — the input files the CIQ names; a run writes the order's files here (LOCAL_PATH)
     <UC>/templates/<MOP template>      — the HTML template the run's MOP was generated with (step 7)
+    <UC>/logs/                         — every JAR call of the run: command, exit code, whole output (jar_logs/)
     <UC>/simulator/mockwire.jar
     <UC>/simulator/config/ · outputs/ · <UC>.yaml (execution YAML on the simulator's ports)
     <UC>/simulator/start_/stop_simulator.ps1/.sh
     <UC>/simulator/vfs/<instance>/ (empty: every step 9 case started there) · logs/ (empty)
 
-Left out: the run's logs, events, LLM outputs, manifest (absolute paths, pids) and the file systems step 9
+Left out: the run's pipeline logs, events, LLM outputs, manifest (absolute paths, pids) and the file systems step 9
 left behind. Written to ``<run_dir>/export/<UC>_export.zip``.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import zipfile
 from pathlib import Path
 
@@ -33,6 +35,9 @@ USER_GUIDE = "USER_GUIDE.md"
 _DEFAULT_MOCKWIRE_JAR = "lib/mockwire.jar"
 _DEFAULT_MOP_TEMPLATE = "lib/templates/mop_summary_report_template_v2.html"
 TEMPLATES_DIR = "templates"
+LOGS_DIR = "logs"
+_JAR_LOG = re.compile(r"step(\d+)_\d+_(.+)\.log$")
+_STEP_NAMES = {5: "QA-Validation", 7: "QA-MOP", 9: "QA-Execution"}
 
 
 class ExportError(RuntimeError):
@@ -97,6 +102,8 @@ def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = Non
     template = mop_template()
     if template:
         files.append((f"{TEMPLATES_DIR}/{template.name}", template))
+    from shared.jar_logs import FOLDER as JAR_LOGS
+    files += _tree(rd / JAR_LOGS, LOGS_DIR)  # each JAR call of the run (OB-105), in call order per step
     files += _tree(sim / "config", "simulator/config") + _tree(sim / "outputs", "simulator/outputs")
     if (sim / f"{uc_name}.yaml").is_file():
         files.append((f"simulator/{uc_name}.yaml", sim / f"{uc_name}.yaml"))
@@ -248,6 +255,13 @@ def _descriptions(run_dir: Path, uc_name: str):
                 return (f"Input file the CIQ names in column `{inputs[name]}` (a copy of your uploaded document): the "
                         "workflow's local steps read it")
             return "—"
+        if arc.startswith(f"{LOGS_DIR}/"):
+            m = _JAR_LOG.match(name)
+            if m:
+                step = int(m.group(1))
+                return (f"JAR call of step {step}{f' ({_STEP_NAMES[step]})' if step in _STEP_NAMES else ''}: "
+                        f"`{m.group(2).replace('-', ' ')}` — its command line, working folder, exit code, duration "
+                        "and whole output")
         if arc.startswith(f"{TEMPLATES_DIR}/"):
             return ("MOP HTML template (step 7): the page the cli-automation JAR fills with the MOP — see **Generate "
                     "the MOP**")
