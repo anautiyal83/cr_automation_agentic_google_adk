@@ -104,6 +104,7 @@ class RequirementGatheringSkill:
         self._ciq_file_path = ""
         self._ciq_replaced = False                      # a corrected CIQ was uploaded at step 2
         self._all_ciq_sheets: dict[str, dict] = {}      # every visible sheet of the workbook
+        self._ciq_constraints: list[dict] = []          # its Constraints sheet (shared.ciq_constraints)
         self._excluded_sheets: set[str] = set()         # sheets the activity does not use (per UC)
 
     # ------------------------------------------------------------------
@@ -149,6 +150,11 @@ class RequirementGatheringSkill:
             ciq_file_path=inp.ciq_file_path,
             ciq_data=inp.ciq_data,
         )
+        # The CIQ's Constraints sheet says what each column's values must be: no data (shared.ciq_constraints)
+        from shared import ciq_constraints
+        self._ciq_constraints = ciq_constraints.read(inp.ciq_file_path or "")
+        self._raw_artifacts["ciq_constraints"] = self._ciq_constraints  # decided: no question about them
+        self._all_ciq_sheets = {k: v for k, v in self._all_ciq_sheets.items() if not ciq_constraints.is_sheet(k)}
         # Sheets the developer said this activity does not use (Edit requirements, kept per UC)
         self._excluded_sheets = {s for s in _load_uc_doc(inp.uc_name).get("excluded_ciq_sheets") or []
                                  if s in self._all_ciq_sheets}
@@ -162,6 +168,7 @@ class RequirementGatheringSkill:
             "ldap_port": ssh_parsed["ldap_port"],
             "xml_files": xml_parsed,
             "ciq_sheets": self._ciq_sheets,
+            "ciq_constraints": self._ciq_constraints,
             # Real command outputs from uploaded transcripts: step 6 checks validation
             # regexes against them, step 8 can reuse them as simulator responses
             "command_samples": command_samples,
@@ -413,7 +420,11 @@ class RequirementGatheringSkill:
                 x for x in (self._developer_notes.strip(), note_block(note, by, at)) if x)
         record: dict[str, Any] = {"at": at, "by": by, "note": (note or "").strip(), "answers": changed}
         if ciq_file_path:
-            self._all_ciq_sheets = parse_ciq(ciq_file_path=ciq_file_path)
+            from shared import ciq_constraints
+            self._all_ciq_sheets = {k: v for k, v in parse_ciq(ciq_file_path=ciq_file_path).items()
+                                    if not ciq_constraints.is_sheet(k)}
+            self._ciq_constraints = ciq_constraints.read(ciq_file_path)
+            self._doc_extracted["ciq_constraints"] = self._ciq_constraints
             self._ciq_file_path, self._ciq_replaced = ciq_file_path, True
             record["ciq_file"] = Path(ciq_file_path).name
         if ciq_file_path or excluded_sheets is not None:

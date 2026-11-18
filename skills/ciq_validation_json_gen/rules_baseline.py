@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 SETTINGS = {"headerRow": 0, "dataStartRow": 1, "trimCellValues": True, "ignoreBlankRows": True}
 
 _IPV4 = re.compile(r"(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}")
+def _is_ip(value: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 _VERSION = re.compile(r"\d+(\.\d+)+")
 _EMAIL = re.compile(r"[^@;,\s]+@[^@;,\s]+\.[^@;,\s]+")
 
@@ -118,8 +127,11 @@ def _column_rule(name: str, values: list[str]) -> dict:
     # A version (13.0.3.7) is also a valid IPv4 string: the column name decides
     if all(_VERSION.fullmatch(v) for v in filled) and (upper in ("VER", "VERSION") or "VERSION" in upper):
         rule.update(pattern=r"[0-9]+(\.[0-9]+)+", patternMessage="Dotted version such as 13.0.3.7")
-    elif all(_IPV4.fullmatch(v) for v in filled) and tokens & {"ip", "addr", "address", "ipaddress"}:
+    elif all(_is_ip(v) for v in filled):
+        # every value an IP address, whatever the column is called (NTP Server 1: 10.10.1.10, user 2026-11-18)
         rule["type"] = "ip"
+        v4 = [v for v in filled if _IPV4.fullmatch(v)]
+        rule["accepts"] = "ipv4" if len(v4) == len(filled) else "ipv6" if not v4 else "both"
     elif all(v.startswith("/") for v in filled) and ("PATH" in upper or "DIR" in upper):
         rule.update(pattern=r"/\S*", patternMessage="Absolute path starting with /")
     elif all(v.isdigit() for v in filled) and len(filled) >= 2:

@@ -301,6 +301,11 @@ def build_available_data_summary(
                      "including the # comments, is decided: never ask about it):")
         parts.append(mop[:_MOP_CHARS] + (f"\n… ({len(mop) - _MOP_CHARS} more chars)" if len(mop) > _MOP_CHARS else ""))
 
+    # --- the CIQ's Constraints sheet: what each column's values must be (decided) ---
+    from shared import ciq_constraints
+    stated = ciq_constraints.describe((raw_artifacts or {}).get("ciq_constraints"))
+    if stated:
+        parts.append("\nCIQ CONSTRAINTS (the CIQ's Constraints sheet - decided, never ask about them):\n" + stated)
 
     # --- the framework's runtime parameters: the CR automation provides them on every run ---
     from core.config import runtime_params

@@ -178,6 +178,7 @@ class CiqValidationJsonGenSkill:
                     feedback.reviewer_analysis,
                     self._validation_schema_summary,
                     ciq_file_path=self._ciq_file_path,
+                    constraints=((self._requirements or {}).get("doc_extracted") or {}).get("ciq_constraints"),
                 )
                 self._last_validation_yaml = val_yaml
             except Exception as e:

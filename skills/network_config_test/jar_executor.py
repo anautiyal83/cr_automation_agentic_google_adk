@@ -541,12 +541,24 @@ def _sanitize_rules_for_jar(rules_path: str) -> str:
         # --- Remove top-level keys the LLM often generates incorrectly ---
         # Only keep keys the JAR can reliably parse from LLM output; outputs (CR_LIST / CR_COUNT, added
         # in code — validation_gen.with_cr_outputs) are mandatory
-        _SAFE_TOP_KEYS = {"sheets", "settings", "outputs"}
+        _SAFE_TOP_KEYS = {"sheets", "settings", "outputs", "workbook_rules"}
         _OUTPUT_KEYS = {"name", "sheet", "column", "aggregate", "separator", "groupBy"}
         for key in list(data.keys()):
             if key not in _SAFE_TOP_KEYS:
                 del data[key]
                 changed = True
+        # workbook rules: only the cross_check the CIQ's Constraints sheet makes (shared.ciq_constraints) — the
+        # LLM's broke the JAR and are removed at generation (autofix)
+        _CROSS_CHECK_KEYS = {"on", "columns", "relation", "message", "values", "pairs", "from", "filter", "missing"}
+        if "workbook_rules" in data:
+            kept = [r for r in data["workbook_rules"] or [] if isinstance(r, dict) and list(r) == ["cross_check"]
+                    and isinstance(r["cross_check"], dict) and set(r["cross_check"]) <= _CROSS_CHECK_KEYS]
+            if len(kept) != len(data["workbook_rules"] or []):
+                changed = True
+            if kept:
+                data["workbook_rules"] = kept
+            else:
+                del data["workbook_rules"]
         for out in (data.get("outputs") or {}).values():
             for k in [k for k in (out if isinstance(out, dict) else {}) if k not in _OUTPUT_KEYS]:
                 del out[k]

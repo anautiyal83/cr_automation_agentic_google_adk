@@ -44,7 +44,8 @@ async def generate_validation_rules(
     yaml_text = clean_yaml_response(raw_response)
 
     yaml_text = fix_validation_rules(yaml_text, ciq_sheets)
-    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path)
+    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path,
+                                   (requirements.get("doc_extracted") or {}).get("ciq_constraints"))
 
     errors = _validate_structure(yaml_text)
 
@@ -60,6 +61,7 @@ async def regenerate_validation_rules(
     reviewer_analysis: str,
     schema_summary: str,
     ciq_file_path: str = "",
+    constraints: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """Regenerate validation-rules.yaml using test feedback."""
     ciq_summary = _ciq_prompt_summary(ciq_sheets)
@@ -77,19 +79,25 @@ async def regenerate_validation_rules(
     yaml_text = clean_yaml_response(raw_response)
 
     yaml_text = fix_validation_rules(yaml_text, ciq_sheets)
-    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path)
+    yaml_text = _with_ciq_baseline(yaml_text, ciq_sheets, ciq_file_path, constraints)
     errors = _validate_structure(yaml_text)
 
     logger.info("Validation rules regenerated: %d chars, %d errors", len(yaml_text), len(errors))
     return yaml_text, errors
 
 
-def _with_ciq_baseline(yaml_text: str, ciq_sheets: dict, ciq_file_path: str) -> str:
+def _with_ciq_baseline(yaml_text: str, ciq_sheets: dict, ciq_file_path: str,
+                       constraints: list[dict] | None = None) -> str:
     """Rules the CIQ's own rows prove (types, e-mail lists, cross-sheet references, required),
-    plus the LLM's additions that those rows pass (rules_baseline)."""
+    plus the LLM's additions that those rows pass (rules_baseline); the CIQ's Constraints sheet last — the
+    customer's word wins (shared.ciq_constraints)."""
     from .rules_baseline import baseline_rules, merge_llm_rules, read_ciq_rows
     rows = read_ciq_rows(ciq_file_path, ciq_sheets)
     rules = merge_llm_rules(baseline_rules(ciq_sheets, rows), parse_yaml(yaml_text), rows)
+    from shared import ciq_constraints
+    applied = ciq_constraints.apply(rules, constraints)
+    if applied:
+        logger.info("Validation rules: %d columns set by the CIQ's Constraints sheet", applied)
     refs = sum(1 for s in rules["sheets"].values() for c in s["columns"].values() if "crossRef" in c)
     logger.info("Validation rules from the CIQ (%d rows): %d sheets, %d cross-sheet references",
                 sum(len(r) for r in rows.values()), len(rules["sheets"]), refs)
@@ -170,6 +178,12 @@ def _build_requirements_summary(requirements: dict) -> str:
     grouping = cat3.get("grouping", {})
     if grouping:
         parts.append(f"Grouping column: {grouping.get('column', '?')}")
+
+    from shared import ciq_constraints
+    stated = ciq_constraints.describe((requirements.get("doc_extracted") or {}).get("ciq_constraints"))
+    if stated:
+        parts.append("CIQ constraints (the CIQ's Constraints sheet — required / type / allowed values are applied "
+                     "by the pipeline; write a rule for each free-text 'rule'):\n" + stated)
 
     answers = requirements.get("developer_answers", {})
     if answers:

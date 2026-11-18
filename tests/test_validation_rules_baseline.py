@@ -56,3 +56,15 @@ def test_llm_extras_kept_only_when_the_ciq_passes_them(tmp_path):
     assert "pattern" not in s["FILES"]["columns"]["INPUT_FILE"]
     assert s["INDEX"]["columns"]["CRGROUP"]["pattern"] == "CR[0-9]+"
     assert s["INDEX"]["columns"]["EMAIL"]["type"] == "email"
+
+
+def test_a_column_of_ip_addresses_is_an_ip_column_whatever_its_name():
+    """VSBC_2001 (user 2026-11-18): "NTP Server 1" holds 10.10.1.10 — validated as text before (the name lacked
+    "ip"); the ciq-processor then rejects "10.10.2.999" ("is not a valid IPv4 address")."""
+    from skills.ciq_validation_json_gen.rules_baseline import _column_rule
+    assert _column_rule("NTP Server 1", ["10.10.1.10", "10.10.2.10"]) == {"type": "ip", "required": True,
+                                                                          "accepts": "ipv4"}
+    assert _column_rule("Peer", ["2001:db8::1"])["accepts"] == "ipv6"
+    assert _column_rule("Peer", ["10.0.0.1", "2001:db8::1"])["accepts"] == "both"
+    assert _column_rule("VER", ["13.0.3.7"])["type"] == "string"  # a version, by its column name
+    assert _column_rule("NTP Server 1", ["10.10.1.10", "ntp.example.com"])["type"] == "string"

@@ -240,6 +240,10 @@ bye
   workflow table `shared/workflow_table` (rows = flat form, `nc_*` rebuilt by `structure.apply` with the run's
   options). "Continue with my edit" deletes the step's error file and continues; `pipeline_agent` then marks
   the step passed and refreshes the cache from the run folder (`run_files.refresh_artifacts`)
+- CIQ `Constraints` sheet (`shared/ciq_constraints.py`): Sheet | Column | Required | Type | Allowed values | Rule; step 1
+  reads it (no data sheet: not in ciq_sheets / CIQ JSON), step 3 applies Required / Type / Allowed values in code
+  (customer's word wins), "must differ from <col>" → workbook `cross_check` not_equals (kept in the JAR copy),
+  other Rule text goes to the rule writer. A column of IP addresses is `type: ip` whatever its name
 - Every validation rules file ends with the mandatory `outputs:` CR_LIST (`distinct`) / CR_COUNT (`distinct_count`)
   over the CIQ's INDEX sheet + CR group column, comments as production writes them
   (`validation_gen.with_cr_outputs`: step 3, and step 5 before the JAR — cached / edited rules too); the JAR
