@@ -867,14 +867,28 @@ def written_files(steps: list[WorkflowStep]) -> list[re.Pattern]:
     """Files the workflow writes with ``cmd > file`` (``${…}`` = any name part): evidence such as production's
     ``org -c eirWhiteRng >/opt/sdf/processing/postrollbackdump_white_${DATE}.txt``, kept on the node and zipped — a
     rollback leaves them on purpose (OB-40)."""
+    from skills.network_config_gen.structure import tar_archive
     from skills.network_simulator_setup.vfs_commands import _simple_commands, redirect_targets
     patterns = []
+
+    def keep(target: str) -> None:
+        if target.startswith("/") and not target.startswith("/tmp/"):
+            parts = re.split(r"\$\{[^}]*\}", target)
+            patterns.append(re.compile("[^/]*".join(re.escape(p) for p in parts)))
+
     for step in steps:
         for simple in _simple_commands(step.send or ""):
             for target in redirect_targets(simple):
-                if target.startswith("/") and not target.startswith("/tmp/"):
-                    parts = re.split(r"\$\{[^}]*\}", target)
-                    patterns.append(re.compile("[^/]*".join(re.escape(p) for p in parts)))
+                keep(target)
+            if step.phase_kind == "backup":
+                # what the backup phase writes is kept on purpose: the MOP's own backup copy
+                # (cp /etc/chrony.conf /var/backup/<ORDER>/chrony.conf, VSBC_2001) or archive — a rollback leaves it
+                cp = re.match(r"^cp(?:\s+-\w+)*\s+\S+\s+(\S+)$", simple)
+                if cp:
+                    keep(cp.group(1).rstrip("/"))
+                tar = tar_archive(simple)
+                if tar:
+                    keep(tar[0])
     return patterns
 
 

@@ -123,48 +123,71 @@ def backup_seed_files(commands: list[dict], ciq_json_files: list[str]) -> dict[s
     ``tar -x``) gets the files the load will overwrite — the copied file, the test archive's member
     (``jar_executor.test_member_name``) — so the backup of exactly those runs (user rule 2026-11-05)."""
     from skills.network_config_gen.structure import tar_archive
+    from skills.network_config_test.jar_executor import test_member_name
     from .topology import file_builtin
+    from .vfs_commands import _simple_commands
     files: dict[str, list[str]] = {}
     tgts = targets(ciq_json_files) or [{"record": {}, "fields": {}, "node": "", "nodeGroup": "", "crGroup": ""}]
-    for c in commands:
-        cmd = str(c.get("cmd", "")).strip()
-        if not file_builtin(cmd) or not cmd.startswith("tar"):
+    # every part of a chained command: `mkdir -p … && cp … && tar -czvf … -C /etc chrony.conf` (VSBC_2001)
+    parts = [(str(c.get("cmd", "")).strip(), simple) for c in commands
+             for simple in _simple_commands(str(c.get("cmd", "")).strip())]
+    for cmd, simple in parts:
+        if not simple.startswith("tar") or not file_builtin(simple):
             continue
         for t in tgts:
-            parsed = tar_archive(_resolve(cmd, t))
+            resolved = _resolve(simple, t)
+            parsed = tar_archive(resolved)
+            base = re.search(r"\s-C\s+(\S+)", resolved)  # sources named relative to -C <folder>
             for src in (parsed[1] if parsed else []):
+                if not src.startswith("/") and base and base.group(1).startswith("/"):
+                    src = base.group(1).rstrip("/") + "/" + src
                 if "${" in src or not src.startswith("/"):
                     continue
                 last = src.rstrip("/").rsplit("/", 1)[-1]
                 path = src.rstrip("/") + "/existing_content.dat" if src.endswith("/") or "." not in last else src
                 files.setdefault(path, ["existing content (NetConfig simulator seed)"])
-    from skills.network_config_test.jar_executor import test_member_name
-    from .vfs_commands import _simple_commands
     load = re.compile(r"^(?:cp(?:\s+-\w+)*\s+(\S+)\s+(\S+?)/?|tar\s+-?[A-Za-z]*x[A-Za-z]*\s+(\S+)\s+-C\s+(\S+?)/?)$")
-    for c in commands:
-        cmd = str(c.get("cmd", "")).strip()
-        for simple in _simple_commands(cmd):
-            m = load.match(simple)
-            if not m:
+    for cmd, simple in parts:
+        m = load.match(simple)
+        if not m:
+            continue
+        src, dest, extract = (m.group(1), m.group(2), False) if m.group(1) else (m.group(3), m.group(4), True)
+        if re.search(r"(?i)backup", src):
+            continue  # the rollback's restore of a backup is no load
+        for t in tgts:
+            resolved = _resolve(cmd, t)
+            g = _GUARD.match(resolved)
+            try:
+                if g and not eval_test(g.group(1)):
+                    continue  # this node takes the other branch
+            except (ValueError, re.error):
+                pass
+            s, d = _resolve(src, t), _resolve(dest, t).rstrip("/")
+            if "${" in s + d or not d.startswith("/") or d == "":
                 continue
-            src, dest, extract = (m.group(1), m.group(2), False) if m.group(1) else (m.group(3), m.group(4), True)
-            if re.search(r"(?i)backup", src):
-                continue  # the rollback's restore of a backup is no load
-            for t in tgts:
-                resolved = _resolve(cmd, t)
-                g = _GUARD.match(resolved)
-                try:
-                    if g and not eval_test(g.group(1)):
-                        continue  # this node takes the other branch
-                except (ValueError, re.error):
-                    pass
-                s, d = _resolve(src, t), _resolve(dest, t).rstrip("/")
-                if "${" in s + d or not d.startswith("/") or d == "":
-                    continue
-                name = s.rsplit("/", 1)[-1]
-                files.setdefault(f"{d}/{test_member_name(name) if extract else name}",
-                                 ["the original file the activity overwrites (NetConfig simulator seed)"])
-                files.setdefault(f"{d}/existing_content.dat", ["existing content (NetConfig simulator seed)"])
+            name = s.rsplit("/", 1)[-1]
+            if re.search(r"(?i)backup", d):
+                # a backup copy (cp /etc/chrony.conf /var/backup/…/chrony.conf): its source is the node's own
+                # file, there before the run; the copy is the run's
+                if not extract and s.startswith("/"):
+                    files.setdefault(s, ["the node's own file (NetConfig simulator seed)"])
+                continue
+            last = d.rsplit("/", 1)[-1]
+            if not extract and (last == name or "." in last):  # cp onto a file path: its folder holds it
+                d, name = d.rsplit("/", 1)[0] or "/", last
+            files.setdefault(f"{d}/{test_member_name(name) if extract else name}",
+                             ["the original file the activity overwrites (NetConfig simulator seed)"])
+            files.setdefault(f"{d}/existing_content.dat", ["existing content (NetConfig simulator seed)"])
+    # a playbook / script the node runs is the node's: `ansible-playbook … /opt/ansible/ntp/ntp_rollback.yml`
+    # (a rollback pre-check `ls -l` of it failed: VSBC_2001 TC-R01)
+    tool = re.compile(r"^(?:sudo\s+)?(?:ansible-playbook|python[\d.]*|bash|sh|perl)\b.*?\s(/[\w.@+-]+(?:/[\w.@+-]+)*"
+                      r"\.(?:ya?ml|py|sh|pl))\b")
+    for cmd, simple in parts:
+        m = tool.match(simple)
+        for t in tgts if m else []:
+            path = _resolve(m.group(1), t)
+            if "${" not in path:
+                files.setdefault(path, [f"{path.rsplit('/', 1)[-1]} on the node (NetConfig simulator seed)"])
     return files
 
 
