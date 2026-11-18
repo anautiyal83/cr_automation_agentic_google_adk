@@ -57,6 +57,7 @@ class SkillInput:
     previous_answers: dict | None = None
     schema_dir: str | None = None
     vendor_profile: dict | None = None  # Pre-filled from vendor profile selection
+    run_options: dict | None = None  # the run's phases and backup route (shared.run_options)
 
 
 @dataclass
@@ -217,8 +218,10 @@ class RequirementGatheringSkill:
                               read_ciq_rows(getattr(inp, "ciq_file_path", "") or "", self._ciq_sheets))
                           if q["id"] not in self._all_answers]
         # A backup is stored on the repo server: which one (it becomes a node of the workflow)
+        from shared import run_options
         ciq_questions += [q for q in questionnaire.repo_server_question(
-                              (self._doc_extracted or {}).get("mop_commands") or [])
+                              (self._doc_extracted or {}).get("mop_commands") or [],
+                              run_options.normalize(getattr(inp, "run_options", None))["backup_via_repo"])
                           if q["id"] not in self._all_answers]
         self._store_question_texts(ciq_questions)
         # Only the CIQ questions are asked on the paths below: their answers need no new round

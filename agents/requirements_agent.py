@@ -93,6 +93,7 @@ class RequirementsGathererNode(BaseAgent):
             transcript_paths=_text_document_paths(doc_set.get("additional_documents")),
             developer_notes=developer_notes,
             vendor_profile=vendor_profile,
+            run_options=doc_set.get("run_options") or {},
             extra_questions=_open_clarifications(run_dir),
         )
 

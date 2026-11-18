@@ -1988,3 +1988,15 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   json-output YAML (the rules only when a run has none); the rules stay ciq-processor's `--rules`. The export also
   ships the MOP template the run used (`templates/`) with step 7's `generate` command in USER_GUIDE.md — a newer
   production template leaves `{{MOP_LABELS_JSON}}` unfilled in this JAR's page (an empty MOP, user 2026-11-18).
+
+### OB-107 — Step 1 asked what is known by default: the repo server, ORDER_NO, a check the MOP states (Medium, Fixed 2026-11-18)
+- Run 324243f4 (VSBC_2001_NTP_SERVER_CHANGE, demo inputs) round 1, 3 questions — user: "common questionnaire …
+  should be understood by default": `orch_repo_server` (the backup's repo server — Settings names it, and the run kept
+  backups on the node), `cmd_q1` "Where should ORDER_NO … be retrieved from?" (a framework runtime parameter; the
+  suggested answer "CRGroup column from the Index sheet" was wrong — Continue would have taken it), `cmd_q2` "Should the
+  post-check verify the new NTP IPs in chronyc sources?" (MOP step 4 says so).
+- **Fix** (`requirement_gathering`: `questionnaire.repo_server_question`, `clean_questions`,
+  `build_available_data_summary`, `QUESTIONS_PROMPT`; the agent passes the run options): the repo server is asked only
+  when the run's backups go via the repo server and `execution.repo_server` has no host; the runtime parameters are
+  listed as known data and a question naming one is dropped; a non-critical yes/no that only confirms a check
+  ("Should … verify …?", default yes) is dropped — the MOP is followed as written. Tests in test_requirements_gaps.py.

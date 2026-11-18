@@ -85,3 +85,20 @@ def test_questions_ask_for_text_not_patterns_and_never_repeat():
     assert out["cmd_q19"]["default_value"] == "python create_xml.py --mandatory_cap 'Mandatory Cap'"
     assert out["na_q4"]["question"] == "Which prompt pattern does the provgw user show?"
     assert looks_like_regex(r"(?P<x>\d+)") and not looks_like_regex("Link UP for every remote node")
+
+
+def test_questions_known_by_default_are_not_asked():
+    """VSBC_2001 round 1 (2026-11-18): ORDER_NO is a framework runtime parameter (its suggested answer was
+    "CRGroup column from the Index sheet"), and a yes/no confirming the MOP's own check is no gap."""
+    from skills.requirement_gathering.questionnaire import clean_questions
+    asked = clean_questions([
+        {"id": "cmd_q1", "question": "Where should the order number (ORDER_NO) for the backup folder name be "
+                                     "retrieved from?", "importance": "critical",
+         "default_value": "CRGroup column from the Index sheet"},
+        {"id": "cmd_q2", "question": "Should the post-check verify that the new NTP server IP addresses appear in "
+                                     "the chronyc sources output?", "importance": "recommended", "input_type": "boolean",
+         "default_value": "true"},
+        {"id": "cmd_q3", "question": "Which NTP servers does the node use when NTP Server 2 is blank?",
+         "importance": "critical", "default_value": "only NTP Server 1"},
+    ])
+    assert [q["id"] for q in asked] == ["cmd_q3"]

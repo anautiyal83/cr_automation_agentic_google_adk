@@ -297,10 +297,32 @@ def build_available_data_summary(
         parts.append(f"\nFULL MOP DOCUMENT available ({len(raw_artifacts['mop_text'])} chars)")
         parts.append("  - Command syntax and procedures are in MOP — do not ask about them")
 
+    # --- the framework's runtime parameters: the CR automation provides them on every run ---
+    from core.config import runtime_params
+    names = ", ".join(runtime_params())
+    if names:
+        parts.append(f"FRAMEWORK RUNTIME PARAMETERS (provided on every run - NEVER ask where they come from): {names}")
     return "\n".join(parts) if parts else "No additional data available"
 
 
 # --------------------------------------------------------------------------- question hygiene (spec 011)
+
+# "Should the post-check verify that …?" with default yes: the MOP's own check, confirmed — not a gap
+_CONFIRM = re.compile(r"^\s*(should|shall|do you want|would you like)\b.*\b(verify|check|validate|confirm|ensure|"
+                      r"compare)\w*\b", re.I)
+
+
+def _asks_runtime_param(text: str) -> bool:
+    """A question naming a framework runtime parameter (ORDER_NO …): the framework provides it on every run."""
+    from core.config import runtime_params
+    return any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])", text) for n in runtime_params())
+
+
+def _confirms_check(q: dict) -> bool:
+    """A yes/no question that only confirms a check, default yes, not critical: the MOP's check is done as written."""
+    yes = str(q.get("default_value", "")).strip().lower() in ("true", "yes", "y", "1")
+    return yes and str(q.get("importance", "")).lower() != "critical" and bool(_CONFIRM.search(str(q.get("question", ""))))
+
 
 _PATTERN_ASK = re.compile(r"\b(regex|regexp|regular expression|pattern|expression|criteria\s+syntax)\b", re.I)
 _PROMPT_TOPIC = re.compile(r"\bprompt\b", re.I)
@@ -372,6 +394,9 @@ def clean_questions(questions: list[dict], answered_texts: dict[str, str] | None
             q["default_value"] = ""
             q["helper_text"] = "e.g. repo_password — the workflow reads it as ${SECRET.repo_password}"
         if any(same_question(text, t) for t in answered):  # answered before under another id
+            continue
+        if _asks_runtime_param(text) or _confirms_check(q):  # known by default (user 2026-11-18)
+            logger.info("Question dropped (known by default): %s", text[:100])
             continue
         if any(same_question(text, o["_asked"]) for o in out):  # repeated in this round
             continue
@@ -536,14 +561,17 @@ _HOST_NAME = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}|[A-Za-z0-9][A-Za-z0-9-]*(?:\.[
 _REPO_ANSWER = re.compile(r"(?:(?P<user>[\w.-]+)@)?(?P<host>\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][\w.-]*)(?::(?P<port>\d+))?")
 
 
-def repo_server_question(mop_commands: list[dict]) -> list[dict]:
+def repo_server_question(mop_commands: list[dict], via_repo: bool = True) -> list[dict]:
     """Where backups go: a MOP with a backup step stores it on a repo server, a node of the
-    execution YAML (step 6, structure.py). Proposed from execution.repo_server."""
+    execution YAML (step 6, structure.py). Asked only when the run's backups go through the repo server
+    (run options "via repo server") and Settings names no repo server (execution.repo_server)."""
     texts = [f"{c.get('phase', '')} {c.get('command', '')}" for c in mop_commands or [] if isinstance(c, dict)]
-    if not any(_BACKUP.search(t) for t in texts):
+    if not via_repo or not any(_BACKUP.search(t) for t in texts):
         return []
     from core.config import repo_server
     cfg = repo_server()
+    if str(cfg.get("host") or "").strip():
+        return []  # Settings → Execution names it: known by default (shown at the step 2 review)
     return [{
         "id": "orch_repo_server",
         "category": "orchestration",

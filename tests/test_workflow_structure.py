@@ -250,8 +250,17 @@ def test_repo_server_answer_parsed():
     # DEP-57: a sentence is no address (the last word "rollback." became the repo host)
     assert parse_repo_server("repo server is an intermittent server which will just keep the backup files "
                              "in case we need to perform a rollback.") == {}
-    assert repo_server_question([{"phase": "Backup", "command": "take a backup of the clips"}])
-    assert not repo_server_question([{"phase": "Activity", "command": "copy the file"}])
+    import core.config
+    backup = [{"phase": "Backup", "command": "take a backup of the clips"}]
+    real = core.config.repo_server
+    try:
+        core.config.repo_server = lambda: {**real(), "host": ""}  # Settings names no repo server
+        assert repo_server_question(backup)
+        assert not repo_server_question([{"phase": "Activity", "command": "copy the file"}])
+        assert not repo_server_question(backup, via_repo=False)  # backups kept on the node (run options)
+    finally:
+        core.config.repo_server = real
+    assert not repo_server_question(backup)  # Settings names it (${REPO_IP}): known by default
 
 
 def test_guard_that_holds_for_a_later_record_is_answered():

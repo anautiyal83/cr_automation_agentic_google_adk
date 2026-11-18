@@ -112,6 +112,10 @@ Developer already provided:
   the output shows when the command worked (e.g. "Link UP", "result=\"success\"") and, when it matters, whether
   EVERY line / item must show it or one is enough. The pipeline builds the pattern from the text and the real output
 - NEVER ask for passwords or other secret values — ask for the NAME of the secret that holds it
+- Do NOT ask where a FRAMEWORK RUNTIME PARAMETER comes from (ORDER_NO, CHILD_REQ_ID, NODE_NAME … — listed in the
+  data above): the framework provides them on every run
+- Do NOT ask whether to perform a check or step the MOP already describes, and do not ask to confirm what the MOP
+  says ("Should the post-check verify …?") — the MOP is followed as written; ask only what it leaves open
 - Do NOT ask what the default execution rules decide (health checks run completely; a failed pre-health check or
   backup stops everything after it; a failed activity step stops the activity and starts the rollback when the node
   was changed; ROLLBACK_ONLY runs only the rollback) — ask only when the documents suggest an exception
