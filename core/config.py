@@ -134,11 +134,32 @@ class PipelineConfiguration(BaseModel):
 # ConfigManager
 # ---------------------------------------------------------------------------
 
-def runtime_params() -> dict[str, str]:
-    """Framework runtime parameters ({name: test value}) from the live config, else defaults."""
+ORDER_PARAM = "ORDER_NO"
+_run_scope: dict[str, str] = {"order_no": ""}  # the running pipeline run's dummy order number
+
+
+def test_order_no(run_id: str) -> str:
+    """A run's dummy order number: ``TEST_`` + the first 8 characters of its id (``TEST_223C4607``) — a new one
+    for every run (user 2026-11-18: a fixed TEST_ORDER_NO met the last run's backup and response files), the same
+    across the run's steps, resumes and re-runs."""
+    return "TEST_" + re.sub(r"[^0-9A-Za-z]", "", str(run_id or ""))[:8].upper()
+
+
+def set_run(run_id: str) -> None:
+    """The run the next steps belong to (the pipeline, before each agent): its dummy ORDER_NO."""
+    _run_scope["order_no"] = test_order_no(run_id) if run_id else ""
+
+
+def runtime_params(run_id: str = "") -> dict[str, str]:
+    """Framework runtime parameters ({name: test value}) from the live config, else defaults; ORDER_NO is the
+    run's own dummy order number (``run_id``, else the running run's)."""
     cm = ConfigManager._live_instance
     config = getattr(cm, "_config", None) if cm else None
-    return dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+    params = dict(config.runtime_params) if config else dict(DEFAULT_RUNTIME_PARAMS)
+    order = test_order_no(run_id) if run_id else _run_scope["order_no"]
+    if order and ORDER_PARAM in params:
+        params[ORDER_PARAM] = order
+    return params
 
 
 def max_queued_per_user() -> int:

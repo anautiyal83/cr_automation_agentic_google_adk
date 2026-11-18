@@ -184,7 +184,8 @@ bye
   sample request must reach the script that builds the uploaded request (validator, DEP-46/47)
 - CIQ column names are bare, never quoted (`data.'Test IMSI'` is empty) nor subscripted (`data['Test IMSI']`; autofix rewrites); no `${…}` inside regexes (not interpolated)
 - Framework runtime parameters (e.g. `${ORDERNO}`) are listed in `config/pipeline_config.yaml` `execution.runtime_params`;
-  step 9 passes their test values as `--var`
+  step 9 passes their test values as `--var`; ORDER_NO is per run, `TEST_<run id 8>` (`core.config.set_run`, before each agent; a
+  reused baseline simulator gets the run's number, OB-110)
 - Validation regexes: `find()`, `^`/`$` per line, `.` does not cross lines
 - `tar -c` success regexes must match GNU tar (``tar: Removing leading `/' …``); autofix replaces a missing one with
   the archive's `ls -1` line (DEP-58)

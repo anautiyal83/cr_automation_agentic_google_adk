@@ -136,6 +136,7 @@ class NetworkSimulatorSetupAgent(BaseAgent):
             baseline_synthetic=baseline.synthetic_keys if baseline else {},
             baseline_outputs=str(baseline.path / "simulator" / "outputs") if baseline and baseline.path else "",
             baseline_run=baseline.run_id if baseline else "",
+            baseline_order_no=baseline.order_no if baseline else "",
         )
         output = await skill.setup(inp)
         from agents.network_config_gen_agent import _write_origin

@@ -2010,3 +2010,26 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   order and expected result; `questionnaire.drop_answered_by_mop` drops a question about what a command's output must
   show when its MOP line states it; `parse_mop` gives an indented `#` line under a command to that command's check
   (PGW 37 / MRF 15 commands parse as before). test_requirements_gaps.py.
+
+### OB-109 — Step 8 seeded no file the node already has: the backup and the rollback pre-check failed (High, Fixed 2026-11-18)
+- Run 223c4607 (VSBC_2001 demo) step 9, 3/3 failed (classified "workflow", wrongly): the backup `mkdir … && cp
+  /etc/chrony.conf /var/backup/<ORDER>/chrony.conf && tar -czvf … -C /etc chrony.conf` — "cp: cannot stat
+  '/etc/chrony.conf'"; the rollback pre-check `ls -l /opt/ansible/ntp/ntp_rollback.yml` — "No such file".
+  `guards.backup_seed_files` read only commands starting with `tar` (not a chained command's tar part), dropped `-C`
+  relative sources, took the cp destination `…/chrony.conf` for a folder (seeded `…/chrony.conf/chrony.conf`) and
+  never seeded the source; a playbook the node runs was never on the simulated node. After that, the rollback-only
+  case failed step 9's restore check on the MOP's own backup copy ("left behind: /var/backup/…/chrony.conf").
+- **Fix**: seeds come from every part of a chained command; tar sources relative to `-C`; a backup copy's source
+  is seeded (a load's is not — the workflow uploads it), a cp onto a file path loads into its folder; playbooks and
+  scripts a node runs (`ansible-playbook|python|bash|sh|perl … /path/x.yml|py|sh|pl`) are seeded;
+  `scenarios.written_files` keeps what the backup phase writes (cp destination, tar archive). Steps 8 + 9 on the
+  run: 3/3 pass.
+
+### OB-110 — Every run used the same dummy ORDER_NO: a re-run met the last run's files (Medium, Fixed 2026-11-18)
+- User 2026-11-18: "TEST_ORDER_NO should be a dummy order no and should change with every run" (the export's
+  ORDER12345.xml.res met by the next execution, OB-?).
+- **Fix** (`core.config`): `runtime_params()` gives ORDER_NO = `TEST_<first 8 characters of the run id>`
+  (`set_run` by the pipeline before each agent, test_step per step) — the same in steps 6 / 8 / 9, resumes and
+  re-runs; the UC baseline records the number its simulator was proven with and step 8 replaces it with the run's
+  in the reused configs, synthetic keys and answers; the export guide's command uses the run's number and says to
+  give each execution a new one (or `-Clean`). tests/test_run_order_no.py.

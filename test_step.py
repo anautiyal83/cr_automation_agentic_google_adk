@@ -346,8 +346,10 @@ async def test_agents(run_id: str, steps: list[str], refix_workflow: bool,
         step: int = 0
 
         async def _run_async_impl(self, ctx):
+            from core.config import set_run
             from shared import jar_logs
             jar_logs.set_context(self.run_dir, self.step)
+            set_run(Path(self.run_dir).name)  # the work dir's own dummy ORDER_NO, as the pipeline does per run
             return
             yield
 

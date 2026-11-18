@@ -75,6 +75,7 @@ class SkillInput:
     baseline_synthetic: dict = field(default_factory=dict)
     baseline_outputs: str = ""  # its outputs/ folder
     baseline_run: str = ""
+    baseline_order_no: str = ""  # the dummy ORDER_NO the baseline was proven with: this run's replaces it
 
 
 @dataclass
@@ -181,8 +182,10 @@ class NetworkSimulatorSetupSkill:
         reuse = bool(inp.baseline_configs) and {n.instance for n in nodes} <= set(inp.baseline_configs) \
             and not inp.feedback
         if reuse:  # the node configs (a gateway's YAML is built again from them)
-            instance_configs = {n.instance: inp.baseline_configs[n.instance] for n in nodes}
-            synthetic_keys, errors = dict(inp.baseline_synthetic), []
+            instance_configs = {n.instance: _this_order(inp.baseline_configs[n.instance], inp.baseline_order_no)
+                                for n in nodes}
+            synthetic_keys = json.loads(_this_order(json.dumps(inp.baseline_synthetic), inp.baseline_order_no))
+            errors = []
             logger.info("Phase 2: simulator configs reused from the baseline of run %s", inp.baseline_run[:8])
         else:
             instance_configs, synthetic_keys, errors = await self._responses(inp, nodes, samples)
@@ -220,6 +223,14 @@ class NetworkSimulatorSetupSkill:
             if reuse and inp.baseline_outputs and Path(inp.baseline_outputs).is_dir():
                 import shutil
                 shutil.copytree(inp.baseline_outputs, sim_dir / "outputs", dirs_exist_ok=True)
+                for f in (sim_dir / "outputs").rglob("*"):  # recorded answers name the order too
+                    if f.is_file() and f.suffix in (".txt", ".yaml", ".yml", ".json", ".xml", ".res", ""):
+                        try:
+                            text = f.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        if _this_order(text, inp.baseline_order_no) != text:
+                            f.write_text(_this_order(text, inp.baseline_order_no), encoding="utf-8")
             for node in nodes:
                 write_instance_files(sim_dir, node.instance, instance_configs[node.instance])
                 errors += [f"{node.instance}: {e}" for e in validate_mockwire_config(
@@ -891,6 +902,13 @@ def recorded_responses(commands: list[dict], samples: list[dict]) -> dict[str, d
         if output is not None:
             entries[cmd] = {"lines": output.splitlines()}
     return entries
+
+
+def _this_order(text: str, old: str) -> str:
+    """A reused baseline's dummy ORDER_NO (folders, answers) replaced by this run's (core.config.set_run)."""
+    from core.config import ORDER_PARAM, runtime_params
+    new = runtime_params().get(ORDER_PARAM, "")
+    return text.replace(old, new) if old and new and old != new else text
 
 
 def _review_yaml(nodes: list[NodeSpec], instance_configs: dict[str, str]) -> str:

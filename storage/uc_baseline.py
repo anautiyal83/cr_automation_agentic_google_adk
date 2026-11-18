@@ -44,6 +44,7 @@ class Baseline:
     simulator_fp: str = ""
     simulator_configs: dict[str, str] = field(default_factory=dict)  # instance → config yaml
     synthetic_keys: dict = field(default_factory=dict)
+    order_no: str = "TEST_ORDER_NO"  # the dummy ORDER_NO its simulator was proven with (before 2026-11-18: fixed)
     path: Path | None = None
 
 
@@ -126,12 +127,18 @@ def save(run_dir: str | Path, uc_name: str, requirements: dict, ciq_json_files: 
         "workflow_fp": workflow_fingerprint(workflow),
         "simulator_fp": simulator_fingerprint(workflow, run_ciq_json_files(rd) if ciq_json_files is None
                                               else ciq_json_files) if has_sim else "",
+        "order_no": _order_no(rd.name),
     }
     (staging / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     shutil.rmtree(target, ignore_errors=True)
     staging.rename(target)
     logger.info("Baseline of %s saved from run %s", uc_name, rd.name)
     return target
+
+
+def _order_no(run_id: str) -> str:
+    from core.config import ORDER_PARAM, runtime_params
+    return runtime_params(run_id).get(ORDER_PARAM, "")
 
 
 def load(uc_name: str, base: Path | None = None) -> Baseline | None:
@@ -143,7 +150,8 @@ def load(uc_name: str, base: Path | None = None) -> Baseline | None:
         return None
     b = Baseline(uc_name=uc_name, run_id=str(meta.get("run_id") or ""), saved_at=str(meta.get("saved_at") or ""),
                  requirements_fp=str(meta.get("requirements_fp") or ""), workflow_yaml=workflow,
-                 simulator_fp=str(meta.get("simulator_fp") or ""), path=d)
+                 simulator_fp=str(meta.get("simulator_fp") or ""), path=d,
+                 order_no=str(meta.get("order_no") or "TEST_ORDER_NO"))
     for f in sorted((d / "scripts").glob("*")) if (d / "scripts").is_dir() else []:
         if f.is_file():
             b.scripts[f.name] = f.read_text(encoding="utf-8")

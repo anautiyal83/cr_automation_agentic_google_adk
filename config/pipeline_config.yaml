@@ -33,6 +33,7 @@ execution:
   # Passed by the production framework to every execution as `--var NAME=value`.
   # Step 6 may use them as ${NAME} without registering them; step 9 passes these
   # dummy values when executing against the simulator.
+  # ORDER_NO: every run uses its own dummy order number, TEST_<first 8 characters of the run id> (core.config.set_run)
   runtime_params:
     ORDER_NO: "TEST_ORDER_NO"
     CHILD_REQ_ID: "TEST_CHILD_REQ"

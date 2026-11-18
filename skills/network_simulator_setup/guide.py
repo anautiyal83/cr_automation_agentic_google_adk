@@ -507,7 +507,7 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
             pass
     try:
         from core.config import runtime_params
-        params = runtime_params()
+        params = runtime_params(run_dir.name)  # the run's own dummy ORDER_NO (TEST_<run id>)
     except Exception:
         params = {}
     ports = ", ".join(f"{i['name']} → {i['port']}" for i in instances)
@@ -572,7 +572,9 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
         "the package folder:", "",
         "```bash", "CLEAN=1 ./start_simulator.sh", "cd ..", f"java -jar {CLI_JAR} {args}", "```", "",
         "`--node` / `--cr` pick one node group of the CIQ JSON; the `--var` values are the framework's "
-        "runtime parameters as step 9 passed them. The simulator answers like the real nodes did in the "
+        "runtime parameters as step 9 passed them. `ORDER_NO` is this run's dummy order number: give each "
+        "execution a new one (`--var ORDER_NO=TEST_002` …) or start the simulator with `-Clean` — the backup and "
+        "response files of an order stay on the simulated nodes. The simulator answers like the real nodes did in the "
         "uploaded transcripts — it is not the production network.",
     ]
 
