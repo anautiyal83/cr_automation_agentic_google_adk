@@ -294,8 +294,13 @@ def build_available_data_summary(
         parts.append("  - XML structure/template is available — do not ask about it")
 
     if raw_artifacts.get("mop_text"):
-        parts.append(f"\nFULL MOP DOCUMENT available ({len(raw_artifacts['mop_text'])} chars)")
-        parts.append("  - Command syntax and procedures are in MOP — do not ask about them")
+        # the MOP itself: what it states (each command's expected result in its # comment) is decided — the
+        # question step only saw "available" and asked how the MOP's own checks are meant (VSBC_2001, 2026-11-18)
+        mop = str(raw_artifacts["mop_text"])
+        parts.append("\nTHE MOP (followed exactly as written — every command, order and expected result it states, "
+                     "including the # comments, is decided: never ask about it):")
+        parts.append(mop[:_MOP_CHARS] + (f"\n… ({len(mop) - _MOP_CHARS} more chars)" if len(mop) > _MOP_CHARS else ""))
+
 
     # --- the framework's runtime parameters: the CR automation provides them on every run ---
     from core.config import runtime_params
@@ -306,6 +311,35 @@ def build_available_data_summary(
 
 
 # --------------------------------------------------------------------------- question hygiene (spec 011)
+
+_MOP_CHARS = 12000  # the MOP text the question step reads (a longer MOP: its start, the rest is summarised)
+# a question about what a command's output must show / when it counts as passed
+_OUTPUT_ASK = re.compile(r"\b(appear|show|output|list|succe|pass|fail|must|sufficient|enough|expect|both|all|any|"
+                         r"verif|check|confirm)\w*", re.I)
+_QUOTED = re.compile(r"[\"'`‘“]([^\"'`’”]{3,})[\"'`’”]")
+
+
+def drop_answered_by_mop(questions: list[dict], mop_commands: list[dict]) -> list[dict]:
+    """A question about what a command's output must show, for a command whose MOP line states it (its #
+    comment: ``chronyc sources -n  #<NTP Server 1> and <NTP Server 2> listed``) — the MOP answers it."""
+    checked = {" ".join(str(c.get("command", "")).split()): str(c.get("validation") or "").strip()
+               for c in mop_commands or [] if isinstance(c, dict)}
+    checked = {k: v for k, v in checked.items() if k and v}
+    if not checked:
+        return questions
+    out = []
+    for q in questions or []:
+        text = str(q.get("question", ""))
+        quoted = [" ".join(m.group(1).split()) for m in _QUOTED.finditer(text)]
+        named = [cmd for cmd in checked if any(cmd == s or (len(s) >= 6 and cmd.startswith(s)) for s in quoted)
+                 or cmd in " ".join(text.split())]
+        if named and _OUTPUT_ASK.search(text):
+            logger.info("Question dropped (the MOP states the check of %r: %s): %s", named[0], checked[named[0]],
+                        text[:100])
+            continue
+        out.append(q)
+    return out
+
 
 # "Should the post-check verify that …?" with default yes: the MOP's own check, confirmed — not a gap
 _CONFIRM = re.compile(r"^\s*(should|shall|do you want|would you like)\b.*\b(verify|check|validate|confirm|ensure|"

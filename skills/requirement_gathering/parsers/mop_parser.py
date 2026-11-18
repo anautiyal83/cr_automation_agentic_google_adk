@@ -71,8 +71,23 @@ def parse_mop(mop_text: str) -> dict[str, Any]:
     current_node = "unknown"
     current_user = "oamsys"
 
+    last_command: dict | None = None  # the command an indented comment line below it belongs to
     for line in mop_text.splitlines():
         stripped = line.strip()
+
+        # An indented comment under a command is that command's check:
+        #   -> ansible-playbook … ntp_config.yml …
+        #      #PLAY RECAP must show failed=0
+        if last_command is not None and line[:1].isspace() and stripped.startswith("#") \
+                and not re.match(r'^#\d+\.', stripped):
+            note = stripped.lstrip("#").strip()
+            if note:
+                last_command["validation"] = f"{last_command['validation']}; {note}".strip("; ")
+                if last_command["description"] == last_command["command"]:
+                    last_command["description"] = note
+            continue
+        if stripped:
+            last_command = None
 
         # Detect phase headers: #1. Pre Health Check, #3. Activity, etc.
         phase_match = re.match(r'^#\d+\.\s*(.+)', stripped)
@@ -118,6 +133,7 @@ def parse_mop(mop_text: str) -> dict[str, Any]:
                 "phase": current_phase,
                 "user": current_user,
             })
+            last_command = commands[-1]
 
     return {
         "commands": commands,

@@ -2000,3 +2000,13 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   when the run's backups go via the repo server and `execution.repo_server` has no host; the runtime parameters are
   listed as known data and a question naming one is dropped; a non-critical yes/no that only confirms a check
   ("Should … verify …?", default yes) is dropped — the MOP is followed as written. Tests in test_requirements_gaps.py.
+
+### OB-108 — Step 1 asked how the MOP's own check is meant: the question step never saw the MOP (Medium, Fixed 2026-11-18)
+- Run 223c4607 (VSBC_2001, after OB-107): "When verifying NTP sources with 'chronyc sources -n', must both NTP servers
+  appear or is one sufficient?" — the MOP line says `#<NTP Server 1> and <NTP Server 2> listed, one of them selected`.
+  The question prompt got only "FULL MOP DOCUMENT available (N chars)", never its text. The MOP parser also dropped an
+  indented comment under a command (`-> ansible-playbook …` / `   #PLAY RECAP must show failed=0`): no check for it.
+- **Fix** (`requirement_gathering`): the question step reads the MOP (up to 12000 chars) as decided — every command,
+  order and expected result; `questionnaire.drop_answered_by_mop` drops a question about what a command's output must
+  show when its MOP line states it; `parse_mop` gives an indented `#` line under a command to that command's check
+  (PGW 37 / MRF 15 commands parse as before). test_requirements_gaps.py.

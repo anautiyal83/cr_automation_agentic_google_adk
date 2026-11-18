@@ -102,3 +102,25 @@ def test_questions_known_by_default_are_not_asked():
          "importance": "critical", "default_value": "only NTP Server 1"},
     ])
     assert [q["id"] for q in asked] == ["cmd_q3"]
+
+
+def test_a_question_the_mop_line_answers_is_not_asked():
+    """VSBC_2001 round 1 (2026-11-18): "must both NTP servers appear in 'chronyc sources -n' or is one
+    sufficient?" — the MOP line says "#<NTP Server 1> and <NTP Server 2> listed". An indented comment under a
+    command is its check too (ansible-playbook … then "   #PLAY RECAP must show failed=0")."""
+    from skills.requirement_gathering.parsers.mop_parser import parse_mop
+    from skills.requirement_gathering.questionnaire import drop_answered_by_mop
+    mop = ("#3. Activity\n"
+           "-> ansible-playbook -i localhost, -c local /opt/ansible/ntp/ntp_config.yml -e ntp_server_1=<NTP Server 1>\n"
+           "   #PLAY RECAP must show failed=0\n\n"
+           "#4. Verify\n"
+           "-> chronyc sources -n   #<NTP Server 1> and <NTP Server 2> listed, one of them selected (^*)\n")
+    cmds = parse_mop(mop)["commands"]
+    assert [c["validation"] for c in cmds] == ["PLAY RECAP must show failed=0",
+                                               "<NTP Server 1> and <NTP Server 2> listed, one of them selected (^*)"]
+    asked = drop_answered_by_mop([
+        {"id": "cmd_q1", "question": "When verifying NTP sources with 'chronyc sources -n' during the post-check, "
+                                     "must both NTP servers appear in the output or is one sufficient?"},
+        {"id": "cmd_q2", "question": "Which NTP servers does the node use when NTP Server 2 is blank?"},
+    ], cmds)
+    assert [q["id"] for q in asked] == ["cmd_q2"]
