@@ -211,6 +211,7 @@ _STEP_AGENTS = {
           ("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
     # helper scripts only, for the (re-fixed) workflow of the copied run
     "6h": [("agents.helper_script_gen_agent", "HelperScriptGenAgent")],
+    "7": [("agents.network_config_mop_qa_agent", "NetworkConfigMopQAAgent")],  # MOP generate (cli-automation generate)
     "8": [("agents.network_simulator_setup_agent", "NetworkSimulatorSetupAgent")],
     "9": [("agents.network_config_qa_agent", "NetworkConfigQAAgent")],
     "10": [("agents.report_agent", "ReportAgent")],

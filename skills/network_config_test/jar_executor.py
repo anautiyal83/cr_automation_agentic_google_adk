@@ -122,8 +122,9 @@ async def run_mop_test(
 
     # --- Step 2: Run cli-automation generate ---
     mop_output = str(mop_dir / f"{uc_name}_mop.html")
-    # Use sanitized rules for schema too (same stripping needed)
-    schema_path = rules_for_jar or validation_rules_path or json_output_path
+    # --schema is the json-output YAML: the JAR checks the CIQ JSON against its `data` template (a file without
+    # `data` — the validation rules — skips that check silently; probed 2026-11-18)
+    schema_path = json_output_path or validation_rules_path
     cmd = [
         java, "-jar", str(cli_jar),
         "generate",
@@ -250,7 +251,7 @@ async def prepare_execution(
     scripts_dir = Path(output_dir) / "scripts"
     return {
         "targets": targets,
-        "schema_path": sanitized_rules or validation_rules_path or json_output_path,
+        "schema_path": json_output_path or sanitized_rules or validation_rules_path,  # --schema: see run_mop_test
         "node_type": node_type,
         "activity": activity,
         # LOCAL steps and relative sftp upload sources resolve here; a UC without helper scripts

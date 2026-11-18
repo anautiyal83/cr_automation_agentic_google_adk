@@ -209,6 +209,12 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
     assert "server **PGW** (port 22201, simulates PGW)" in guide
     assert "`work/SD_input.xlsx` | Input file the CIQ names in column `INPUT_FILE`" in guide
     assert f"{UC}/scripts/SD_input.xlsx" not in names  # inputs are the order's (LOCAL_PATH), not the scripts'
+    # the MOP: the template this JAR fills, and step 7's command (--schema = the JSON output configuration)
+    assert f"{UC}/templates/mop_summary_report_template_v2.html" in names
+    assert ("java -jar cli-automation-standalone.jar generate --json json_data/" + f"{UC}.json --schema {UC}_json-output.yaml "
+            f"--yaml {UC}.yaml --html-template templates/mop_summary_report_template_v2.html --output {UC}_mop.html "
+            "--cr CR1 --node-type PGW_RDS --activity 1058_IFC_CAPABILITY_MODIFICATION") in guide
+    assert f"--schema {UC}_json-output.yaml --yaml simulator/{UC}.yaml" in guide  # execute too
     assert "\n## Network simulator\n" in guide and "\n### Servers\n" in guide and "\n### How the servers work together\n" in guide
     assert "\n# password: netconf-sim\n" in guide  # a comment in a code block stays as it is
 

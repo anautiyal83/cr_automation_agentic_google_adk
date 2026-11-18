@@ -1977,3 +1977,14 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   call's log line names its file. Steps 5 / 7 / 9 list their logs among the step's files; Run Artifacts shows a
   "Jar Logs" group. `_step_files`: a rule with a "/" is a path prefix (`simulator/manifest` never matched before).
   `tests/test_jar_logs.py`.
+
+### OB-106 — Steps 7 / 9 gave the JAR the validation rules as `--schema`: its CIQ JSON check never ran (Medium, Fixed 2026-11-18)
+- User 2026-11-18: "during execution json-output YAML should also be used, but i dont see this as a parameter". The
+  cli-automation JAR has no json-output option: `generate` / `execute` load `--schema`, take its `data` section and
+  check the CIQ JSON against it (`JsonSchemaSupport.validateAgainstSchema`; javap). The validation rules have no
+  `data` — the check returned silently. With the json-output YAML a CIQ JSON missing `crGroups[0].email` stops with
+  "Payload missing required key: data.crGroups[0].email"; with the rules it went through.
+- **Fix** (`network_config_test/jar_executor`: `run_mop_test`, `prepare_execution`; export guide): `--schema` is the
+  json-output YAML (the rules only when a run has none); the rules stay ciq-processor's `--rules`. The export also
+  ships the MOP template the run used (`templates/`) with step 7's `generate` command in USER_GUIDE.md — a newer
+  production template leaves `{{MOP_LABELS_JSON}}` unfilled in this JAR's page (an empty MOP, user 2026-11-18).

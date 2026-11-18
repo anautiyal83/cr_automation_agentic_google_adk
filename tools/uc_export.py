@@ -8,6 +8,7 @@ Layout (mirrors the run folder, so the simulator guide's relative paths hold in 
     <UC>/json_data/<CIQ JSON>          — the data the execution YAML runs on (--json)
     <UC>/scripts/                      — the helper scripts the LOCAL steps run (step 6; ACTIVITY_PYTHON_SCRIPT_PATH)
     <UC>/work/                         — the input files the CIQ names; a run writes the order's files here (LOCAL_PATH)
+    <UC>/templates/<MOP template>      — the HTML template the run's MOP was generated with (step 7)
     <UC>/simulator/mockwire.jar
     <UC>/simulator/config/ · outputs/ · <UC>.yaml (execution YAML on the simulator's ports)
     <UC>/simulator/start_/stop_simulator.ps1/.sh
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 EXPORT_DIR = "export"
 USER_GUIDE = "USER_GUIDE.md"
 _DEFAULT_MOCKWIRE_JAR = "lib/mockwire.jar"
+_DEFAULT_MOP_TEMPLATE = "lib/templates/mop_summary_report_template_v2.html"
+TEMPLATES_DIR = "templates"
 
 
 class ExportError(RuntimeError):
@@ -50,6 +53,19 @@ def mockwire_jar() -> Path:
             if p.is_file():
                 return p.resolve()
     raise ExportError(f"MockWire JAR not found: {PROJECT_ROOT / _DEFAULT_MOCKWIRE_JAR}")
+
+
+def mop_template() -> Path | None:
+    """The MOP HTML template of the live config (Settings → External Modules, step 7), else the default one; it must
+    fit the cli-automation JAR (a newer template's placeholders stay unfilled: an empty MOP page)."""
+    from core.config import ConfigManager
+    config = getattr(ConfigManager._live_instance, "_config", None)
+    for path in (getattr(config, "mop_template", None), _DEFAULT_MOP_TEMPLATE):
+        if path:
+            p = Path(path) if Path(path).is_absolute() else PROJECT_ROOT / path
+            if p.is_file():
+                return p.resolve()
+    return None
 
 
 def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = None) -> Path:
@@ -78,6 +94,9 @@ def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = Non
     files += [(arc, f) for arc, f in _tree(rd / "scripts", "scripts") if f.name in callers]
     files += [(f"{WORK_DIR}/{f.name}", f) for _, f in _tree(rd / "scripts", "scripts") if f.name in inputs]
     files.append(("simulator/mockwire.jar", jar))
+    template = mop_template()
+    if template:
+        files.append((f"{TEMPLATES_DIR}/{template.name}", template))
     files += _tree(sim / "config", "simulator/config") + _tree(sim / "outputs", "simulator/outputs")
     if (sim / f"{uc_name}.yaml").is_file():
         files.append((f"simulator/{uc_name}.yaml", sim / f"{uc_name}.yaml"))
@@ -139,8 +158,43 @@ def user_guide(run_dir: Path, uc_name: str, files: list[str], dirs: list[str]) -
         lines.append(f"| `{arc}` | {described(arc)} |")
     for arc in dirs:
         lines.append(f"| `{arc}/` | {described(arc + '/')} |")
+    template = next((a for a in files if a.startswith(f"{TEMPLATES_DIR}/")), "")
+    if template:
+        lines += _mop_section(run_dir, uc_name, template)
     lines += ["", simulator_sections(run_dir / "simulator", uc_name, run_dir.name)]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _mop_section(run_dir: Path, uc_name: str, template: str) -> list[str]:
+    """How to generate the MOP (step 7's command) from the package folder."""
+    from skills.network_config_test.jar_executor import _parse_uc_name
+    from skills.network_simulator_setup.guide import CLI_JAR
+    node_type, activity = _parse_uc_name(uc_name)
+    jsons = [j for j in sorted((run_dir / "json_data").glob("*.json")) if "VALIDATION_REPORT" not in j.name.upper()]
+    data, crs = (f"json_data/{jsons[0].name}" if jsons else "json_data/<CIQ JSON>"), []
+    if jsons:
+        try:
+            from tools.ciq_json import node_groups
+            crs = list(dict.fromkeys(str(cr) for cr, _ in node_groups(json.loads(jsons[0].read_text(encoding="utf-8")))
+                                     if cr))
+        except (OSError, ValueError):
+            pass
+    cr = crs[0] if crs else "<CR group>"
+    cmd = (f"java -jar {CLI_JAR} generate --json {data} --schema {uc_name}_json-output.yaml --yaml {uc_name}.yaml "
+           f"--html-template {template} --output {uc_name}_mop.html --cr {cr} --node-type {node_type} "
+           f"--activity {activity}")
+    return [
+        "", "## Generate the MOP", "",
+        f"The MOP (method of procedure) is the approval document of `{uc_name}.yaml`: every phase and command as it "
+        f"will run, per CR group. From the package folder (beside `USER_GUIDE.md`), with `{CLI_JAR}` copied there and "
+        "Java 8:", "",
+        "```", cmd, "```", "",
+        f"It writes `{uc_name}_mop-{cr}.html`"
+        + (f" (one file per CR group: {', '.join(f'`--cr {c}`' for c in crs)})" if len(crs) > 1 else "")
+        + f". Use the template in `{template}`: it is the one this JAR fills — a template made for a newer JAR "
+        "leaves placeholders such as `{{MOP_LABELS_JSON}}` in the page, which then shows no commands. `--schema` is "
+        "the JSON output configuration: the JAR checks the CIQ JSON against it before it writes the MOP.",
+    ]
 
 
 def _descriptions(run_dir: Path, uc_name: str):
@@ -194,6 +248,9 @@ def _descriptions(run_dir: Path, uc_name: str):
                 return (f"Input file the CIQ names in column `{inputs[name]}` (a copy of your uploaded document): the "
                         "workflow's local steps read it")
             return "—"
+        if arc.startswith(f"{TEMPLATES_DIR}/"):
+            return ("MOP HTML template (step 7): the page the cli-automation JAR fills with the MOP — see **Generate "
+                    "the MOP**")
         if arc == "simulator/mockwire.jar":
             return "MockWire, the network simulator (Java 8 or later)"
         if arc.startswith("simulator/config/") and name[:-5] in gateways:

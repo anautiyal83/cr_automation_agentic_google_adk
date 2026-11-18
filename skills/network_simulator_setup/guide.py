@@ -511,7 +511,7 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
     except Exception:
         params = {}
     ports = ", ".join(f"{i['name']} → {i['port']}" for i in instances)
-    args = (f"execute --json {data} --schema {uc_name}_validation-rules.yaml --yaml simulator/{uc_name}.yaml "
+    args = (f"execute --json {data} --schema {uc_name}_json-output.yaml --yaml simulator/{uc_name}.yaml "
             f"--node {node} --cr {cr} --output-dir exec_output")
     args += "".join(f" --var {k}={v}" for k, v in params.items())
     # the automation server's folders (step 6 declares them, production values): here the package's own
