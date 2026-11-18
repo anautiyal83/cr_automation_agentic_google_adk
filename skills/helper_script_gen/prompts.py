@@ -159,6 +159,9 @@ Define EVERY one of these flags with argparse, spelled EXACTLY like this (no ren
 no snake_case/camelCase conversion, no extra required flags):
 {flags}
 Use parser.parse_known_args() so an additional flag added later never breaks a run.
+Files: read and write ONLY the files these flags name, at exactly the path given (create a missing parent
+folder with os.makedirs). Never make up a file name or folder and never write into the current folder:
+the workflow decides where every file lives.
 """
 
 OUTPUT_CONTRACT_SECTION = """

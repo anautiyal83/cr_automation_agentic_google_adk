@@ -8,6 +8,7 @@ production workflows bundled in the cli-automation JAR are (specs/013-production
   ``register.when`` as one ``${…}`` with double-quoted literals — the JAR evaluates them exactly like the plain
   form the rest of step 6 works with (probed 2026-11-11, spec 013); ``plain`` turns them back for ``flatten``
 - steps: production field order; every validation ``enabled: true`` with a ``description``
+- paths: every folder a variable in ``globals.vars`` (``paths``: scripts, the order's work folder, node folders)
 
 Behaviour is unchanged: only the form differs.
 """
@@ -101,8 +102,8 @@ def _expressions(parsed: dict, fn) -> int:
 
 def plain(parsed: dict) -> int:
     """Undo NIAM failover and the expression form (``structure.flatten``)."""
-    from . import failover
-    changed = failover.undo(parsed) + _expressions(parsed, unwrap)
+    from . import failover, paths
+    changed = paths.undo(parsed) + failover.undo(parsed) + _expressions(parsed, unwrap)
     vars_ = (parsed.get("globals") or {}).get("vars")
     if isinstance(vars_, dict) and vars_.get("order_number") == "${ORDER_NO}":  # added by _file
         del vars_["order_number"]
@@ -302,6 +303,8 @@ def apply(parsed: dict, uc_name: str = "", node_types: dict[str, int] | None = N
     changed += _niam_nodes(parsed)
     changed += _ssh_host_keys(parsed)
     changed += _file(parsed, uc_name)
+    from . import paths
+    changed += paths.apply(parsed, uc_name)  # every folder a variable at the top (user 2026-11-18)
     changed += _phases(parsed)
     changed += _steps(parsed)
     changed += _expressions(parsed, wrap)

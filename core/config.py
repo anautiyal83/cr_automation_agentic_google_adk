@@ -161,6 +161,19 @@ def local_path() -> str:
         return default
 
 
+def script_path() -> str:
+    """Where the helper scripts are on the automation server (execution.script_path, production's
+    ``ACTIVITY_PYTHON_SCRIPT_PATH``); '' to run them by their bare name."""
+    default = "/data/cloud-user/om/install/sas/bin/macro_server/java/CLICR/ANY/V1/script/python"
+    try:
+        import yaml
+        raw = yaml.safe_load(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        value = (raw.get("execution") or {}).get("script_path", default)
+        return "" if value is None else str(value).strip()
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def wsl_distro() -> str:
     """The WSL distribution step 9 runs the cli-automation JAR in (execution.wsl_distro, spec 013 PF-D5); ''
     when not on Windows or not configured."""

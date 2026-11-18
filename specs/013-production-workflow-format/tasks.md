@@ -101,6 +101,16 @@ bye
   phases register are looked up again at its start (`when: ROLLBACK_ONLY == 'true'`), with their own inputs and the
   nested shell they were read in (enter + guarded exit); `nc_rbl*`. EIR rollback-only: 3 → 12 steps ran
 
+- [x] PF025 (PF-D8, 2026-11-18) paths as variables: `network_config_gen/paths.py`, last pass of `production.apply`
+  (undone by `production.plain`): `ACTIVITY_PYTHON_SCRIPT_PATH` + UC-prefixed script names, `LOCAL_PATH` for the
+  workflow's own files (script file flags, sftp local side, `nc_records/`) + `nc_localdir` (`mkdir -p`), node folders
+  `<TYPE>_<FOLDER>_PATH` (system folders `/dev` `/proc` `/bin` … stay). Step 8 gets `expand_nodes_text` (the
+  simulator answers on real folders), helper scripts + the spec 012 check `local_view`; step 9 points both
+  automation-server folders at its scripts folder; the export ships inputs in `work/` and runs from the package
+  folder with `--var ACTIVITY_PYTHON_SCRIPT_PATH=scripts --var LOCAL_PATH=work`. Prompts: every file a script reads or
+  writes is a flag; `check_files_from_flags` rejects a script writing a made-up name when its command names files.
+  `tests/test_workflow_paths.py`
+
 ## Stage D — prompt + docs
 
 - [ ] PF030 Step 6 prompt: production-style examples (from the corpus, generic), the patterns of production-style.md

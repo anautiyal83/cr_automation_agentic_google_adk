@@ -305,9 +305,10 @@ async def execute_target(
 
 
 def _point_local_path(workflow_path: str, cwd: str | None, distro: str) -> None:
-    """The workflow's ``LOCAL_PATH`` (production's input folder) in the simulator copy: the folder step 9 stages
-    the inputs in (LOCAL steps run there too)."""
-    import yaml
+    """The workflow's automation-server folders in the simulator copy: ``LOCAL_PATH`` (production's per-order work
+    folder) and ``ACTIVITY_PYTHON_SCRIPT_PATH`` (the helper scripts) are the folder step 9 stages the inputs in and
+    the helper scripts are in (LOCAL steps run there too)."""
+    from skills.network_config_gen.paths import LOCAL_VAR, SCRIPT_VAR
     if not cwd:
         return
     path = Path(workflow_path)
@@ -315,14 +316,20 @@ def _point_local_path(workflow_path: str, cwd: str | None, distro: str) -> None:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return
-    if "LOCAL_PATH:" not in text:
+    if f"{LOCAL_VAR}:" not in text and f"{SCRIPT_VAR}:" not in text:
         return
     target = wsl_path(str(Path(cwd).resolve())) if distro else str(Path(cwd).resolve()).replace("\\", "/")
     from skills.network_simulator_setup.autofix import dump_yaml, parse_yaml
     doc = parse_yaml(text)
     vars_ = ((doc or {}).get("globals") or {}).get("vars") if isinstance(doc, dict) else None
-    if isinstance(vars_, dict) and "LOCAL_PATH" in vars_ and vars_["LOCAL_PATH"] != target:
-        vars_["LOCAL_PATH"] = target
+    if not isinstance(vars_, dict):
+        return
+    changed = False
+    for name in (LOCAL_VAR, SCRIPT_VAR):
+        if name in vars_ and vars_[name] != target:
+            vars_[name] = target
+            changed = True
+    if changed:
         path.write_text(dump_yaml(doc), encoding="utf-8")
 
 

@@ -6,7 +6,8 @@ Layout (mirrors the run folder, so the simulator guide's relative paths hold in 
                                        work together, the workflow per server, trying it by hand
     <UC>/<UC>_validation-rules.yaml · <UC>_json-output.yaml · <UC>.yaml (execution YAML)
     <UC>/json_data/<CIQ JSON>          — the data the execution YAML runs on (--json)
-    <UC>/scripts/                      — helper scripts + inputs the LOCAL steps run (step 6)
+    <UC>/scripts/                      — the helper scripts the LOCAL steps run (step 6; ACTIVITY_PYTHON_SCRIPT_PATH)
+    <UC>/work/                         — the input files the CIQ names; a run writes the order's files here (LOCAL_PATH)
     <UC>/simulator/mockwire.jar
     <UC>/simulator/config/ · outputs/ · <UC>.yaml (execution YAML on the simulator's ports)
     <UC>/simulator/start_/stop_simulator.ps1/.sh
@@ -53,7 +54,7 @@ def mockwire_jar() -> Path:
 
 def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = None) -> Path:
     """Write the UC's export zip and return its path. Raises ExportError when a deliverable is missing."""
-    from skills.network_simulator_setup.guide import SCRIPT_NAMES, write_guide
+    from skills.network_simulator_setup.guide import SCRIPT_NAMES, WORK_DIR, write_guide
     rd = Path(run_dir)
     sim = rd / "simulator"
     deliverables = [rd / f"{uc_name}_validation-rules.yaml", rd / f"{uc_name}_json-output.yaml", rd / f"{uc_name}.yaml"]
@@ -74,7 +75,8 @@ def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = Non
     # from the scripts folder only what the workflow uses: the helper scripts it calls and the input files the CIQ
     # names — not the dumps a test run left there, nor a helper of an earlier step 6 the workflow no longer calls
     callers, inputs = _script_callers(rd / f"{uc_name}.yaml"), _ciq_files(rd)
-    files += [(arc, f) for arc, f in _tree(rd / "scripts", "scripts") if f.name in callers or f.name in inputs]
+    files += [(arc, f) for arc, f in _tree(rd / "scripts", "scripts") if f.name in callers]
+    files += [(f"{WORK_DIR}/{f.name}", f) for _, f in _tree(rd / "scripts", "scripts") if f.name in inputs]
     files.append(("simulator/mockwire.jar", jar))
     files += _tree(sim / "config", "simulator/config") + _tree(sim / "outputs", "simulator/outputs")
     if (sim / f"{uc_name}.yaml").is_file():
@@ -82,6 +84,7 @@ def build_export(run_dir: str | Path, uc_name: str, jar: str | Path | None = Non
     files += [(f"simulator/{n}", sim / n) for n in SCRIPT_NAMES]
     dirs = [f"simulator/outputs/{n}/responses" for n in instances] + [f"simulator/vfs/{n}" for n in instances]
     dirs.append("simulator/logs")
+    dirs.append(WORK_DIR)  # the workflow's LOCAL_PATH in the guide's command
     guide = user_guide(rd, uc_name, [a for a, _ in files], dirs)
 
     out = export_path(rd, uc_name)
@@ -142,6 +145,7 @@ def user_guide(run_dir: Path, uc_name: str, files: list[str], dirs: list[str]) -
 
 def _descriptions(run_dir: Path, uc_name: str):
     """arc path → one line on what the file is, from what the run knows about it."""
+    from skills.network_simulator_setup.guide import WORK_DIR
     sim = run_dir / "simulator"
     try:
         manifest = json.loads((sim / "manifest.json").read_text(encoding="utf-8"))
@@ -179,6 +183,9 @@ def _descriptions(run_dir: Path, uc_name: str):
                     "rollback) and every step with its validation; run by the cli-automation JAR")
         if arc.startswith("json_data/"):
             return "CIQ JSON data: the CIQ workbook as the workflow reads it (`--json`; CR groups → node groups → records)"
+        if arc.startswith(f"{WORK_DIR}/") and name in inputs:
+            return (f"Input file the CIQ names in column `{inputs[name]}` (a copy of your uploaded document): the "
+                    "workflow reads it from `LOCAL_PATH` (this folder in the guide's command)")
         if arc.startswith("scripts/"):
             if name in callers:
                 return (f"Helper script (step 6) the workflow runs on the automation server: \"{callers[name]}\" "

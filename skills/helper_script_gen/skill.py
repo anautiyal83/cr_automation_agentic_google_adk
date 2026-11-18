@@ -110,6 +110,50 @@ def check_cell_handling(code: str, semantics: list[str]) -> list[str]:
             "after the activity, and its absence is a MATCH)"]
 
 
+_FILE_FLAG = re.compile(r"out|file|path|dir|report|dest", re.I)
+_WRITE_MODE = re.compile(r"[wax]")
+
+
+def check_files_from_flags(code: str, flags: list[str]) -> list[str]:
+    """Problems if the script writes a file it names itself (``open(f"report_{imsi}.html", "w")``) while its
+    command line names files: every folder is the workflow's (``LOCAL_PATH``, user 2026-11-18), a self-named file
+    lands wherever the JAR was started."""
+    import ast
+    file_flags = [f for f in flags if _FILE_FLAG.search(f)]
+    if not file_flags:
+        return []  # a workflow that names no file: nothing better to write to
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    def composed(node) -> bool:  # a name the script makes up: a literal, an f-string, "a" + x
+        return (isinstance(node, ast.Constant) and isinstance(node.value, str)) or isinstance(node, ast.JoinedStr) \
+            or (isinstance(node, ast.BinOp) and (composed(node.left) or composed(node.right)))
+
+    made = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and composed(n.value)
+            for t in n.targets if isinstance(t, ast.Name)}
+    from_args = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and not composed(n.value)
+                 for t in n.targets if isinstance(t, ast.Name)}
+
+    def self_named(node) -> bool:
+        return composed(node) or (isinstance(node, ast.Name) and node.id in made and node.id not in from_args)
+
+    bad = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        if isinstance(n.func, ast.Name) and n.func.id == "open" and n.args:
+            mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "mode"), None)
+            if isinstance(mode, ast.Constant) and _WRITE_MODE.search(str(mode.value)) and self_named(n.args[0]):
+                bad.append(ast.unparse(n.args[0]))
+        elif isinstance(n.func, ast.Attribute) and n.func.attr in ("write_text", "write_bytes") \
+                and isinstance(n.func.value, ast.Call) and n.func.value.args and self_named(n.func.value.args[0]):
+            bad.append(ast.unparse(n.func.value.args[0]))
+    return [f"The script writes {b}, a file name it makes up: write only to the files the command line names "
+            f"({', '.join(file_flags)}) — the workflow decides every file and folder (LOCAL_PATH)" for b in bad[:2]]
+
+
 def arg_values(cmd_lines: list[str]) -> list[str]:
     """The values the workflow passes the script (``--output_file '${ORDER_NO}.xml'`` → ``X1.xml``): what an
     f-string field printing an argument holds at run time."""
@@ -578,7 +622,8 @@ class HelperScriptGenSkill:
                         script_name, cmd_lines[0], request_xmls, response_xmls,
                         ciq_summary, inp.workflow_yaml, answers, extra=contract + retry,
                     )
-                    problems = (check_script_contract(code, flags) or check_cell_handling(code, semantics)
+                    problems = (check_script_contract(code, flags) or check_files_from_flags(code, flags)
+                                or check_cell_handling(code, semantics)
                                 or check_output_contract(code, regexes, arg_values(cmd_lines))
                                 or smoke_run(script_name, code, cmd_lines, test_values,
                                              response_sample=response_xmls[0] if response_xmls else "",

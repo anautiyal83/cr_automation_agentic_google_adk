@@ -408,6 +408,9 @@ phases:
   never on a network node and never under an invented path (/usr/local/bin/…: no node has it). Every node file
   it reads is copied to the automation server first: a file inside a pod `oc cp`/`kubectl cp` to the node, then an
   sftp download step; the script reads the local copy. Only a script the MOP itself runs on a node stays there.
+- Every file a script reads OR writes is a flag of its command, by its bare name (`--output_file
+  'report_${{ORDER_NO}}.html'`, `--response_file '${{ORDER_NO}}.xml.res'`): a script never picks a file name or
+  folder itself. Write no folder in front of these names — the pipeline places them in the order's work folder.
 - A value a step registers is `${{NAME}}` in later commands (`predump_${{DATE}}.txt`); `$NAME` is a shell variable
   that is empty unless the same command sets it.
 

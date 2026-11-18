@@ -162,13 +162,15 @@ def _check_schema(kind: str, text: str) -> list[Problem]:
 
 
 def _check_script(code: str, workflow_text: str, rel: str) -> list[Problem]:
-    from skills.helper_script_gen.skill import (HelperScriptGenSkill, check_output_contract,
+    from skills.helper_script_gen.skill import (HelperScriptGenSkill, check_files_from_flags, check_output_contract,
                                                 check_script_contract, contract_flags)
     try:
         compile(code, rel or "<script>", "exec")
     except SyntaxError as e:
         return [Problem(line=e.lineno or 0, plain=f"Python error: {e.msg}.", technical=str(e))]
     name = rel.rsplit("/", 1)[-1]
+    from skills.network_config_gen.paths import local_view
+    workflow_text = local_view(workflow_text) if workflow_text else ""  # as step 6 checks it: no path variables
     calls = HelperScriptGenSkill._find_needed_scripts(workflow_text).get(name, []) if workflow_text else []
     regexes = HelperScriptGenSkill._script_output_regexes(workflow_text).get(name, []) if workflow_text else []
     out = []
@@ -179,6 +181,8 @@ def _check_script(code: str, workflow_text: str, rel: str) -> list[Problem]:
     for msg in check_output_contract(code, regexes):
         out.append(Problem(line=0, plain="Nothing the script prints matches the workflow's success check.",
                            technical=msg))
+    for msg in check_files_from_flags(code, contract_flags(calls)):
+        out.append(Problem(line=0, plain=msg.split(" — ")[0] + ".", technical=msg))
     return out
 
 

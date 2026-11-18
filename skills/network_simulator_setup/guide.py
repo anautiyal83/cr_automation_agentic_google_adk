@@ -30,6 +30,9 @@ SCRIPT_NAMES = ("start_simulator.ps1", "start_simulator.sh", "stop_simulator.ps1
                 "env_setup_windows.ps1", "env_setup_linux.sh")
 DEFAULT_WSL_DISTRO = "Ubuntu-24.04"
 CLI_JAR = "cli-automation-standalone.jar"
+# the automation server's folders in the UC export: helper scripts, and the inputs + files a run writes
+SCRIPTS_DIR = "scripts"
+WORK_DIR = "work"
 DEFAULT_TTL_MINUTES = 240
 MAX_LISTED_COMMANDS = 25
 MAX_SHOWN_CHARS = 110
@@ -494,7 +497,7 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
     jsons = sorted((run_dir / "json_data").glob("*.json"))
     jsons = [j for j in jsons if "VALIDATION_REPORT" not in j.name.upper()]
     if jsons:
-        data = f"../json_data/{jsons[0].name}"
+        data = f"json_data/{jsons[0].name}"
         try:
             from tools.ciq_json import node_groups
             cr_group, group = node_groups(json.loads(jsons[0].read_text(encoding="utf-8")))[0]
@@ -508,9 +511,17 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
     except Exception:
         params = {}
     ports = ", ".join(f"{i['name']} → {i['port']}" for i in instances)
-    args = (f"execute --json {data} --schema ../{uc_name}_validation-rules.yaml --yaml ../simulator/{uc_name}.yaml "
-            f"--node {node} --cr {cr} --output-dir ../exec_output")
+    args = (f"execute --json {data} --schema {uc_name}_validation-rules.yaml --yaml simulator/{uc_name}.yaml "
+            f"--node {node} --cr {cr} --output-dir exec_output")
     args += "".join(f" --var {k}={v}" for k, v in params.items())
+    # the automation server's folders (step 6 declares them, production values): here the package's own
+    from skills.network_config_gen.paths import LOCAL_VAR, SCRIPT_VAR
+    declared = (_load(sim_dir / f"{uc_name}.yaml").get("globals") or {}).get("vars") or {}
+    folders = {k: v for k, v in ((SCRIPT_VAR, SCRIPTS_DIR), (LOCAL_VAR, WORK_DIR)) if k in declared}
+    args += "".join(f" --var {k}={v}" for k, v in folders.items())
+    where = (" The workflow declares its folders at the top (`globals.vars`, production values); the command points "
+             + " and ".join(f"`{k}` at `{v}/`" for k, v in folders.items())
+             + ": the helper scripts are there, the order's files are written there.") if folders else ""
     distro = _distro()
     modules, commands = local_requirements(sim_dir, uc_name)
     inside = ["Java 8 (`openjdk-8-jre-headless`, the default `java`)", "`python3` and `python` (`python-is-python3`)"]
@@ -522,7 +533,7 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
         "", "## Run the execution YAML against the simulator", "",
         f"With the simulator started, run `{uc_name}.yaml` (ports: {ports}) with the cli-automation JAR "
         f"`{CLI_JAR}` — copy it into the package folder (beside `USER_GUIDE.md`) if it is not there. Run it "
-        "**from the `scripts/` folder**, where the workflow's LOCAL steps find their helper scripts and input files. "
+        f"**from the package folder** (beside `USER_GUIDE.md`).{where} "
         "The JAR needs **Java 8** (it evaluates `when` / `expr` with Nashorn, gone since Java 15) and the LOCAL steps "
         "need **Linux bash**.", "",
         "**Not in Windows PowerShell directly:** there the JAR runs the LOCAL steps through a shell that drops their "
@@ -550,16 +561,16 @@ def _workflow_section(sim_dir: Path, uc_name: str, instances: list[dict]) -> lis
         f"(default `{distro}`). If Windows blocks the script as downloaded, `Unblock-File .\\env_setup_windows.ps1` first.", "",
         "**2. Start the simulator** (Windows, empty simulated file systems):", "",
         "```powershell", ".\\start_simulator.ps1 -Clean", "```", "",
-        "**3. Run the workflow in WSL, from the `scripts/` folder.** WSL starts in the current Windows folder, so the "
+        "**3. Run the workflow in WSL, from the package folder.** WSL starts in the current Windows folder, so the "
         "relative paths hold; `--exec` starts `java` without a shell, so no argument is re-quoted:", "",
-        "```powershell", "cd ..\\scripts", f"wsl -d {distro} --exec java -jar ../{CLI_JAR} {args}", "```", "",
+        "```powershell", "cd ..", f"wsl -d {distro} --exec java -jar {CLI_JAR} {args}", "```", "",
         "**4. Results** are written to `exec_output/` in the package folder (`…_EXECUTION_REPORT_<node>.json`). Stop "
         "the simulator with `.\\stop_simulator.ps1` (in `simulator/`). Start it with `-Clean` before each run: a run "
         "leaves its files on the simulated nodes.",
         "", "### Linux server", "",
         "The automation server is already set up (Java 8, python): start the simulator and run the JAR from "
-        "`scripts/`:", "",
-        "```bash", "CLEAN=1 ./start_simulator.sh", "cd ../scripts", f"java -jar ../{CLI_JAR} {args}", "```", "",
+        "the package folder:", "",
+        "```bash", "CLEAN=1 ./start_simulator.sh", "cd ..", f"java -jar {CLI_JAR} {args}", "```", "",
         "`--node` / `--cr` pick one node group of the CIQ JSON; the `--var` values are the framework's "
         "runtime parameters as step 9 passed them. The simulator answers like the real nodes did in the "
         "uploaded transcripts — it is not the production network.",

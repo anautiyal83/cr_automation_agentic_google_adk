@@ -75,9 +75,11 @@ class HelperScriptGenAgent(BaseAgent):
                       baseline.run_id[:8])
         else:
             skill = HelperScriptGenSkill(llm_fn=get_llm_fn(config))
+            # the scripts' checks run them in one folder by their names (paths.local_view: no path variables)
+            from skills.network_config_gen.paths import local_view
             output = await skill.generate(SkillInput(
                 uc_name=uc_name,
-                workflow_yaml=workflow_yaml,
+                workflow_yaml=local_view(workflow_yaml),
                 requirements=requirements,
                 run_dir=run_dir,
                 sample_inputs=uploaded_documents(state),  # the formats of the files the scripts read (OB-58)

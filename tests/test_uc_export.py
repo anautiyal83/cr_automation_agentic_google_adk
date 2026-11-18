@@ -36,7 +36,11 @@ auth:
 'regex:^ldapsearch -x -b "imsi=\\S+,dc=IMSI" objectclass=\\*$': {lines: ['# extended LDIF', 'imsi: 1']}
 """
 
-OVERLAY = """nodes:
+OVERLAY = """globals:
+  vars:
+    LOCAL_PATH: /mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}
+    ACTIVITY_PYTHON_SCRIPT_PATH: /data/cloud-user/om/install/sas/bin/macro_server/java/CLICR/ANY/V1/script/python
+nodes:
   RDS: {type: remote, plugin: ssh, ssh: {host: localhost, port: '22200', user: oamsys, ne_id: BH-R-1-CLI}}
   PGW: {type: remote, plugin: ssh, ssh: {host: localhost, port: '22201', user: oamsys,
         ne_id: BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI, elevate_to_root: true}}
@@ -47,8 +51,9 @@ phases:
     steps:
     - {node: RDS, send: su - sdfrun}
     - {node: RDS, send: 'ldapsearch -x -b "imsi=${rec.data.Test IMSI},dc=IMSI" objectclass=*'}
-    - {node: LOCAL, send: "python create_xml.py --imsi '${rec.data.Test IMSI}'", command_description: Build the order XML}
-    - {node: PGW, sftp: {operation: upload, local_path: '${ORDERNO}.xml', remote_path: '/srv/inbox/${ORDERNO}.xml'}}
+    - {node: LOCAL, send: "python ${ACTIVITY_PYTHON_SCRIPT_PATH}/create_xml.py --imsi '${rec.data.Test IMSI}'",
+       command_description: Build the order XML}
+    - {node: PGW, sftp: {operation: upload, local_path: '${LOCAL_PATH}/${ORDERNO}.xml', remote_path: '/srv/inbox/${ORDERNO}.xml'}}
     - {node: PGW, send: sar 1 10}
     - {node: PGW, send: unknown_tool --x}
 """
@@ -108,19 +113,21 @@ def test_guide_says_how_to_start_log_in_and_run_the_workflow(tmp_path):
             in guide)
     assert "`su - sdfrun` → switches user → `rdshyd201$ `" in guide
     assert "objectclass=*` → `# extended LDIF` (+1 lines)" in guide
-    assert "SFTP upload `${ORDERNO}.xml` ↔ `/srv/inbox/${ORDERNO}.xml`" in guide
+    assert "SFTP upload `${LOCAL_PATH}/${ORDERNO}.xml` ↔ `/srv/inbox/${ORDERNO}.xml`" in guide
     assert "`unknown_tool --x` → **no answer**" in guide
     # by hand: the login and a command with its answer
     assert "ssh -p 22201" in guide and "# neId: BH-NOKIA-CFX-Q-BHPPNCFQD1-172.27.11.147-CLI" in guide
     assert "sar 1 10\n#   → Average:" in guide
     assert "--port 22201" in guide and "--node BH --cr CR1" in guide
-    assert f"--json ../json_data/{UC}.json" in guide
+    assert f"--json json_data/{UC}.json" in guide
+    # the automation server's folders are the package's own (the workflow declares them with production values)
+    assert "--var ACTIVITY_PYTHON_SCRIPT_PATH=scripts --var LOCAL_PATH=work" in guide
     sh = (rd / "simulator" / "start_simulator.sh").read_bytes()
     assert b"\r\n" not in sh and b"start PGW 22201" in sh and b"start RDS 22200" in sh
     assert '@{ Name = "PGW"; Port = 22201 }' in (rd / "simulator" / "start_simulator.ps1").read_text(encoding="utf-8")
-    # how to run the JAR: in WSL on Windows (never natively), from scripts/, after the setup script
+    # how to run the JAR: in WSL on Windows (never natively), from the package folder, after the setup script
     assert "powershell -ExecutionPolicy Bypass -File .\\env_setup_windows.ps1" in guide
-    assert "cd ..\\scripts\nwsl -d Ubuntu-24.04 --exec java -jar ../cli-automation-standalone.jar execute" in guide
+    assert "cd ..\nwsl -d Ubuntu-24.04 --exec java -jar cli-automation-standalone.jar execute" in guide
     assert "**Not in Windows PowerShell directly:**" in guide and "### Linux server" in guide
     assert "sudo ./env_setup_linux.sh" not in guide  # a Linux server is set up already
 
@@ -183,7 +190,8 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
                  "simulator/start_simulator.ps1", "simulator/start_simulator.sh",
                  "simulator/stop_simulator.ps1", "simulator/stop_simulator.sh",
                  "simulator/env_setup_windows.ps1", "simulator/env_setup_linux.sh",
-                 "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/vfs/RDS/", "simulator/logs/"):
+                 "simulator/outputs/PGW/responses/", "simulator/vfs/PGW/", "simulator/vfs/RDS/", "simulator/logs/",
+                 "work/", "work/SD_input.xlsx"):
         assert f"{UC}/{name}" in names, name
     # the run's logs, events, LLM output, manifest and what step 9 left on the nodes stay out
     assert not [n for n in names if n.endswith((".jsonl", "raw.txt", "manifest.json", "left_by_step9.xml"))]
@@ -195,11 +203,12 @@ def test_export_holds_the_deliverables_and_a_clean_simulator(tmp_path):
     assert not [n for n in names if n.endswith(("postdump_white_20231108.txt", "old_helper.py"))]
     guide = z.read(f"{UC}/USER_GUIDE.md").decode("utf-8")
     for arc in (f"{UC}_validation-rules.yaml", "json_data/", "simulator/mockwire.jar", "simulator/config/PGW.yaml",
-                "simulator/vfs/RDS/", "simulator/start_simulator.sh", "scripts/SD_input.xlsx"):
+                "simulator/vfs/RDS/", "simulator/start_simulator.sh", "work/SD_input.xlsx"):
         assert f"| `{arc}" in guide, arc
     assert '`scripts/create_xml.py` | Helper script (step 6) the workflow runs on the automation server: "Build the order XML"' in guide
     assert "server **PGW** (port 22201, simulates PGW)" in guide
-    assert "`scripts/SD_input.xlsx` | Input file the CIQ names in column `INPUT_FILE`" in guide
+    assert "`work/SD_input.xlsx` | Input file the CIQ names in column `INPUT_FILE`" in guide
+    assert f"{UC}/scripts/SD_input.xlsx" not in names  # inputs are the order's (LOCAL_PATH), not the scripts'
     assert "\n## Network simulator\n" in guide and "\n### Servers\n" in guide and "\n### How the servers work together\n" in guide
     assert "\n# password: netconf-sim\n" in guide  # a comment in a code block stays as it is
 

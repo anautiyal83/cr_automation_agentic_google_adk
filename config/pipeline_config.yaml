@@ -52,6 +52,9 @@ execution:
   # Where the activity's input files are on the automation server (production: per child request and node);
   # workflows check them there and upload them from there. Empty: the run folder (spec 013 C4)
   local_path: "/mnt/shared_data/${CHILD_REQ_ID}/${NODE_NAME}"
+  # Where the helper scripts are on the automation server (production's CLICR folder, shared by every UC: each
+  # script carries its UC's prefix); the workflow runs them as ${ACTIVITY_PYTHON_SCRIPT_PATH}/<script>
+  script_path: "/data/cloud-user/om/install/sas/bin/macro_server/java/CLICR/ANY/V1/script/python"
   # Run queue (spec 007): one pipeline runs at a time, the others wait; jobs one user may have waiting
   max_queued_per_user: 3
   # Backups are taken on this server (node `repo_server` of every workflow that uses it; it logs in with the

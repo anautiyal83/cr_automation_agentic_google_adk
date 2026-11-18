@@ -157,6 +157,11 @@ ${SECRET.key} ${ENV.NAME}                     — globals.secrets / OS environme
   (JAR default is stop), `validation.enabled`, and every expression as one `${…}` (`${A != "" && B == "x"}`) —
   the JAR evaluates it exactly like the plain form step 6 works with internally. Multi-line sends are `|-`
   blocks (a double-quoted `\n` reaches the shell as a newline, P-8). CIQ references stay ours (PF-D1)
+- Spec 013 PF-D8 paths (`skills/network_config_gen/paths.py`, last pass of `production.apply`, undone by `flatten`):
+  every folder is a `globals.vars` entry — `ACTIVITY_PYTHON_SCRIPT_PATH` (`execution.script_path`; scripts get the UC
+  prefix: `pgw_rds_1058_create_xml.py`), `LOCAL_PATH` (the order's files; `nc_localdir` creates it), node folders
+  `<TYPE>_<FOLDER>_PATH`. Step 8 works on `paths.expand_nodes_text` (real node folders), helper scripts on
+  `paths.local_view`; step 9 points both automation-server folders at its scripts folder (`_point_local_path`)
 - Spec 013 node model (`sessions.py`, step 6 `_ciq_fixes`): one `niam_<type>_server` per CIQ node type (`node_types`
   of the CIQ JSON template; `ne_id ${<TYPE>.niamID-1}`); hosts reached from it (`oc/kubectl exec -it … -- bash`,
   `ssh user@host`, `telnet`, `su`) are nested sessions on that node (enter step with the new prompt, `exit`);

@@ -58,6 +58,7 @@ not apply to a use case leaves it unchanged.
 | PF-D5 | Step 9 runs the JAR under Linux (WSL) so LOCAL steps behave as in production (no Windows quote / path rewriting); WSL + Java must be installed on the pipeline machine | Decided (user 2026-11-11) |
 | PF-D6 | The Windows-only rules leave step 6: no autofix / validator rule against `"` in LOCAL steps | Proposed |
 | PF-D7 | `dump_yaml` writes multi-line sends as `>-` blocks and never a double-quoted scalar with a backslash (P-8) | Proposed |
+| PF-D8 | Every folder is a variable at the top (`globals.vars`), steps use its name (user 2026-11-18): helper scripts `${ACTIVITY_PYTHON_SCRIPT_PATH}/<uc prefix>_<script>.py` (`execution.script_path`, production's CLICR folder — one folder for every UC, so the UC prefix, as production), the order's files `${LOCAL_PATH}/…` (`execution.local_path`, created by `nc_localdir`), node folders `<TYPE>_<FOLDER>_PATH`; scripts read / write only files their command names. Step 9 and the export point the two automation-server folders at their own (`--var` overrides `globals.vars`, probed 2026-11-18) | Decided (user 2026-11-18) |
 
 ## Acceptance
 

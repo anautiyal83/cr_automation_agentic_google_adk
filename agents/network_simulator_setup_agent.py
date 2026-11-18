@@ -114,9 +114,11 @@ class NetworkSimulatorSetupAgent(BaseAgent):
         if baseline and (not baseline.simulator_fp or baseline.simulator_fp != uc_baseline.simulator_fingerprint(
                 artifacts.get("workflow_yaml", ""), _ciq_json_files(run_dir))):
             baseline = None
+        # the simulator answers on the folders the nodes see: node path variables written out (paths.expand_nodes)
+        from skills.network_config_gen.paths import expand_nodes_text
         inp = SkillInput(
             uc_name=uc_name,
-            workflow_yaml=artifacts.get("workflow_yaml", ""),
+            workflow_yaml=expand_nodes_text(artifacts.get("workflow_yaml", "")),
             requirements=requirements,
             generation_hints=requirements.get("generation_hints", {}),
             ciq_json_files=_ciq_json_files(run_dir),

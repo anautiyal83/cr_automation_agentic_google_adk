@@ -9,6 +9,16 @@ from skills.network_config_gen.production import unwrap
 from skills.network_config_gen.autofix import dump_yaml, parse_yaml
 from skills.network_config_gen.validator import check_placeholders, validate_workflow
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _literal_paths(monkeypatch):
+    """These tests read the commands step 6 builds (backups, rollback, transfers) with their real folders: the
+    last pass that turns folders into variables (``paths``, tests/test_workflow_paths.py) stays off here."""
+    from skills.network_config_gen import paths
+    monkeypatch.setattr(paths, "apply", lambda parsed, uc_name="": 0)
+
 REC = "configSequences.0.records.0.data."
 
 WORKFLOW = f"""
