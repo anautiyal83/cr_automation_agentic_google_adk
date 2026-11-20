@@ -40,8 +40,8 @@ TOTAL_STEPS = 10
 
 # Short names for compact single-row display
 _SHORT_NAMES = {
-    1: "DOC Parser", 2: "DOC Analyzer", 3: "CIQ Config Generation",
-    4: "Generate CIQ JSON Config", 5: "QA-Validation", 6: "Generate Execution Config",
+    1: "DOC Parser", 2: "DOC Analyzer", 3: "Generate CIQ Validation Rules",
+    4: "Generate CIQ Json Builder", 5: "QA-Validation", 6: "Generate Playbook",
     7: "QA-MOP", 8: "Simulator Setup", 9: "QA-Execution",
     10: "Final Report",
 }
@@ -2016,7 +2016,7 @@ class ProgressSection:
             self.status_detail.text = ", ".join(parts) + " — the document is compiled again for review"
 
     def _show_artifact_dialog(self, tab: int = 0):
-        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ JSON config),
+        """The review's files, one tab each (steps 3-4: the validation rules and the CIQ Json Builder),
         opened on ``tab``."""
         import html as html_mod
         from nicegui import app
@@ -2421,7 +2421,7 @@ def _failure_reasons(run_dir: str, step: int) -> list[str]:
     return reasons
 
 
-_REVIEW_LABELS = {"validation-rules": "Validation rules · step 3", "json-output": "CIQ JSON config · step 4",
+_REVIEW_LABELS = {"validation-rules": "Validation rules · step 3", "json-output": "CIQ Json Builder · step 4",
                   "simulator-config": "Simulator config", "simulator-report": "Simulator report"}
 _REVIEW_SUFFIXES = (".yaml", ".yml", ".json", ".py", ".html", ".txt")
 

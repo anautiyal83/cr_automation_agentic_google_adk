@@ -277,7 +277,7 @@ def test_queue_snapshot_statuses_positions_estimates(tmp_path, monkeypatch):
     rows = job_rows(paused[:3])
     assert rows[0]["detail"] == "Paused — review of step 5" and rows[0]["estimate"] == "now"
     assert rows[1]["estimate"].startswith("after the review") and rows[1]["pos"] == "1"
-    assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Execution Config"
+    assert job_rows(running[:1])[0]["detail"] == "Running — step 6 / 10 Generate Playbook"
 
 
 def test_mark_finished_only_ended_runs_once(tmp_path, monkeypatch):

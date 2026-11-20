@@ -89,7 +89,7 @@ Spec: [specs/010-run-phase-options](specs/010-run-phase-options/spec.md).
 
 Spec: [specs/012-yaml-editor](specs/012-yaml-editor/spec.md).
 
-- **Where**: the steps 3–4 review (validation rules, CIQ JSON config) and the step 6 review (execution workflow,
+- **Where**: the steps 3–4 review (validation rules, CIQ Json Builder) and the step 6 review (execution workflow,
   helper scripts): **Edit files**, **Edit** on a file row, **Fix in editor** in the failure box. **Open** in the
   step tracker's artifact list shows any of these files read-only (editable only at its own review, by the run's
   owner with Update on Progress).

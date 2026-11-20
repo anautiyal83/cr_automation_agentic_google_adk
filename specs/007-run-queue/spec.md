@@ -94,7 +94,7 @@ with its **status**:
 | Status | Meaning | Shown with |
 |--------|---------|------------|
 | **Waiting** | In the queue (status `queued`) | position, waiting since, estimated start and duration |
-| **Running** | The pipeline is executing it | current step (e.g. "Step 6 / 10 — Generate Execution Config"), started at, estimated time left |
+| **Running** | The pipeline is executing it | current step (e.g. "Step 6 / 10 — Generate Playbook"), started at, estimated time left |
 | **Paused** | Waiting at a milestone for its owner's review or for step 1 answers | the step and milestone, paused since; time left "after the review + ~X min" |
 | **Completed** | Finished successfully | ended at, duration |
 | **Failed** | Ended with an error | ended at, failed step |

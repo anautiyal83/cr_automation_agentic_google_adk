@@ -285,8 +285,8 @@ python test_step.py --skill ciq_validation_json_gen --run-id <id>
 - Session data: `.nicegui/` (git-ignored); cookie secret `NETCONFIG_STORAGE_SECRET` or `data/.storage_secret`
 
 ## Step Names (UI)
-1. DOC Parser, 2. DOC Analyzer, 3. CIQ Config Generation,
-4. Generate CIQ JSON Config, 5. QA-Validation, 6. Generate Execution Config,
+1. DOC Parser, 2. DOC Analyzer, 3. Generate CIQ Validation Rules,
+4. Generate CIQ Json Builder, 5. QA-Validation, 6. Generate Playbook,
 7. QA-MOP, 8. Simulator Setup, 9. QA-Execution, 10. Final Report
 
 ## External Dependencies

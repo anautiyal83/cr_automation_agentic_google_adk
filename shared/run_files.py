@@ -42,7 +42,7 @@ class EditableFile:
 
 
 _KINDS = {"validation_rules_yaml": ("validation_rules", "Validation rules · step 3"),
-          "json_template_yaml": ("json_output", "CIQ JSON config · step 4"),
+          "json_template_yaml": ("json_output", "CIQ Json Builder · step 4"),
           "workflow_yaml": ("workflow", "Execution workflow · step 6")}
 
 

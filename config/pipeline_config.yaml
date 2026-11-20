@@ -5,9 +5,9 @@ models:
   per_step:
     1: null  # DOC Parser
     2: null  # DOC Analyzer
-    3: "openrouter/google/gemini-4-argon"  # CIQ Config Generation — needs stronger model for column matching
-    4: null  # Generate CIQ JSON Config
-    6: null  # Generate Execution Config
+    3: "openrouter/google/gemini-4-argon"  # Generate CIQ Validation Rules — needs stronger model for column matching
+    4: null  # Generate CIQ Json Builder
+    6: null  # Generate Playbook
     8: null  # Simulator Setup
 
 retry:

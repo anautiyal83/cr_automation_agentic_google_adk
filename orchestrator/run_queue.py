@@ -16,8 +16,8 @@ RECENT_HOURS = 24
 RECENT_MAX = 10
 MIN_LEFT = 60.0
 
-STEP_NAMES = {1: "DOC Parser", 2: "DOC Analyzer", 3: "CIQ Config Generation", 4: "Generate CIQ JSON Config",
-              5: "QA-Validation", 6: "Generate Execution Config", 7: "QA-MOP", 8: "Simulator Setup",
+STEP_NAMES = {1: "DOC Parser", 2: "DOC Analyzer", 3: "Generate CIQ Validation Rules", 4: "Generate CIQ Json Builder",
+              5: "QA-Validation", 6: "Generate Playbook", 7: "QA-MOP", 8: "Simulator Setup",
               9: "QA-Execution", 10: "Final Report"}
 _ACTIVE = ("running", "paused_milestone", "paused_hil", "resuming",
            "PipelineStatus.RUNNING", "PipelineStatus.PAUSED_MILESTONE", "PipelineStatus.PAUSED_HIL")
