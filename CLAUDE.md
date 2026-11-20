@@ -58,6 +58,8 @@ report_generation -> HTML + Excel pipeline report
 
 ## PipelineAgent Built-in Features
 - **Milestones**: built-in pause after each agent (configured via `_AGENT_MILESTONES`)
+- **Cache hits are reviewed**: a cached agent with a review stops at it (not re-run); step 2 from the cache is held by
+  the pipeline (`_CACHED_REVIEWS`), its "edit" goes back to step 1 (OB-112)
 - **Retry routing**: reads `_retry_target` from state, maps via `_RETRY_STEP_TO_INDEX`; "Continue" at a review drops it;
   every retry counts per agent, past `MAX_RETRIES` (3) the run fails (OB-4/5)
 - **Display steps**: maps agent name to 10 UI steps via `_AGENT_DISPLAY_STEPS`

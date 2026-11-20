@@ -2045,3 +2045,11 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   and folds the rest into "Earlier answers without their question (N)". The old texts cannot be recovered: no run
   kept them (summaries showed the ids too; other UCs use the same ids for other questions).
   tests/test_question_texts.py.
+
+### OB-112 — A re-run from the cache skipped the reviews of the cached steps (Medium, Fixed 2026-11-20)
+- User 2026-11-20: "after re-run why i am not seeing review steps from Step 1-5" (run a127d0b3: steps 1-4 CACHE HIT,
+  the first review step 5). A cache hit went straight to the next agent, past the milestone pause.
+- **Fix** (`pipeline_agent`): a cached agent with a review goes on to it (not re-run, no cache save); the step 2 review,
+  which the requirements agent holds itself, is held by the pipeline from the cache (`_CACHED_REVIEWS`, artifact = the
+  requirements summary) — "edit" there sends the run back to step 1 like at any later review.
+  tests/test_pipeline_retries.py::test_a_cached_step_is_still_reviewed.

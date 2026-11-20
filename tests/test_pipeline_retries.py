@@ -60,3 +60,21 @@ def test_rerun_of_a_passed_step_starts_at_its_first_agent(tmp_path):
     assert pipeline._rerun_index("", ctx, 6, helper) == _AGENT_NAMES.index(_first_agent_of_step(6)) < helper
     (tmp_path / "step_6_error.json").write_text(json.dumps({"failed_agents": ["helper_script_gen"]}), encoding="utf-8")
     assert pipeline._rerun_index("", ctx, 6, helper) == helper        # a recorded failure still decides
+
+
+def test_a_cached_step_is_still_reviewed(tmp_path):
+    """Re-run a127d0b3: steps 1-4 came from the cache and their reviews (2, 4) were skipped — a cached
+    step stops at its review like a generated one (user 2026-11-20)."""
+    from orchestrator.pipeline_agent import _AGENT_MILESTONES, _CACHED_REVIEWS
+    from storage.artifact_cache import CACHEABLE_AGENTS
+    reviewed = {**_AGENT_MILESTONES, **_CACHED_REVIEWS}
+    assert {"requirements_gatherer", "ciq_validation_json_gen", "helper_script_gen"} <= set(reviewed) & CACHEABLE_AGENTS
+    assert _CACHED_REVIEWS["requirements_gatherer"][0] == 2
+    source = inspect.getsource(pipeline_agent.PipelineAgent._run_async_impl)
+    skip = source.index("if cache_hit and not (_AGENT_MILESTONES.get(agent.name) or _CACHED_REVIEWS.get(agent.name))")
+    assert skip < source.index("MILESTONE PAUSE (built-in)")
+    assert "_AGENT_MILESTONES.get(agent.name) or (cache_hit and _CACHED_REVIEWS.get(agent.name))" in source
+    # the step 2 review of a cached run shows the requirements document
+    (tmp_path / "UC_requirements-summary.html").write_text("<html/>", encoding="utf-8")
+    assert PipelineAgent._resolve_artifacts({"run_dir": str(tmp_path), "uc_name": "UC"}, 2)[0] \
+        .endswith("UC_requirements-summary.html")

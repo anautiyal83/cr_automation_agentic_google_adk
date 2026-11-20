@@ -65,6 +65,12 @@ _AGENT_MILESTONES: dict[str, tuple[int, str]] = {
     "network_config_exec_qa": (9, "Execution QA"),
 }
 
+# Reviews an agent holds itself (step 2: the requirements agent) — from the cache the agent does not run,
+# so the pipeline holds them; "edit" sends the run back to step 1 like at any later review
+_CACHED_REVIEWS: dict[str, tuple[int, str]] = {
+    "requirements_gatherer": (2, "Requirements Summary"),
+}
+
 # Cached only once this step has executed their artifacts and passed: step 6 passing its
 # validator is not proof — a workflow that failed step 9 stayed cached and the next run reused it (DEP-55)
 # Agents whose artifacts are cached only once a later step passed. Empty since 2026-11-12 (user): step 6 is cached
@@ -331,7 +337,9 @@ class PipelineAgent(BaseAgent):
             except Exception as e:
                 logger.error("Cache check failed for %s: %s", agent.name, e, exc_info=True)
 
-            if cache_hit:
+            # A step loaded from the cache is still reviewed (user 2026-11-20): only an agent without a
+            # review goes straight on
+            if cache_hit and not (_AGENT_MILESTONES.get(agent.name) or _CACHED_REVIEWS.get(agent.name)):
                 index += 1
                 continue
 
@@ -344,7 +352,9 @@ class PipelineAgent(BaseAgent):
             set_run(run_id_str)  # its dummy ORDER_NO (TEST_<run id>) for every step: steps 8 and 9 agree
             agent_t0 = time.monotonic()
 
-            if resume_pause:
+            if cache_hit:
+                flow.flow("FROM CACHE [%d/%d] %s — to its review (not re-run)", index + 1, total, agent.name)
+            elif resume_pause:
                 flow.flow("RESUME [%d/%d] %s — back at its milestone (not re-run)", index + 1, total, agent.name)
             else:
                 try:
@@ -414,7 +424,7 @@ class PipelineAgent(BaseAgent):
             try:
                 from storage.artifact_cache import ArtifactCache, CACHEABLE_AGENTS, inputs_fingerprint, options_fingerprint
                 run_dir = ctx.session.state.get("run_dir", "")
-                if agent.name in CACHEABLE_AGENTS:
+                if agent.name in CACHEABLE_AGENTS and not cache_hit:
                     all_passed = all(_step_ok(ctx.session.state, run_dir, sn) for sn in display_steps)
                     if all_passed:
                         cache = ArtifactCache()
@@ -458,7 +468,7 @@ class PipelineAgent(BaseAgent):
                     continue
 
             # ----- MILESTONE PAUSE (built-in) -----
-            milestone_cfg = _AGENT_MILESTONES.get(agent.name)
+            milestone_cfg = _AGENT_MILESTONES.get(agent.name) or (cache_hit and _CACHED_REVIEWS.get(agent.name))
             if milestone_cfg:
                 ms_step, ms_name = milestone_cfg
                 # ----- CHECKPOINT: a restart shows this review again (spec 007) -----
@@ -729,6 +739,7 @@ class PipelineAgent(BaseAgent):
             return "", []
 
         _ARTIFACT_MAP = {
+            2: (f"{uc_name}_requirements-summary.html", []),
             4: (f"{uc_name}_validation-rules.yaml", [f"{uc_name}_json-output.yaml"]),
             5: (f"{uc_name}_ciq-qa-report.html", []),
             6: (f"{uc_name}.yaml", []),
