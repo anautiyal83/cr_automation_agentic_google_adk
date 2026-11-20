@@ -402,6 +402,31 @@ def same_question(a: str, b: str, threshold: float = 0.75) -> bool:
     return len(wa & wb) / len(wa | wb) >= threshold
 
 
+def fresh_ids(questions: list[dict], question_texts: dict[str, str]) -> list[dict]:
+    """The LLM numbers its questions itself (cmd_q1, cmd_q2 …) and reuses an id another question of
+    the UC already has: its text replaced the saved question of that answer. A question whose id
+    holds a different saved question gets the next free number of its prefix; one asking the same
+    thing keeps its id (an answered one is dropped as answered). Two questions of the round with one
+    id get two."""
+    taken, this_round = set(question_texts), set()
+    out = []
+    for q in questions or []:
+        if not isinstance(q, dict) or not q.get("id"):
+            out.append(q)
+            continue
+        qid, saved = str(q["id"]), question_texts.get(str(q["id"]))
+        if qid in this_round or (saved and not same_question(str(q.get("question") or ""), saved)):
+            m = re.match(r"(.*?)(\d+)$", qid)
+            stem, n = (m.group(1), int(m.group(2))) if m else (qid + "_", 1)
+            while f"{stem}{n}" in taken:
+                n += 1
+            q = {**q, "id": f"{stem}{n}"}
+        taken.add(q["id"])
+        this_round.add(q["id"])
+        out.append(q)
+    return out
+
+
 def clean_questions(questions: list[dict], answered_texts: dict[str, str] | None = None,
                     all_answers: dict | None = None) -> list[dict]:
     """Rules the LLM cannot be trusted to follow (spec 011, PGW Q-1 … Q-4):

@@ -17,7 +17,7 @@ def test_edit_is_handed_over_once(tmp_path):
 
 def test_apply_edit_replaces_saved_answers_and_adds_an_authoritative_note(monkeypatch):
     saved = {}
-    monkeypatch.setattr(skill_mod, "_save_answers", lambda uc, answers: saved.update({uc: dict(answers)}))
+    monkeypatch.setattr(skill_mod, "_save_answers", lambda uc, answers, *_: saved.update({uc: dict(answers)}))
     sk = RequirementGatheringSkill(llm_fn=None)
     sk._uc_name = "UC_X"
     sk._all_answers = {"q1": "plain files for every version", "q2": "Yes"}
@@ -150,7 +150,7 @@ def test_edit_replaces_the_ciq_and_leaves_out_sheets_also_for_later_runs(tmp_pat
     docs: dict = {}
     monkeypatch.setattr(skill_mod, "_load_uc_doc", lambda uc: dict(docs.get(uc, {})))
     monkeypatch.setattr(skill_mod, "_save_uc_doc", lambda uc, doc: docs.update({uc: dict(doc)}))
-    monkeypatch.setattr(skill_mod, "_save_answers", lambda uc, answers: None)
+    monkeypatch.setattr(skill_mod, "_save_answers", lambda uc, answers, *_: None)
     new = _workbook(tmp_path / "fixed.xlsx", {"INDEX": [["ZONE"], ["EAST"]], "INPUT_FILE": [["FILE"], ["a.zip"]],
                                                "Extra": [["X"], ["1"]]})
     sk = RequirementGatheringSkill(llm_fn=None)

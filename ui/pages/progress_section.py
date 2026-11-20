@@ -1914,13 +1914,27 @@ class ProgressSection:
                                      on_upload=lambda e: self._receive_ciq_upload(e, ciq, ciq_label, render_sheets))
                            .props('accept=".xlsx" flat bordered').classes("w-full"), "progress")
 
-                if answers:
-                    ui.label(f"Captured answers ({len(answers)})").classes("text-subtitle2 font-semibold")
-                for qid, val in answers.items():
+                def answer_box(qid: str, val, label: str, dim: bool = False) -> None:
                     with ui.column().classes("w-full gap-1"):
-                        ui.label(str(questions.get(qid) or qid)).classes("text-caption font-medium")
+                        ui.label(label).classes("text-caption " + ("cr-text-dim" if dim else "font-medium"))
                         inputs[qid] = (val, ui.textarea(value="" if val is None else str(val))
                                        .props("outlined autogrow").classes("w-full cr-boxed"))
+
+                # answers with their question first; those answered before the questions were saved with
+                # the answers (OB-111) folded away — their questions cannot be recovered
+                asked = {q: v for q, v in answers.items() if questions.get(q)}
+                bare = {q: v for q, v in answers.items() if not questions.get(q)}
+                if asked:
+                    ui.label(f"Captured answers ({len(asked)})").classes("text-subtitle2 font-semibold")
+                for qid, val in asked.items():
+                    answer_box(qid, val, str(questions[qid]))
+                if bare:
+                    with ui.expansion(f"Earlier answers without their question ({len(bare)})") \
+                            .classes("w-full text-subtitle2"):
+                        ui.label("Answered before the questions were saved with the answers; only the answer "
+                                 "is known.").classes("text-caption cr-text-dim")
+                        for qid, val in bare.items():
+                            answer_box(qid, val, qid, dim=True)
             with ui.row().classes("w-full justify-end gap-2 px-5 py-3").style("border-top: 1px solid var(--cr-border)"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
                 action(ui.button("Update requirements", icon="check",

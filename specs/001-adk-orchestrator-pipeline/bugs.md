@@ -2033,3 +2033,15 @@ Found while writing the UC input guideline (code review, not yet reproduced in a
   re-runs; the UC baseline records the number its simulator was proven with and step 8 replaces it with the run's
   in the reused configs, synthetic keys and answers; the export guide's command uses the run's number and says to
   give each execution a new one (or `-Clean`). tests/test_run_order_no.py.
+
+### OB-111 — Edit requirements showed ids instead of questions; a new question could take an answered one's id (Medium, Fixed 2026-11-20)
+- User 2026-11-20: "questions not showing in edit requirement" — "we should be saving questions along with answers".
+  PGW_RDS_1058: 167 of 217 saved answers had no question text (`cmd_q1` in the dialog). Answers were saved on submit,
+  the texts only at compile; answers from the old `<uc>_answers.json` format never had them. The LLM numbers its own
+  questions: 22 ids held different questions in different runs, the newer text replacing the answered one's.
+- **Fix** (`requirement_gathering`): `_save_answers` stores the answered questions' texts with the answers;
+  `questionnaire.fresh_ids` gives a question whose id holds a different saved question (or repeats in its round) the
+  next free number of its prefix, before the answered filter. The dialog lists the answers with their question first
+  and folds the rest into "Earlier answers without their question (N)". The old texts cannot be recovered: no run
+  kept them (summaries showed the ids too; other UCs use the same ids for other questions).
+  tests/test_question_texts.py.

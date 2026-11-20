@@ -273,7 +273,8 @@ class RequirementGatheringSkill:
             available_data,
         )
 
-        # Filter already-answered
+        # An id of another saved question gets a new one, then filter already-answered
+        questions = questionnaire.fresh_ids(questions, self._question_texts)
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
         # No pattern / secret questions, no repeats in other words (spec 011)
@@ -312,7 +313,7 @@ class RequirementGatheringSkill:
         to proceed with partial information.
         """
         self._all_answers.update(answers)
-        _save_answers(self._uc_name, self._all_answers)
+        _save_answers(self._uc_name, self._all_answers, self._question_texts)
         if getattr(self, "_ciq_only_round", False):
             # The requirements were complete; only the CIQ either-or question was open
             self._ciq_only_round = False
@@ -375,6 +376,7 @@ class RequirementGatheringSkill:
             available_data,
         )
 
+        questions = questionnaire.fresh_ids(questions, self._question_texts)
         if questions and self._all_answers:
             questions = questionnaire.filter_answered_questions(questions, self._all_answers)
         # No pattern / secret questions, no repeats in other words (spec 011)
@@ -414,7 +416,7 @@ class RequirementGatheringSkill:
         changed = {k: {"from": self._all_answers.get(k, ""), "to": v} for k, v in (answers or {}).items()
                    if str(self._all_answers.get(k, "")) != str(v)}
         self._all_answers.update({k: c["to"] for k, c in changed.items()})
-        _save_answers(self._uc_name, self._all_answers)
+        _save_answers(self._uc_name, self._all_answers, self._question_texts)
         if note and note.strip():
             self._developer_notes = "\n\n".join(
                 x for x in (self._developer_notes.strip(), note_block(note, by, at)) if x)
@@ -450,7 +452,7 @@ class RequirementGatheringSkill:
         Returns ``SkillOutput`` with ``requirements``, ``requirements_json``,
         and ``requirements_html`` populated.
         """
-        _save_answers(self._uc_name, self._all_answers)
+        _save_answers(self._uc_name, self._all_answers, self._question_texts)
         _save_question_texts(self._uc_name, self._question_texts)
 
         requirements = await analyzer.compile_requirements(
@@ -894,9 +896,14 @@ def _load_requirements(uc_name: str) -> dict:
     return _load_uc_doc(uc_name).get("compiled_requirements", {})
 
 
-def _save_answers(uc_name: str, answers: dict):
+def _save_answers(uc_name: str, answers: dict, question_texts: dict[str, str] | None = None):
+    """The answers with their questions: an answer saved alone is just an id later (the step 2
+    edit dialog, the Q/A pairs for the LLM)."""
     doc = _load_uc_doc(uc_name) or {}
     doc["developer_answers"] = answers
+    texts = doc.get("question_texts") or {}
+    texts.update({k: v for k, v in (question_texts or {}).items() if k in answers and v})
+    doc["question_texts"] = texts
     _save_uc_doc(uc_name, doc)
 
 
